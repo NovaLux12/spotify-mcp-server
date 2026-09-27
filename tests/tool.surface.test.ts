@@ -48,7 +48,7 @@ import {
   toolNamingMetadata,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
-import { LEGACY_TOOL_ALIASES, LEGACY_TOOL_ALIAS_NAMES } from '../src/shaping.js';
+import { LEGACY_TOOL_ALIASES, LEGACY_TOOL_ALIAS_NAMES, RETIRED_QUEUE_TOOLS, RETIRED_QUEUE_TOOL_NAMES } from '../src/shaping.js';
 import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
@@ -594,6 +594,32 @@ describe('tool surface: budget', () => {
     }
   });
 
+  it('registers no retired queue-read name and exactly two queue entry points (#847)', async () => {
+    const tools = await listTools({});
+    const names = new Set(tools.map((t) => t.name));
+    // Pin the absences on the REAL wire surface, not on the module that used to
+    // register them: a name can come back through any manifest entry, and this
+    // is the list a host would see.
+    for (const retired of RETIRED_QUEUE_TOOL_NAMES) {
+      assert.ok(!names.has(retired), `retired queue tool ${retired} is still registered`);
+    }
+    for (const survivor of ['get_queue', 'peek_next']) {
+      assert.ok(names.has(survivor), `queue entry point ${survivor} is not registered`);
+    }
+    // The count is a host-visible claim, so it is asserted as one. `get_queue`
+    // is the only registered tool that names the queue CONTENT read, and
+    // `peek_next` the only one that names the lookahead.
+    const entryPoints = tools.filter((t) => /queue contents|short lookahead/i.test(t.description ?? ''))
+      .map((t) => t.name);
+    assert.deepEqual(entryPoints.sort(), ['get_queue', 'peek_next']);
+    // Their canonical replacements are registered too — a `fix` that points at
+    // a tool this session trimmed is a dead end for the caller reading it.
+    for (const retired of RETIRED_QUEUE_TOOL_NAMES) {
+      const canonical = RETIRED_QUEUE_TOOLS[retired].canonical;
+      assert.ok(names.has(canonical), `${retired} points at ${canonical}, which is not registered`);
+    }
+  });
+
   it('registers exactly the eight canonical taste names and no legacy alias (#908)', async () => {
     const names = new Set((await listTools({})).map((t) => t.name));
     const canonical = [...LEGACY_TOOL_ALIAS_NAMES].map((alias) => LEGACY_TOOL_ALIASES[alias]);
@@ -762,7 +788,7 @@ describe('tool surface: budget', () => {
       'search_saved_audiobooks', 'check_in_library', 'search_saved_tracks',
       'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause', 'skip_next',
       'skip_previous', 'seek', 'set_volume', 'set_shuffle', 'set_repeat', 'get_queue', 'add_to_queue',
-      'get_devices', 'transfer_playback', 'handoff',
+      'get_devices', 'transfer_playback',
     ]);
     assert.equal(new Set(names).size, names.length);
     assert.equal(new Set(REGISTRAR_MANIFEST.map((module) => module.key)).size, REGISTRAR_MANIFEST.length);

@@ -27,6 +27,10 @@ function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,s
     getAllPages: async()=>[],
   };
   registerPlaybackIntelTools(server, client);
+  // #848 moved `volume_step` out of this module and into `set_volume`, so the
+  // survivor is registered here too. The two modules do not share a tool name,
+  // so `find` is unaffected.
+  registerPlaybackTools(server, client);
   return { registered, calls, client };
 }
 function find(registered:RegisteredTool[], name:string){ const t=registered.find(x=>x.name===name); assert.ok(t, `tool ${name} not found`); return t!; }
@@ -58,11 +62,14 @@ test('queue_next dry_run', async()=>{
   const r = await invoke(find(registered,'queue_next'), { uri:'spotify:track:trk1', dry_run:true });
   assert.match(text(r), /\[dry run\]/);
 });
-test('describe_queue enriched', async()=>{
+// #847: describe_queue was retired into `get_queue` view='enriched', which
+// lives in tools/playback.ts. Its contract is pinned there in
+// tests/queue.tools.test.ts, including the context label and the total.
+test('peek_next is this module\'s surviving queue entry point', async()=>{
   const q={ currently_playing: trackFixture(), queue:[trackFixture({uri:'spotify:track:q2', name:'Q2'}), trackFixture({uri:'spotify:track:q3', name:'Q3'})] };
-  const { registered } = makeHarness({ getResponse:(p)=> p==='/me/player/queue'?q : p==='/me/player'?{ context:{uri:'spotify:playlist:pl1'}, device:{id:'d1'}} : p.startsWith('/playlists/')?{name:'My Playlist'}:null });
-  const r = await invoke(find(registered,'describe_queue'), { include_context:true });
-  assert.match(text(r), /Queue:/);
+  const { registered } = makeHarness({ getResponse:()=>q });
+  const r = await invoke(find(registered,'peek_next'), { count:2 });
+  assert.match(text(r), /Next 2\/2 in queue/);
 });
 test('describe_listening_session groups', async()=>{
   const items=[{ played_at:'2026-08-26T10:00:00Z', track: trackFixture()},{ played_at:'2026-08-26T10:03:00Z', track: trackFixture({uri:'spotify:track:trk2'})}];
@@ -200,11 +207,14 @@ test('get_playback_context still reads deprecated tracks.total projection', asyn
 });
 // #830: Spotify declares volume_percent as the required query parameter; the
 // `volume` spelling is silently rejected, so the nudge never applied.
-test('volume_step writes volume_percent, not volume', async()=>{
+// #848 moved this from `volume_step` to `set_volume`'s `delta_step`, so the
+// assertion moves with it — the property is unchanged, only the tool name and
+// the spelling of the step.
+test('set_volume delta_step writes volume_percent, not volume', async()=>{
   const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ device:{ id:'d1', volume_percent:50}}:null });
-  await invoke(find(registered,'volume_step'), { step:10 });
+  await invoke(find(registered,'set_volume'), { delta_step:10 });
   const put = calls.find(c=>c.method==='PUT' && c.path.startsWith('/me/player/volume'));
-  assert.ok(put, 'volume_step must PUT the volume');
+  assert.ok(put, 'a delta step must PUT the volume');
   const qs = new URLSearchParams(put!.path.split('?')[1]);
   assert.equal(qs.get('volume_percent'), '60');
   assert.equal(qs.get('device_id'), 'd1');

@@ -16,89 +16,44 @@ import { capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { chmod, copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type {
   PlaybackState,
   SpotifyTrack,
 } from '../types/spotify.js';
 import { PlaybackDryRun, ResponseFormat } from '../shaping.js';
-import { getConfig, storePath } from '../config.js';
+import { getConfig } from '../config.js';
 import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
-import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { collectShowRadarEpisodes } from './showradar.js';
 import { emit, type ToolResult } from '../result.js';
+import { migratePlaybackPositions, positionsFile } from './playbackpositions.js';
 
-export function playbackExtFile(env: NodeJS.ProcessEnv = process.env): string {
-  return storePath('playback-extensions', env);
-}
-interface PlaybackSnapshot {
-  name: string;
-  saved_at: string;
-  playback: PlaybackState | null;
-  note?: string;
-}
-interface DevicePreset { label?: string; volume?: number }
-interface ListeningSession { id: string; tags: string[]; created_at: string; tracks: string[]; note?: string }
-interface PlaybackExtStore {
-  states: Record<string, PlaybackSnapshot>;
-  devicePresets: Record<string, DevicePreset>;
-  sessions: Record<string, ListeningSession>;
-  smartRules: Record<string, unknown>;
-  showDigest?: { playlist_id?: string; last_saved?: string };
-  /**
-   * #839: set when the file existed but could not be turned into a store. The
-   * bytes were moved aside first, so a later write loses nothing — but the
-   * caller must be told, because the store it holds is empty for a reason.
-   */
-  load_error?: string;
-  /** Where the original bytes were preserved; null when even that failed. */
-  preserved_as?: string | null;
-}
-
-/** A fresh, empty store. Every call gets its own maps; callers mutate them. */
-function emptyPlaybackExtStore(): PlaybackExtStore {
-  return { states: {}, devicePresets: {}, sessions: {}, smartRules: {} };
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function parsePlaybackExtStore(parsed: unknown): PlaybackExtStore {
-  if (!isPlainObject(parsed)) throw new Error('top level is not a JSON object');
-  for (const key of ['states', 'devicePresets', 'sessions', 'smartRules'] as const) {
-    if (parsed[key] !== undefined && !isPlainObject(parsed[key])) {
-      throw new Error(`"${key}" is not a JSON object`);
-    }
-  }
-  return {
-    states: (parsed.states ?? {}) as Record<string, PlaybackSnapshot>,
-    devicePresets: (parsed.devicePresets ?? {}) as Record<string, DevicePreset>,
-    sessions: (parsed.sessions ?? {}) as Record<string, ListeningSession>,
-    smartRules: (parsed.smartRules ?? {}) as Record<string, unknown>,
-    showDigest: isPlainObject(parsed.showDigest) ? (parsed.showDigest as { playlist_id?: string; last_saved?: string }) : undefined,
-  };
-}
-
-export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Promise<PlaybackExtStore> {
-  const file = playbackExtFile(env);
-  try {
-    return await loadSidecar<PlaybackExtStore>(file, emptyPlaybackExtStore, parsePlaybackExtStore);
-  } catch (err) {
-    if (err instanceof SidecarUnreadableError) {
-      return {
-        ...emptyPlaybackExtStore(),
-        load_error: err.message,
-        preserved_as: err.preservedAs,
-      };
-    }
-    throw err;
-  }
-}
+// The store moved to src/playbackstores.ts (#848). It used to live here, but
+// the collapsed `set_volume` needs it and `set_volume` is in playback.ts, which
+// is in the `core` toolset: importing this module from there would evaluate
+// this module's whole registrar in every core session, undoing the lazy loading
+// from #906. Imported here for this module's own use, and re-exported so the
+// existing importers of these names keep working against one implementation.
+import {
+  playbackExtFile,
+  loadPlaybackExt,
+  savePlaybackExt,
+  type PlaybackExtStore,
+  type PlaybackSnapshot,
+  type ListeningSession,
+} from '../playbackstores.js';
+export {
+  playbackExtFile,
+  loadPlaybackExt,
+  savePlaybackExt,
+  type PlaybackExtStore,
+  type PlaybackSnapshot,
+  type DevicePreset,
+  type ListeningSession,
+} from '../playbackstores.js';
 
 /**
  * #839: the one way these tools answer. When the store was reset because its
@@ -113,18 +68,6 @@ function respond(fmt: string | undefined, store: PlaybackExtStore, echo: Record<
     return { content: [{ type: 'text', text: JSON.stringify(disclosed, null, 2) }], structuredContent: disclosed };
   }
   return { content: [{ type: 'text', text: `WARNING: ${store.load_error}\n${text}` }], structuredContent: disclosed };
-}
-
-async function savePlaybackExt(store: PlaybackExtStore, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const file = playbackExtFile(env);
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  // `load_error` is a report about this call, not store content: persisting it
-  // would make the next load claim a corruption that has already been resolved.
-  const { load_error: _loadError, preserved_as: _preservedAs, ...persisted } = store;
-  await writeFile(file, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  // #1084: mode only applies at creation; re-assert so a pre-existing or
-  // copied-in store does not stay world-readable after this write.
-  await chmod(file, 0o600);
 }
 
 // sessions auto-detect helper exported for tests
@@ -398,23 +341,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       return respond(args.response_format as string, store, { ok: true, device_id: args.device_id, volume: args.volume_percent }, `Set volume preset for ${args.device_id} → ${args.volume_percent}%.`);
     });
 
-  server.tool('apply_device_presets',
-    'Apply all stored per-device volume presets via PUT /me/player/volume.',
-    { dry_run: PlaybackDryRun, response_format: ResponseFormat },
-    async (args) => {
-      const store = await loadPlaybackExt();
-      const presets = Object.entries(store.devicePresets).filter(([, v]) => typeof v.volume === 'number');
-      if (presets.length === 0) return respond(args.response_format as string, store, { ok: true, applied: 0 }, 'No volume presets stored. Use set_device_volume_preset first.');
-      if (args.dry_run) {
-        const lines = presets.map(([id, p]) => `  - ${id}: volume ${p.volume}`);
-        return respond(args.response_format as string, store, { ok: true, dry_run: true, applied: 0, presets: presets.length }, `[dry run] Would apply ${presets.length} preset(s):\n${lines.join('\n')}`);
-      }
-      let applied = 0; const failed: string[] = [];
-      for (const [id, p] of presets) {
-        try { await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(p.volume!), device_id: id })}`); applied++; } catch (e) { failed.push(id); }
-      }
-      return respond(args.response_format as string, store, { ok: failed.length === 0, applied, failed }, `Applied ${applied}/${presets.length} volume presets${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
-    });
+  ;
 
   server.tool('list_device_presets',
     'List stored device name labels and volume presets.',
@@ -512,6 +439,47 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const echo = { ok: true, count: sessions.length, sessions };
       if (args.response_format === 'json') return respond('json', store, echo, '');
       return respond(args.response_format as string, store, echo, `${sessions.length} session(s):\n${lines.join('\n')}`);
+    });
+
+  // -------------------------------------------------------------------------
+  // #846 — the unified playback-position record and its one-time migration.
+  // Three sidecars each persisted a playback position in their own shape under
+  // their own key scheme (see src/tools/playbackpositions.ts). This tool is
+  // the one-time bridge between them and the single canonical record; the
+  // reads that serve it (list_playback_bookmarks, resume_playback_position)
+  // are thin wrappers over that record, not a second way to see it.
+  // -------------------------------------------------------------------------
+  server.tool('migrate_playback_positions',
+    'One-time, idempotent import of every legacy playback position (exhaust2 checkpoints, playback-ext states, backup-dir bookmarks) into the single canonical record. Running it twice changes no record and imports zero. A legacy store that exists but cannot be parsed is refused with nothing written, and its bytes are preserved. Legacy bookmark files are renamed to .migrated, never deleted.',
+    { response_format: ResponseFormat },
+    async (args) => {
+      const fmt = args.response_format as string;
+      const result = await migratePlaybackPositions();
+      const echo = { ...result, path: positionsFile() };
+      if (result.refused) {
+        const text = `Migration refused — ${result.refused}. No file was written; every original is still on disk.`;
+        return fmt === 'json'
+          ? { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo }
+          : { content: [{ type: 'text', text }], structuredContent: echo };
+      }
+      const { per_source, unreadable } = result;
+      const prose = [
+        `Imported ${result.imported} playback position(s) into ${positionsFile()} — `
+          + `states: ${per_source.playback_state}, checkpoints: ${per_source.checkpoint}, bookmarks: ${per_source.bookmark}.`,
+        `Already present: ${result.already_present}. Total now: ${result.total}.`,
+        ...(result.bookmark_files_marked.length
+          ? [`Marked ${result.bookmark_files_marked.length} legacy bookmark file(s) as .migrated (renamed, not deleted).`]
+          : []),
+        // #846/#1092 discipline: an unreadable record is named with its reason
+        // and counted separately, so no total here can be read as "everything
+        // migrated" when something did not.
+        ...(unreadable.length
+          ? [`${unreadable.length} record(s) could NOT be read and were NOT migrated:`, ...unreadable.map((u) => `  - ${u.origin} "${u.origin_id}": ${u.reason}`)]
+          : []),
+      ].join('\n');
+      return fmt === 'json'
+        ? { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo }
+        : { content: [{ type: 'text', text: prose }], structuredContent: echo };
     });
 
   // #180 smart rule persistence

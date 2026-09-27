@@ -77,8 +77,9 @@ function browseCategoryUnavailable(path: string, noun: string, err?: unknown): E
   return new Error(
     `The browse-category lookup (${path}) could not be answered: ${detail} GET /browse/categories/{id} and ` +
       'GET /browse/categories/{id}/playlists were removed by Spotify’s February 2026 Web API changes and ' +
-      'have no replacement endpoint, so the category and its playlists cannot be read; run with credentials ' +
-      'from a grandfathered (pre-Nov-2024) app if you need them.',
+      'have no replacement endpoint, so the category and its playlists cannot be read on this registration. ' +
+      'Whether a grandfathered (pre-Nov-2024) app registration may still read them is unverified: no probe ' +
+      'in this repository shows a 200 on this path.',
     err === undefined ? undefined : { cause: err },
   );
 }
@@ -928,7 +929,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       } catch (err) {
         if (err instanceof SpotifyApiError && err.status === 403) {
           throw new Error(
-            `Spotify returned 403 for the markets lookup: ${err.message}. GET /markets was removed by Spotify's February 2026 Web API changes, so the set of markets Spotify serves cannot be read on a current registration; market inputs are validated against the bundled ISO 3166-1 alpha-2 list instead, and the market a lookup runs under comes from its market argument or SPOTIFY_MCP_MARKET. Run with credentials from a grandfathered (pre-Nov-2024) app if you need the served-market list.`,
+            `Spotify returned 403 for the markets lookup: ${err.message}. GET /markets was removed by Spotify's February 2026 Web API changes, so the set of markets Spotify serves cannot be read on a current registration; market inputs are validated against the bundled ISO 3166-1 alpha-2 list instead, and the market a lookup runs under comes from its market argument or SPOTIFY_MCP_MARKET. Whether a grandfathered (pre-Nov-2024) app registration may still read the served-market list is unverified: no probe in this repository shows a 200 on this path.`,
             { cause: err },
           );
         }

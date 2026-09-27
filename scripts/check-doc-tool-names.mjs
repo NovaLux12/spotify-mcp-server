@@ -107,6 +107,31 @@ const parameterAllowlist = new Set([
   // describing itself, not a request parameter — same category as the
   // `DoctorSurface` rows above.
   'matched_artists', 'unmatched_artists',
+  // #846: the fields of the one canonical playback-position record, plus two
+  // keys the migration report publishes. SPEC §5.1 has to name them to state
+  // the contract: which field means "not captured" (shuffle_state/repeat_state
+  // are null, not false), that origin_id is half the idempotency key, and that
+  // already_present is what a second run reports. They describe a store's own
+  // rows and a report's own output — the same category as the
+  // `DoctorSurface` and coverage keys above, not tool parameters. `captured_at`
+  // is named only to say the field is GONE, which is the #639 removed-field
+  // case: a caller reading an old payload must be able to look the name up.
+  'already_present', 'captured_at', 'is_playing', 'origin_id',
+  'playback_state', 'repeat_state', 'saved_at', 'shuffle_state',
+  // #847: the `get_queue` structuredContent keys SPEC §5.1 and §5.15 name.
+  // The queue-read collapse put six tools' answers under `runtime`,
+  // `duplicates` and `profile`, and a migration note has to name the fields
+  // it is promising still exist — including the `timeline` row shape and the
+  // two nullability clauses that keep a failed read from becoming a number.
+  // A call's own output describing itself, not request parameters, the same
+  // category as `matched_artists` above and the `DoctorSurface` rows.
+  // `queue_length` is the one entry that is a RETIRED tool's field: §5.15 names
+  // it to say it does not come across, and a migration note cannot promise or
+  // deny a field by writing it in a code span the gate refuses to read.
+  'context_label', 'current_track_remaining_error',
+  'current_track_remaining_ms', 'duration_ms', 'estimated_total_wait_ms',
+  'is_episode', 'plays_at_ms', 'queue_length', 'total_remaining_ms',
+  'total_runtime_ms',
   // #602: the account registry's own vocabulary. `account_id` and
   // `display_name` are the two keys the acting-account echo adds to EVERY
   // tool result; the rest are `list_accounts` / `switch_account`
@@ -411,6 +436,34 @@ const retiredToolNames = new Set([
   'forgotten_favorites',
   'taste_recommendations',
   'record_feedback',
+  // #848 — the transfer and volume tool families, collapsed onto one tool each.
+  // Each name still FORWARDS to its survivor with the flags its behaviour
+  // needed (`handoff` → `transfer_playback` with `preserve_position: true`), so
+  // a migration table can name what it replaced; the names are simply not
+  // registered any more, which is what this list records.
+  'handoff',
+  'switch_device',
+  'transfer_playback_with_state',
+  'volume_step',
+  'mute',
+  'unmute',
+  'room_level',
+  'apply_device_presets',
+  'apply_volume_plan',
+  'plan_volume_level_across_devices',
+  // #847 — the six queue-read registrations collapsed into `get_queue` and
+  // `peek_next`. Unlike the eight above, these are NOT rewritten by
+  // SPOTIFY_MCP_LEGACY_ALIASES: the survivors take arguments the retired
+  // tools did not, so a name-only rewrite would answer a different question.
+  // A caller gets a typed `retired_tool_alias` refusal naming the exact
+  // replacement call, and a migration table still has to be able to NAME what
+  // it replaced.
+  'describe_queue',
+  'get_queue_snapshot',
+  'queue_runtime_report',
+  'queue_duplicate_check',
+  'queue_profile',
+  'predict_next_tracks',
 ]);
 /**
  * #1287 — parameter names this server published under a deprecation notice and
@@ -427,6 +480,14 @@ const retiredParameterNames = new Set([
   'playlist_id_a', 'playlist_id_b', 'playlist_a_id', 'playlist_b_id',
 ]);
 const documentedMetadata = new Set([
+  // #848 removed the last tool that took a `device_name` argument, so
+  // `census.parameterNames` stopped carrying the name and SPEC.md's playback-
+  // position record table (#846) started failing this gate on a field that is
+  // still perfectly real. It belongs here rather than in `parameterAllowlist`:
+  // that set is fed by the live registry on purpose, so a name added to it
+  // would claim a tool accepts it. This one is a documented FIELD of a payload,
+  // which is what this set is for.
+  'device_name',
   'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
   'rate_limited', 'unavailable', 'statsfm_resource_not_found', 'conflict',

@@ -45,7 +45,7 @@ const REQUIRED_TOOLS = [
   // Post-v1.4 differentiators (highest-severity failure class: silent
   // wiring loss). See the wiring-regression note above.
   'grow_playlist', 'verify_receipt', 'spotify_doctor',
-  'whats_new', 'search_deep', 'handoff', 'merge_playlists',
+  'whats_new', 'search_deep', 'transfer_playback', 'merge_playlists',
   'library_hygiene', 'plan_podcast_session', 'where_was_i', 'apply_scene',
 ];
 

@@ -88,6 +88,27 @@ export interface EmitOptions {
    * always attached whatever this is set to.
    */
   proseCarriesPayload?: boolean;
+  /**
+   * In `json` mode, print THIS instead of the payload (#895).
+   *
+   * The default mirrors the payload into the text block, and the host already
+   * has it as `structuredContent` — one payload, two copies, charged twice.
+   * A call site whose payload can be large (a move plan, a capped section set)
+   * passes a summariser here and the text block becomes a bounded line that
+   * names the channel the data is in.
+   *
+   * **The text block is then NOT valid JSON, deliberately.** A mirrored JSON
+   * block is the copy being removed; replacing it with a pointer is what makes
+   * the saving real. The trade is that a client reading only `content[].text`
+   * no longer finds the object there, which is why this is opt-in per call site
+   * rather than a change to the default — SPEC.md §5 promises "the raw API
+   * payload as JSON text", and the json branches that keep the mirrored form
+   * are how that promise is kept.
+   *
+   * A summariser that interpolates a list must bound it: a summary that is
+   * itself unbounded is no saving at all.
+   */
+  jsonSummary?: (payload: Record<string, unknown>) => string;
 }
 
 /**
@@ -103,6 +124,10 @@ export interface EmitOptions {
  * Passing them the other way round still type-checks — that is precisely why
  * nine modules had it the other way round — so read the call:
  * `emit(fmt, prose, payload)`.
+ *
+ * A module whose payload can be large passes `{ jsonSummary }` rather than
+ * defining its own wrapper: the wrapper is the drift #582 exists to prevent,
+ * and the summary is a per-call-site decision, so it is an option here (#895).
  */
 export function emit(
   fmt: string | undefined,
@@ -112,7 +137,14 @@ export function emit(
 ): ToolResult {
   const indent = options.jsonIndent ?? 2;
   const isJson = fmt === 'json';
-  const body = isJson ? JSON.stringify(payload, null, indent) : prose;
+  // #895 — `jsonSummary` replaces the mirrored print with a bounded line. The
+  // payload still rides as `structuredContent` either way, so nothing is lost;
+  // what is removed is the second copy of it.
+  const body = isJson
+    ? options.jsonSummary
+      ? options.jsonSummary(payload)
+      : JSON.stringify(payload, null, indent)
+    : prose;
   // `proseCarriesPayload` is about prose. Gating on it unconditionally would
   // drop `structuredContent` from json mode too, where it has always been
   // present and where the printed payload and the structured one are the same

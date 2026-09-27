@@ -161,16 +161,20 @@ async function buildMcpServer(
   // Resources/prompts are separate MCP surfaces and do not contribute to the
   // tool schema budget, but retain their existing toolsets and scope gates.
   // Imported dynamically for the same reason as the tool modules: a static
-  // import of ./resources/index.js would drag `walkFollowedArtists` — and so
+  // import of ./resources/register.js would drag `walkFollowedArtists` — and so
   // the whole of src/tools/following.ts — into every process, including one
   // that trimmed the `following` toolset.
+  //
+  // #685: the two resource modules are registered through ONE helper, so the
+  // order a host sees is the order any test reproducing it sees. They used to
+  // be two calls here and two independent calls in the test suites, one of
+  // which registered only one of the modules — which is how a shadowing pair
+  // could not be observed by the tests that claimed to cover it.
   const resourcesActive =
     isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes);
   if (resourcesActive) {
-    const { registerTemplateResources } = await import('./resources/templates.js');
-    const { registerResources } = await import('./resources/index.js');
-    registerTemplateResources(server, client);
-    registerResources(server, client);
+    const { registerReadSurfaces } = await import('./resources/register.js');
+    registerReadSurfaces(server, client);
   }
   if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) {
     const { registerPrompts } = await import('./prompts/index.js');

@@ -1,13 +1,14 @@
 /**
  * exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379).
  *
- * 23 playback tools owned by the fix/exhaust2-playback builder. All in this
+ * 22 playback tools owned by the fix/exhaust2-playback builder. All in this
  * slice register here and nowhere else. Buckets: timers/volume/sleep
  * (sleep_timer, playback_timer_status, mute, unmute, volume_ramp, room_level, volume_report),
  * devices (switch_device, pause_everywhere), shuffle-play (surprise_me,
  * skip_n, daily_pick), podcasts (episode_bookmark, episode_resume,
  * queue_next_episode), queue honesty (queue_replace_via_playlist,
- * queue_profile), intel (session_stats, most_replayed, last_heard,
+ * queue_profile — the last of these retired by #847 into `get_queue`
+ * include:['profile']), intel (session_stats, most_replayed, last_heard,
  * weekday_heatmap), checkpoints (checkpoint_playback, continue_last).
  *
  * Local sidecar store lives next to the other playback sidecars
@@ -20,8 +21,8 @@ import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -45,6 +46,14 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
+import {
+  listPositions,
+  newPositionRecord,
+  positionsFile,
+  putPosition,
+  recordFromCheckpoint,
+  type PlaybackPositionRecord,
+} from './playbackpositions.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
 import { textResult, emit } from '../result.js';
@@ -88,20 +97,6 @@ function rngFor(seed: number | undefined): () => number {
   return typeof seed === 'number' ? mulberry32(seed) : Math.random;
 }
 
-async function resolveDeviceHint(
-  client: SpotifyClient,
-  hint: string,
-): Promise<{ deviceId: string | null; devices: SpotifyDevice[] }> {
-  const res = await client.get<GetDevicesResponse>('/me/player/devices');
-  const devices = res?.devices ?? [];
-  const exact = devices.find((d) => d.id === hint);
-  const store = await loadPlaybackExt();
-  const byLabel = devices.find(
-    (d) => (store.devicePresets[d.id ?? '']?.label ?? '').toLowerCase() === hint.toLowerCase(),
-  );
-  const found = exact ?? byLabel ?? devices.find((d) => d.name.toLowerCase().includes(hint.toLowerCase()));
-  return { deviceId: found?.id ?? null, devices };
-}
 
 /**
  * Cursor-walk /me/player/recently-played (newest → older via the documented
@@ -160,75 +155,31 @@ function isAttributable(m: QueueRowMeta | undefined): m is QueueRowMeta {
   return m !== undefined && (m.artists.length > 0 || !!m.name || !!m.type);
 }
 
-// ---------------------------------------------------------------------------
-// local sidecar store
-// ---------------------------------------------------------------------------
-
-export function exhaust2PlaybackFile(env: NodeJS.ProcessEnv = process.env): string {
-  return storePath('exhaust2-playback', env);
-}
-
-interface MuteMemory {
-  volume: number;
-  muted_at: string;
-  device_id: string | null;
-  device_name: string | null;
-}
-interface EpisodeBookmark {
-  id: string;
-  saved_at: string;
-  note?: string;
-  episode_uri: string;
-  episode_name: string;
-  show_name: string | null;
-  show_id: string | null;
-  progress_ms: number;
-  duration_ms: number | null;
-  device_id: string | null;
-}
-interface Exhaust2Checkpoint {
-  id: string;
-  saved_at: string;
-  note?: string;
-  playback: PlaybackState | null;
-}
-interface Exhaust2Store {
-  muteMemory: Record<string, MuteMemory>;
-  episodeBookmarks: Record<string, EpisodeBookmark>;
-  checkpoints: Record<string, Exhaust2Checkpoint>;
-}
-
-export async function loadExhaust2Store(env: NodeJS.ProcessEnv = process.env): Promise<Exhaust2Store> {
-  return loadSidecar<Exhaust2Store>(
-    exhaust2PlaybackFile(env),
-    () => ({ muteMemory: {}, episodeBookmarks: {}, checkpoints: {} }),
-    (parsed) => {
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('top level is not a JSON object');
-      }
-      const p = parsed as Record<string, unknown>;
-      for (const key of ['muteMemory', 'episodeBookmarks', 'checkpoints'] as const) {
-        if (p[key] !== undefined && (typeof p[key] !== 'object' || p[key] === null || Array.isArray(p[key]))) {
-          throw new Error(`"${key}" is not a JSON object`);
-        }
-      }
-      return {
-        muteMemory: (p.muteMemory ?? {}) as Record<string, MuteMemory>,
-        episodeBookmarks: (p.episodeBookmarks ?? {}) as Record<string, EpisodeBookmark>,
-        checkpoints: (p.checkpoints ?? {}) as Record<string, Exhaust2Checkpoint>,
-      };
-    },
-  );
-}
-
-export async function saveExhaust2Store(store: Exhaust2Store, env: NodeJS.ProcessEnv = process.env): Promise<void> {
-  const file = exhaust2PlaybackFile(env);
-  await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-  await writeFile(file, `${JSON.stringify(store, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  // #1084: mode only applies at creation; re-assert so a pre-existing or
-  // copied-in store does not stay world-readable after this write.
-  await chmod(file, 0o600);
-}
+// The store moved to src/playbackstores.ts (#848), for the same reason the
+// playbackext store did: the collapsed `set_volume` is in playback.ts, which is
+// in the `core` toolset, and a static import of this module from there would
+// evaluate this module's whole registrar in every core session — exactly what
+// the lazy loading from #906 exists to prevent. Imported for this module's own
+// use and re-exported so the existing importers (logout.ts, the exhaust2 tests)
+// keep working against one implementation.
+import {
+  exhaust2PlaybackFile,
+  loadExhaust2Store,
+  saveExhaust2Store,
+  type Exhaust2Store,
+  type MuteMemory,
+  type EpisodeBookmark,
+  type Exhaust2Checkpoint,
+} from '../playbackstores.js';
+export {
+  exhaust2PlaybackFile,
+  loadExhaust2Store,
+  saveExhaust2Store,
+  type Exhaust2Store,
+  type MuteMemory,
+  type EpisodeBookmark,
+  type Exhaust2Checkpoint,
+} from '../playbackstores.js';
 
 // ---------------------------------------------------------------------------
 // in-process timer registry (sleep_timer + volume_ramp; cancel-safe)
@@ -484,96 +435,13 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   );
 
   // 2. mute (#359) — volume 0 with remembered level
-  server.tool(
-    'mute',
-    'Set volume to 0 while remembering the previous level in the sidecar — one word beats volume_step ×N. unmute restores it. Quota: 1 read + 1 write.',
-    {
-      device_id: z.string().optional().describe('Device to mute (defaults to active device)'),
-      response_format: ResponseFormat,
-      dry_run: PlaybackDryRun,
-    },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run;
-      const state = await client.get<PlaybackState>('/me/player');
-      if (!state?.device && !args.device_id) {
-        return textResult('No active device — pass device_id to mute a specific device (volume memory is per device id).', { ok: false, error: 'no_active_device' });
-      }
-      const deviceId = args.device_id ?? state?.device?.id ?? null;
-      const deviceName = state?.device?.name ?? null;
-      const previous = typeof state?.device?.volume_percent === 'number' ? state.device.volume_percent : 50;
-      const memoryKey = deviceId ?? 'active';
-      if (dryRun) {
-        const steps = [`Remember current volume ${previous}% for ${deviceName ?? deviceId ?? 'active device'}`, `PUT ${volumeQuery(0, deviceId)}`];
-        return { content: [{ type: 'text', text: describeDryRun('mute', deviceName ?? deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, previous_volume: previous } };
-      }
-      await client.put(volumeQuery(0, deviceId)); // remember only after the mute lands — a failed PUT must leave prior memory intact (#843)
-      const store = await loadExhaust2Store();
-      store.muteMemory[memoryKey] = { volume: previous, muted_at: new Date().toISOString(), device_id: deviceId, device_name: deviceName };
-      await saveExhaust2Store(store);
-      return emit(fmt, `Muted ${deviceName ?? deviceId ?? 'active device'} (was ${previous}% — remembered for unmute).`, { ok: true, dry_run: false, previous_volume: previous, device_id: deviceId, remembered_for: memoryKey });
-    },
-  );
+  ;
 
   // 3. unmute (#360) — restore remembered level
-  server.tool(
-    'unmute',
-    'Restore the volume level remembered by mute (falls back to 50% if nothing remembered). Quota: 1 write (sidecar read is local).',
-    {
-      device_id: z.string().optional().describe('Device to unmute (defaults to the key mute remembered / active device)'),
-      response_format: ResponseFormat,
-      dry_run: PlaybackDryRun,
-    },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run;
-      const store = await loadExhaust2Store();
-      let deviceId = args.device_id ?? null;
-      let memory = deviceId ? store.muteMemory[deviceId] ?? null : store.muteMemory.active ?? null;
-      if (!memory && !deviceId) {
-        // No explicit device: fall back to the most recent mute anywhere.
-        const entries = Object.values(store.muteMemory).sort((a, b) => b.muted_at.localeCompare(a.muted_at));
-        memory = entries[0] ?? null;
-        deviceId = memory?.device_id ?? null;
-      }
-      const volume = memory?.volume ?? 50;
-      const source = memory ? 'remembered by mute' : 'no memory — default 50%';
-      if (dryRun) {
-        const steps = [`PUT ${volumeQuery(volume, deviceId)} (${source})`];
-        return { content: [{ type: 'text', text: describeDryRun('unmute', deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, volume, source } };
-      }
-      await client.put(volumeQuery(volume, deviceId));
-      return emit(fmt, `Unmuted → volume ${volume}% (${source}).`, { ok: true, dry_run: false, volume, source, device_id: deviceId });
-    },
-  );
+  ;
 
   // 4. switch_device (#361) — fuzzy-name transfer, pure handoff
-  server.tool(
-    'switch_device',
-    'Transfer playback to a device by fuzzy name or sidecar label — pure handoff, no content args (complements play_on which plays content, and handoff which is pos-preserving id-only). Quota: 1 read + 1 write.',
-    {
-      device_name: z.string().min(1).describe('Device name substring (case-insensitive), exact id, or sidecar label'),
-      play: z.boolean().optional().default(true).describe('true = keep playing on the target (default); false = transfer paused'),
-      response_format: ResponseFormat,
-      dry_run: PlaybackDryRun,
-    },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run;
-      const { deviceId, devices } = await resolveDeviceHint(client, args.device_name as string);
-      if (!deviceId) {
-        const names = devices.map((d) => d.name).join(', ') || 'no devices';
-        return textResult(`No device matches "${args.device_name}". Available: ${names}`, { ok: false, error: 'device_not_found', available: devices.map((d) => ({ id: d.id, name: d.name })) });
-      }
-      const target = devices.find((d) => d.id === deviceId);
-      if (dryRun) {
-        const steps = [`PUT /me/player { device_ids: ["${deviceId}"], play: ${args.play ?? true} }`];
-        return { content: [{ type: 'text', text: describeDryRun('switch_device', target?.name ?? deviceId, steps) }], structuredContent: { ok: true, dry_run: true, resolved_device_id: deviceId, play: args.play ?? true } };
-      }
-      await client.put('/me/player', { device_ids: [deviceId], play: args.play ?? true });
-      return emit(fmt, `Playback transferred → "${target?.name ?? deviceId}" (${args.play ?? true ? 'playing' : 'paused'}).`, { ok: true, dry_run: false, resolved_device_id: deviceId, device_name: target?.name ?? null, play: args.play ?? true });
-    },
-  );
+  ;
 
   // 5. surprise_me (#362) — seeded random play
   server.tool(
@@ -1152,66 +1020,17 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     },
   );
 
-  // 17. queue_profile (#374) — composition profile of the current queue
-  server.tool(
-    'queue_profile',
-    'Composition profile of the current queue: unique artists, albums, track-vs-episode mix, longest consecutive block by one artist. Quota: 1 read (GET /me/player/queue), local compute.',
-    { response_format: ResponseFormat },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const q = await client.get<{ currently_playing?: unknown; queue?: Array<Record<string, unknown>> }>('/me/player/queue');
-      const rows = [q?.currently_playing, ...(q?.queue ?? [])].filter(Boolean) as Array<Record<string, unknown>>;
-      if (rows.length === 0) return textResult('Queue is empty.', { ok: true, total: 0 });
-      const artists = new Map<string, number>();
-      const albums = new Set<string>();
-      const shows = new Set<string>();
-      let tracks = 0;
-      let episodes = 0;
-      for (const r of rows) {
-        if (r.type === 'episode') {
-          episodes++;
-          shows.add((r as { show?: { name?: string } }).show?.name ?? 'unknown show');
-        } else {
-          tracks++;
-          for (const a of trackArtists(r)) artists.set(a, (artists.get(a) ?? 0) + 1);
-          const album = (r as { album?: { name?: string } }).album?.name;
-          if (album) albums.add(album);
-        }
-      }
-      let blockArtist = '';
-      let blockLen = 0;
-      let curArtist = '';
-      let curLen = 0;
-      for (const r of rows) {
-        const first = trackArtists(r)[0] ?? '';
-        if (first === curArtist) curLen++;
-        else { curArtist = first; curLen = 1; }
-        if (curLen > blockLen && curArtist) { blockArtist = curArtist; blockLen = curLen; }
-      }
-      const echo = {
-        ok: true,
-        total: rows.length,
-        tracks,
-        episodes,
-        unique_artists: artists.size,
-        unique_albums: albums.size,
-        unique_shows: shows.size,
-        longest_artist_block: blockArtist ? { artist: blockArtist, tracks: blockLen } : null,
-      };
-      const text = [
-        `Queue profile (${rows.length} items):`,
-        `  mix: ${tracks} track(s) / ${episodes} episode(s)`,
-        `  unique artists: ${artists.size} | unique albums: ${albums.size}${shows.size ? ` | unique shows: ${shows.size}` : ''}`,
-        blockArtist ? `  longest block by one artist: ${blockArtist} ×${blockLen}` : '  no single-artist block',
-      ].join('\n');
-      return emit(fmt, text, echo);
-    },
-  );
+  // 17. queue_profile (#374) — REMOVED by #847. It was a composition profile
+  // of one GET /me/player/queue, and `get_queue` with include:['profile']
+  // returns the same numbers — unique artists, albums and shows, the
+  // track-vs-episode mix, the longest single-artist run — from that same one
+  // read. `trackArtists` stays: four other tools here use it, and deleting
+  // the tool was not a reason to re-derive the helper.
 
   // 18. checkpoint_playback (#375) — auto-named timestamped checkpoint
   server.tool(
     'checkpoint_playback',
-    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Quota: 1 read + local sidecar write.',
+    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Writes the same shared position record capture_playback_position writes, so list_playback_bookmarks and continue_last both see it. Quota: 1 read + local sidecar write.',
     {
       note: z.string().optional().describe('Optional note to attach'),
       response_format: ResponseFormat,
@@ -1219,21 +1038,42 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
       const state = await client.get<PlaybackState>('/me/player');
-      const store = await loadExhaust2Store();
       const iso = new Date().toISOString();
-      let id = `cp-${iso.slice(0, 16)}`;
-      if (store.checkpoints[id]) id = `cp-${iso.slice(0, 19)}`;
-      const cp: Exhaust2Checkpoint = { id, saved_at: iso, note: args.note, playback: state };
-      store.checkpoints[id] = cp;
-      await saveExhaust2Store(store);
-      return emit(fmt, `Checkpoint saved: ${id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`, { ok: true, checkpoint: { id, saved_at: iso, note: args.note ?? null, item: state?.item?.name ?? null, progress_ms: state?.progress_ms ?? null }, path: exhaust2PlaybackFile() });
+      // The id keeps the `cp-YYYY-MM-DDTHH:MM` shape callers already parse out
+      // of prose, and `placeRecord` appends -2/-3 if that id is taken, so the
+      // collision branch this used to have inline is now handled in one place.
+      const id = `cp-${iso.slice(0, 16)}`;
+      // #846: the canonical record carries every field this checkpoint could
+      // hold that `continue_last` or `resume_playback_position` reads — track,
+      // offset, device, shuffle, repeat, context. The old record additionally
+      // held the whole PlaybackState (queue, disallows), which nothing read;
+      // that is the loss the consolidation accepts, and it is a loss for NEW
+      // checkpoints only — an unmigrated one keeps its state under `legacy`.
+      const record = await putPosition(newPositionRecord({
+        id,
+        label: null,
+        note: args.note ?? null,
+        saved_at: iso,
+        device_id: state?.device?.id ?? null,
+        device_name: state?.device?.name ?? null,
+        track_uri: state?.item?.uri ?? null,
+        track_name: state?.item?.name ?? null,
+        position_ms: state?.progress_ms ?? 0,
+        is_playing: state?.is_playing ?? false,
+        context_uri: state?.context?.uri ?? null,
+        shuffle_state: typeof state?.shuffle_state === 'boolean' ? state.shuffle_state : null,
+        repeat_state: state?.repeat_state ?? null,
+        origin: 'checkpoint',
+        origin_id: id,
+      }));
+      return emit(fmt, `Checkpoint saved: ${record.id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`, { ok: true, checkpoint: { id: record.id, saved_at: record.saved_at, note: record.note, item: record.track_name, progress_ms: record.position_ms }, path: positionsFile() });
     },
   );
 
   // 19. continue_last (#376) — resume newest checkpoint by saved_at
   server.tool(
     'continue_last',
-    'Resume the most recent checkpoint without knowing its name (sidecar lookup by saved_at). Pairs with checkpoint_playback. Quota: 2-3 writes (play + shuffle/repeat best-effort).',
+    'Resume the most recent saved playback position without knowing its name (newest by saved_at across the shared position store — a checkpoint_playback, a capture_playback_position bookmark or a save_playback_state slot). Pairs with checkpoint_playback. Quota: 2-3 writes (play + shuffle/repeat best-effort).',
     {
       device_id: z.string().optional().describe('Target device id'),
       response_format: ResponseFormat,
@@ -1242,59 +1082,42 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
       const dryRun = args.dry_run;
-      const store = await loadExhaust2Store();
-      const newest = Object.values(store.checkpoints).sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
-      if (!newest) return textResult('No checkpoints. Use checkpoint_playback first.', { ok: false, error: 'no_checkpoints' });
-      const p = newest.playback;
-      if (!p?.item?.uri) return textResult(`Checkpoint "${newest.id}" has no playable item to continue.`, { ok: false, error: 'no_item', checkpoint: newest.id });
-      const deviceId = args.device_id ?? p.device?.id ?? null;
+      // #846: the canonical store is the source of truth, and "the most recent
+      // saved position" is the honest reading of this tool now that all three
+      // writers land in one place. A pre-migration exhaust2 checkpoint is the
+      // fallback, so nothing the user already saved stops being resumable
+      // before the migration has run.
+      const all = await listPositions();
+      let newest: PlaybackPositionRecord | null = all.length ? all[all.length - 1] : null;
+      if (!newest) {
+        const store = await loadExhaust2Store();
+        const legacy = Object.entries(store.checkpoints)
+          .map(([key, cp]) => recordFromCheckpoint(key, cp))
+          .sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
+        if (legacy) newest = legacy;
+      }
+      if (!newest) return textResult('No saved playback positions. Use checkpoint_playback first.', { ok: false, error: 'no_checkpoints' });
+      if (!newest.track_uri) return textResult(`Checkpoint "${newest.id}" has no playable item to continue.`, { ok: false, error: 'no_item', checkpoint: newest.id });
+      const deviceId = args.device_id ?? newest.device_id ?? null;
       const qs = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
       if (dryRun) {
         const steps = [
-          `PUT /me/player/play${qs} { uris: ["${p.item.uri}"], position_ms: ${p.progress_ms ?? 0} }`,
-          ...(typeof p.shuffle_state === 'boolean' ? [`PUT /me/player/shuffle?state=${p.shuffle_state}`] : []),
-          ...(p.repeat_state ? [`PUT /me/player/repeat?state=${p.repeat_state}`] : []),
+          `PUT /me/player/play${qs} { uris: ["${newest.track_uri}"], position_ms: ${newest.position_ms} }`,
+          ...(typeof newest.shuffle_state === 'boolean' ? [`PUT /me/player/shuffle?state=${newest.shuffle_state}`] : []),
+          ...(newest.repeat_state ? [`PUT /me/player/repeat?state=${newest.repeat_state}`] : []),
         ];
         return { content: [{ type: 'text', text: describeDryRun('continue_last', newest.id, steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, checkpoint: newest.id, saved_at: newest.saved_at } };
       }
       const failed: string[] = [];
-      try { await client.put(`/me/player/play${qs}`, { uris: [p.item.uri], position_ms: p.progress_ms ?? 0 }); } catch { failed.push('play'); }
-      if (typeof p.shuffle_state === 'boolean') { try { await client.put(`/me/player/shuffle?state=${p.shuffle_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('shuffle'); } }
-      if (p.repeat_state) { try { await client.put(`/me/player/repeat?state=${p.repeat_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('repeat'); } }
-      return emit(fmt, `Continuing from checkpoint "${newest.id}" → ${p.item.uri} @ ${p.progress_ms ?? 0}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: p.item.uri, progress_ms: p.progress_ms ?? 0, device_id: deviceId, failed });
+      try { await client.put(`/me/player/play${qs}`, { uris: [newest.track_uri], position_ms: newest.position_ms }); } catch { failed.push('play'); }
+      if (typeof newest.shuffle_state === 'boolean') { try { await client.put(`/me/player/shuffle?state=${newest.shuffle_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('shuffle'); } }
+      if (newest.repeat_state) { try { await client.put(`/me/player/repeat?state=${newest.repeat_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('repeat'); } }
+      return emit(fmt, `Continuing from checkpoint "${newest.id}" → ${newest.track_uri} @ ${newest.position_ms}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: newest.track_uri, progress_ms: newest.position_ms, device_id: deviceId, failed });
     },
   );
 
   // 20. room_level (#377) — same volume percent on every live device
-  server.tool(
-    'room_level',
-    'Level the room: read the active device volume and apply the same percent to every other live device. Quota: 1 read + N writes (one volume PUT per target device).',
-    {
-      exclude_device_id: z.string().optional().describe('Additional device id to leave untouched'),
-      response_format: ResponseFormat,
-      dry_run: PlaybackDryRun,
-    },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run;
-      const res = await client.get<GetDevicesResponse>('/me/player/devices');
-      const devices = (res?.devices ?? []).filter((d) => d.id);
-      const active = devices.find((d) => d.is_active && typeof d.volume_percent === 'number');
-      if (!active) return textResult('No active device reporting a volume — cannot level the room.', { ok: false, error: 'no_active_device' });
-      const targets = devices.filter((d) => d.id !== active.id && d.id !== args.exclude_device_id && !d.is_restricted);
-      if (targets.length === 0) return textResult('No other live devices to level.', { ok: true, applied: 0 });
-      if (dryRun) {
-        const steps = targets.map((d) => `PUT ${volumeQuery(active.volume_percent!, d.id)} ("${d.name}")`);
-        return { content: [{ type: 'text', text: describeDryRun('room_level', `${targets.length} device(s) @ ${active.volume_percent}%`, steps) }], structuredContent: { ok: true, dry_run: true, source: { id: active.id, name: active.name, volume: active.volume_percent }, targets: targets.map((d) => ({ id: d.id, name: d.name })) } };
-      }
-      let applied = 0;
-      const failed: string[] = [];
-      for (const d of targets) {
-        try { await client.put(volumeQuery(active.volume_percent!, d.id!)); applied++; } catch { failed.push(d.name); }
-      }
-      return emit(fmt, `Room levelled: ${applied}/${targets.length} device(s) → ${active.volume_percent}%${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, source: { id: active.id, name: active.name, volume: active.volume_percent }, applied, total: targets.length, failed });
-    },
-  );
+  ;
 
   // 21. volume_report (#378) — read-only volume snapshot across devices
   server.tool(

@@ -12,6 +12,11 @@
  * any of them shipped green. These cases drive the real handlers against a
  * recording stub and assert the exact wire call.
  *
+ * #848 later removed three of them from this module — the two volume-plan
+ * tools and `transfer_playback_with_state` — and their cases moved to
+ * `tests/tools.playback-collapse.test.ts`, driven through the survivors. What
+ * is left here is 19 of the original 20, plus the census.
+ *
  * The module's mutations carry `dry_run` (default false, #836) and are covered
  * on BOTH sides here: the preview must issue no write at all, and the commit
  * must issue exactly the documented one. `delete_playback_bookmark` is the
@@ -258,17 +263,27 @@ function makeHarness(options: StubOptions = {}) {
 
 let tmp: string;
 let prevBackupDir: string | undefined;
+let prevExtFile: string | undefined;
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'spotify-swarm3-playback-'));
   prevBackupDir = process.env.SPOTIFY_MCP_BACKUP_DIR;
   process.env.SPOTIFY_MCP_BACKUP_DIR = tmp;
+  // #846: capture_playback_position writes the shared position record, which
+  // lives in the playback-extensions sidecar, not the backup dir. Both stores
+  // are pinned into this test's own mkdtemp root so the suite keeps writing
+  // only there and the "the effect, not the call" assertions can still read
+  // the bytes back off disk.
+  prevExtFile = process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE;
+  process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE = join(tmp, 'playback-ext.json');
 });
 
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
   if (prevBackupDir === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
   else process.env.SPOTIFY_MCP_BACKUP_DIR = prevBackupDir;
+  if (prevExtFile === undefined) delete process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE;
+  else process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE = prevExtFile;
 });
 
 const bookmarkFile = (id: string) => join(tmp, `playback-bookmark-${id}.json`);
@@ -326,30 +341,48 @@ describe('#668 get_playback_snapshot', () => {
 // 3. capture_playback_position
 // ===========================================================================
 
-describe('#668 capture_playback_position', () => {
-  it('writes a 0600 bookmark under the temp backup dir and names the path', async () => {
+describe('#846 capture_playback_position writes the canonical record', () => {
+  it('writes a 0600 record in the shared position store and names that file', async () => {
     const h = makeHarness();
     const out = await h.invoke('capture_playback_position', { label: 'morning' });
     const sc = h.structured(out);
     assert.equal(sc.bookmarked, true);
-    const bookmark = sc.bookmark as Record<string, unknown>;
-    assert.equal(bookmark.label, 'morning');
-    assert.equal(bookmark.track_uri, 'spotify:track:t01');
-    assert.equal(bookmark.position_ms, 30_000);
-    assert.equal(bookmark.device_id, 'dev_kitchen');
+    const record = sc.position as Record<string, unknown>;
+    assert.equal(record.label, 'morning');
+    assert.equal(record.track_uri, 'spotify:track:t01');
+    assert.equal(record.position_ms, 30_000);
+    assert.equal(record.device_id, 'dev_kitchen');
+    assert.equal(record.origin, 'bookmark');
+    // Shuffle/repeat are not read here, so they must be null rather than a
+    // default that would read as a captured `false` (#1092).
+    assert.equal(record.shuffle_state, null);
+    assert.equal(record.repeat_state, null);
 
-    // The effect, not the call: the file really exists, with the right mode.
+    // The effect, not the call: the store really exists, with the right mode,
+    // and the record really landed in it under the id that was reported.
     const files = await readdir(tmp);
     assert.equal(files.length, 1, `exactly one sidecar expected, saw ${files.join(', ')}`);
-    assert.equal(
-      String(sc.path),
-      join(tmp, files[0] as string),
-      'the reported path must be the file that was actually written, inside the temp backup dir',
-    );
-    const onDisk = JSON.parse(await readFile(join(tmp, files[0] as string), 'utf8')) as Record<string, unknown>;
-    assert.equal(onDisk.track_uri, 'spotify:track:t01');
-    const mode = (await stat(join(tmp, files[0] as string))).mode & 0o777;
-    assert.equal(mode, 0o600, `bookmark sidecar must be 0600, saw ${mode.toString(8)}`);
+    const path = String(sc.path);
+    assert.ok(path.startsWith(tmp), `the store must be inside the temp backup dir, saw ${path}`);
+    const onDisk = JSON.parse(await readFile(path, 'utf8')) as { positions: Record<string, Record<string, unknown>> };
+    assert.equal(onDisk.positions[String(record.id)]?.track_uri, 'spotify:track:t01');
+    const mode = (await stat(path)).mode & 0o777;
+    assert.equal(mode, 0o600, `position store must be 0600, saw ${mode.toString(8)}`);
+  });
+
+  it('the record it writes is the one the listing serves, in the one record format', async () => {
+    // #846's whole claim: a capture and a checkpoint are the same kind of row.
+    // Asserting it through the tools is the only way to catch a writer that
+    // fills the canonical fields but a reader that still expects the old shape.
+    const h = makeHarness();
+    const captured = (h.structured(await h.invoke('capture_playback_position', { label: 'x' })).position as { id: string });
+    const listed = h.structured(await h.invoke('list_playback_bookmarks'));
+    const rows = listed.items as Array<Record<string, unknown>>;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.id, captured.id);
+    assert.equal(rows[0]?.label, 'x');
+    assert.equal(rows[0]?.origin, 'bookmark');
+    assert.equal(listed.origins && (listed.origins as Record<string, number>).bookmark, 1);
   });
 
   it('writes nothing when there is no item to bookmark', async () => {
@@ -365,17 +398,18 @@ describe('#668 capture_playback_position', () => {
 // ===========================================================================
 
 describe('#668 list_playback_bookmarks', () => {
-  it('lists every bookmark, ordered by id, with label and mm:ss position', async () => {
+  it('lists every saved position, oldest first, with label and mm:ss position', async () => {
     const h = makeHarness();
-    // Ids seeded in an order that is NOT their sort order, so the assertion
-    // below cannot pass by accident on a filesystem whose readdir happens to
-    // return them sorted. The ordering claim is asserted as "equals the sort
-    // of what was seeded" rather than against a hardcoded pair, so it holds
-    // whatever order the directory hands back.
+    // #846 changed the sort key from the filename to `saved_at`, because the
+    // consolidated store assigns ids that are not timestamps — a canonical id
+    // has no time in it, so id order would have been an accident. Seeded here
+    // in an order that is NOT their saved_at order AND whose ids sort the
+    // OTHER way, so an implementation that regressed to id order fails rather
+    // than passing by coincidence.
     const seeded = [
-      { id: 'zz-last', track_name: 'Zulu', position_ms: 3_661_000, label: 'morning' },
-      { id: 'aa-first', track_name: 'Alpha', position_ms: 90_000 },
-      { id: 'mm-middle', track_name: 'Mike', position_ms: 0 },
+      { id: 'zz-last', captured_at: '2026-09-27T11:00:00.000Z', track_name: 'Zulu', position_ms: 3_661_000, label: 'morning' },
+      { id: 'aa-first', captured_at: '2026-09-27T09:00:00.000Z', track_name: 'Alpha', position_ms: 90_000 },
+      { id: 'mm-middle', captured_at: '2026-09-27T10:00:00.000Z', track_name: 'Mike', position_ms: 0 },
     ];
     for (const row of seeded) {
       await writeJson(bookmarkFile(row.id), seedBookmark({ ...row, id: row.id }).bm);
@@ -384,22 +418,48 @@ describe('#668 list_playback_bookmarks', () => {
     await writeFile(join(tmp, 'backup-2026-09-27-1.json'), '{}\n');
 
     const out = await h.invoke('list_playback_bookmarks');
-    assert.deepEqual(h.calls, [], 'listing bookmarks is a local read and must issue no Spotify call');
+    assert.deepEqual(h.calls, [], 'listing positions is a local read and must issue no Spotify call');
 
     const sc = h.structured(out);
     const items = sc.items as Array<Record<string, unknown>>;
-    const expectedIds = seeded.map((r) => r.id).sort();
+    const expectedIds = [...seeded]
+      .sort((a, b) => a.captured_at.localeCompare(b.captured_at))
+      .map((r) => r.id);
     assert.deepEqual(
       items.map((b) => b.id),
       expectedIds,
-      'bookmarks come back sorted by id, and only playback-bookmark-*.json rows are bookmarks',
+      'positions come back oldest first, and only playback-bookmark-*.json rows are positions',
     );
     assert.equal(items.find((b) => b.id === 'zz-last')?.label, 'morning');
     const prose = h.text(out);
-    assert.match(prose, /3 bookmark\(s\)/);
+    assert.match(prose, /3 saved playback position\(s\)/);
     assert.match(prose, /1:30/, '90_000ms renders as 1:30');
     assert.match(prose, /1:01:01/, '3_661_000ms renders as 1:01:01');
     assert.deepEqual(sc.pagination, { total: 3, returned: 3, truncated: false });
+  });
+
+  it('reports an unreadable store as an error, never as an empty list', async () => {
+    // The distinction this pins: "the file could not be read" and "you have
+    // no positions" produce different output. A read failure degraded to an
+    // empty listing is the exact lie #839/#1092 exist to prevent — the user
+    // would conclude their bookmarks were gone.
+    const h = makeHarness();
+    await writeJson(bookmarkFile('bm1'), seedBookmark().bm);
+    await writeFile(join(tmp, 'playback-ext.json'), '{"positions": {oops', 'utf8');
+
+    const out = await h.invoke('list_playback_bookmarks');
+    const sc = h.structured(out);
+    assert.equal(sc.error, 'store_unreadable');
+    assert.equal(sc.ok, false);
+    assert.equal(sc.items, undefined, 'no rows may be presented as if they were the whole list');
+    assert.match(h.text(out), /WARNING/);
+    assert.match(h.text(out), /NOT an empty list/);
+    // And the bytes are preserved rather than overwritten by the read.
+    assert.equal(
+      await readFile(join(tmp, 'playback-ext.json.corrupt'), 'utf8'),
+      '{"positions": {oops',
+      'the unreadable bytes are preserved at <file>.corrupt',
+    );
   });
 
   it('reports zero bookmarks and points at capture when the dir has none', async () => {
@@ -433,7 +493,10 @@ describe('#668 delete_playback_bookmark', () => {
     const out = await h.invoke('delete_playback_bookmark', { bookmark_id: 'bm1', dry_run: false });
     assert.equal(h.structured(out).deleted, true);
     assert.deepEqual(await readdir(tmp), [], 'commit must actually remove the sidecar');
-    assert.match(h.text(out), /Deleted bookmark bm1/);
+    // A bookmark that was never migrated has no canonical row, so the honest
+    // report names the file that was unlinked rather than claiming a store
+    // write that did not happen.
+    assert.match(h.text(out), /Deleted bookmark file .*playback-bookmark-bm1\.json/);
   });
 
   it('leaves the file untouched on the dry_run preview', async () => {
@@ -448,7 +511,7 @@ describe('#668 delete_playback_bookmark', () => {
     const h = makeHarness();
     const out = await h.invoke('delete_playback_bookmark', { bookmark_id: 'nope', dry_run: false });
     assert.equal(h.structured(out).found, false);
-    assert.match(h.text(out), /No bookmark found with id "nope"/);
+    assert.match(h.text(out), /No saved playback position with id "nope"/);
   });
 });
 
@@ -522,86 +585,24 @@ describe('#668 get_device_volume_report', () => {
 });
 
 // ===========================================================================
-// 8. get_queue_snapshot
+// #847 removed: get_queue_snapshot
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 get_queue_snapshot', () => {
-  const QUEUE = {
-    currently_playing: track(0, 200_000, 'Now Playing'),
-    queue: [track(1, 200_000), track(2, 60_000), episode(3, 120_000)],
-  };
 
-  it('totals the runtime across the whole queue, not just the returned page', async () => {
-    const h = makeHarness({ queue: QUEUE });
-    // max_results 2 over a 3-item queue: the page and the total are different
-    // numbers, so a total summed from the page is visible.
-    const out = await h.invoke('get_queue_snapshot', { max_results: 2 });
-    assert.deepEqual(h.paths('GET'), ['/me/player/queue']);
-    const sc = h.structured(out);
-    assert.equal(sc.total, 3);
-    assert.equal(sc.total_runtime_ms, 380_000, '200_000 + 60_000 + 120_000 — every queued row, not the 2 returned');
-    const items = sc.items as Array<Record<string, unknown>>;
-    assert.equal(items.length, 2, 'the page really is smaller than the queue');
-    assert.deepEqual(items.map((i) => i.position), [1, 2], 'positions are 1-based');
-    assert.deepEqual(sc.pagination, { total: 3, returned: 2, truncated: true });
-    assert.match(h.text(out), /"Now Playing" — Artist/);
-  });
-
-  it('reports an episode in the queue with its show as the subtitle', async () => {
-    const h = makeHarness({ queue: QUEUE });
-    const out = await h.invoke('get_queue_snapshot', { max_results: 3 });
-    const items = h.structured(out).items as Array<Record<string, unknown>>;
-    assert.equal(items[2]?.is_episode, true, 'an item with no `artists` is an episode');
-    assert.equal(items[2]?.subtitle, 'The Show');
-    assert.equal(items[0]?.subtitle, 'Artist');
-  });
-
-  it('reports an empty queue without dividing by zero', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] } });
-    const out = await h.invoke('get_queue_snapshot');
-    const sc = h.structured(out);
-    assert.equal(sc.total, 0);
-    assert.equal(sc.total_runtime_ms, 0);
-    assert.equal(sc.currently_playing, null);
-    assert.match(h.text(out), /\(queue is empty\)/);
-  });
-});
-
+// #847 removed: queue_runtime_report
 // ===========================================================================
-// 9. queue_runtime_report
-// ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 queue_runtime_report', () => {
-  it('computes average, longest, shortest and the current track remaining time', async () => {
-    const h = makeHarness({
-      queue: { currently_playing: track(0, 200_000), queue: [track(1, 300_000), track(2, 60_000), track(3, 120_000)] },
-    });
-    const out = await h.invoke('queue_runtime_report');
-    const sc = h.structured(out);
-    assert.equal(sc.upcoming_count, 3);
-    assert.equal(sc.total_runtime_ms, 480_000);
-    assert.equal(sc.average_runtime_ms, 160_000);
-    assert.equal((sc.longest as Record<string, unknown>).duration_ms, 300_000);
-    assert.equal((sc.shortest as Record<string, unknown>).duration_ms, 60_000);
-    // state().item.duration_ms 200_000 - progress_ms 30_000
-    assert.equal(sc.current_track_remaining_ms, 170_000);
-    assert.equal(sc.estimated_total_wait_ms, 650_000);
-  });
 
-  it('returns null longest/shortest for an empty queue rather than throwing', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] }, state: null });
-    const out = await h.invoke('queue_runtime_report');
-    const sc = h.structured(out);
-    assert.equal(sc.upcoming_count, 0);
-    assert.equal(sc.average_runtime_ms, 0);
-    assert.equal(sc.longest, null);
-    assert.equal(sc.shortest, null);
-    assert.equal(sc.current_track_remaining_ms, 0);
-    assert.match(h.text(out), /Longest:\s+—/);
-  });
-});
-
-// ===========================================================================
 // 10. split_queue_plan
 // ===========================================================================
 
@@ -691,39 +692,15 @@ describe('#668 split_queue_plan', () => {
 });
 
 // ===========================================================================
-// 11. queue_duplicate_check
+// #847 removed: queue_duplicate_check
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['duplicates']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 queue_duplicate_check', () => {
-  it('groups repeats by uri and counts only the redundant occurrences as wasted', async () => {
-    const h = makeHarness({
-      queue: {
-        currently_playing: null,
-        queue: [track(1, 200_000, 'Alpha'), track(2, 100_000, 'Beta'), track(1, 200_000, 'Alpha'), track(1, 200_000, 'Alpha')],
-      },
-    });
-    const out = await h.invoke('queue_duplicate_check');
-    const sc = h.structured(out);
-    const groups = sc.duplicate_groups as Array<Record<string, unknown>>;
-    assert.equal(groups.length, 1);
-    assert.equal(groups[0]?.name, 'Alpha');
-    assert.equal(groups[0]?.occurrences, 3);
-    assert.deepEqual(groups[0]?.positions, [1, 3, 4], 'queue positions are 1-based');
-    assert.equal(groups[0]?.wasted_runtime_ms, 400_000, 'the first occurrence is the one that plays');
-    assert.equal(sc.total_redundant, 2);
-    assert.equal(sc.wasted_runtime_ms, 400_000);
-  });
 
-  it('says there are no duplicates rather than reporting an empty group', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2)] } });
-    const out = await h.invoke('queue_duplicate_check');
-    assert.deepEqual(h.structured(out).duplicate_groups, []);
-    assert.equal(h.structured(out).total_redundant, 0);
-    assert.match(h.text(out), /No duplicates in the upcoming queue\./);
-  });
-});
-
-// ===========================================================================
 // 12. queue_prune_plan
 // ===========================================================================
 
@@ -768,37 +745,15 @@ describe('#668 queue_prune_plan', () => {
 });
 
 // ===========================================================================
-// 13. predict_next_tracks
+// #847 removed: predict_next_tracks
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`, whose `runtime.timeline` carries the same per-item rows and cumulative `plays_at_ms`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 predict_next_tracks', () => {
-  it('stamps each item with its cumulative start time after the current track', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1, 200_000), track(2, 100_000)] } });
-    const out = await h.invoke('predict_next_tracks', { count: 2 });
-    const sc = h.structured(out);
-    assert.equal(sc.current_track_remaining_ms, 170_000, '200_000 - 30_000 still to play');
-    const items = sc.items as Array<Record<string, unknown>>;
-    assert.equal(items[0]?.plays_at_ms, 170_000);
-    assert.equal(items[1]?.plays_at_ms, 370_000, 'the second starts after the first finishes');
-  });
 
-  it('defaults to five and never returns more than the queue holds', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2)] } });
-    const out = await h.invoke('predict_next_tracks', {});
-    assert.equal((h.structured(out).items as unknown[]).length, 2);
-    const capped = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2), track(3), track(4), track(5), track(6)] } });
-    assert.equal((capped.structured(await capped.invoke('predict_next_tracks', {})).items as unknown[]).length, 5);
-  });
-
-  it('says predictions are unavailable for an empty queue', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] } });
-    const out = await h.invoke('predict_next_tracks', { count: 3 });
-    assert.deepEqual(h.structured(out).items, []);
-    assert.match(h.text(out), /queue is empty — predictions unavailable/);
-  });
-});
-
-// ===========================================================================
 // 14. shuffle_state_report
 // ===========================================================================
 
@@ -954,82 +909,6 @@ describe('#668 listening_session_report', () => {
 });
 
 // ===========================================================================
-// 19. transfer_playback_with_state — the multi-step Spotify write
-// ===========================================================================
-
-describe('#668 transfer_playback_with_state', () => {
-  it('issues the documented PUTs in order against the resolved device', async () => {
-    const h = makeHarness({ state: state({ shuffle_state: true, repeat_state: 'track' }) });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'Desk', dry_run: false });
-    assert.equal(h.structured(out).transferred, true);
-
-    const puts = h.calls.filter((c) => c.method === 'PUT');
-    assert.deepEqual(puts.map((c) => c.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_desk',
-      '/me/player/shuffle?state=true&device_id=dev_desk',
-      '/me/player/repeat?state=track&device_id=dev_desk',
-    ]);
-    assert.deepEqual(puts[0]?.body, { device_ids: ['dev_desk'], play: true }, 'the transfer body is the contract');
-    assert.deepEqual(puts[1]?.body, { uris: ['spotify:track:t01'], position_ms: 30_000 });
-  });
-
-  it('falls back to a seek when the context-less resume is refused', async () => {
-    const h = makeHarness({ failWrite: ['/me/player/play'] });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: false });
-    const puts = h.calls.filter((c) => c.method === 'PUT');
-    assert.deepEqual(puts.map((c) => c.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_desk',
-      '/me/player/seek?position_ms=30000&device_id=dev_desk',
-      '/me/player/shuffle?state=false&device_id=dev_desk',
-      '/me/player/repeat?state=off&device_id=dev_desk',
-    ]);
-    assert.equal(h.structured(out).transferred, true, 'the seek fallback is a success, not a partial failure');
-  });
-
-  it('names the steps that failed instead of claiming a clean transfer', async () => {
-    // play:false takes the else-branch seek, so the failure lands on `seek`.
-    const h = makeHarness({ failWrite: ['/me/player/seek'] });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', play: false, dry_run: false });
-    const sc = h.structured(out);
-    assert.equal(sc.transferred, false);
-    assert.deepEqual(sc.failed_steps, ['seek']);
-    assert.match(h.text(out), /failed steps: seek/);
-  });
-
-  it('appends device_id to the shuffle/repeat queries with &, not a second ?', async () => {
-    // The regression this file exists for: `?state=false?device_id=X` put the
-    // device id inside the `state` value, so the state was never restored.
-    const h = makeHarness({ state: state({ shuffle_state: true, repeat_state: 'context' }) });
-    await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: false });
-    for (const path of h.paths('PUT')) {
-      assert.doesNotMatch(path, /\?[^?]*\?/, `"${path}" has two '?' — the second parameter is part of the first value`);
-    }
-    assert.ok(h.paths('PUT').includes('/me/player/shuffle?state=true&device_id=dev_desk'));
-    assert.ok(h.paths('PUT').includes('/me/player/repeat?state=context&device_id=dev_desk'));
-  });
-
-  it('refuses to transfer when no device matches, issuing no write at all', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'Car', dry_run: false });
-    assert.equal(h.structured(out).target_found, false);
-    assert.deepEqual(h.paths('PUT'), [], 'an unresolved target must not reach the player endpoint');
-    assert.match(h.text(out), /No device matches "Car" among 2 device\(s\)\./);
-  });
-
-  it('previews the same steps without issuing any of them', async () => {
-    const h = makeHarness({ state: state({ shuffle_state: true }) });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: true });
-    assert.deepEqual(h.paths('PUT'), []);
-    const sc = h.structured(out);
-    assert.equal(sc.dry_run, true);
-    const steps = sc.steps as string[];
-    assert.ok(steps.some((s) => s.startsWith('PUT /me/player/seek?position_ms=30000')), steps.join(' | '));
-  });
-});
-
-// ===========================================================================
 // 20. sleep_timer_plan
 // ===========================================================================
 
@@ -1071,7 +950,7 @@ describe('#668 sleep_timer_plan', () => {
 });
 
 // ===========================================================================
-// 21. device_type_census
+// 19. device_type_census
 // ===========================================================================
 
 describe('#668 device_type_census', () => {
@@ -1117,24 +996,27 @@ describe('#668 device_type_census', () => {
  */
 const COVERED_ELSEWHERE = new Set([
   'get_context_inspect', // tests/tools.swarm3playback-context.test.ts
-  'plan_volume_level_across_devices', // tests/tools.swarm3playback-volume.test.ts
-  'apply_volume_plan', // tests/tools.swarm3playback-volume.test.ts
   'resume_playback_position', // tests/tools.swarm3playback-resume.test.ts
 ]);
 
 describe('#668 anti-vacuity', () => {
-  it('registers all 24 playback tools, so a renamed or dropped tool fails here', () => {
+  // 24 -> 20 (#847) retired `get_queue_snapshot`, `queue_runtime_report`,
+  // `queue_duplicate_check` and `predict_next_tracks`. 20 -> 17 (#848) retired
+  // `apply_volume_plan`, `plan_volume_level_across_devices` and
+  // `transfer_playback_with_state` into `set_volume` and `transfer_playback` in
+  // playback.ts. Both counts stay pinned so the NEXT removal is equally loud.
+  it('registers all 17 playback tools, so a renamed or dropped tool fails here', () => {
     const names = makeHarness().names();
-    assert.equal(names.length, 24, `expected the module's 24 tools, got ${names.length}: ${names.join(', ')}`);
-    assert.equal(new Set(names).size, 24, 'tool names must be unique');
+    assert.equal(names.length, 17, `expected the module's 17 tools, got ${names.length}: ${names.join(', ')}`);
+    assert.equal(new Set(names).size, 17, 'tool names must be unique');
   });
 
-  it('classifies the two mutating playback tools as writes, not reads', async () => {
+  it('classifies the mutating playback tools as writes, not reads', async () => {
     // Guards the readOnly/destructive split for the tools whose names do not
     // start with a read verb. `delete_playback_bookmark` is the destructive one.
     const { classifyToolAnnotations } = await import('../src/tools/annotations.js');
     assert.deepEqual(classifyToolAnnotations('delete_playback_bookmark'), { destructiveHint: true });
-    assert.deepEqual(classifyToolAnnotations('transfer_playback_with_state'), { destructiveHint: false });
+    assert.deepEqual(classifyToolAnnotations('transfer_playback'), { destructiveHint: false });
     assert.deepEqual(classifyToolAnnotations('list_playback_bookmarks'), { readOnlyHint: true, idempotentHint: true });
   });
 });
@@ -1152,5 +1034,10 @@ describe('#668 anti-vacuity', () => {
     );
     const stale = [...COVERED_ELSEWHERE].filter((n) => !names.includes(n));
     assert.deepEqual(stale, [], `COVERED_ELSEWHERE names tools this module no longer registers: ${stale.join(', ')}`);
-    assert.equal(invoked.size, 20, `this file should drive the 20 uncovered tools; it drove ${invoked.size}`);
+    // 20 when #668 measured it; 16 after #847 retired the four queue readers
+    // whose cases moved to tests/queue.tools.test.ts; 15 after #848 retired
+    // three more, whose cases moved to tests/tools.playback-collapse.test.ts.
+    // The assertion is a floor on COVERAGE, not a record of the old number, so
+    // it tracks what is still here.
+    assert.equal(invoked.size, 15, `this file should drive the 15 remaining uncovered tools; it drove ${invoked.size}`);
   });
