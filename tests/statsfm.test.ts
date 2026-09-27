@@ -727,13 +727,27 @@ test('json responses carry the same measured total as the prose (#1006)', async 
     track_id: ENTITY.track,
     response_format: 'json',
   });
-  const parsed = JSON.parse(h.text(out)) as Record<string, unknown>;
+  // #895: the payload rides in `structuredContent`; the text block beside it
+  // is a bounded summary rather than a second copy of the same bytes.
   const sc = out.structuredContent as Record<string, unknown>;
-  assert.equal(parsed.count, 162);
-  assert.equal(parsed.totalMs, sc.totalMs);
-  assert.equal(parsed.scope, sc.scope);
-  assert.equal(parsed.lifetime, sc.lifetime);
-  assert.equal((parsed.streams as unknown[]).length, sc.sample_returned, 'json carries the sample, not a page');
+  // The prose call is the control: every field the prose path publishes must
+  // read the same in the machine channel, which is what "the same measured
+  // total" in the test's name actually claims.
+  const prose = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
+  const proseSc = prose.structuredContent as Record<string, unknown>;
+  assert.equal(sc.count, 162);
+  assert.equal(sc.totalMs, proseSc.totalMs);
+  assert.equal(sc.scope, proseSc.scope);
+  assert.equal(sc.lifetime, proseSc.lifetime);
+  assert.equal(sc.sample_returned, proseSc.sample_returned);
+  assert.equal((sc.streams as unknown[]).length, (proseSc.streams as unknown[]).length);
+  // json mode is capped to the same 10 sample rows the prose path shows, and
+  // says how many existed — it used to ship all 162 in both channels.
+  assert.equal((sc.streams as unknown[]).length, 10, 'json is capped like the prose beside it');
+  const sections = sc.sections as Record<string, { returned: number; total: number; truncated: boolean }>;
+  assert.equal(sections.streams.returned, 10);
+  assert.equal(sections.streams.total, sc.sample_returned);
+  assert.equal(sections.streams.truncated, true);
 });
 
 
@@ -1003,7 +1017,8 @@ test('statsfm_records_artists renders record rows', async () => {
 test('statsfm tools honor response_format=json', async () => {
   const h = makeHarness(() => topTracksFixture());
   const out = await h.find('statsfm_top_tracks').handler({ user_id: 'u', response_format: 'json' });
-  const parsed = JSON.parse(out.content[0].text) as { items: unknown[] };
+  // #895: read the machine channel; json mode is emitted once (#895).
+  const parsed = out.structuredContent as { items: unknown[] };
   assert.equal(parsed.items.length, 2);
 });
 
@@ -1165,14 +1180,20 @@ test('scoped top json carries pagination and the page (#1297)', async () => {
   const out = await h.find('statsfm_top_tracks_from_artist').handler({
     user_id: 'u', artist_id: 1, limit: 2, response_format: 'json',
   });
-  const parsed = JSON.parse(out.content[0].text) as {
+  // #895: read the machine channel; json mode is emitted once (#895).
+  const parsed = out.structuredContent as {
     items: unknown[];
     pagination: { total: number | null; returned: number; next_offset: number | null };
+    sections: Record<string, { returned: number; total: number }>;
   };
   assert.equal(parsed.items.length, 2, 'json must carry the page, not all 91 rows');
   assert.equal(parsed.pagination.total, 91);
   assert.equal(parsed.pagination.returned, 2);
   assert.equal(parsed.pagination.next_offset, 2);
+  // The section's denominator is the upstream cardinality, not the 2-row
+  // page: a windowed read must not claim it returned every row.
+  assert.equal(parsed.sections.items.total, 91);
+  assert.equal(parsed.sections.items.returned, 2);
 });
 
 test('scoped top still sends limit/offset on the wire (#1297)', async () => {

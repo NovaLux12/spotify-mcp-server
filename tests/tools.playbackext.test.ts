@@ -129,7 +129,11 @@ describe('playbackext', () => {
   // is a silent feature loss and an added one is drift.
   // #848: `apply_device_presets` became `set_volume { op: 'preset' }`, so this
   // module keeps the tools that MANAGE presets and set_volume applies them.
-  it('registers exactly the 12 playback-extension tools', () => {
+  // #848 retired `apply_device_presets` into `set_volume { op: 'preset' }` in
+  // playback.ts, so this module keeps the tools that MANAGE presets and
+  // set_volume applies them — 14 became 13 on the merged tree, after #846 added
+  // `migrate_playback_positions` and #847 retired nothing here.
+  it('registers exactly the 13 playback-extension tools', () => {
     const { client } = makeClient(); const h = serverHarness(client);
     assert.deepEqual(
       h.registered.map((r: { name: string }) => r.name).sort(),
@@ -137,6 +141,8 @@ describe('playbackext', () => {
         'list_device_presets',
         'list_playback_states',
         'list_sessions',
+        // #846: the one-time, idempotent import of all three legacy stores.
+        'migrate_playback_positions',
         'refresh_smart_playlist',
         'rename_device',
         'replay_session',

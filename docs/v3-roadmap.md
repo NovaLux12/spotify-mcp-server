@@ -1,7 +1,7 @@
 # The road to 3.0
 
 <!-- BEGIN:generated v3-headline -->
-Measured on this branch, just now: a default 3.0 session puts **128 tools** in front of the model — 143,948 bytes of schema — drawn from **561** this server knows how to register. The other 433 are one environment variable away, waiting behind `SPOTIFY_MCP_TOOLSETS` alongside **47** resource templates and **14** prompts.
+Measured on this branch, just now: a default 3.0 session puts **128 tools** in front of the model — 144,870 bytes of schema — drawn from **556** this server knows how to register. The other 428 are one environment variable away, waiting behind `SPOTIFY_MCP_TOOLSETS` alongside **28** resource templates and **14** prompts.
 <!-- END:generated v3-headline -->
 
 3.0 is not a feature release with a bugfix chaser attached. It is the release

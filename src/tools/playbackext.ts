@@ -29,6 +29,7 @@ import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from 
 import { addToQueueBatch } from './queueops.js';
 import { collectShowRadarEpisodes } from './showradar.js';
 import { emit, type ToolResult } from '../result.js';
+import { migratePlaybackPositions, positionsFile } from './playbackpositions.js';
 
 // The store moved to src/playbackstores.ts (#848). It used to live here, but
 // the collapsed `set_volume` needs it and `set_volume` is in playback.ts, which
@@ -438,6 +439,47 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
       const echo = { ok: true, count: sessions.length, sessions };
       if (args.response_format === 'json') return respond('json', store, echo, '');
       return respond(args.response_format as string, store, echo, `${sessions.length} session(s):\n${lines.join('\n')}`);
+    });
+
+  // -------------------------------------------------------------------------
+  // #846 — the unified playback-position record and its one-time migration.
+  // Three sidecars each persisted a playback position in their own shape under
+  // their own key scheme (see src/tools/playbackpositions.ts). This tool is
+  // the one-time bridge between them and the single canonical record; the
+  // reads that serve it (list_playback_bookmarks, resume_playback_position)
+  // are thin wrappers over that record, not a second way to see it.
+  // -------------------------------------------------------------------------
+  server.tool('migrate_playback_positions',
+    'One-time, idempotent import of every legacy playback position (exhaust2 checkpoints, playback-ext states, backup-dir bookmarks) into the single canonical record. Running it twice changes no record and imports zero. A legacy store that exists but cannot be parsed is refused with nothing written, and its bytes are preserved. Legacy bookmark files are renamed to .migrated, never deleted.',
+    { response_format: ResponseFormat },
+    async (args) => {
+      const fmt = args.response_format as string;
+      const result = await migratePlaybackPositions();
+      const echo = { ...result, path: positionsFile() };
+      if (result.refused) {
+        const text = `Migration refused — ${result.refused}. No file was written; every original is still on disk.`;
+        return fmt === 'json'
+          ? { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo }
+          : { content: [{ type: 'text', text }], structuredContent: echo };
+      }
+      const { per_source, unreadable } = result;
+      const prose = [
+        `Imported ${result.imported} playback position(s) into ${positionsFile()} — `
+          + `states: ${per_source.playback_state}, checkpoints: ${per_source.checkpoint}, bookmarks: ${per_source.bookmark}.`,
+        `Already present: ${result.already_present}. Total now: ${result.total}.`,
+        ...(result.bookmark_files_marked.length
+          ? [`Marked ${result.bookmark_files_marked.length} legacy bookmark file(s) as .migrated (renamed, not deleted).`]
+          : []),
+        // #846/#1092 discipline: an unreadable record is named with its reason
+        // and counted separately, so no total here can be read as "everything
+        // migrated" when something did not.
+        ...(unreadable.length
+          ? [`${unreadable.length} record(s) could NOT be read and were NOT migrated:`, ...unreadable.map((u) => `  - ${u.origin} "${u.origin_id}": ${u.reason}`)]
+          : []),
+      ].join('\n');
+      return fmt === 'json'
+        ? { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo }
+        : { content: [{ type: 'text', text: prose }], structuredContent: echo };
     });
 
   // #180 smart rule persistence

@@ -20,8 +20,21 @@ import {
   listStructuredContent,
   batchSummary,
   describeDryRun,
+  parseSpotifyUri,
   validateUris,
 } from '../shaping.js';
+// #847: the local analyses behind `get_queue`'s `include` parameter. Pure
+// functions over rows that were already fetched — this module issues the
+// requests, `queueanalysis.ts` only computes.
+import {
+  duplicateAnalysis,
+  formatLong,
+  formatMs,
+  playingRow,
+  profileAnalysis,
+  queueRows,
+  runtimeAnalysis,
+} from '../queueanalysis.js';
 import { getConfig } from '../config.js';
 import { MARKET_CODE } from '../markets.js';
 // #603: the device row renderer is shared with the spotify://player/devices
@@ -84,6 +97,42 @@ function formatItem(item: RenderableItem): string {
     return `"${name}" — ${item.show.name ?? 'unknown show'}${duration}`;
   }
   return `"${name}" (${item.type ?? 'unknown type'})${duration}`;
+}
+
+/**
+ * Human label for the playback context behind the queue (#847, from
+ * `describe_queue`): `playlist "Road Trip"` / `album "X"` / the bare URI for
+ * any other type, since an artist or a show context has no name worth a
+ * second read.
+ *
+ * Returns null — with the caller reporting why — when the context cannot be
+ * resolved. The retired tool swallowed the failure and printed a bare URI,
+ * which is a plausible-looking answer for a lookup that never happened (#803).
+ */
+async function resolveContextLabel(
+  client: SpotifyClient,
+  state: PlaybackState | null,
+): Promise<string | null> {
+  const ctx = state?.context?.uri;
+  if (!ctx) return null;
+  const parsed = parseSpotifyUri(ctx);
+  if (!parsed) return ctx;
+  try {
+    if (parsed.type === 'playlist') {
+      const playlist = await client.get<{ name?: string } | null>(`/playlists/${parsed.id}`, { fields: 'name' });
+      return playlist?.name ? `playlist "${playlist.name}"` : ctx;
+    }
+    if (parsed.type === 'album') {
+      const album = await client.get<{ name?: string } | null>(`/albums/${parsed.id}`);
+      return album?.name ? `album "${album.name}"` : ctx;
+    }
+  } catch {
+    // The context URI is still the truth about what is playing; the NAME is
+    // what could not be read, so the URI is the honest answer and the reason
+    // is reported beside it rather than substituted for it.
+    return ctx;
+  }
+  return ctx;
 }
 
 const marketSchema = MARKET_CODE
@@ -1070,13 +1119,27 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
     },
   );
 
-  // get_queue
+  // get_queue — #847. This is the ONE queue-content entry point. It absorbed
+  // describe_queue, get_queue_snapshot, queue_runtime_report,
+  // queue_duplicate_check, predict_next_tracks and queue_profile, all of which
+  // read the same endpoint once and answered a slightly different question.
+  //
+  // The three analyses are LOCAL (`src/queueanalysis.ts`), so `include` costs
+  // no extra Spotify request except the one `GET /me/player` the current
+  // track's remaining time needs. The queue endpoint itself is read exactly
+  // once per call no matter which view or includes are asked for — that is
+  // asserted on a stub call log in tests/queue.tools.test.ts, not just
+  // promised here.
   server.tool(
     'get_queue',
-    'Get the current playback queue.',
+    'Read the playback queue. Use this for queue CONTENTS (what is playing, what is up next, how long it runs, what repeats). Use peek_next for a short lookahead. Quota: 1 read; view=enriched and include=runtime add one GET /me/player, and the context label adds one catalog read.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
+      view: z.enum(['raw', 'enriched']).default('raw')
+        .describe("'raw' (default) = the queue as returned. 'enriched' = plus the source context (playlist/album name) and total time remaining."),
+      include: z.array(z.enum(['runtime', 'duplicates', 'profile'])).default([])
+        .describe('Local analyses over the same single read, no extra request except runtime: runtime = total/avg/longest/shortest, time left on the current track, and a per-item timeline of when each row starts playing; duplicates = repeated rows and the runtime they waste; profile = unique artists/albums/shows, track-vs-episode mix, longest single-artist run.'),
     },
     async (args) => {
       const queue = await client.get<SpotifyQueue>('/me/player/queue');
@@ -1085,7 +1148,13 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         return { content: [{ type: 'text', text: 'No active playback session.' }] };
       }
 
-      if (args.response_format === 'json') {
+      const includes = new Set((args.include as string[] | undefined) ?? []);
+      const enriched = args.view === 'enriched';
+      const wantsRuntime = includes.has('runtime');
+
+      // A bare `view=raw` with no `include` must answer exactly what it
+      // answered before #847, so the fast path returns before any of this.
+      if (!enriched && includes.size === 0 && args.response_format === 'json') {
         return {
           content: [{ type: 'text', text: JSON.stringify(queue) }],
           structuredContent: { ...queue },
@@ -1095,6 +1164,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const upNext = Array.isArray(queue.queue) ? queue.queue : [];
       const shaped = truncateItems(upNext, resolveMaxResults(args.max_results));
       const detailed = args.response_format === 'detailed';
+      // Analyses run over the FULL queue, never the truncated slice: a total
+      // that quietly covered only the first `max_results` rows is a wrong
+      // number wearing the right field name (#803).
+      const rows = queueRows(queue);
 
       const lines: string[] = [];
 
@@ -1126,13 +1199,96 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         returned: upNext.length,
         next_offset: null,
       };
+
+      const extra: Record<string, unknown> = {
+        currently_playing: queue.currently_playing,
+        truncated: shaped.truncated,
+        remaining: shaped.remaining,
+      };
+
+      // One `GET /me/player` serves BOTH the enriched context URI and the
+      // runtime's current-track position, so asking for both still costs one.
+      let state: PlaybackState | null = null;
+      let stateError: string | null = null;
+      let stateRead = false;
+      if (enriched || wantsRuntime) {
+        stateRead = true;
+        try {
+          state = await client.get<PlaybackState>('/me/player');
+        } catch (error) {
+          stateError = error instanceof Error ? error.message : String(error);
+        }
+      }
+
+      if (enriched) {
+        const totalRemaining = rows.reduce((sum, r) => sum + r.duration_ms, 0);
+        extra.context_label = await resolveContextLabel(client, state);
+        extra.total_remaining_ms = totalRemaining;
+        extra.total_remaining_formatted = formatLong(totalRemaining);
+        // Both read paths answered, or said why they did not. `context_label`
+        // being null while `context_unresolved_reason` names the failure is the
+        // difference between "there is no context" and "the lookup broke".
+        if (state === null && stateError !== null) extra.context_unresolved_reason = stateError;
+        lines.splice(1, 0, ...(extra.context_label ? [`Source: ${extra.context_label}`] : []));
+        lines.push(`\nTotal remaining: ${extra.total_remaining_formatted} across ${rows.length} item(s)`);
+      }
+
+      if (wantsRuntime) {
+        const runtime = runtimeAnalysis(rows, state, stateError);
+        Object.assign(extra, { runtime });
+        lines.push(
+          `\nRuntime: ${runtime.upcoming_count} upcoming · total ${formatMs(runtime.total_runtime_ms)} · avg ${formatMs(runtime.average_runtime_ms)}`,
+        );
+        lines.push(
+          `  Longest: ${runtime.longest ? `"${runtime.longest.name}" (${formatMs(runtime.longest.duration_ms)})` : '—'} · Shortest: ${runtime.shortest ? `"${runtime.shortest.name}" (${formatMs(runtime.shortest.duration_ms)})` : '—'}`,
+        );
+        if (runtime.current_track_remaining_ms === null) {
+          // Say it is unread, do not print a 0 that reads as "the current
+          // track is over" (#803).
+          lines.push(`  Current track remaining: unknown — ${runtime.current_track_remaining_error}`);
+        } else {
+          lines.push(`  Current track remaining: ${formatMs(runtime.current_track_remaining_ms)} · est. total wait ${formatMs(runtime.estimated_total_wait_ms ?? 0)}`);
+        }
+      }
+
+      if (includes.has('duplicates')) {
+        const dupes = duplicateAnalysis(rows);
+        Object.assign(extra, { duplicates: dupes });
+        lines.push(
+          dupes.duplicate_groups.length
+            ? `\nDuplicates: ${dupes.duplicate_groups.length} group(s) · ${dupes.total_redundant} redundant · ${formatMs(dupes.wasted_runtime_ms)} wasted`
+            : '\nDuplicates: none',
+        );
+        for (const group of dupes.duplicate_groups) {
+          lines.push(`  - "${group.name}" ×${group.occurrences} at ${group.positions.join(', ')} (${formatMs(group.wasted_runtime_ms)} wasted)`);
+        }
+        if (dupes.unreadable_rows) {
+          lines.push(`  ${dupes.unreadable_rows} row(s) carry no URI and could not be compared`);
+        }
+      }
+
+      if (includes.has('profile')) {
+        // Counted over the playing item too, which is what the retired
+        // `queue_profile` did — a profile that changed meaning on the way in
+        // would be a different answer under a name that used to be right.
+        const profile = profileAnalysis(rows, playingRow(queue.currently_playing));
+        Object.assign(extra, { profile });
+        lines.push(
+          `\nProfile: ${profile.total} item(s) · ${profile.tracks} track(s) / ${profile.episodes} episode(s)`,
+        );
+        lines.push(
+          `  unique artists: ${profile.unique_artists} | albums: ${profile.unique_albums} | shows: ${profile.unique_shows}`,
+        );
+        lines.push(
+          profile.longest_artist_block
+            ? `  longest single-artist run: ${profile.longest_artist_block.artist} ×${profile.longest_artist_block.tracks}`
+            : '  longest single-artist run: none',
+        );
+      }
+
       return {
         content: [{ type: 'text', text: lines.join('\n') }],
-        structuredContent: listStructuredContent(shaped.items, pagination, {
-          currently_playing: queue.currently_playing,
-          truncated: shaped.truncated,
-          remaining: shaped.remaining,
-        }),
+        structuredContent: listStructuredContent(shaped.items, pagination, extra),
       };
     },
   );

@@ -5,9 +5,10 @@
  * already pattern-matches (`server/mcp.js` runs `uriTemplate.match(uri)` in
  * registration order). It is that the SDK's own `UriTemplate` is stricter than
  * RFC 6570, which leaves every advertised `{?…}` template unable to match a URI
- * a conforming host would build from it, and turns each `{+qs}` catch-all into
- * an unanchored `(.+)` prefix match that also accepts URIs that are not this
- * resource at all.
+ * a conforming host would build from it, and turned each `{+qs}` catch-all into
+ * an unanchored `(.+)` prefix match that also accepted URIs that were not this
+ * resource at all. #685 removed those catch-alls once the matcher no longer
+ * needed them, so this file now asserts the property over every template.
  *
  * The first group drives the real SDK over `InMemoryTransport`, so routing is
  * exercised the way a host exercises it. The second group asserts the general
@@ -158,19 +159,22 @@ test('a URI that is not this resource is still rejected, with no API call (#1401
 test('an undeclared or out-of-order query parameter still routes (#1401)', async () => {
   const { client } = makeClientStub();
   const mcp = await connect(client);
-  // The `{+qs}` twin stays the catch-all for query strings this server does not
-  // model, and for declared parameters sent in an order the template does not
-  // expand to. Tightening the `{?…}` entry must not close that door.
+  // `Rfc6570UriTemplate`'s form-style matcher reads the declared names as an
+  // ordered subsequence and permits undeclared pairs, so this server's
+  // addressing stays open to query strings it does not model. #685 removed the
+  // `{+qs}` twin that used to be the mechanism; the door must stay open.
   await mcp.readResource({ uri: `${SAVED_TRACKS}?market=GB` });
   await mcp.readResource({ uri: `${SAVED_TRACKS}?limit=5&format=json` });
 });
 
-test('a nested template is not swallowed by its parent {+qs} twin (#1401)', async () => {
-  const { client } = makeClientStub();
+test('a nested template is not swallowed by its parent resource (#685, #1401)', async () => {
+  const { client, calls } = makeClientStub();
   const mcp = await connect(client);
-  // `spotify://audiobook/{id}{+qs}` compiles to a prefix match that used to
-  // accept `spotify://audiobook/bk1/chapters`. The chapters entry must win.
+  // `spotify://audiobook/{id}{+qs}` compiled to a prefix match that used to
+  // accept `spotify://audiobook/bk1/chapters`. The chapters entry must win —
+  // and must still win now that the catch-all twin is gone.
   await mcp.readResource({ uri: 'spotify://audiobook/bk1/chapters?limit=5&offset=10' });
+  assert.equal(calls.at(-1)?.path, '/audiobooks/bk1/chapters');
 });
 
 // --------------------------------------- the advertised list, as a property
@@ -233,23 +237,29 @@ test('every form-style registered template also matches with only some variables
   assert.deepEqual(unmatched, []);
 });
 
-test('no registered {+qs} twin matches a URI that is not a query on that resource (#1401)', () => {
+test('no registered template absorbs a URI that is not a query on that resource (#685, #1401)', () => {
   const registry = registeredTemplates();
-  // Only twins whose base ends in a LITERAL. Where the base ends in a variable
-  // (`spotify://artist/{id}{+qs}`), appending `X` does not extend the path — it
-  // makes a different id, `abc123X`, which legitimately matches. The defect is
-  // in the literal-ending twins like `spotify://me/saved/tracks{+qs}`.
-  const catchAlls = registry.filter(({ uriTemplate }) => /[^{}]\{\+\w+\}$/.test(uriTemplate));
-  assert.ok(catchAlls.length > 0, 'expected literal-ending {+qs} twins to be registered');
+  assert.ok(registry.length > 0);
 
-  // Each must require a real query. A bare `(.+)` accepts any URI with the
-  // resource as a prefix, so `spotify://me/saved/tracksX` — a different URI
-  // entirely — was served saved tracks.
+  // #685 removed the `{+qs}` catch-all twins, so this is now a property of
+  // every template rather than of the ones that used to be catch-alls: a bare
+  // `(.+)` accepted any URI with the resource as a *prefix*, so
+  // `spotify://me/saved/tracksX` — a different resource — was served saved
+  // tracks. Only templates whose base ends in a LITERAL are asserted here:
+  // where the base ends in a variable (`spotify://artist/{id}{?format}`),
+  // appending `X` does not extend the path, it makes a different id.
+  const literalEnding = registry.filter(({ uriTemplate }) => {
+    const head = uriTemplate.replace(/\{[?#][^}]*\}$/, '');
+    return head.length > 0 && !head.endsWith('}');
+  });
+  assert.ok(literalEnding.length > 0, 'expected literal-ending templates to be registered');
+
   const overMatched: string[] = [];
-  for (const { uriTemplate, matcher } of catchAlls) {
-    // A real URI, not the template text: expand with the path variable filled
-    // and `qs` left undefined, which drops the query-string expression.
-    const base = new UriTemplate(uriTemplate).expand({ id: SAMPLE_VALUES.id });
+  for (const { uriTemplate, matcher } of literalEnding) {
+    // A real URI, not the template text: expand the path variables and let the
+    // query-string expression collapse to nothing.
+    const head = uriTemplate.replace(/\{[?#][^}]*\}$/, '');
+    const base = new UriTemplate(head).expand({ id: SAMPLE_VALUES.id });
     for (const suffix of ['X', '/extra', 'extra?limit=5']) {
       if (matcher(base + suffix)) overMatched.push(`${uriTemplate} accepted ${base}${suffix}`);
     }

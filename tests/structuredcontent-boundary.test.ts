@@ -171,12 +171,14 @@ describe('#1343 — a cooldown refusal is `ok: false`, and the type admits it', 
     // absent rather than zero-filled.
     assert.ok(!('scanned' in sc), 'a cooldown payload must not claim a scan happened');
     assert.ok(!('groups' in sc), 'a cooldown payload must not claim groups were found');
-    // json mode prints the same payload, not a prose lie about it. The prose
-    // modes return the gate's own message verbatim, which is not JSON, so ask
-    // for the parseable mode explicitly.
+    // #895: json mode no longer serializes the payload into the text block —
+    // the text is a bounded summary and the payload is `structuredContent`, so
+    // a caller parses one object, not two. The refusal is still the same
+    // refusal on the machine channel, not a prose substitute for it.
     const jsonOut = await h.invoke('library_hygiene', { response_format: 'json' });
-    const parsed = JSON.parse(textOf(jsonOut));
-    assert.equal(parsed.ok, false);
+    assert.equal(jsonOut.structuredContent?.ok, false);
+    assert.equal(jsonOut.structuredContent?.cooldown, true);
+    assert.notEqual(textOf(jsonOut), textOf(out), 'json mode must not repeat the prose refusal');
   });
 
   it('library_hygiene dry_run issues no requests and claims no scan', async () => {

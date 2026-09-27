@@ -62,11 +62,14 @@ test('queue_next dry_run', async()=>{
   const r = await invoke(find(registered,'queue_next'), { uri:'spotify:track:trk1', dry_run:true });
   assert.match(text(r), /\[dry run\]/);
 });
-test('describe_queue enriched', async()=>{
+// #847: describe_queue was retired into `get_queue` view='enriched', which
+// lives in tools/playback.ts. Its contract is pinned there in
+// tests/queue.tools.test.ts, including the context label and the total.
+test('peek_next is this module\'s surviving queue entry point', async()=>{
   const q={ currently_playing: trackFixture(), queue:[trackFixture({uri:'spotify:track:q2', name:'Q2'}), trackFixture({uri:'spotify:track:q3', name:'Q3'})] };
-  const { registered } = makeHarness({ getResponse:(p)=> p==='/me/player/queue'?q : p==='/me/player'?{ context:{uri:'spotify:playlist:pl1'}, device:{id:'d1'}} : p.startsWith('/playlists/')?{name:'My Playlist'}:null });
-  const r = await invoke(find(registered,'describe_queue'), { include_context:true });
-  assert.match(text(r), /Queue:/);
+  const { registered } = makeHarness({ getResponse:()=>q });
+  const r = await invoke(find(registered,'peek_next'), { count:2 });
+  assert.match(text(r), /Next 2\/2 in queue/);
 });
 test('describe_listening_session groups', async()=>{
   const items=[{ played_at:'2026-08-26T10:00:00Z', track: trackFixture()},{ played_at:'2026-08-26T10:03:00Z', track: trackFixture({uri:'spotify:track:trk2'})}];

@@ -1,8 +1,9 @@
 /**
  * playbackintel — exhaustive playback/queue/player intel (#272-283 slice)
- * 12 tools: play_on, queue_next, describe_queue, describe_listening_session,
- * play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle,
+ * 11 tools: play_on, queue_next, describe_listening_session, play_at,
+ * device_health, seek_relative, playback_timeline, repeat_queue_toggle,
  * now_playing_history, playback_compare_states, peek_next
+ * #847 retired describe_queue into `get_queue` view='enriched'.
  * + triage extras: get_playback_context, volume_step, market_availability
  * Each tool states its quota cost in words in the description.
  */
@@ -10,7 +11,7 @@ import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
+import type { PlaybackState, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
@@ -178,43 +179,12 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       return emit(args.response_format as string, `Queued ${uri} at tail. ${disclosure}`, { ok:true, uri, insertion:'tail', workaround:'tail-only API; use temp playlist for true next', disclosure });
     });
 
-  // 274 describe_queue — enriched queue + context
-  server.tool('describe_queue',
-    'Enriched queue view: currently playing + up-next with durations, total remaining, and source context label. Quota: 1 read, or 2 if include_context resolves playlist/album name.',
-    { max_results: MaxResults, include_context: z.boolean().default(true).describe('Resolve context URI to playlist/album name (extra GET)'), response_format: ResponseFormat },
-    async (args) => {
-      const cap = resolveMaxResults(args.max_results as number | undefined);
-      const q = await client.get<SpotifyQueue>('/me/player/queue');
-      if (!q) return textResult('No queue available (nothing playing).', { ok:true, queue: null });
-      const currently = q.currently_playing;
-      const items = q.queue ?? [];
-      const { items: sliced, truncated, remaining, footer } = truncateItems(items, cap);
-      const totalRemaining = items.reduce((s, it:any)=> s + (it.duration_ms ?? 0), 0);
-      let contextLabel: string | null = null;
-      if (args.include_context !== false) {
-        try {
-          const player: any = await client.get('/me/player');
-          const ctx = player?.context?.uri as string | undefined;
-          if (ctx) {
-            const p = parseSpotifyUri(ctx);
-            if (p?.type === 'playlist') { const pl:any = await client.get(`/playlists/${p.id}`, { fields: 'name' }); contextLabel = pl?.name ? `playlist "${pl.name}"` : ctx; }
-            else if (p?.type === 'album') { const al:any = await client.get(`/albums/${p.id}`); contextLabel = al?.name ? `album "${al.name}"` : ctx; }
-            else contextLabel = ctx;
-          }
-        } catch {}
-      }
-      const lines: string[] = [];
-      if (currently) lines.push(`Now: ${formatItem(currently)}`);
-      else lines.push('Now: —');
-      if (contextLabel) lines.push(`Context: ${contextLabel}`);
-      lines.push(`Queue: ${items.length} track(s), total remaining ${formatDuration(totalRemaining)}`);
-      sliced.forEach((it:any,i:number)=> lines.push(` ${i+1}. ${formatItem(it)} (${formatDuration(it.duration_ms ?? 0)})`));
-      if (footer) lines.push(footer);
-      lines.push('Workaround note: queue is tail-append only; reorder requires temp playlist.');
-      const echo: Record<string, unknown> = { ok:true, currently_playing: currently, queue_length: items.length, total_remaining_ms: totalRemaining, total_remaining_formatted: formatDuration(totalRemaining), context_label: contextLabel, items: sliced, truncated, remaining, insertion:'tail', workaround:'queue is append-only' };
-      if (args.response_format === 'json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
-      return { content:[{type:'text', text: lines.join('\n')}], structuredContent: echo };
-    });
+  // 274 describe_queue — REMOVED by #847. Its answer is `get_queue` with
+  // `view: 'enriched'` (context label + total remaining), and its call is
+  // refused with that migration note rather than rewritten, because a
+  // name-only rewrite would answer a different question under a name that
+  // used to be right. The `insertion`/`workaround` disclosure it carried is on
+  // `queue_next` and `get_queue` keeps it in prose.
 
   // 275 describe_listening_session — recently-played + detectSessions
   server.tool('describe_listening_session',
@@ -451,9 +421,12 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       return { content:[{type:'text', text: lines.join('\n')}], structuredContent: echo };
     });
 
-  // peek_next (scout #2.2 adjacent) — queue lookahead
+  // peek_next (scout #2.2 adjacent) — queue lookahead.
+  // #847: one of the two surviving queue-read entry points. Its decision rule
+  // is "a short lookahead" and it defers everything else to get_queue, which
+  // is what replaced the six registrations this used to cross-reference.
   server.tool('peek_next',
-    'Queue lookahead — next N tracks with durations and total runway. Right-sized via max_results. Quota: 1 read. Read-only.',
+    'Short lookahead at the queue: the next N items with durations and total runway. Use get_queue for the whole queue, its runtime, duplicates or composition. Quota: 1 read. Read-only.',
     { count: z.number().int().min(1).max(50).optional().describe('Alias for max_results: how many to peek (default 5)'), max_results: MaxResults, response_format: ResponseFormat },
     async (args) => {
       const n = (args.count as number | undefined) ?? (args.max_results as number | undefined) ?? 5;

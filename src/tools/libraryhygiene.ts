@@ -23,6 +23,8 @@ import {
   completenessFooter,
   truncateItems,
   structuredContent,
+  capRowSections,
+  emitOnce,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { fetchAlbumsPerId, PER_ID_FANOUT_WIDTH } from './catalog.js';
@@ -187,10 +189,65 @@ type ToolOut = {
   structuredContent?: Record<string, unknown>;
 };
 
-function shapeResult(rf: ResponseFormatValue, prose: string, payload: LibraryHygieneResult): ToolOut {
+/**
+ * The row arrays `library_hygiene` publishes in the prose modes (#895).
+ *
+ * `near_complete` and `orphaned_singles` are the findings the tool exists to
+ * report, and the prose path already caps them via `truncateItems`; shipping
+ * them uncapped alongside that prose made the machine-readable channel
+ * disagree with the sentence the tool's own description writes.
+ */
+const ROW_ARRAYS = ['near_complete', 'orphaned_singles'] as const;
+
+/**
+ * Fields the prose modes do not ship at all, and the exact count the caller
+ * would have got (#895). `groups` is the bulk export: pass
+ * `response_format: 'json'` to receive it whole.
+ */
+const WITHHELD_ROWS = ['groups'] as const;
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). The two channels are deliberately not
+ * byte-identical — see `emitOnce`. Bounded by construction: it names section
+ * counts and never interpolates a row.
+ */
+function summarizeAnalysis(payload: Record<string, unknown>): string {
+  const sections = payload.sections as
+    | Record<string, { returned: number; total: number; truncated: boolean; unreadable?: boolean }>
+    | undefined;
+  if (!sections) return 'Album completion & consolidation — full analysis in structuredContent.';
+  const parts = Object.entries(sections).map(([key, section]) =>
+    section.unreadable ? `${key} (unreadable)` : `${key}: ${section.returned}/${section.total}`);
+  const head = 'Album completion & consolidation — full analysis in structuredContent:';
+  return `${head}\nSections: ${parts.join(', ')}.`;
+}
+
+/**
+ * Shape one result (#895).
+ *
+ * The prose modes cap the machine channel through `capRowSections`;
+ * `response_format: 'json'` is the bulk export and returns the analysis whole,
+ * which is what the tool description promises. Either way the payload is
+ * emitted ONCE, as `structuredContent`, with a bounded text block beside it.
+ */
+function shapeResult(
+  rf: ResponseFormatValue,
+  prose: string,
+  payload: LibraryHygieneResult,
+  maxResults?: number,
+): ToolOut {
+  const bulk = rf === 'json';
+  // json mode is the bulk export: the analysis whole, uncapped and unenveloped.
+  // The prose modes are where the cap applies, because that is where the
+  // `max_results` promise in the tool description is written.
+  const machine = bulk || maxResults === undefined || !('groups' in payload)
+    ? payload
+    : capRowSections(payload, ROW_ARRAYS, maxResults, WITHHELD_ROWS);
+  if (bulk) return emitOnce(structuredContent(machine), summarizeAnalysis);
   return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: structuredContent(payload),
+    content: [{ type: 'text', text: prose }],
+    structuredContent: structuredContent(machine),
   };
 }
 
@@ -581,7 +638,7 @@ export function registerLibraryHygieneTools(server: McpServer, client: SpotifyCl
       }
       const result = await analyze(client);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      return shapeResult(rf, renderProse(result, maxResults), result);
+      return shapeResult(rf, renderProse(result, maxResults), result, maxResults);
     },
   );
 }

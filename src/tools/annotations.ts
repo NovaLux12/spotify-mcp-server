@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -1242,7 +1242,30 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // estimated: the real `tools/list` payload for this module. The get_devices
   // description now names the spotify://player/devices resource so an agent
   // prefers the zero-tool-call read over a call that costs a turn and quota.
+  // Then 12,210 -> 13,076B (+866), same 16 tools — #847. `get_queue` absorbed
+  // describe_queue, get_queue_snapshot, queue_runtime_report,
+  // queue_duplicate_check, predict_next_tracks and queue_profile, and pays for
+  // the `view` and `include` parameters and the decision-rule description that
+  // replaced six cross-reference descriptions. It is 866B for six tools that
+  // cost 2,686B between them, and the six are gone rather than reworded.
   // Re-measure with `npm run count:tools` before raising it again.
+  // Re-measured on the merged tree, 2026-09-27, on the module that carries
+  // #847, #846 and #848 at once. Two figures, and neither side's own number is
+  // the merged one, so quoting either would misattribute the delta:
+  //
+  //   * #847 added the enriched `get_queue` and the `resolveContextLabel` helper
+  //     beside it. That is this module's *base*, not a delta measured here.
+  //   * #848 extended `set_volume` and `transfer_playback` to carry the UNION
+  //     of the flags the twelve tools they replaced each needed, and retired
+  //     `handoff` — the only one of the ten that lived in this module. 16 -> 15
+  //     tools; the two survivors are wider, not more numerous.
+  //
+  // 13,132 -> 14,441B (+1,309) is the honest split of that: the union schemas and
+  // the two prose arms they gained cost more than the ten retired rows saved
+  // across the five modules. The other nine retirements live in the four modules
+  // below and are attributed there.
+  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [15, 14441]),
+  // --- from the #848 branch ---
   //
   // #848: the four transfer and eight volume writers became `transfer_playback`
   // and `set_volume`, whose two schemas carry the union of the flags they
@@ -1259,7 +1282,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // collapsed pair is smaller than the ten tools it replaced — so a caller that
   // loads the `playback` toolset in a trimmed session reads a smaller payload
   // under a smaller bound. Both halves of the ratio improved.
-  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [15, 13519]),
+  // --- from origin/main (#846/#847) ---
+  // Re-measured when the `runtime` analysis gained `timeline` — the per-item
+  // `plays_at_ms` the retired `predict_next_tracks` returned, so the union
+  // claim is the union and not a summary of it: 13,076 -> 13,132B (+56). The
+  // cost is one clause in the `include` description; the payload it restores
+  // is free, because `structuredContent` is not part of the schema a host
+  // pays for. Re-measure with `npm run count:tools` before raising it again.
   manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [3, 2502]),
   manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1696]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),
@@ -1429,10 +1458,26 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
   // Tool count unchanged at 10.
-  // #1318: the same deprecated alias on 10 composites. MEASURED with
-  // `npm run count:tools` on 2026-09-27: 7990 B -> 9650 B (+1660 B). Tool
-  // count unchanged at 10.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 9650], { readOnlySafe: true }),
+  // #895 + #1318: both raised this module's schema bytes, and the merged
+  // surface is their UNION, so the baseline is measured on the merged tree
+  // rather than taken from either side — #895 alone measured 8582 B and
+  // #1318 alone measured 9650 B, and neither is the number the other
+  // produces. #895 gave 4 of the 10 `max_results` so the shared row cap has a
+  // control the caller can raise; #1318 added the same deprecated `user_id`
+  // alias across all 10. MEASURED with `node scripts/surface-census.mjs` on
+  // 2026-09-27 after merging both onto current main: 10242 B, tool count
+  // unchanged at 10. The ceiling is DERIVED by `manifestEntry` (110%), so
+  // `Math.ceil(10242 * 1.1)` = 11267 B and this sits inside budget with 1025 B
+  // spare.
+  //
+  // The first measurement of the merged tree read 9924 B, which was 318 B
+  // short: the merge had dropped `...StatsfmUserInputFields` from
+  // `taste_listening_clock` while its handler still called
+  // `resolveStatsfmUserInput`. `check:doc-tool-names` caught it (the cookbook
+  // shows that tool taking `statsfm_user`); the schema was restored and the
+  // baseline re-measured. A baseline measured against a tree where a tool had
+  // lost an input is a ratchet that would have locked the loss in.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 10242], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count
@@ -1593,7 +1638,21 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [12, 7657], { scopeKey: 'playback' }),
+  // Re-measured on the merged tree, 2026-09-27, carrying #846, #847 and #848.
+  // 13 -> 14 tools and 8,178 -> 8,852B was #846's delta alone — the one tool that
+  // writes the canonical playback-position record. #848 then retired
+  // `apply_device_presets` into `set_volume { op: 'preset' }`, so 14 -> 13.
+  // Bytes 8,852 -> 8,331B (-521): the retired row, less the one clause the
+  // survivor's `op` description gained.
+  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8331], { scopeKey: 'playback' }),
+  // --- from the #848 branch ---
+
+  // --- from origin/main (#846/#847) ---
+  // Re-measured on the tree that carries BOTH #846 and #847, 2026-09-27:
+  // 13 -> 14 tools and 8,178 -> 8,852B (+674). #846 adds the one tool that
+  // writes the canonical playback-position record; #847's queue collapse does
+  // not touch this module, so this figure is the #846 delta measured on a
+  // post-#847 tree rather than either change's own measurement.
   // playbackintel 11,837 -> 11,882B (+45) is #851: market_availability's
   // description now names the concurrent batch, is_playable, and the
   // per-market failure reason it reports. Tool count is unchanged at 15 — the
@@ -1602,11 +1661,24 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // Then 11,882 -> 11,773B (-109) when #922 reworded this module's quota
   // cost in words: the quota-circle glyphs and the cross-sell breadcrumbs
   // come out of the 15 descriptions. The two deltas compose, and neither is
+  // Re-measured on the merged tree, 2026-09-27. 14 tools was #847's figure and it
+  // holds; #848 retired `volume_step` into `set_volume { op: 'level',
+  // delta_step }`, so 14 -> 13. Bytes 11,098 -> 10,315B (-783) — the retired row
+  // is most of it, the rest the `set_volume` cross-sell the survivor's
+  // description picked up. A merged measurement, not either change's own.
+  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [13, 10315], { scopeKey: 'playback' }),
+  // --- from the #848 branch ---
   // measured off the other's tree.
   // #848 re-measured the module at 10,990B: volume_step became set_volume's
   // `delta_step`, so this is 14 tools rather than 15. Measured from the real
   // `tools/list` over stdio, on the branch, not estimated.
-  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [14, 10990], { scopeKey: 'playback' }),
+  // --- from origin/main (#846/#847) ---
+  // measured off the other's tree — this figure is the merged measurement.
+  // Re-measured after #847, which retired describe_queue into `get_queue`
+  // view='enriched' and gave peek_next the decision rule that used to be
+  // spread across a See-also chain: 15 -> 14 tools and 11,773 -> 11,098B
+  // (-675). 737B of the reduction is describe_queue's own row; the rest is
+  // the cross-sell breadcrumbs those two descriptions carried.
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5713], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
@@ -1641,7 +1713,26 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `weekday_heatmap` no longer point at `listening_report` / `listening_heatmap`
   // by name, because those are derived analytics the default registry does not
   // serve and a description must not advertise a tool that is absent. +45B.
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [19, 14484], { scopeKey: 'playback' }),
+  // Re-measured on the merged tree, 2026-09-27. 22 tools / 17,313B was #846 and
+  // #847's figure; #848 moved `mute`, `unmute`, `switch_device` and
+  // `room_level` into `set_volume` and `transfer_playback` in playback.ts, where
+  // the duplicate writers already were, so 22 -> 18. Bytes 17,313 -> 14,279B
+  // (-3,034), the largest per-module share of the collapse. The timer/ramp family
+  // stayed here because a scheduled ramp is a different operation, not a
+  // differently-spelled one.
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [18, 14279], { scopeKey: 'playback' }),
+  // --- from the #848 branch ---
+
+  // --- from origin/main (#846/#847) ---
+  // Re-measured after #847 retired queue_profile into `get_queue`
+  // include=['profile']: 23 -> 22 tools, 17,518 -> 17,050B. The module's
+  // other 22 tools are untouched, so the whole delta is that one row leaving
+  // the surface.
+  // 22 tools is #847's figure and it holds on this tree; #846 changed no
+  // registration here, only the descriptions of the ones that stayed. Bytes
+  // are re-measured, not composed: 17,050 -> 17,313B (+263) on the tree that
+  // carries both changes. The 23 -> 22 step and the byte rise have different
+  // causes, and quoting either side's number would attribute both to one.
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
@@ -1696,7 +1787,25 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
     gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 18951 },
   }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [21, 11508], { scopeKey: 'playback' }),
+  // Re-measured on the merged tree, 2026-09-27. 20 tools / 12,541B was #847 and
+  // #846's figure; #848 retired `plan_volume_level_across_devices`,
+  // `apply_volume_plan` and `transfer_playback_with_state` into the two
+  // playback.ts survivors, so 20 -> 17. Bytes 12,541 -> 10,006B (-2,535). The
+  // queue planners that remain — split_queue_plan, queue_prune_plan,
+  // sleep_timer_plan — are untouched by any of the three changes.
+  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [17, 10006], { scopeKey: 'playback' }),
+  // --- from the #848 branch ---
+
+  // --- from origin/main (#846/#847) ---
+  // Re-measured after #847 retired get_queue_snapshot, queue_runtime_report,
+  // queue_duplicate_check and predict_next_tracks into `get_queue`:
+  // 24 -> 20 tools, 14,043 -> 12,113B. The four local analyses they ran live
+  // on in src/queueanalysis.ts, and the queue planners that remain
+  // (split_queue_plan, queue_prune_plan, sleep_timer_plan) are unchanged.
+  // 20 tools is #847's figure (24 -> 20, the four queue readers it retired),
+  // and it holds on this tree. Bytes re-measured: 12,113 -> 12,541B (+428),
+  // which is #846 rewiring the survivors onto the shared record rather than
+  // any change in how many there are.
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 24 / 18 tools and same input schemas.
   // restore_playlist_from_snapshot and apply_snapshot_changes now say that
@@ -2723,7 +2832,23 @@ function stampDeprecation(result: unknown, resolution: PlaylistInputResolution):
  */
 function retiredAliasResult(requested: string) {
   const canonical = resolveLegacyToolAlias(requested);
-  if (canonical === undefined) return undefined;
+  if (canonical === undefined) {
+    // #847: a retired queue-read name. Not in LEGACY_TOOL_ALIASES and not
+    // dispatched by SPOTIFY_MCP_LEGACY_ALIASES — the surviving tools take
+    // arguments the retired ones did not, so a rewrite would answer a
+    // different question. Same `kind` and same stable discriminator as the row
+    // above: a host routing on `kind` sees one coherent "this name was
+    // withdrawn on purpose" refusal, and `fix` carries the exact call.
+    const queue = resolveRetiredQueueTool(requested);
+    if (queue === undefined) return undefined;
+    const queueTool = safeIdentifier(requested);
+    return errorResult(queueTool, {
+      kind: 'unknown_tool',
+      reason: 'retired_tool_alias',
+      fix: `Call ${queue.call} instead.`,
+      text: `${queueTool} is not an available tool; ${retiredQueueToolMessage(requested, queue)}.`,
+    }, `retired tool ${JSON.stringify(requested)}`);
+  }
   const tool = safeIdentifier(requested);
   return errorResult(tool, {
     kind: 'unknown_tool',

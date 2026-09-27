@@ -167,6 +167,14 @@ export interface Exhaust2Checkpoint {
 export interface Exhaust2Store {
   muteMemory: Record<string, MuteMemory>;
   episodeBookmarks: Record<string, EpisodeBookmark>;
+  /**
+   * Read-only since #846: `checkpoint_playback` writes the shared position
+   * record in the playback-extensions store instead. These are the records
+   * written before that, kept here so `migrate_playback_positions` can import
+   * them and `continue_last` can fall back to them on an install that has not
+   * migrated yet. Nothing adds to this map any more, and nothing deletes from
+   * it — the key is dropped only when the whole file is next rewritten.
+   */
   checkpoints: Record<string, Exhaust2Checkpoint>;
 }
 

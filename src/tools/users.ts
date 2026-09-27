@@ -95,7 +95,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
       } catch (err) {
         if (err instanceof SpotifyApiError && err.status === 403) {
           throw new Error(
-            `Spotify returned 403 for the user-profile lookup: ${err.message}. GET /users/{id} was removed by Spotify's February 2026 Web API changes; run with credentials from a grandfathered (pre-Nov-2024) app if you need it.`,
+            `Spotify returned 403 for the user-profile lookup: ${err.message}. GET /users/{id} was removed by Spotify's February 2026 Web API changes and no endpoint replaced it — /me only ever serves the caller, so an arbitrary user_id has nothing to migrate onto. Whether a grandfathered (pre-Nov-2024) app registration may still read it is unverified: no probe in this repository shows a 200 on this path.`,
             { cause: err },
           );
         }
@@ -151,7 +151,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
       } catch (err) {
         if (err instanceof SpotifyApiError && err.status === 403) {
           throw new Error(
-            `Spotify returned 403 for the user-playlists lookup: ${err.message}. GET /users/{id}/playlists was removed by Spotify's February 2026 Web API changes; run with credentials from a grandfathered (pre-Nov-2024) app if you need it.`,
+            `Spotify returned 403 for the user-playlists lookup: ${err.message}. GET /users/{id}/playlists was removed by Spotify's February 2026 Web API changes and no endpoint replaced it — /me/playlists only ever serves the caller, so an arbitrary user_id has nothing to migrate onto. Whether a grandfathered (pre-Nov-2024) app registration may still read it is unverified: no probe in this repository shows a 200 on this path.`,
             { cause: err },
           );
         }

@@ -11,9 +11,9 @@
  * invisible to any assertion made against the rendered output alone.
  *
  * Every test drives the real MCP SDK over `InMemoryTransport`, so template
- * routing is exercised the way a host exercises it — including the ordering
- * constraint that `spotify://audiobook/{id}{+qs}` would otherwise swallow
- * `spotify://audiobook/{id}/chapters`.
+ * routing is exercised the way a host exercises it — including that
+ * `spotify://audiobook/{id}/chapters` reaches the chapters endpoint rather than
+ * being swallowed by the bare audiobook shape beside it.
  */
 import './helpers/hermetic.js';
 
@@ -23,8 +23,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
-import { registerResources } from '../src/resources/index.js';
-import { registerTemplateResources } from '../src/resources/templates.js';
+import { registerReadSurfaces } from '../src/resources/register.js';
 import { registerPlaybackTools } from '../src/tools/playback.js';
 import { registerAudiobookTools } from '../src/tools/audiobooks.js';
 import type { SpotifyClient } from '../src/client.js';
@@ -188,8 +187,10 @@ function makeClientStub(opts: StubOptions = {}): { client: SpotifyClient; calls:
 
 async function connect(client: SpotifyClient, withTools = false): Promise<Client> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
-  registerResources(server, client);
-  registerTemplateResources(server, client);
+  // #685: the production read surface, in the order `src/index.ts` uses. The
+  // two modules used to be registered here in the opposite order, which is
+  // harmless only now that no two templates claim the same URI.
+  registerReadSurfaces(server, client);
   if (withTools) {
     registerPlaybackTools(server, client);
     registerAudiobookTools(server, client);
@@ -596,8 +597,10 @@ test('spotify://audiobook/{id} omits market entirely when none is asked for', as
 });
 
 test('spotify://audiobook/{id}/chapters routes to the chapters endpoint, not the bare one (#603)', async () => {
-  // This is the ordering constraint: registered after `spotify://audiobook/{id}`,
-  // that pair's `{+qs}` twin compiles to `(.+)` and swallows the nested URI.
+  // The nested shape has to reach the chapters endpoint on its own. It used to
+  // need the bare audiobook's `{+qs}` twin registered first so the twin would
+  // not swallow it; #685 removed the twin, so this is now decided by the two
+  // shapes being disjoint rather than by the order of two registrations.
   const { client, calls } = makeClientStub({
     getResponse: (path) =>
       path === '/audiobooks/bk1/chapters'
@@ -686,16 +689,20 @@ test('the new resources and templates are in resources/list and templates/list (
   assert.ok(uris.includes('spotify://player/devices'), 'player/devices must be a listed fixed resource');
 
   const templates = (await mcp.listResourceTemplates()).resourceTemplates.map((t) => t.uriTemplate);
+  // #685: one template per URI shape. The `{?…}` expression is the
+  // query-absorbing form, so no shape also needs a `{+qs}` catch-all twin.
   for (const pattern of [
-    'spotify://audiobook/{id}',
-    'spotify://audiobook/{id}{+qs}',
-    'spotify://audiobook/{id}/chapters',
-    'spotify://audiobook/{id}/chapters{+qs}',
-    'spotify://chapter/{id}',
-    'spotify://chapter/{id}{+qs}',
+    'spotify://audiobook/{id}{?format,market}',
+    'spotify://audiobook/{id}/chapters{?format,market,limit,offset}',
+    'spotify://chapter/{id}{?format,market}',
   ]) {
     assert.ok(templates.includes(pattern), `missing template ${pattern}`);
   }
+  assert.equal(
+    templates.filter((t) => /\{\+/.test(t)).length,
+    0,
+    'a {+qs} catch-all twin is back',
+  );
   for (const pattern of [
     'spotify://me/top/tracks{?format,time_range,limit,offset}',
     'spotify://me/top/artists{?format,time_range,limit,offset}',
@@ -723,16 +730,12 @@ test('each new resource declares its format twin and its parameter set in its de
   for (const uri of [
     'spotify://me/top/tracks',
     'spotify://me/top/tracks{?format,time_range,limit,offset}',
-    'spotify://me/top/tracks{+qs}',
     'spotify://me/top/artists{?format,time_range,limit,offset}',
     'spotify://me/recently-played{?format,limit,after,before}',
     'spotify://me/saved/albums{?format,limit,offset}',
-    'spotify://audiobook/{id}',
-    'spotify://audiobook/{id}{+qs}',
-    'spotify://audiobook/{id}/chapters',
-    'spotify://audiobook/{id}/chapters{+qs}',
-    'spotify://chapter/{id}',
-    'spotify://chapter/{id}{+qs}',
+    'spotify://audiobook/{id}/chapters{?format,market,limit,offset}',
+    'spotify://audiobook/{id}{?format,market}',
+    'spotify://chapter/{id}{?format,market}',
   ]) {
     const entry = described.find((d) => d.uri === uri);
     assert.ok(entry, `no listing entry for ${uri}`);
@@ -770,15 +773,15 @@ test('a bounded parameter states its bound, not just its name (#603, #883)', asy
 
   for (const uri of [
     'spotify://me/top/tracks',
-    'spotify://me/top/tracks{+qs}',
+    'spotify://me/top/tracks{?format,time_range,limit,offset}',
     'spotify://me/top/artists',
-    'spotify://me/top/artists{+qs}',
+    'spotify://me/top/artists{?format,time_range,limit,offset}',
     'spotify://me/recently-played',
-    'spotify://me/recently-played{+qs}',
+    'spotify://me/recently-played{?format,limit,after,before}',
     'spotify://me/saved/albums',
-    'spotify://me/saved/albums{+qs}',
+    'spotify://me/saved/albums{?format,limit,offset}',
     'spotify://me/saved/tracks',
-    'spotify://me/saved/tracks{+qs}',
+    'spotify://me/saved/tracks{?format,offset,limit}',
   ]) {
     const entry = described.find((d) => d.uri === uri);
     assert.ok(entry, `no listing entry for ${uri}`);
@@ -801,14 +804,16 @@ test('a bounded parameter states its bound, not just its name (#603, #883)', asy
   assert.match(topTracks!.description, /any other value reads medium_term/);
 });
 
-test('an unrecognised query parameter still routes, via the {+qs} catch-all (#603)', async () => {
+test('an unrecognised query parameter still routes (#603, #685)', async () => {
   const { client } = makeClientStub({
     getResponse: (path) => (path === '/me/top/tracks' ? topTracksPage(20) : undefined),
   });
   const mcp = await connect(client);
 
-  // RFC 6570 form-style operators match only the parameters they name, so
-  // without the catch-all this read would find no route at all.
+  // `Rfc6570UriTemplate` reads the declared names as an ordered subsequence and
+  // lets undeclared pairs through, so this read finds a route on the one
+  // `{?…}` template. It used to route through a `{+qs}` catch-all twin, which
+  // also matched URIs that were not a query on this resource at all.
   const prose = content(await mcp.readResource({ uri: 'spotify://me/top/tracks?campaign=spring' }));
   assert.match(prose.text, /Top tracks/);
 });
@@ -821,10 +826,10 @@ test('the SDK matcher is stricter than RFC 6570, which is why the server uses it
   //
   // so every named parameter must be present AND in declaration order. A
   // realistic read — `?time_range=short_term&limit=5` — matches neither that
-  // template nor the bare URI. `#1401` stopped routing around that by relying
-  // on the `{+qs}` twin, and instead registers the templates with a matcher
-  // that follows RFC 6570; see `tests/resources-uri-template-matching.test.ts`
-  // for what the server routes with, and for the over-matching `{+qs}` had.
+  // template nor the bare URI. `#1401` replaced the reliance on a `{+qs}` twin
+  // with a matcher that follows RFC 6570, and `#685` removed the twin that
+  // over-matched; see `tests/resources-uri-template-matching.test.ts` for what
+  // the server routes with.
   //
   // The assertion below is about the SDK, not about this server: it keeps
   // failing if a future SDK relaxes this to true RFC 6570, so the reason the
