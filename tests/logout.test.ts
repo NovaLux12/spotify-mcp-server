@@ -39,12 +39,23 @@ const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIRM = process.env.SPOTIFY_MCP_CONFIRM;
 
 /** A throwaway data dir wired into every store override logout knows about. */
-function sandbox(): { root: string; env: NodeJS.ProcessEnv } {
+function sandbox(): { root: string; home: string; env: NodeJS.ProcessEnv } {
   const root = join(tmpdir(), `spotify-mcp-logout-${randomUUID()}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   created.push(root);
+  const home = join(root, 'home');
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = {
-    HOME: root,
+    // Distinct from `root`, and it has to stay that way. `SPOTIFY_MCP_DATA_DIR`
+    // is itself the playlist-health snapshot store, so with HOME === DATA_DIR
+    // that store resolves to the home directory and `dangerousEraseTarget`
+    // refuses it — correct, and fatal to a test asserting an all-clear.
+    // `logout` got away with HOME === DATA_DIR only because it checked the
+    // *process* home while resolving stores from this env; threading the env
+    // through to the check (#1358) made the mismatch visible, so the fixture
+    // now states the shape it was assuming. `tests/logout.home-resolution.test.ts`
+    // covers the refusal this configuration provokes.
+    HOME: home,
     SPOTIFY_MCP_DATA_DIR: root,
     SPOTIFY_MCP_TOKEN_FILE: join(root, 'tokens.json'),
     SPOTIFY_MCP_HISTORY_DIR: join(root, 'history'),
@@ -107,10 +118,19 @@ before(async () => {
   const box = sandbox();
   const realHome = ORIGINAL_HOME ?? homedir();
   assert.notEqual(box.root, realHome);
+  assert.notEqual(box.home, realHome);
   for (const store of localStorePaths({ env: box.env })) {
-    // Equality is allowed: SPOTIFY_MCP_DATA_DIR is itself the playlist-health
-    // snapshot directory, so that store resolves to the sandbox root. planErasure
-    // refuses it (it holds the other stores), which is tested separately below.
+    // Equality with the sandbox root is allowed: SPOTIFY_MCP_DATA_DIR is itself
+    // the playlist-health snapshot directory, so that store resolves to the
+    // sandbox root. planErasure refuses it (it holds the other stores), which
+    // is tested separately below. Equality with the sandbox *home* is not: a
+    // store that resolves to the home directory is refused, and these tests are
+    // about the ordinary outcome (#1358).
+    assert.notEqual(
+      store.path,
+      box.home,
+      `${store.id} resolves to the sandbox home — give HOME a directory of its own`,
+    );
     assert.ok(
       store.path === box.root || store.path.startsWith(box.root + '/'),
       `${store.id} would resolve outside the sandbox (${store.path}) — add its env override to sandbox()`,

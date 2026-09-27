@@ -50,12 +50,20 @@ const ORIGINAL_HOME = process.env.HOME;
 const ORIGINAL_CONFIRM = process.env.SPOTIFY_MCP_CONFIRM;
 
 /** A throwaway data dir wired into every store override logout knows about. */
-function sandbox(): { root: string; env: NodeJS.ProcessEnv } {
+function sandbox(): { root: string; home: string; env: NodeJS.ProcessEnv } {
   const root = join(tmpdir(), `spotify-mcp-logout-kind-${randomUUID()}`);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   created.push(root);
+  const home = join(root, 'home');
+  mkdirSync(home, { recursive: true, mode: 0o700 });
   const env: NodeJS.ProcessEnv = {
-    HOME: root,
+    // Distinct from `root` for the reason spelled out in the two tests below
+    // that already had to construct a distinct HOME by hand: with HOME ===
+    // DATA_DIR the playlist-health store resolves to the home directory and
+    // `dangerousEraseTarget` refuses it. That refusal became reachable from
+    // `runLogout` when the env was threaded through to the check (#1358) — the
+    // check used to run against the process home, which this env never named.
+    HOME: home,
     SPOTIFY_MCP_DATA_DIR: root,
     SPOTIFY_MCP_TOKEN_FILE: join(root, 'tokens.json'),
     SPOTIFY_MCP_HISTORY_DIR: join(root, 'history'),
@@ -121,7 +129,13 @@ before(() => {
   const box = sandbox();
   const realHome = ORIGINAL_HOME ?? homedir();
   assert.notEqual(box.root, realHome);
+  assert.notEqual(box.home, realHome);
   for (const store of localStorePaths({ env: box.env })) {
+    assert.notEqual(
+      store.path,
+      box.home,
+      `${store.id} resolves to the sandbox home — give HOME a directory of its own (#1358)`,
+    );
     assert.ok(
       store.path === box.root || store.path.startsWith(box.root + '/'),
       `${store.id} would resolve outside the sandbox (${store.path}) — add its env override to sandbox()`,
