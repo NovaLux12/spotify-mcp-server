@@ -36,8 +36,13 @@ import { readOnlyEnv } from '../config.js';
 // shrinking startup or RSS. See RegistrarSpec and loadManifestRegistrars.
 import { formatReceipt, MAX_RECEIPTS, RECEIPT_ID_PATTERN, RECEIPT_ID_SHAPE, receiptMissMessage, verifyReceipt } from '../receipts.js';
 import { z } from 'zod';
-import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
-import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  type ServerResult,
+} from '@modelcontextprotocol/sdk/types.js';
+import { getObjectShape, getSchemaDescription, normalizeObjectSchema, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import { finalInputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
@@ -2187,15 +2192,122 @@ function unknownParamResult(tool: string, param: string, candidates: string[]) {
   }, `unknown parameter ${JSON.stringify(param)}`);
 }
 
-function validationResult(tool: string, param: string | undefined) {
-  const subject = param ? `parameter ${safeIdentifier(param)}` : 'arguments';
-  return errorResult(tool, {
-    kind: 'validation',
+function validationResult(tool: string, shape: Record<string, AnySchema> | undefined, error: unknown) {
+  const param = validationParam(error);
+  return errorResult(tool, validationEnvelope(tool, 'tool', 'parameter', shape, error, param), param ? `schema validation failed for parameter ${param}` : 'schema validation failed');
+}
+
+/**
+ * The shared validation envelope for both surfaces (#689).
+ *
+ * Two rules, and the second is the one that is easy to get wrong:
+ *
+ *  1. Name the offending argument and say what was expected. `expected` is
+ *     read off the zod issue itself, never inferred, and the argument's own
+ *     `.describe()` text rides along as the concrete next step — that text is
+ *     the same string `tools/list` already advertises, so the error and the
+ *     schema cannot disagree.
+ *  2. When the issue does not carry a readable expectation, say nothing rather
+ *     than something plausible. A message that names a type the schema does
+ *     not enforce is #803 in prose: a caller who acts on it is wrong and
+ *     cannot tell. So an unreadable issue falls back to pointing at the schema,
+ *     which is always true.
+ */
+function validationEnvelope(
+  subject: string,
+  kind: 'tool' | 'prompt',
+  noun: 'parameter' | 'argument',
+  shape: Record<string, AnySchema> | undefined,
+  error: unknown,
+  param: string | undefined,
+) {
+  const nouned = param ? `${noun} ${safeIdentifier(param)}` : 'arguments';
+  const expectation = expectationPhrase(firstIssue(error));
+  // An enum already enumerates every legal value, so the field description
+  // would only restate it (`one of "short_term"… (short_term (4 weeks)…)`).
+  // Everything else — a type, a bound — is incomplete on its own and the
+  // description is what turns it into something a caller can act on.
+  const hint = expectation?.exhaustive ? undefined : fieldHint(shape, param);
+  const detail = expectation ? `expected ${expectation.phrase}${hint ? ` (${hint})` : ''}` : undefined;
+  return {
+    kind: 'validation' as const,
     reason: defaultReason('validation'),
-    fix: param ? `Pass a valid value for ${safeIdentifier(param)}.` : 'Pass values that match the tool schema.',
-    text: `${tool} rejected ${subject}; pass a valid value according to the tool schema.`,
+    fix: detail
+      ? `Pass ${detail}.`
+      : param ? `Pass a valid value for ${safeIdentifier(param)}.` : `Pass values that match the ${kind} schema.`,
+    text: detail
+      ? `${subject} rejected ${nouned}: ${detail}`
+      : `${subject} rejected ${nouned}; pass a valid value according to the ${kind} schema.`,
     ...(param ? { param: safeIdentifier(param) } : {}),
-  }, param ? `schema validation failed for parameter ${param}` : 'schema validation failed');
+  };
+}
+
+/** The first zod issue, or `undefined` when the failure is not a zod error. */
+function firstIssue(error: unknown): unknown {
+  if (error === null || typeof error !== 'object' || !('issues' in error) || !Array.isArray(error.issues)) {
+    return undefined;
+  }
+  return error.issues[0];
+}
+
+/**
+ * What the schema actually demands, phrased for a caller: `a string`, `one of
+ * "decade" or "genre"`, `a value at most 5`. Returns `undefined` for any issue
+ * whose shape this does not read, and the caller then says nothing (#689
+ * rule 2). `exhaustive` marks the phrases that already list every legal value,
+ * so the caller knows not to pad them with the field description.
+ */
+function expectationPhrase(issue: unknown): { phrase: string; exhaustive: boolean } | undefined {
+  if (issue === null || typeof issue !== 'object') return undefined;
+  const record = issue as Record<string, unknown>;
+  switch (record.code) {
+    case 'invalid_type':
+      return typeof record.expected === 'string'
+        ? { phrase: `${/^[aeiou]/i.test(record.expected) ? 'an' : 'a'} ${record.expected}`, exhaustive: false }
+        : undefined;
+    case 'invalid_value': {
+      if (!Array.isArray(record.values)) return undefined;
+      // `humanList` adds the quotes, so pre-quoting here would double them.
+      const options = record.values
+        .filter((value): value is string | number | boolean => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+        .map((value) => String(value));
+      return options.length > 0 ? { phrase: `one of ${humanList(options)}`, exhaustive: true } : undefined;
+    }
+    case 'too_big':
+      return typeof record.maximum === 'number'
+        ? { phrase: `a value ${record.inclusive === false ? 'below' : 'at most'} ${record.maximum}`, exhaustive: false }
+        : undefined;
+    case 'too_small':
+      return typeof record.minimum === 'number'
+        ? { phrase: `a value ${record.inclusive === false ? 'above' : 'at least'} ${record.minimum}`, exhaustive: false }
+        : undefined;
+    case 'not_multiple_of':
+      return typeof record.divisor === 'number' ? { phrase: `a multiple of ${record.divisor}`, exhaustive: true } : undefined;
+    case 'invalid_format':
+      return typeof record.format === 'string' ? { phrase: `a value formatted as ${record.format}`, exhaustive: true } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * The argument's own description — one line, capped. This is the concrete next
+ * step in a validation message, and it is the same sentence the host already
+ * read in `tools/list` / `prompts/list`, so the two cannot drift.
+ */
+function fieldHint(shape: Record<string, AnySchema> | undefined, param: string | undefined): string | undefined {
+  if (!shape || !param || !Object.hasOwn(shape, param)) return undefined;
+  const field = shape[param];
+  if (field === null || typeof field !== 'object') return undefined;
+  return singleLine(getSchemaDescription(field), 160);
+}
+
+/** Collapse a schema description to one bounded line, or `undefined` if empty. */
+function singleLine(value: string | undefined, cap: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const oneLine = value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (oneLine.length === 0) return undefined;
+  return oneLine.length > cap ? `${oneLine.slice(0, cap - 1).trimEnd()}…` : oneLine;
 }
 
 async function invokeHandler(entry: RegistryEntry, args: unknown, extra: unknown): Promise<unknown> {
@@ -2279,11 +2391,11 @@ export function installToolErrorBoundary(server: McpServer): number {
     try {
       if (entry.inputSchema) {
         const parsed = await safeParseAsync(entry.inputSchema, args);
-        if (!parsed.success) return validationResult(tool, validationParam(parsed.error));
+        if (!parsed.success) return validationResult(tool, shape, parsed.error);
         parsedArgs = parsed.data;
       }
     } catch {
-      return validationResult(tool, undefined);
+      return validationResult(tool, shape, undefined);
     }
 
     try {
@@ -2296,4 +2408,168 @@ export function installToolErrorBoundary(server: McpServer): number {
   });
 
   return Object.keys(registry).length;
+}
+
+interface PromptRegistryEntry {
+  argsSchema?: AnySchema;
+  callback: (args: never, extra: unknown) => unknown;
+  enabled?: boolean;
+}
+
+function getPromptRegistry(server: McpServer): Record<string, PromptRegistryEntry> {
+  const registry = (server as unknown as { _registeredPrompts?: Record<string, PromptRegistryEntry> })._registeredPrompts;
+  if (!registry || typeof registry !== 'object') {
+    throw new Error('Spotify MCP prompt registry is unavailable; refusing to start without its error boundary');
+  }
+  return registry;
+}
+
+/**
+ * A JSON-RPC error the caller can act on: `-32602` (Invalid params) and a
+ * one-line message.
+ *
+ * Deliberately NOT `new McpError(ErrorCode.InvalidParams, …)`. `McpError`
+ * formats its own message as `MCP error ${code}: ${message}`, so the prefix
+ * lands in the string the protocol puts on the wire — which is exactly the
+ * noise #689 asks to remove. `Protocol._onrequest` reads `error.code` and
+ * `error.message` directly and never inspects the constructor, so an `Error`
+ * carrying a numeric `code` serialises to the same `code` with a clean message.
+ */
+function invalidParams(message: string): Error {
+  // `singleLine`, not `safeIdentifier`: the latter is for identifiers and would
+  // turn every space and quote in a sentence into `?`. Caller-supplied names
+  // inside the message were already run through `safeIdentifier` by the
+  // message builders, so this only has to keep the string on one line.
+  return Object.assign(new Error(singleLine(message, 400) ?? 'Invalid prompt arguments'), { code: ErrorCode.InvalidParams });
+}
+
+/**
+ * Replace the SDK's `prompts/get` with the prompt-surface half of the same
+ * boundary `installToolErrorBoundary` installs for tools (#689).
+ *
+ * The tool side already rejected unknown keys; prompts did not, and the gap
+ * was worse than a missing check. `server.prompt()` builds a PLAIN
+ * `z.object()`, which strips: a call carrying a misspelled argument rendered a
+ * complete prompt built from defaults, with no signal that the argument the
+ * caller cared about was dropped. `dj` declares no arguments at all and still
+ * accepted `{mood: "chill"}`. And when validation did fire, the SDK rethrew
+ * zod's own wording through `McpError`, so the wire read
+ * `MCP error -32602: Invalid arguments for prompt playlist_audit: Invalid
+ * input: expected string, received undefined at playlist`.
+ *
+ * So both halves of the tool boundary are mirrored here: reject an unknown key
+ * before the callback, naming it and suggesting the real near-misses; and
+ * normalise a schema failure into the same one-line envelope the tools return,
+ * with the same rule about never claiming a constraint the schema does not
+ * enforce.
+ *
+ * Strict rejection, not stripping, and the tools side is the deciding evidence:
+ * a caller that misnames a tool argument is refused, so a caller that misnames
+ * a prompt argument is refused too. One server, one contract — a boundary that
+ * stripped here would make `prompts/get` and `tools/call` disagree about the
+ * same mistake, and the lenient one would be the one that silently drops work.
+ *
+ * This does not narrow what a caller may put IN a known argument. Prompt
+ * arguments already arrive as protocol strings and the numeric ones use
+ * `z.coerce.number()`, so a host that can only express a scalar is served
+ * today and still is.
+ *
+ * The handler is installed on the request-handler map directly rather than
+ * through `setRequestHandler`, because that wrapper validates the request
+ * against `GetPromptRequestSchema` — whose `arguments` are
+ * `z.record(z.string(), z.string())` — and a caller that sends a number gets a
+ * `-32603 InternalError` whose message is a pretty-printed zod issue array,
+ * thrown before this boundary is ever entered. That is the exact failure #689
+ * names, so the boundary has to see the request to answer it. The tools side
+ * has no such trap: `CallToolRequestParamsSchema` declares
+ * `z.record(z.string(), z.unknown())`, so a mistyped value reaches the tool
+ * boundary and is answered in the tool envelope. If the map is not where the
+ * SDK keeps it, refuse to start rather than serve the leaky boundary.
+ */
+export function installPromptErrorBoundary(server: McpServer): number {
+  const registry = getPromptRegistry(server);
+  const names = Object.keys(registry);
+  // No prompts registered means the `prompts` capability was never declared
+  // (a trimmed toolset), and the SDK refuses a `prompts/get` handler it
+  // cannot justify. Nothing to guard, so nothing to install.
+  if (names.length === 0) return 0;
+
+  const lowLevelServer = server.server;
+  const handlers = (lowLevelServer as unknown as { _requestHandlers?: unknown })._requestHandlers;
+  if (!(handlers instanceof Map)) {
+    throw new Error('Spotify MCP prompt error boundary cannot be installed; refusing to serve prompts with unvalidated arguments');
+  }
+  handlers.set('prompts/get', async (request: { params?: Record<string, unknown> }, extra: unknown) => {
+    const params = (request?.params ?? {}) as { name?: unknown; arguments?: Record<string, unknown> };
+    // The request schema no longer runs, so the one field it really did check
+    // — that `name` is a string — is checked here instead.
+    const requested = typeof params.name === 'string' ? params.name : '';
+    // `Object.hasOwn`, not a bare index: the registry is a bare object literal,
+    // so `getPrompt({name: "toString"})` must not reach Object.prototype.
+    const entry = Object.hasOwn(registry, requested) ? registry[requested] : undefined;
+    if (!entry) {
+      const suggestions = nearestNames(requested, names);
+      throw invalidParams(`Prompt ${safeIdentifier(requested)} is not an available prompt; ${suggestions.length > 0 ? `call ${humanList(suggestions)} instead.` : 'call a prompt advertised by prompts/list instead.'}`);
+    }
+    if (entry.enabled === false) {
+      throw invalidParams(`Prompt ${safeIdentifier(requested)} is disabled; call a prompt advertised by prompts/list instead.`);
+    }
+
+    const shape = getObjectShape(entry.argsSchema);
+    const knownArgs = shape ? Object.keys(shape) : [];
+    const args = params.arguments ?? {};
+    const unknown = Object.keys(args).find((arg) => !knownArgs.includes(arg));
+    if (unknown) throw invalidParams(unknownPromptArg(requested, unknown, knownArgs));
+
+    // A non-string argument value never reached the schema either: the request
+    // parse that used to reject it is gone, and zod's own `invalid_type` is the
+    // honest report. Name the argument and say what MCP asked for.
+    const nonString = Object.keys(args).find((arg) => typeof args[arg] !== 'string');
+    if (nonString !== undefined) {
+      throw invalidParams(promptNonStringArg(requested, nonString));
+    }
+
+    if (!entry.argsSchema) return await Promise.resolve(entry.callback(undefined as never, extra)) as ServerResult;
+
+    let outcome: { ok: true; args: unknown } | { ok: false; message: string };
+    try {
+      const parsed = await safeParseAsync(entry.argsSchema, args);
+      outcome = parsed.success
+        ? { ok: true, args: parsed.data }
+        : { ok: false, message: promptValidationText(requested, shape, parsed.error) };
+    } catch {
+      outcome = { ok: false, message: `${requested} rejected arguments; pass values that match the prompt schema.` };
+    }
+    if (!outcome.ok) throw invalidParams(outcome.message);
+    return await Promise.resolve(entry.callback(outcome.args as never, extra)) as ServerResult;
+  });
+
+  return names.length;
+}
+
+function unknownPromptArg(prompt: string, arg: string, candidates: string[]) {
+  const name = safeIdentifier(prompt);
+  if (candidates.length === 0) {
+    return `${name} does not accept argument ${safeIdentifier(arg)}; remove it, ${name} takes no arguments`;
+  }
+  const suggestions = nearestNames(arg, candidates);
+  if (suggestions.length === 0) {
+    return `${name} does not accept argument ${safeIdentifier(arg)}; remove it and use only arguments advertised by prompts/list instead`;
+  }
+  return `${name} does not accept argument ${safeIdentifier(arg)}; remove it and use ${humanList(suggestions)} instead`;
+}
+
+/**
+ * MCP prompt arguments are `z.record(z.string(), z.string())` on the wire — the
+ * spec's `{"[key": "string"}`. A caller that sends a number is wrong, and used
+ * to be told so by a `-32603` carrying a zod issue array. Say the same thing
+ * in the form the caller can act on.
+ */
+function promptNonStringArg(prompt: string, arg: string) {
+  return `${safeIdentifier(prompt)} rejected argument ${safeIdentifier(arg)}: expected a string, because MCP prompt arguments are transmitted as strings; pass the value as a string`;
+}
+
+function promptValidationText(prompt: string, shape: Record<string, AnySchema> | undefined, error: unknown) {
+  const envelope = validationEnvelope(safeIdentifier(prompt), 'prompt', 'argument', shape, error, validationParam(error));
+  return envelope.text;
 }

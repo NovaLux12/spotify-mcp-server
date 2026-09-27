@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { installPromptErrorBoundary } from '../tools/annotations.js';
 
 /**
  * Shared optional time-range argument (#60): defaults preserve old behaviour.
@@ -15,6 +16,14 @@ const STANDARD_FOOTER =
   'If any read returns empty (0 tracks/artists/playlists), report it explicitly and suggest a fallback instead of presenting an empty list. If a tool is unavailable (toolset-trimmed) or rate-limited (429), note it with data from spotify://me/rate-limit, wait and retry once before skipping that section — never fail the whole task for one missing step. Validate user-supplied strings (dates as YYYY-MM-DD, playlist names by resolving via get_user_playlists) and ask for clarification rather than guessing.';
 
 export function registerPrompts(server: McpServer): void {
+  // The `prompts/get` boundary is installed HERE rather than in `src/index.ts`
+  // beside `installToolErrorBoundary`, because `registerPrompts` is the only
+  // way a prompt surface is ever built: production and every test go through
+  // this function, so the guarantee cannot be lost to a call site that forgot
+  // it. `server.prompt()` registers a plain `z.object()`, which STRIPS unknown
+  // arguments — before this, a call carrying a misspelled argument rendered a
+  // complete prompt from defaults and said nothing. See #689.
+
   // dj — act as a DJ based on user's top artists and mood (#455, #462, #460)
   server.prompt(
     'dj',
@@ -322,4 +331,8 @@ export function registerPrompts(server: McpServer): void {
       };
     },
   );
+
+  // Must come after every `server.prompt(...)` above: the boundary reads the
+  // registry to learn each prompt's argument names.
+  installPromptErrorBoundary(server);
 }

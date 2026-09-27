@@ -285,7 +285,6 @@ export const PAGED_WALK_LIST_REASON =
  * applied, so it cannot smuggle a longer list past a limit the array form
  * enforces.
  */
-type BoundedPlaylistArray = z.ZodType<string[], unknown>;
 
 function boundedPlaylistArray(min: number, max: number, reason: string) {
   return z.preprocess(
