@@ -631,6 +631,29 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // src/tools/confirm.ts is untouched and still fails closed on every verdict
   // but 'confirmed'.
   unpin_playlist: { destructiveHint: true },
+  // #1544: `dead_library_finder` issues `DELETE /me/library` for every scan
+  // candidate when `dry_run` is false — one per candidate in `library_writes`
+  // chunks, over a set bounded by `fetchAllCap` rather than by anything the
+  // caller chose. `dead` matches no entry in either prefix list (it is not
+  // `remove`, `unsave`, or `delete`), so the name-driven fallback reached
+  // `destructive ? {destructiveHint:true} : {destructiveHint:false}` and handed
+  // the host `destructiveHint: false` — telling an auto-approving client that
+  // gutting a saved library is a safe no-op. That is the #1100 failure mode
+  // exactly, and it is worse here than on `unpin_playlist` because of the
+  // scale: the name says "finder", so a host or an agent reading the registry
+  // has every reason to believe the word.
+  //
+  // The `find` prefix does not reach this name either (the verb is the SECOND
+  // word), so the read-side regex missed it too — which is why this is an
+  // override on the one name rather than a change to the prefixes, and why
+  // `readOnlyHint` stays ABSENT: MCP defaults it false, which is the truth for
+  // a tool whose commit path writes.
+  //
+  // This is a static host hint applied after registration (AGENTS.md §4). It
+  // never prompts and it does not replace the elicitation gate: the handler
+  // still calls `requiredConfirmationRefusal` and still fails closed on every
+  // verdict but `confirmed`, with `SPOTIFY_MCP_CONFIRM=never` the only bypass.
+  dead_library_finder: { destructiveHint: true },
   // #896: `playlist_staleness_report` issues only GETs — /me/playlists and then
   // each playlist's items — and writes nothing, but its name starts with
   // `playlist`, which carries no read verb, so the name-driven policy

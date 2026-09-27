@@ -54,9 +54,35 @@ interface RegisteredTool {
 function harness(
   register: (server: McpServer, client: StubFromResponder) => void,
   responder: Responder = () => null,
+  elicitResult?: unknown,
 ) {
   const registered: RegisteredTool[] = [];
+  const elicitCalls: Array<{ message: string }> = [];
   const fakeServer = {
+    // #1544: `dead_library_finder` deletes `DELETE /me/library` once per
+    // candidate, so a qualifying library crosses `REMOVE_ELICIT_THRESHOLD` and
+    // the write is gated. Without this block the stub advertises no
+    // elicitation capability, `requiredConfirmationRefusal` treats that as a
+    // refusal, and the tests below would observe a refusal rather than the
+    // write whose response-format independence they exist to pin.
+    //
+    // `elicitResult` present → the stub advertises elicitation and
+    // `elicitInput` resolves to it. Omitted → no capability at all, which is
+    // the fail-closed case and is asserted separately below.
+    ...(elicitResult !== undefined
+      ? {
+          // Real McpServer shape: the capability accessor and elicitation both
+          // live on the inner Server that McpServer exposes as `.server`.
+          server: {
+            getClientCapabilities: () => ({ elicitation: { form: {} } }),
+            async elicitInput(request: { message?: string }) {
+              elicitCalls.push({ message: request?.message ?? '' });
+              if (elicitResult instanceof Error) throw elicitResult;
+              return elicitResult;
+            },
+          },
+        }
+      : {}),
     tool(
       name: string,
       _description: string,
@@ -108,6 +134,7 @@ function harness(
      * recorded the difference.
      */
     client,
+    elicitCalls,
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
@@ -637,6 +664,8 @@ describe('dead_library_finder (#895)', () => {
   const DEAD = 500;
   const CAP = 10;
   const allDeadUris = Array.from({ length: DEAD }, (_, i) => `spotify:track:dead${i}`);
+  /** #1544: the verdict that lets the gated write proceed. */
+  const accept = { action: 'accept', content: { confirm: true } };
 
   it('deletes every eligible track and says so, in every response format', async () => {
     // The write is `max_results`-independent by contract: `MaxResults` is
@@ -646,7 +675,7 @@ describe('dead_library_finder (#895)', () => {
     // `max_results` to shrink a reply would have changed their library.
     const seen: string[][] = [];
     for (const rf of ['concise', 'detailed', 'json'] as const) {
-      const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+      const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD), accept);
       const out = await h.invoke('dead_library_finder', { dry_run: false, max_results: CAP, response_format: rf });
       assert.equal(out.structuredContent!.count, DEAD, `${rf}: the eligible set is the whole library`);
       assert.equal(out.structuredContent!.removed, DEAD, `${rf}: and all of it was removed`);
@@ -658,7 +687,7 @@ describe('dead_library_finder (#895)', () => {
   });
 
   it('withholds the deleted-track record from the prose modes and names where to get it', async () => {
-    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD), accept);
     const out = await h.invoke(
       'dead_library_finder',
       { dry_run: false, max_results: CAP, response_format: 'concise' },
@@ -689,7 +718,7 @@ describe('dead_library_finder (#895)', () => {
     // This is the assertion the pre-fix tree fails. Before #1517 `details` was
     // capped here too, so `max_results: 10` shipped 10 of 500 rows and named
     // no way to get the other 490 — the exact shape #1517 reports.
-    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD), accept);
     const out = await h.invoke(
       'dead_library_finder',
       { dry_run: false, max_results: CAP, response_format: 'json' },
