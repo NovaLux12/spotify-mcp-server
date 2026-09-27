@@ -3,7 +3,25 @@
 One-stop copy for claiming/listing the server in directories. Keep in sync
 with README + server.json when the tool surface changes.
 
-## Canonical facts (2026-09-21)
+## Canonical facts
+
+Three things this page used to carry are gone, because each one went stale
+without anyone noticing (#932):
+
+- **The version.** A header naming a release reads as the current one to a
+  directory reviewer and is wrong the moment the next release merges. The
+  current version is the `version` field in `package.json`; what each release
+  contains is [CHANGELOG.md](../CHANGELOG.md).
+- **A "last verified" date.** Nothing re-checked it, so it could only ever get
+  older.
+- **A test count.** The census does not run the suite, so wiring the figure in
+  would mean CI running it twice; a sentence with no number in it cannot drift.
+  Read the case count from the CI run.
+
+The surface line below is the one figure that is kept, because it is generated
+by `npm run count:tools -- --write` and gated by `--check`. The thresholds in
+the safety line are constants in `src/tools/confirm.ts` and
+`src/tools/playlistbatch.ts`, not generated figures.
 
 - npm: `@novalux12/spotify-mcp` — https://www.npmjs.com/package/@novalux12/spotify-mcp
 - Repo: https://github.com/NovaLux12/spotify-mcp-server
