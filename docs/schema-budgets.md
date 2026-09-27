@@ -56,7 +56,7 @@ to the measured value whenever a module's real `tools/list` weight changes —
 `--write` refreshes the table below but never the manifest. A module left at a
 stale baseline silently loses its 10% headroom for the next contributor.
 
-- **#900** — `freshness` 2,043 → 2,235 and `swarm3discovery` 21,887 → 22,339
+- **#900** — `freshness` 2,043 → 2,235 and `swarm3discovery` 21,825 → 22,277
   schema bytes, both description text only. The tools' inputs, outputs and
   counts are unchanged (1 and 24). Five descriptions quoted a per-artist cost
   — "N followed artists = N+1 API requests", "1 small albums call per followed
@@ -64,10 +64,18 @@ stale baseline silently loses its 10% headroom for the next contributor.
   lookups became the one shared canonical release probe: a repeat scan inside
   the read-cache window spends a probe and no request. They now say that.
   Measured by driving `dist/index.js` over stdio and byte-counting the live
-  `tools/list` payload: the registry is **592 tools** before and after, and the
-  aggregate moved **610,728 → 611,372 bytes (+644)** against the 621,000-byte
-  enforced ceiling, leaving 9,628 bytes of headroom. No aggregate raise, and no
-  ceiling moved to make a breach disappear.
+  `tools/list` payload on both sides of the branch at base `7e1fbd1`: the
+  registry is **592 tools** before and after, and the aggregate moved
+  **606,460 → 607,104 bytes (+644)** against the 621,000-byte enforced ceiling,
+  leaving 13,896 bytes of headroom. No aggregate raise, and no ceiling moved to
+  make a breach disappear.
+
+  These figures describe the tree this branch sits on. `main` moves under this
+  work, and both module baselines have already drifted once under it
+  (`swarm3discovery` was 21,887 before #1227's neighbourhood landed), so a
+  figure that was true against an earlier base stops being true against this
+  one. The manifest entries beside this note are the live values; re-measure
+  rather than trusting the prose if you are reading this much later.
 
 ## Checked-in baseline and ceilings
 
