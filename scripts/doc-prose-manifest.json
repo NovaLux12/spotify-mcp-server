@@ -2877,6 +2877,34 @@
         "label": "Annotations are orthogonal to this gate and do not subst…"
       },
       {
+        "hash": "cac3ee853f8a808e",
+        "label": "deadlibraryfinder removal gate (#1544)"
+      },
+      {
+        "hash": "4b04ad3d1b2b1371",
+        "label": "deadlibraryfinder's dryrun: false path is a bulk library…"
+      },
+      {
+        "hash": "15d4b86c9eb4c5d6",
+        "label": "Three properties are worth stating, because each is a de…"
+      },
+      {
+        "hash": "2c213093d22d50cb",
+        "label": "The name is not the argument for or against. The house i…"
+      },
+      {
+        "hash": "ec757e4ae8c2622c",
+        "label": "The prompt lands after the scan, naming the count. The s…"
+      },
+      {
+        "hash": "9052c6b1ac65604b",
+        "label": "A refusal is zero deletes, and the annotation says so to…"
+      },
+      {
+        "hash": "ef757564da9953f3",
+        "label": "SPOTIFYMCPCONFIRM=never (value exactly never) remains th…"
+      },
+      {
         "hash": "246bac0ce9d16c81",
         "label": "Purpose and provenance on stored-data writes (#708)"
       },
@@ -7002,9 +7030,9 @@
     }
   ],
   "provenance": {
-    "head": "8d1fcdd1648ae9f3e9a618434563957419cc61f4",
-    "base": "76aad008e240cd657a8b0d40150c0c21793c0395",
-    "upstream": "76aad008e240cd657a8b0d40150c0c21793c0395",
+    "head": "3c306cee69dc68e25a3972e92f2e9c81581fa1fa",
+    "base": "f56b950a510ec5900c575788fa4a81db93ad6089",
+    "upstream": "f56b950a510ec5900c575788fa4a81db93ad6089",
     "behind": false
   },
   "reanchored": [
