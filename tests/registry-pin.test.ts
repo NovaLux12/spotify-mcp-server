@@ -56,8 +56,10 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
 import {
   AGGREGATE_SURFACE_LIMITS,
+  loadManifestRegistrars,
   moduleToolNames,
   registerManifestModule,
+  registerManifestModules,
   REGISTRAR_MANIFEST,
   type RegistrarManifestContext,
   type RegistrarManifestEntry,
@@ -86,15 +88,18 @@ interface RegistryPin {
  * Register every manifest module against a real McpServer, in manifest order,
  * and return the exact tool name each module owns.
  *
- * `registerManifestModule` records ownership as the set of names that appeared
+ * `registerManifestModules` is the production path (#906): it resolves each
+ * module's lazy registrar and then registers in manifest order, so this
+ * measures the sequence `src/index.ts` actually serves rather than a parallel
+ * one. `registerManifestModule` records ownership as the names that appeared
  * during that module's own registrar call, so a module's list is derived from
  * the registry rather than restated from the manifest.
  */
-function measureManifestOwnership(): Map<string, string[]> {
+async function measureManifestOwnership(): Promise<Map<string, string[]>> {
   const server = new McpServer({ name: 'registry-pin', version: '0.0.0' });
   const client = new SpotifyClient();
   const context: RegistrarManifestContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
-  for (const module of REGISTRAR_MANIFEST) registerManifestModule(server, client, module, context);
+  await registerManifestModules(server, client, context);
   return new Map(REGISTRAR_MANIFEST.map((module) => [module.key, [...moduleToolNames(server, module.key)]]));
 }
 
@@ -175,8 +180,8 @@ let wireToolsPromise: Promise<WireTool[]> | undefined;
 const wireTools = (): Promise<WireTool[]> => (wireToolsPromise ??= listWireTools());
 
 /** Measured ownership, shared by every in-process assertion. */
-let ownershipPromise: Map<string, string[]> | undefined;
-const ownership = (): Map<string, string[]> => (ownershipPromise ??= measureManifestOwnership());
+let ownershipPromise: Promise<Map<string, string[]>> | undefined;
+const ownership = (): Promise<Map<string, string[]>> => (ownershipPromise ??= measureManifestOwnership());
 
 const sorted = (names: Iterable<string>): string[] => [...names].sort();
 
@@ -193,10 +198,11 @@ const REGENERATE = process.env.REGISTRY_PIN_WRITE === '1';
 
 describe('registry pin: exact manifest', () => {
   it('every manifest module registers exactly the tool names the pin records', async () => {
-    const measured = ownership();
+    const measured = await ownership();
+    const pinned = await pin();
     const problems: string[] = [];
     for (const module of REGISTRAR_MANIFEST) {
-      const expected = pin().modules[module.key];
+      const expected = pinned.modules[module.key];
       assert.ok(Array.isArray(expected), `tests/registry-surface.json has no entry for module ${module.key}`);
       const { missing, added } = delta(expected, measured.get(module.key) ?? []);
       if (missing.length > 0) problems.push(`${module.key} (${module.file}) no longer registers: ${missing.join(', ')}`);
@@ -211,34 +217,35 @@ describe('registry pin: exact manifest', () => {
     ].join('\n'));
   });
 
-  it('the pin covers every manifest module, and no module that is not in the manifest', () => {
-    const pinned = sorted(Object.keys(pin().modules));
+  it('the pin covers every manifest module, and no module that is not in the manifest', async () => {
+    const pinned = sorted(Object.keys((await pin()).modules));
     const manifest = sorted(REGISTRAR_MANIFEST.map((module) => module.key));
     assert.deepEqual(pinned, manifest, 'tests/registry-surface.json and REGISTRAR_MANIFEST disagree on the module set');
   });
 
-  it('the pin agrees with the manifest baselines, so it cannot become a second registrar list', () => {
+  it('the pin agrees with the manifest baselines, so it cannot become a second registrar list', async () => {
     // The manifest owns the counts; the pin adds names. If the two records ever
     // disagree, one of them was hand-edited — and the point of the pin is that
     // neither is a silent place to change the surface.
+    const pinned = (await pin()).modules;
     const mismatches = REGISTRAR_MANIFEST
-      .filter((module) => (pin().modules[module.key] ?? []).length !== module.baseline.toolCount)
-      .map((module) => `${module.key}: pin lists ${(pin().modules[module.key] ?? []).length} names, manifest baseline is ${module.baseline.toolCount}`);
+      .filter((module) => (pinned[module.key] ?? []).length !== module.baseline.toolCount)
+      .map((module) => `${module.key}: pin lists ${(pinned[module.key] ?? []).length} names, manifest baseline is ${module.baseline.toolCount}`);
     assert.deepEqual(mismatches, [], `pin and manifest baselines disagree:\n  ${mismatches.join('\n  ')}`);
   });
 
   it('the live tools/list is exactly the pinned surface, with no additions and no omissions', async () => {
     const tools = await wireTools();
-    const { missing, added } = delta(pin().flat, tools.map((tool) => tool.name));
+    const { missing, added } = delta((await pin()).flat, tools.map((tool) => tool.name));
     assert.deepEqual(missing, [], `tools/list no longer serves pinned tools: ${missing.join(', ')}`);
     assert.deepEqual(added, [], `tools/list serves tools the pin does not record: ${added.join(', ')}`);
   });
 });
 
 describe('registry pin: no duplicate names', () => {
-  it('no tool name is owned by two manifest modules', () => {
+  it('no tool name is owned by two manifest modules', async () => {
     const owners = new Map<string, string[]>();
-    for (const [key, names] of ownership()) {
+    for (const [key, names] of await ownership()) {
       for (const name of names) owners.set(name, [...(owners.get(name) ?? []), key]);
     }
     const shared = [...owners].filter(([, keys]) => keys.length > 1).map(([name, keys]) => `${name} claimed by ${keys.join(' and ')}`);
@@ -247,7 +254,7 @@ describe('registry pin: no duplicate names', () => {
     assert.ok(owners.size > 500, `expected the full surface, measured ${owners.size} owned names`);
   });
 
-  it('a duplicate registration fails naming both modules that own the name', () => {
+  it('a duplicate registration fails naming both modules that own the name', async () => {
     // The SDK aborts on a re-registration before any assertion can run, and its
     // own message names only the tool. In a 66-module manifest that leaves the
     // reader to guess which of the other 65 modules owns the name, so
@@ -256,7 +263,8 @@ describe('registry pin: no duplicate names', () => {
     const client = new SpotifyClient();
     const context: RegistrarManifestContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
 
-    const [first, second] = REGISTRAR_MANIFEST;
+    // Resolve the first module's lazy registrar the way production does (#906).
+    const [first] = await loadManifestRegistrars(REGISTRAR_MANIFEST, context);
     registerManifestModule(server, client, first, context);
     const stolen = moduleToolNames(server, first.key)[0];
     assert.ok(stolen, `${first.key} registered nothing to collide with`);
@@ -345,15 +353,14 @@ describe('registry pin: size budget', () => {
     assert.ok(nonAscii.length > 0, `expected non-ASCII text in descriptions, found none across ${tools.length} tools`);
     const undercount = Buffer.byteLength(json, 'utf8') - json.length;
     assert.ok(undercount > 0, `UTF-8 must exceed UTF-16 here; the two measures are identical, so a code-unit budget is passing unnoticed`);
-    // Report the size of the trap rather than just its existence.
-    console.log(`[registry-pin] code-unit budget would undercount this surface by ${undercount}B; ceiling headroom is ${AGGREGATE_SURFACE_LIMITS.maxBytes - Buffer.byteLength(json, 'utf8')}B`);
   });
 
-  it('every manifest module stays inside its own derived ceiling', () => {
+  it('every manifest module stays inside its own derived ceiling', async () => {
     // The upper bound `tool.surface.test.ts` already enforces. What it does not
     // have is a lower bound — that is the first assertion in this file.
+    const measured = await ownership();
     const over = REGISTRAR_MANIFEST
-      .map((module) => ({ module, count: ownership().get(module.key)?.length ?? 0 }))
+      .map((module) => ({ module, count: measured.get(module.key)?.length ?? 0 }))
       .filter(({ module, count }) => count > module.ceiling.toolCount)
       .map(({ module, count }) => `${module.key}: ${count} tools > ceiling ${module.ceiling.toolCount}`);
     assert.deepEqual(over, [], `modules over their tool ceiling:\n  ${over.join('\n  ')}`);
@@ -366,14 +373,14 @@ describe('registry pin: size budget', () => {
 // ---------------------------------------------------------------------------
 
 let cachedPin: RegistryPin | undefined;
-function pin(): RegistryPin {
-  if (process.env.REGISTRY_PIN_WRITE === '1') return buildPin();
+function pin(): Promise<RegistryPin> {
+  if (REGENERATE) return buildPin();
   cachedPin ??= JSON.parse(readFileSync(PIN_PATH, 'utf8')) as RegistryPin;
-  return cachedPin;
+  return Promise.resolve(cachedPin);
 }
 
-function buildPin(): RegistryPin {
-  const measured = ownership();
+async function buildPin(): Promise<RegistryPin> {
+  const measured = await ownership();
   return {
     generatedBy: 'tests/registry-pin.test.ts — REGISTRY_PIN_WRITE=1 node --import tsx --test tests/registry-pin.test.ts',
     modules: Object.fromEntries(REGISTRAR_MANIFEST.map((module) => [module.key, sorted(measured.get(module.key) ?? [])])),
@@ -382,16 +389,18 @@ function buildPin(): RegistryPin {
 }
 
 describe('registry pin: the lockfile itself', () => {
-  it('is current with the registry, or is regenerated on request', () => {
+  it('is current with the registry, or is regenerated on request', async () => {
     if (REGENERATE) {
-      const built = buildPin();
+      // No console.log: tests/no-test-debug-output-guard.test.ts holds this tree
+      // at zero debug statements, and a stray log in a passing run is exactly
+      // the thing that guard exists to catch.
+      const built = await buildPin();
       writeFileSync(PIN_PATH, `${JSON.stringify(built, null, 2)}\n`);
       cachedPin = built;
-      console.log(`[registry-pin] wrote ${built.flat.length} tools across ${Object.keys(built.modules).length} modules to tests/registry-surface.json`);
       return;
     }
-    const built = buildPin();
-    assert.deepEqual(built.modules, pin().modules, 'tests/registry-surface.json is stale — regenerate it and commit the result');
-    assert.deepEqual(built.flat, pin().flat, 'tests/registry-surface.json is stale — regenerate it and commit the result');
+    const built = await buildPin();
+    assert.deepEqual(built.modules, (await pin()).modules, 'tests/registry-surface.json is stale — regenerate it and commit the result');
+    assert.deepEqual(built.flat, (await pin()).flat, 'tests/registry-surface.json is stale — regenerate it and commit the result');
   });
 });
