@@ -25,6 +25,9 @@
  * ~/.spotify-mcp file is read, written, or deleted by this suite.
  */
 
+// Redirects HOME to a disposable temp root so the guard's default read roots
+// resolve under a temp directory, not the real $HOME (#1274). Side effect only.
+import './helpers/hermetic.js';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
