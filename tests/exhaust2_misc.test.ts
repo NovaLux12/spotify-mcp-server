@@ -630,6 +630,35 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const res = await h({ pretty: true, response_format: 'concise' });
     assert.ok(res.content[0].text.includes('"bundle_version": 1'));
     assert.ok(res.content[0].text.includes('restore_checklist'));
+    assert.ok(!res.content[0].text.includes('unreadable_stores'), 'a clean export has nothing to report');
+  });
+
+  // #839: an unreadable store used to export as `null`, and the checklist then
+  // told the user to write that `null` back over their file. The bundle is the
+  // artefact a migration is run from, so a silent null there is the loss
+  // archived as if it were the data.
+  it('sidecar_export_bundle names a store it could not read and does not offer it for restore', async () => {
+    const scenes = join(tmp, 'scenes.json');
+    const truncated = '{"desk":{"volume":30';
+    writeFileSync(scenes, truncated);
+    try {
+      const h = getHandler('sidecar_export_bundle', makeClient());
+      const res = await h({ pretty: true, response_format: 'concise' });
+      const bundle = JSON.parse(res.content[0].text) as {
+        scenes: unknown;
+        unreadable_stores?: Record<string, string>;
+        restore_checklist: string[];
+      };
+      assert.equal(bundle.scenes, null);
+      assert.match(bundle.unreadable_stores?.scenes ?? '', /is not valid JSON/);
+      assert.match(bundle.unreadable_stores?.scenes ?? '', new RegExp(scenes.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+      assert.match(bundle.restore_checklist[0]!, /Do NOT restore scenes/);
+      assert.equal(readFileSync(scenes, 'utf8'), truncated, 'the file itself is left exactly as it was');
+      assert.equal(readFileSync(`${scenes}.corrupt`, 'utf8'), truncated, 'and its bytes are preserved beside it');
+    } finally {
+      rmSync(scenes, { force: true });
+      rmSync(`${scenes}.corrupt`, { force: true });
+    }
   });
 
   // #422

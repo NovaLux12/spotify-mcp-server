@@ -22,7 +22,7 @@ import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
@@ -44,7 +44,7 @@ import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../s
 import { loadScenes, scenesFilePath } from './scenes.js';
 import { loadPlaybackExt, playbackExtFile } from './playbackext.js';
 import { genreTagsPath, loadGenreTags } from './libraryinsights.js';
-import { loadSidecar } from '../sidecar.js';
+import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { historyFilePath, isHistoryEnabled, readHistory } from '../history.js';
 import type { HistoryRecord } from '../history.js';
 import {
@@ -1502,13 +1502,27 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const tryRead = async (p: string): Promise<unknown> => {
-        try { return JSON.parse(await readFile(p, 'utf8')); } catch { return null; }
+      // #839: an unreadable store used to export as `null`, which the restore
+      // checklist below then tells the user to write back — archiving the loss
+      // as if it were the user's data and, on restore, replacing the file with
+      // a literal null. A store that cannot be read is named, its bytes are
+      // copied aside, and the checklist stops telling anyone to restore it.
+      const unreadable: Record<string, string> = {};
+      const tryRead = async (key: string, p: string): Promise<unknown> => {
+        try {
+          return await loadSidecar<unknown>(p, () => null, (parsed) => parsed);
+        } catch (err) {
+          if (err instanceof SidecarUnreadableError) {
+            unreadable[key] = err.message;
+            return null;
+          }
+          throw err;
+        }
       };
       const [scenes, playbackExt, misc] = await Promise.all([
-        tryRead(scenesFilePath()),
-        tryRead(playbackExtFile()),
-        tryRead(miscFilePath()),
+        tryRead('scenes', scenesFilePath()),
+        tryRead('playback_ext', playbackExtFile()),
+        tryRead('exhaust2_misc', miscFilePath()),
       ]);
       // Bounded tail read (#628): a large ledger must not be slurped whole.
       const history: unknown[] = await readHistory();
@@ -1518,9 +1532,13 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         scenes,
         playback_ext: playbackExt,
         exhaust2_misc: misc,
+        ...(Object.keys(unreadable).length > 0 ? { unreadable_stores: unreadable } : {}),
         mutation_history: { enabled: isHistoryEnabled(), path: historyFilePath(), records: history },
         restore_checklist: [
-          '1. Write scenes.json / playback-ext.json / exhaust2-misc.json back under ~/.spotify-mcp (owner-only modes).',
+          '1. Write scenes.json / playback-ext.json / exhaust2-misc.json back under ~/.spotify-mcp (owner-only modes).'
+            + (Object.keys(unreadable).length > 0
+              ? ` Do NOT restore ${Object.keys(unreadable).join(', ')} from this bundle: they could not be read (see unreadable_stores), and their bytes are preserved on disk.`
+              : ''),
           '2. Re-declare genre tags (or restore genre-tags.json) for playlist_from_tags / filter_by_genre.',
           '3. Mutations.jsonl is an audit trail — restore only if you want undo/audit continuity.',
           '4. Re-run auth (tokens are never exported).',
@@ -1528,7 +1546,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ],
       };
       const json = args.pretty ? JSON.stringify(bundle, null, 2) : JSON.stringify(bundle);
-      return emit(rf, json, { ok: true, ...({ bundle } as unknown as Record<string, unknown>) });
+      return emit(rf, json, { ok: true, ...(Object.keys(unreadable).length > 0 ? { unreadable_stores: unreadable } : {}), ...({ bundle } as unknown as Record<string, unknown>) });
     },
   );
 
