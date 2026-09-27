@@ -30,6 +30,8 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  resolveStatsfmUserInput,
+  StatsfmUserInputFields,
 } from '../shaping.js';
 import {
   normalizeStreams,
@@ -46,7 +48,6 @@ import {
   __setStatsfmClient,
   statsfmClient,
   statsfmFetchFromPayloadImpl,
-  resolveStatsfmUserId,
 } from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
 import { readOnlyModeEnabled } from './annotations.js';
@@ -78,26 +79,6 @@ export async function statsfmGet<T>(path: string, params?: Record<string, string
 // ---------------------------------------------------------------------------
 // Shared bits
 // ---------------------------------------------------------------------------
-
-/**
- * The stats.fm identity argument for the `statsfm_user` spelling (#927).
- *
- * The same contract as `userIdSchema()` in `statsfm.ts`, under the other name:
- * `.optional()` so `STATSFM_USER_ID` can supply the default, with every handler
- * resolving through `resolveStatsfmUserId` before use. That helper throws a
- * message naming both ways to supply the id when neither is present, which is
- * what replaces the SDK's own required-field error that `.optional()` removes.
- *
- * Exported because `taste_playlist.ts` declares the same argument and must not
- * keep a private copy that could drift.
- */
-export const statsfmUserSchema = z
-  .string()
-  .min(1)
-  .optional()
-  .describe(
-    'stats.fm user ID (or username) — public profile, no auth. Defaults to STATSFM_USER_ID.',
-  );
 
 /**
  * `range` is the shared stats.fm ranking window (#720) — the same upstream
@@ -276,12 +257,12 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_daily_brief',
     'Yesterday (or a given date) in brief: top-3 tracks, 2 revival picks, novelty share vs the lifetime core. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('UTC date YYYY-MM-DD. Default: yesterday'),
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const day = args.date ?? ymd(Date.now() - 86_400_000);
       const [artistsRaw, tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '20' }),
@@ -331,14 +312,14 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_era_playlist',
     'Era window → representative track list: pick a listening era and get its playlist spec. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       era_index: z.number().int().min(0).optional().describe('Era index (0 = oldest). Default: latest'),
       track_count: z.number().int().min(1).max(50).optional().describe('Tracks to list. Default: 15'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const [tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '100' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -394,14 +375,14 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_forgotten_bangers',
     'Forgotten-bangers playlist spec: lifetime tops missing from the recent sample, ranked with a revival pick. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       top_limit: z.number().int().min(5).max(100).optional().describe('Lifetime top tracks to scan. Default: 50'),
       track_count: z.number().int().min(1).max(50).optional().describe('Bangers to list. Default: 15'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const [topRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: String(args.top_limit ?? 50) }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -453,13 +434,13 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_obsession_ladder',
     'Obsession ladder: artists ranked by stream share, each with an exposure tier. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       range: rangeSchema,
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const range = args.range ?? 'lifetime';
       const artistsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range, limit: '50' });
       if (args.response_format === 'json') {
@@ -495,13 +476,13 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_diamond_rotation',
     'Diamond-mining rotation: mid-tier lifetime tracks (rank ~20–60) absent from recent streams — deep cuts to re-polish. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       track_count: z.number().int().min(1).max(30).optional().describe('Diamonds to list. Default: 10'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const [topRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '60' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -543,12 +524,12 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_weekly_recap',
     'Week-in-review brief: stream count, top artists/tracks of the window, busiest day, novelty share. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       days: z.number().int().min(1).max(30).optional().describe('Window in days back from now. Default: 7'),
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const days = args.days ?? 7;
       const [artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '20' }),
@@ -601,7 +582,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_genre_bridge',
     'Genre-bridge playlist spec: picks spanning two genres with evidence + risk per pick. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       from_genre: z.string().min(1).optional().describe('Start genre (substring). Default: lifetime #1'),
       to_genre: z.string().min(1).optional().describe('Target genre (substring). Default: most novel adjacent genre'),
       track_count: z.number().int().min(2).max(30).optional().describe('Picks to list. Default: 8'),
@@ -609,7 +590,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const [genresRaw, tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/genres`, { range: 'lifetime', limit: '15' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '60' }),
@@ -667,12 +648,12 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_novelty_loyalty',
     'Loyalty-vs-novelty report: top-5 share, recent-outside-core share, and a verdict (comfort / balanced / explorer). Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       range: rangeSchema,
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const range = args.range ?? 'lifetime';
       const [artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range, limit: '20' }),
@@ -710,11 +691,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_listening_clock',
     'Listening-clock summary: day-part split (UTC), peak window, and a sequencing note for playlist order. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const streamsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' });
       if (args.response_format === 'json') {
         const raw = { streams: streamsRaw };
@@ -742,13 +723,13 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_revival_queue',
     'Revival queue builder: ordered re-listen queue from forgotten favorites + dormant-affinity artists, each with a search_tracks fallback line. Read-only, no auth.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       queue_size: z.number().int().min(1).max(30).optional().describe('Queue length. Default: 10'),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const [tracksRaw, artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '50' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '30' }),

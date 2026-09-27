@@ -22,16 +22,16 @@ import {
   resolveMaxResults,
   truncateItems,
   paginationInfo,
+  resolveStatsfmUserInput,
+  StatsfmUserInputFields,
 } from '../shaping.js';
 import { capFor } from '../chunk.js';
-import { resolveStatsfmUserId } from '../lib/statsfm-client.js';
 import { normalizeStreams } from './statsfm_taste.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import {
   DEAD_STATSFM_IDS,
   SPOTIFY_FALLBACK_GUIDANCE,
   statsfmGet,
-  statsfmUserSchema,
   DryRunDefault,
   picksFromTopTracks,
   picksFromStreams,
@@ -121,7 +121,7 @@ export function registerTastePlaylistTools(server: McpServer, client: SpotifyCli
       + 'Quota: 2 stats.fm GETs when previewing; + up to track_count /search GETs, 1 create and '
       + 'chunked adds when committing.',
     {
-      statsfm_user: statsfmUserSchema,
+      ...StatsfmUserInputFields,
       track_count: z.number().int().min(1).max(50).optional().describe('Tracks to list. Default: 20'),
       seed: z.enum(['core', 'recent', 'mixed']).optional().describe('Blend seed. Default: mixed'),
       dry_run: DryRunDefault,
@@ -135,7 +135,7 @@ export function registerTastePlaylistTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
+      const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const seed = args.seed ?? 'mixed';
       const n = args.track_count ?? 20;
       const dryRun = args.dry_run ?? true;

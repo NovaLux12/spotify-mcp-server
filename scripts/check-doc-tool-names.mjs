@@ -404,6 +404,14 @@ const documentedMetadata = new Set([
   // that separates "we never had that name" (unknown_param) from "we did, and
   // we took it away". It is a refusal shape, not a tool or a parameter.
   'retired_input',
+  // #1318: the `reason` a refusal carries when a stats.fm identity arrives
+  // under both spellings with different values. Same category as
+  // `retired_input` — a refusal shape a host parses, not a tool, a parameter
+  // or a metadata key. `kind` is already `validation`; this separates "you
+  // sent one field twice and it did not match" from any other validation
+  // failure, which is exactly the routing decision a host cannot make from
+  // prose alone.
+  'conflicting_input',
   // #896: `quota_hit_at_playlist` is the key a paged scan reports to say WHICH
   // playlist a mid-walk 429 stopped it at, so a caller can tell a partial
   // result from a complete one. It is a structuredContent key, not a tool and

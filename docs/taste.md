@@ -19,7 +19,7 @@ The eight taste-intelligence tools live under the `taste` toolset. The `statsfm_
 
 The right-hand column is a migration table, not a menu: those names were each a duplicate registration of the tool to their left and are no longer advertised (#908). `SPOTIFY_MCP_LEGACY_ALIASES=1` still dispatches them for a release.
 
-Network-backed taste tools require an explicit `statsfm_user` string. The local-only `statsfm_record_feedback` is the identity-free exception: it never contacts stats.fm, and it persists each verdict to a local sidecar at `~/.spotify-mcp/taste-feedback.json` rather than keeping it in memory. Where `range` is accepted, taste tools use the same three values as the endpoint tools — `weeks`, `months`, and `lifetime` — because they send the same stats.fm query parameter. User-scoped endpoint tools require `user_id`; see the [stats.fm tool reference](statsfm.md#ranges).
+Network-backed taste tools take the identity as `statsfm_user` (`user_id` is a deprecated alias until v2.2). The local-only `statsfm_record_feedback` is the identity-free exception: it never contacts stats.fm, and it persists each verdict to a local sidecar at `~/.spotify-mcp/taste-feedback.json` rather than keeping it in memory. Where `range` is accepted, taste tools use the same three values as the endpoint tools — `weeks`, `months`, and `lifetime` — because they send the same stats.fm query parameter. User-scoped endpoint tools take the same `statsfm_user` argument; see the [stats.fm tool reference](statsfm.md#ranges).
 
 `statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
 
@@ -32,7 +32,7 @@ Listener A has streamed for about three years and imported that history into sta
 ## Step 1 — inspect aggregate history
 
 ```json
-{ "tool": "statsfm_streams_stats", "user_id": "<your-statsfm-user-id>", "response_format": "json" }
+{ "tool": "statsfm_streams_stats", "statsfm_user": "<your-statsfm-user-id>", "response_format": "json" }
 ```
 
 The result contains aggregate stream totals, listening duration, and catalog cardinality; optionally bound it with Unix-millisecond `after` and `before` values. It does not report import coverage, stream gaps, or the newest stream. Use `statsfm_recaps` when you need a calendar-year view.
@@ -48,7 +48,7 @@ With `response_format: "json"`, the raw payloads appear under `topArtists`, `top
 ## Step 3 — find the momentum
 
 ```json
-{ "tool": "statsfm_top_genres", "user_id": "<your-statsfm-user-id>", "range": "months" }
+{ "tool": "statsfm_top_genres", "statsfm_user": "<your-statsfm-user-id>", "range": "months" }
 ```
 
 This month: alt-r&b climbing past indie folk, dream pop fading. Identity is indie folk; momentum is alt-r&b. The playlist should honor both — familiar core, current edge.

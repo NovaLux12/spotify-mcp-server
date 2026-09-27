@@ -3273,8 +3273,16 @@
         "label": "Second upstream: long-range listening history, cross-ran…"
       },
       {
-        "hash": "8515c523b806c0cb",
+        "hash": "ebae9c5747a78916",
         "label": "Identity. stats.fm has no OAuth: a user-scoped read need…"
+      },
+      {
+        "hash": "6d3d08a165520d9d",
+        "label": "Sending both spellings is accepted only when they agree …"
+      },
+      {
+        "hash": "77a75972223cae15",
+        "label": "On the wire the name is a path segment, not a parameter.…"
       },
       {
         "hash": "bd9c280ab78254de",
@@ -3313,7 +3321,7 @@
         "label": "Ten composites register in src/tools/tastecomposites.ts …"
       },
       {
-        "hash": "455ba684a6f018a0",
+        "hash": "cd55ea0bdba5d11b",
         "label": "statsfmuser is the identity argument on all eleven, and …"
       },
       {
@@ -3995,7 +4003,7 @@
         "label": "Cookbook — copy-paste agent recipes"
       },
       {
-        "hash": "4749428a7c7e6971",
+        "hash": "fc4e2dcbb2cccb88",
         "label": "Conventions: JSON tool args are shown inline; replace PL…"
       },
       {
@@ -4011,8 +4019,8 @@
         "label": "Risk: creates a new playlist and bulk-adds tracks to it;…"
       },
       {
-        "hash": "e0ddf0845a25e87a",
-        "label": "1. Call statsfmstreamsstats with userid: \"<your-statsfm-…"
+        "hash": "a03432232b111bb2",
+        "label": "1. Call statsfmstreamsstats with statsfmuser: \"<your-sta…"
       },
       {
         "hash": "c95b8f005a75b6e5",
@@ -4027,7 +4035,7 @@
         "label": "Risk: queues a track to your active device; preview firs…"
       },
       {
-        "hash": "a5ed32ad2f77ff55",
+        "hash": "e6774155db0491bb",
         "label": "1. Call whatsnew with since: \"last-check\" and dryrun: tr…"
       },
       {
@@ -4095,7 +4103,7 @@
         "label": "Risk: bulk-adds candidate tracks to a playlist; preview …"
       },
       {
-        "hash": "08de96a450dd44dc",
+        "hash": "01a1ae9cb32040d0",
         "label": "1. Call growplaylist with playlistid: \"PLAYLISTID\"; it f…"
       },
       {
@@ -4111,8 +4119,8 @@
         "label": "Risk: read-only — no Spotify or sidecar writes."
       },
       {
-        "hash": "b804055146e34e8b",
-        "label": "1. Call statsfmfriends for each explicit public userid, …"
+        "hash": "0457956b1626c291",
+        "label": "1. Call statsfmfriends for each explicit public statsfmu…"
       },
       {
         "hash": "bec49c778579b214",
@@ -4143,7 +4151,7 @@
         "label": "Risk: read-only — set SPOTIFYMCPREADONLY=1 so write-capa…"
       },
       {
-        "hash": "9837eff8a9776ecd",
+        "hash": "8723380e30dfc7c6",
         "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…"
       },
       {
@@ -5135,17 +5143,17 @@
   "retired": [
     {
       "file": "AGENTS.md",
-      "hash": "1d592fc01b13a615",
-      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
-      "date": "2026-09-27",
-      "reason": "added the check:tests-typecheck row to the Commands table for #1408, which changed the pinned paragraph"
-    },
-    {
-      "file": "AGENTS.md",
       "hash": "118767fe31aa6582",
       "label": "A retirement reason is a claim about a tree, and --prose…",
       "date": "2026-09-27",
       "reason": "Reworded in #1440 to document the contradiction evidence the behind-refusal carries; same rule, stated in full."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "1d592fc01b13a615",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-09-27",
+      "reason": "added the check:tests-typecheck row to the Commands table for #1408, which changed the pinned paragraph"
     },
     {
       "file": "AGENTS.md",
@@ -5212,6 +5220,20 @@
     },
     {
       "file": "docs/cookbook.md",
+      "hash": "08de96a450dd44dc",
+      "label": "1. Call growplaylist with playlistid: \"PLAYLISTID\"; it f…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "4749428a7c7e6971",
+      "label": "Conventions: JSON tool args are shown inline; replace PL…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
       "hash": "77c086349fb258ca",
       "label": "Conventions: JSON tool args are shown inline; replace PL…",
       "date": "2026-09-27",
@@ -5219,10 +5241,38 @@
     },
     {
       "file": "docs/cookbook.md",
+      "hash": "9837eff8a9776ecd",
+      "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "a5ed32ad2f77ff55",
+      "label": "1. Call whatsnew with since: \"last-check\" and dryrun: tr…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "b804055146e34e8b",
+      "label": "1. Call statsfmfriends for each explicit public userid, …",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
       "hash": "bc40b051aa9710e4",
       "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "e0ddf0845a25e87a",
+      "label": "1. Call statsfmstreamsstats with userid: \"<your-statsfm-…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
     },
     {
       "file": "README.md",
@@ -5275,6 +5325,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "455ba684a6f018a0",
+      "label": "statsfmuser is the identity argument on all eleven, and …",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -5293,6 +5350,13 @@
       "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "8515c523b806c0cb",
+      "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
     },
     {
       "file": "SPEC.md",
@@ -5373,8 +5437,8 @@
     }
   ],
   "provenance": {
-    "head": "fe9b9d9d48673cdc66c216e20be009cd938f1363",
-    "upstream": "4b2779a288038fcc1e28af69d0f0325f36d96bf9",
+    "head": "b661d75636bef5f9cc76923b86348af05fc415c5",
+    "upstream": "fba8797acef127bdcd9071f0187cab487a909275",
     "behind": false
   }
 }

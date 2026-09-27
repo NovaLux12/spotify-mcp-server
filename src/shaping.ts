@@ -15,6 +15,7 @@ import { runInToolContext } from './history.js';
 import { normalizeObjectSchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import { CHUNK_CAPS } from './chunk.js';
+import { resolveStatsfmUserId } from './lib/statsfm-client.js';
 
 /** Exact root input schema projected onto the production tools/list boundary. */
 export function finalInputSchema(input: unknown): Record<string, unknown> {
@@ -640,6 +641,138 @@ interface PlaylistInputResolution {
   deprecatedInputs: string[];
   /** One-line migration note, or null for a call with no deprecated input. */
   deprecationNote: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// stats.fm identity (#1318)
+// ---------------------------------------------------------------------------
+
+/** Canonical spelling of the stats.fm identity argument, for every tool. */
+export const STATSFM_USER_INPUT = 'statsfm_user';
+
+/**
+ * The legacy spelling, kept callable for one release and removed in the next
+ * minor (AGENTS.md §5).
+ *
+ * It is named ONCE here rather than at 43 call sites, because the whole point
+ * of the rename is that there is now one name to migrate to — a second list of
+ * "tools that still say user_id" is exactly the thing the rename removes.
+ */
+export const STATSFM_LEGACY_USER_INPUT = 'user_id';
+
+/**
+ * The release that removes `user_id` (#1318).
+ *
+ * Named once for the same reason `RETIRED_PLAYLIST_INPUTS_REMOVED_IN` is: the
+ * deprecation note, the SPEC table and the census must not be able to promise
+ * three different versions. The next minor from this branch removes it.
+ */
+export const STATSFM_USER_INPUT_REMOVED_IN = 'v2.2';
+
+/**
+ * A blank id is not an answer.
+ *
+ * `resolveStatsfmUserId` already declines to treat `""` or `"   "` as a
+ * supplied id, and this does the same before the alias comparison — otherwise a
+ * caller sending `user_id: ""` alongside a real `statsfm_user` would be told
+ * the two conflict, which is a claim about a value they never gave.
+ */
+function presentStatsfmUser(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return value.trim() === '' ? undefined : value;
+}
+
+/**
+ * The identity argument, declared identically by every user-scoped stats.fm
+ * tool (#1318).
+ *
+ * One declaration for all four modules, so the two spellings cannot drift apart
+ * again — a per-module copy is what produced the split this issue removes. Each
+ * tool spreads it into its own shape, which is why it is a raw shape record
+ * rather than a `z.object`: the SDK's `server.tool` takes the inner shape, and
+ * exporting a wrapper would force every call site to unwrap it again.
+ *
+ * Both fields are `.optional()`: `STATSFM_USER_ID` supplies the default, which
+ * is what gives up the SDK's own "Required" error. `resolveStatsfmUserId` (via
+ * {@link resolveStatsfmUserInput}) owes the caller a better message in its
+ * place, and it is not optional bookkeeping — it is the replacement.
+ *
+ * The legacy field is still advertised for one release, so its description
+ * says what it is rather than reading like a peer: a host choosing between two
+ * optional fields with similar names has to be told which one is current.
+ */
+export const StatsfmUserInputFields = {
+  [STATSFM_USER_INPUT]: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'stats.fm user id or customId (e.g. "martijn"). Defaults to STATSFM_USER_ID.',
+    ),
+  [STATSFM_LEGACY_USER_INPUT]: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      `Deprecated alias for ${STATSFM_USER_INPUT}; removed in ${STATSFM_USER_INPUT_REMOVED_IN}. `
+      + 'Send one spelling only — both with different values is an error.',
+    ),
+} as const;
+
+/**
+ * Resolve the stats.fm identity argument, accepting both spellings (#1318).
+ *
+ * Returns the SAME `PlaylistInputResolution` the playlist deprecation returns,
+ * so `withPlaylistInputMetadata` / `withPlaylistInputNote` carry the metadata
+ * for this deprecation without a second mechanism. That reuse is the reason
+ * this lives here and not in a statsfm-local helper: a caller parsing
+ * `deprecation_note` off any tool must not have to learn a new key.
+ *
+ * The conflict rule is AGENTS.md §5's, applied to a scalar:
+ *
+ *   canonical only            → no metadata
+ *   legacy only                → the value, plus a note naming the canonical field
+ *   both, agreeing            → the value, plus a note (the caller DID send a
+ *                               deprecated name, so the notice is owed even
+ *                               though the call is unambiguous)
+ *   both, disagreeing         → throw, naming BOTH fields, before any request
+ *   neither                   → `resolveStatsfmUserId` (STATSFM_USER_ID or throw)
+ *
+ * The disagreement test compares the values as normalized (trimmed), because
+ * that is the comparison that decides whether the call is ambiguous at all. A
+ * caller sending `"martijn"` and `" martijn "` has sent one answer twice, and
+ * refusing that would be a refusal a reader cannot act on.
+ */
+export function resolveStatsfmUserInput(
+  args: Readonly<Record<string, unknown>>,
+): PlaylistInputResolution & { userId: string } {
+  const canonical = presentStatsfmUser(args[STATSFM_USER_INPUT]);
+  const legacy = presentStatsfmUser(args[STATSFM_LEGACY_USER_INPUT]);
+
+  if (canonical !== undefined && legacy !== undefined) {
+    if (canonical.trim() !== legacy.trim()) {
+      throw new Error(
+        `conflicting stats.fm identity: ${STATSFM_USER_INPUT}="${canonical}" and `
+        + `${STATSFM_LEGACY_USER_INPUT}="${legacy}" are different; pass only ${STATSFM_USER_INPUT}.`,
+      );
+    }
+  }
+
+  const supplied = canonical ?? legacy;
+  const deprecatedInputs = legacy === undefined ? [] : [STATSFM_LEGACY_USER_INPUT];
+
+  return {
+    values: supplied === undefined ? [] : [supplied],
+    deprecatedInputs,
+    deprecationNote: deprecatedInputs.length === 0
+      ? null
+      : `${STATSFM_LEGACY_USER_INPUT} is deprecated; use ${STATSFM_USER_INPUT}. `
+        + `(${STATSFM_LEGACY_USER_INPUT} is removed in ${STATSFM_USER_INPUT_REMOVED_IN}.)`,
+    // The env fallback and the missing-identity throw stay with
+    // `resolveStatsfmUserId`, which owns that contract (#927). Re-implementing
+    // the precedence here would be a second copy that could drift.
+    userId: resolveStatsfmUserId(supplied, STATSFM_USER_INPUT),
+  };
 }
 
 function normalizeResolvedPlaylistValue(value: unknown): string {
