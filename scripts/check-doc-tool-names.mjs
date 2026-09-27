@@ -69,6 +69,12 @@ const parameterAllowlist = new Set([
   // their resource hints are degraded. A report describing its own output.
   'prompts_without_resources',
   'requests_planned', 'token_refresh', 'web_search',
+  // #703: the `history` doctor row's `fields` keys (#703 gives the mutation
+  // ledger a row cap, a retention window, and a purge command, so a host can
+  // read the row's numbers without parsing a sentence). A report describing
+  // its own output, same category as the `DoctorSurface` keys above.
+  'history_purge', 'history_rows', 'history_max_rows', 'history_retention_days',
+  'history_oldest_ts',
   // #677: the token-endpoint failure classes. RFC 6749 §5.2 error codes the
   // refresh response carries (`invalid_client`, `server_error`) and one
   // category name of this server's own classifier (`network_unreachable`).

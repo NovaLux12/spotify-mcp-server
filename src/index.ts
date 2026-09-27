@@ -239,6 +239,21 @@ async function startMcpServer(): Promise<void> {
   const { resolveHttpConfig } = await import('./http.js');
   const httpConfig = resolveHttpConfig(process.env);
 
+  // Mutation-ledger retention, applied at startup and not only on the next
+  // append (#703). A ledger nobody wrote to for a month still ages, and
+  // pruning on append alone would leave the oldest records on disk for exactly
+  // as long as the user did nothing — which is the case a retention window
+  // exists for. Every account's ledger is swept, since a profile the user
+  // stopped using is the one no append will ever reach. It is fire-and-
+  // forget and advisory: it cannot fail a startup, and a prune that cannot
+  // land is counted and reported by spotify_doctor like any other history
+  // write failure.
+  void import('./history.js')
+    .then(({ pruneHistoryLedgers }) => pruneHistoryLedgers(process.env))
+    .catch(() => {
+      /* retention is best-effort; the append path and doctor still report it */
+    });
+
   // Toolset segmentation (#95): SPOTIFY_MCP_TOOLSETS=playlists,player,... trims
   // the registered surface for clients that cap tool counts. Default: the
   // curated `core` surface (#889); `all` is the whole thing.
@@ -452,6 +467,7 @@ Usage:
   spotify-mcp logout [--dry-run]       Erase local stores; print how to revoke the
                         [--keep-backups]   Spotify token by hand (#704)
                         [--profile <name>]
+                        [--purge-data]
   spotify-mcp --help                   Show this message
   spotify-mcp --version                Print the version
 
@@ -476,6 +492,8 @@ Usage:
   logout erases every local store it can find and names each path it removed.
   Spotify publishes no token-revocation API, so the token must still be revoked
   at https://www.spotify.com/account/apps/ — logout prints that address.
+  --purge-data asks for that erasure explicitly and is accepted, but it changes
+  nothing: the stores go whether or not you pass it (#703).
 
 Environment:
 ${renderEnvHelp()}

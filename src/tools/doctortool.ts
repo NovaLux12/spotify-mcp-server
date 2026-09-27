@@ -63,6 +63,17 @@ import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
 
 type DoctorStatus = 'pass' | 'fail' | 'warn' | 'info';
 
+/**
+ * Machine-readable values a row carries beside its prose (#703).
+ *
+ * Optional, and used only where a number in `detail` is a MEASUREMENT a caller
+ * would otherwise have to parse out of a sentence. Prose is free to be
+ * reworded; a key here is a contract, so anything published this way is named
+ * once and derived from the same value the sentence was built from — the two
+ * halves cannot disagree because there is only one measurement.
+ */
+export type DoctorRowFields = Record<string, string | number>;
+
 export interface DoctorRow {
   /** Stable check id, e.g. 'token', 'scopes', 'premium', 'rate_limit', 'config'. */
   id: string;
@@ -75,6 +86,8 @@ export interface DoctorRow {
   phase?: string;
   /** Machine-readable diagnostic message for probe failures. */
   message?: string;
+  /** Keyed measurements this row reports, for a host that renders the report. */
+  fields?: DoctorRowFields;
 }
 
 export interface DoctorReport {
@@ -746,15 +759,28 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
 }
 
 /**
- * Mutation-history trail health (#591, grown in #905). The ledger is what
- * history_search and the undo family read, and a lost append is invisible in the
- * file itself — an unwritable directory leaves a trail that reads as complete.
- * So the resolved path and the write-failure count are reported here, and any
- * lost append is a `fail` row: the audit trail is not trustworthy.
+ * Mutation-history trail health (#591, grown in #905 and #703). The ledger is
+ * what history_search and the undo family read, and a lost append is invisible
+ * in the file itself — an unwritable directory leaves a trail that reads as
+ * complete. So the resolved path and the write-failure count are reported
+ * here, and any lost append is a `fail` row: the audit trail is not
+ * trustworthy.
  *
  * #905 added the size and the record count. Growth used to be unobservable: a
  * ledger sitting just under its rotation cap looked exactly like an empty one,
  * so a user could not tell that the oldest records were about to be dropped.
+ *
+ * #703 added the retention view. Bytes and a 500-record read cannot answer the
+ * question a user with an audit trail actually has — how many records are still
+ * here, how old the oldest one is, and what removes them — so the row now
+ * carries all four, and names the command that erases the ledger. The row cap
+ * and the window are reported as the CONFIGURED values rather than as an
+ * absolute: a user who has raised `SPOTIFY_MCP_HISTORY_MAX_ROWS` to keep a year
+ * of trail is told the number they set, not a ceiling they were promised.
+ *
+ * `fields` is the machine-readable half, for a host that renders the report
+ * rather than reading the prose: the same numbers, keyed, so nothing has to be
+ * parsed out of a sentence that is free to be reworded.
  */
 async function historyRow(tokenFile: string): Promise<DoctorRow> {
   const history = historyWriteStatus(process.env, tokenFile);
@@ -766,7 +792,19 @@ async function historyRow(tokenFile: string): Promise<DoctorRow> {
     };
   }
   const stats = await historyLedgerStats(process.env, tokenFile);
+  const retention = stats.retention_days > 0 ? `${stats.retention_days}d` : 'none';
   const growth = `${stats.bytes} B live + ${stats.archive_bytes} B archive of a ${stats.cap_bytes} B cap; ${stats.records}${stats.records_capped ? '+' : ''} record(s)`;
+  const held = `${stats.rows}/${stats.max_rows} row(s) retained, oldest record ${
+    stats.oldest_ts ?? 'undated'
+  }, retention ${retention}`;
+  const detail = `${growth}; ${held}; history_purge=spotify-mcp logout`;
+  const fields: DoctorRowFields = {
+    history_purge: 'spotify-mcp logout',
+    history_rows: stats.rows,
+    history_max_rows: stats.max_rows,
+    history_retention_days: stats.retention_days,
+  };
+  if (stats.oldest_ts !== undefined) fields.history_oldest_ts = stats.oldest_ts;
   if (history.failures > 0) {
     return {
       id: 'history',
@@ -774,14 +812,16 @@ async function historyRow(tokenFile: string): Promise<DoctorRow> {
       summary:
         `mutation history writes failed ${history.failures} time(s) — the trail at ` +
         `${history.path} is incomplete, so history_search and undo may be missing records`,
-      detail: `last_failure=${history.last_failure ?? 'unknown'}; ${growth}`,
+      detail: `last_failure=${history.last_failure ?? 'unknown'}; ${detail}`,
+      fields,
     };
   }
   return {
     id: 'history',
     status: 'pass',
     summary: `mutation history enabled — ${history.path} (0 write failures)`,
-    detail: growth,
+    detail,
+    fields,
   };
 }
 

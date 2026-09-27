@@ -458,6 +458,48 @@ describe('runLogout', () => {
     assert.match(output, /Local stores cleared/);
   });
 
+  it('erases the rotated mutation ledger as well as the live one (#703)', async () => {
+    // Rotation moves the live file to `mutations.jsonl.1` and starts a fresh
+    // one, so the archive is the OLDER half of the same audit trail. Erasing
+    // the live file alone would report a clean sweep and leave half the trail
+    // on disk — the outcome this command exists to prevent.
+    const box = sandbox();
+    const live = join(box.root, 'history', 'mutations.jsonl');
+    const archive = `${live}.1`;
+    await fs.mkdir(join(box.root, 'history'), { recursive: true });
+    await fs.writeFile(live, '{"ts":"2026-09-01T00:00:00.000Z","method":"PUT"}\n', { mode: 0o600 });
+    await fs.writeFile(archive, '{"ts":"2026-08-01T00:00:00.000Z","method":"PUT"}\n', { mode: 0o600 });
+
+    const { code, output } = await runIn([], box.env);
+    assert.equal(code, 0, output);
+
+    for (const p of [live, archive]) {
+      await assert.rejects(fs.lstat(p), /ENOENT/, `${p} should be gone`);
+    }
+    assert.ok(output.includes(live), `the report must name the erased ledger: ${output}`);
+    assert.ok(output.includes(archive), `the report must name the erased archive: ${output}`);
+  });
+
+  it('--purge-data is accepted, and erases the ledger by naming its path (#703)', async () => {
+    // The acceptance criteria for #703 name `spotify-mcp logout --purge-data`.
+    // Erasure was already unconditional, so the honest implementation of that
+    // flag is to accept it and say so — not to reject a spelling the criteria
+    // tell a reviewer to type, and not to invent a narrower mode.
+    const box = sandbox();
+    const live = join(box.root, 'history', 'mutations.jsonl');
+    const archive = `${live}.1`;
+    await fs.mkdir(join(box.root, 'history'), { recursive: true });
+    await fs.writeFile(live, '{"ts":"2026-09-01T00:00:00.000Z","method":"PUT"}\n', { mode: 0o600 });
+    await fs.writeFile(archive, '{"ts":"2026-08-01T00:00:00.000Z","method":"PUT"}\n', { mode: 0o600 });
+
+    const { code, output } = await runIn(['--purge-data'], box.env);
+    assert.equal(code, 0, output);
+    for (const p of [live, archive]) {
+      await assert.rejects(fs.lstat(p), /ENOENT/, `${p} should be gone`);
+    }
+    assert.ok(output.includes(live), `the report must name the erased ledger: ${output}`);
+  });
+
   it('leaves no readable refresh token behind', async () => {
     const box = sandbox();
     const tokenPath = join(box.root, 'tokens.json');
@@ -620,6 +662,17 @@ describe('parseLogoutArgs', () => {
 
   it('accepts --profile=<name>', () => {
     assert.equal(parseLogoutArgs(['--profile=work']).profile, 'work');
+  });
+
+  it('accepts --purge-data and records the ask (#703)', () => {
+    // Recorded, but not defaulted on: the options object stays honest about
+    // what the caller asked for, and erasure does not read this field.
+    assert.deepEqual(parseLogoutArgs(['--purge-data']), {
+      dryRun: false,
+      keepBackups: false,
+      purgeData: true,
+    });
+    assert.equal('purgeData' in parseLogoutArgs([]), false);
   });
 
   it('rejects --profile with no value', () => {
