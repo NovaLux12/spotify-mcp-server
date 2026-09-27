@@ -718,24 +718,6 @@ function visitJsonToolExamples(value, file, line, registry) {
 }
 
 /**
- * A recipe step is an executable claim, so both halves of it are checked: the
- * tool it names and the arguments it passes. #928 is the case that makes the
- * second half necessary — the cookbook said `whats_new` with
- * `since: "last Monday"`, a value the tool's own schema rejects, so the step
- * failed validation instead of returning a result.
- *
- * The trigger is an imperative verb rather than the literal word "Call": the
- * docs write `preview <tool> with ...` for the write half of a recipe, and a
- * matcher that only saw "Call" left every preview step unchecked — a bogus
- * key in a preview step passed the gate silently.
- *
- * Values are compared only where the schema constrains them (enum, const,
- * pattern). A free-form string such as `playlist_id: "PLAYLIST_ID"` is a
- * placeholder the schema cannot falsify, and a gate that failed on it would
- * be a gate nobody trusts.
- */
-
-/**
  * A schema node is a union when it lists `anyOf`/`oneOf`; each branch is
  * checked and the value is accepted if any branch accepts it. `whats_new`'s
  * `since` is exactly this shape (`const: 'last-check'` OR an ISO-date
@@ -787,6 +769,18 @@ function validateArgumentValues(file, line, tool, entries, registry) {
   }
 }
 
+/**
+ * A recipe step is an executable claim, so both halves of it are checked: the
+ * tool it names and the arguments it passes. #928 is the case that makes the
+ * second half necessary — the cookbook said `whats_new` with
+ * `since: "last Monday"`, a value the tool's own schema rejects, so the step
+ * failed validation instead of returning a result.
+ *
+ * The trigger is an imperative verb rather than the literal word "Call": the
+ * docs write `preview <tool> with ...` for the write half of a recipe, and a
+ * matcher that only saw "Call" left every preview step unchecked — a bogus
+ * key in a preview step passed the gate silently.
+ */
 function checkCallRecipes(file, source, registry = census) {
   const pattern = /\b([A-Za-z]+)\s+`?([a-z][a-z0-9_]*)`?\s+(?:with|using)\s+([^.;\n]+)/g;
   for (const match of source.matchAll(pattern)) {
