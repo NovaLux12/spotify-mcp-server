@@ -185,16 +185,59 @@ describe('#1408 — the tests/ typecheck budget holds the real tree', () => {
       'number',
       'the baseline has no total, so there is nothing to compare against',
     );
-    assert.ok(baseline.total > 0, 'a baseline of 0 means the gate is not measuring anything');
-    assert.ok(
-      Object.keys(baseline.byFile).length > 0,
-      'the baseline lists no files, so a new broken file would not be caught',
+    // The tree now measures zero, so the baseline is zero and lists no files.
+    // That is the STRICTEST state this gate has a shape for, not a blind one:
+    // `total: 0` with an empty `byFile` means every diagnostic and every file
+    // is an increase, so nothing passes. The older wording here read a zero
+    // baseline as "the gate is not measuring anything", which is backwards —
+    // it was written when the baseline was a slack allowance, and slack is
+    // exactly what a zero removes.
+    //
+    // The property that actually keeps this honest is not the baseline's size
+    // but that the gate FIRES, and that is proved below against a scratch
+    // project carrying a real error.
+    assert.equal(
+      typeof baseline.total,
+      'number',
+      'the baseline has no total, so there is nothing to compare against',
     );
+    assert.ok(baseline.total >= 0, 'a negative total is not a measurement');
     // Every baselined file must be under tests/ — this project covers the test
     // tree. A baseline entry elsewhere would mean the gate had been pointed at
     // something else.
     const outside = Object.keys(baseline.byFile).filter((file) => !file.startsWith('tests/'));
     assert.deepEqual(outside, [], `the baseline covers files outside tests/: ${outside.join(', ')}`);
+  });
+
+  it('a zero baseline still fires on a real type error, rather than allowing everything', () => {
+    // The direct answer to "a baseline of 0 measures nothing". The same file
+    // the real project is measured with, a scratch baseline that allows one
+    // error in one file, and then that one error doubled — under a zero
+    // allowance the very first diagnostic has to be a regression.
+    const dir = mkdtempSync(join(tmpdir(), 'typecheck-zero-'));
+    try {
+      const probe = join(dir, 'zero');
+      mkdirSync(probe, { recursive: true });
+      const project = join(probe, 'tsconfig.json');
+      writeFileSync(
+        project,
+        JSON.stringify({
+          compilerOptions: { noEmit: true, strict: true, types: [], rootDir: '.', target: 'ES2022' },
+          include: ['*.ts'],
+        }),
+      );
+      writeFileSync(join(probe, 'bad.ts'), 'export const n: number = "s";\n');
+      const key = relative(ROOT, join(probe, 'bad.ts'));
+      const baseline = join(dir, 'baseline.json');
+      writeFileSync(baseline, JSON.stringify({ total: 0, byFile: {} }));
+
+      const { code, stderr } = runGate(['--project', project, '--baseline', baseline]);
+      assert.notEqual(code, 0, 'a zero baseline accepted a tree carrying a real type error');
+      assert.match(stderr, /budget exceeded/);
+      assert.ok(stderr.includes(key), `the failure must name the offending file:\n${stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('exits zero on the real tree, because the real tree is within budget', () => {
