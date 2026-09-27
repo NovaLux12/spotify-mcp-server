@@ -28,6 +28,9 @@ import {
   UnexpectedCallError,
   UnexpectedArgumentError,
 } from './helpers/stub-client.js';
+// #1274: a store default resolving through homedir() must never land in the
+// real $HOME. Imported for its side effect, as every test file must.
+import './helpers/hermetic.js';
 import { initConfig } from '../src/config.js';
 import { SpotifyClient } from '../src/client.js';
 
