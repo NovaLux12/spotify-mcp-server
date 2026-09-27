@@ -203,7 +203,25 @@ export async function resolveOutputPath(
   return { dir: dirname(real), file: real };
 }
 
-/** Write a confined export file: mode 0600, never through a symlink. */
+/**
+ * Write a confined export file: mode 0600, never through a symlink.
+ *
+ * The `0o600` argument to `open()` is NOT the enforcement (#1560). It applies
+ * only when the call CREATES the file; on an existing path the kernel ignores
+ * it, and `O_TRUNC` is in the flags precisely to say an existing file is
+ * expected. A target the user had `chmod`'d, an older build, or another tool
+ * had left at 0644 therefore kept 0644 while the export wrote private content
+ * into it — group- and world-readable. `handle.chmod()` re-asserts the mode on
+ * the inode we already hold, before a byte is written, so the file is never
+ * briefly at the wider mode with the payload in it.
+ *
+ * The chmod goes through the HANDLE, not the path, for the same reason
+ * `O_NOFOLLOW` is there: a second path-resolved `chmod` after the open would
+ * re-open the symlink-swap window the open just closed. `auth.ts`'s
+ * post-rename `chmod(tokenFile, 0o600)` is the weaker shape — it runs after the
+ * content lands, so its window is measured in "wrongly readable payload",
+ * which is the one this function is documented not to have.
+ */
 export async function writeOutputFile(file: string, data: string): Promise<void> {
   const handle = await open(
     file,
@@ -211,6 +229,7 @@ export async function writeOutputFile(file: string, data: string): Promise<void>
     0o600,
   );
   try {
+    await handle.chmod(0o600);
     await handle.writeFile(data, 'utf8');
   } finally {
     await handle.close();
