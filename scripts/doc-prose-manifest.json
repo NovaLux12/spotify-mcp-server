@@ -1705,6 +1705,46 @@
         "label": "/artists/{id}/top-tracks status (#901). The two platform…"
       },
       {
+        "hash": "6d82d0d6ca168752",
+        "label": "4.0.5 Matching vocabulary: duplicates and artist credits…"
+      },
+      {
+        "hash": "bfe8de4f5114a49b",
+        "label": "Sibling playlist tools that agents treat as interchangea…"
+      },
+      {
+        "hash": "b4ebdbfbe59b03db",
+        "label": "matchby — when two playlist items are the same. One para…"
+      },
+      {
+        "hash": "e6495ce7652cb99a",
+        "label": "| matchby | Rule | Catches | |---|---|---| | uri (defaul…"
+      },
+      {
+        "hash": "71bb5409f00f0e9a",
+        "label": "Two consequences are deliberate. nameartist sorts the ar…"
+      },
+      {
+        "hash": "807872357735e5e1",
+        "label": "Every duplicate tool echoes the rule it applied as match…"
+      },
+      {
+        "hash": "203ed1caa42fd787",
+        "label": "removeduplicateplaylistitems and cleanallplaylists also …"
+      },
+      {
+        "hash": "4d4a9170c0e111ae",
+        "label": "includefeatured — whether a featured credit counts. One …"
+      },
+      {
+        "hash": "914a5f8f3a9fc041",
+        "label": "How an artist reference is matched. A reference is resol…"
+      },
+      {
+        "hash": "ab3820e6c217fced",
+        "label": "The parity test that holds all of this together is tests…"
+      },
+      {
         "hash": "b964ac04f2e6f6d8",
         "label": "5. Tools"
       },
@@ -2929,16 +2969,20 @@
         "label": "Returns: confirmation with the total replaced count, req…"
       },
       {
-        "hash": "e67f208a8aa8fa17",
+        "hash": "2652aa45cf048390",
         "label": "findduplicatesinplaylist Find duplicate tracks in a play…"
       },
       {
-        "hash": "1d0730021d0c4a24",
-        "label": "Inputs: playlistid (string, required), shared response f…"
+        "hash": "e0e18b5a752a109b",
+        "label": "Inputs: playlistid (string, required), matchby (see [§4.…"
       },
       {
-        "hash": "e3ad71b5cfba881d",
-        "label": "Returns: per group: track label, occurrence count and ki…"
+        "hash": "2c71e9a28e3e418e",
+        "label": "Returns: per group: track label, occurrence count, the r…"
+      },
+      {
+        "hash": "b6df2ef19ac6275a",
+        "label": "Before #885 this tool counted an exact-URI group and a r…"
       },
       {
         "hash": "c3f4977a96a501f6",
@@ -3375,6 +3419,30 @@
       {
         "hash": "c1b1954710f6689b",
         "label": "Requirements are either-of where the scope gate is eithe…"
+      },
+      {
+        "hash": "a4a45cec6b253364",
+        "label": "5.14 Spotify reference inspection (#915)"
+      },
+      {
+        "hash": "771122732d666ebd",
+        "label": "Six local, zero-network tools that parse and canonicalis…"
+      },
+      {
+        "hash": "bb27108730a123c2",
+        "label": "| Tool | Purpose | |---|---| | parsespotifyuri | one ref…"
+      },
+      {
+        "hash": "cee28acc9c1fafed",
+        "label": "parsespotifyuri is the tool an agent reaches for to ask …"
+      },
+      {
+        "hash": "65a9b00f653c1b69",
+        "label": "The policy, stated once. A reference is a bare catalog i…"
+      },
+      {
+        "hash": "ab62052951deebeb",
+        "label": "The other spotify:-shaped patterns in src/ are not a sec…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -4884,6 +4952,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1d0730021d0c4a24",
+      "label": "Inputs: playlistid (string, required), shared response f…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "7b610616c97ccf11",
       "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …",
       "date": "2026-09-27",
@@ -4902,6 +4977,20 @@
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "e3ad71b5cfba881d",
+      "label": "Returns: per group: track label, occurrence count and ki…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "e67f208a8aa8fa17",
+      "label": "findduplicatesinplaylist Find duplicate tracks in a play…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
     }
   ]
 }
