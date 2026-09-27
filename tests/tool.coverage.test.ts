@@ -114,9 +114,9 @@ const KNOWN_UNTESTED: readonly {
     reason:
       'swarm3 discovery composites are registered wholesale and have no per-tool test file yet (epic #575). Read-only report tools, so the risk is a wrong field rather than a bad write.',
     tools: [
-      'artist_album_completeness', 'artist_catalog_stats', 'artist_collaboration_network',
+      'artist_album_completeness', 'artist_collaboration_network',
       'artist_discography_gaps', 'artist_era_sampler', 'artist_top_vs_saved', 'decade_sampler_plan',
-      'era_distribution_report', 'lyric_snippet_search', 'year_explorer',
+      'era_distribution_report', 'year_explorer',
     ],
   },
   {

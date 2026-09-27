@@ -629,7 +629,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       if (hasUnavailable(p.items)) {
         throw new Error(
           `Playlist "${p.name ?? p.id}" contains unavailable items — a full rewrite would drop them. ` +
-            `Remove them first (e.g. playlist_strip_episodes / keep_only style tools).`,
+            `Remove them first (e.g. playlist_strip_episodes / playlist_keep_only style tools).`,
         );
       }
       const backupFile = await backupItemsBeforeWrite(p.id, p.name, p.items);

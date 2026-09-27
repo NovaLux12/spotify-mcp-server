@@ -852,6 +852,63 @@ assertions derived from the same source as the code under test, are decoration.
 The fix pattern for both: make the test exercise the comparison, then revert
 the source change and confirm the test actually fails.
 
+**A guard's scope is part of its contract, and widening it is a measurement
+before it is a fix.** `scripts/check-error-param-names.mjs` walks `src/tools`
+and nothing else, so a message naming a parameter that does not exist could sit
+in `shaping.ts`, `result.ts` or `accounts.ts` with the gate green — the modules
+that own the shared error paths. Widening the walk turned the gate **red**, and
+that is the part worth reading: the fix was never "change a glob". Measured on
+the tree the guard was written against, the findings ran 15 → 11 → 4 → 0, one
+decision at a time — four were the shipped CLI's own flags, seven were the
+guard's own vocabulary being incomplete (`playlist_a` and `playlist_b` reach
+five tools by spread from `PlaylistPairFields`; `subject_type` is a real
+parameter of a tool registered through `registerCanonicalTool`, a registration
+form the original scanner never matched), three were not parameter claims at
+all, and one
+was a genuine bad message. Widening the scope *and* fixing the vocabulary *and*
+fixing the one bad message were three separate pieces of work that a scope-only
+patch would have hidden. Assert the widened rule over the whole tree, or it is
+decoration — the same failure as the test that cannot fail, one level up. The
+number belongs to a measurement, so re-derive it before quoting it: an earlier
+version of this paragraph said "ten findings" and could not be reproduced from
+any state of the tree, which is the whole failure in miniature.
+
+**A falsifier you derived yourself is the only proof a guard is wired.** The
+original defect was a `--profile` in a `+`-joined message; the scanner read only
+the first literal. Reintroducing that exact defect into `src/accounts.ts` left
+the gate green, which is how the fourth defect surfaced. A green run on a test
+you did not break is not evidence.
+
+**An exemption is a guard too, and it fails on the module that matters most.**
+The `--flag` exemption for the shipped CLI was "the module declares a function
+whose parameter list names `argv`", which is true of `auth.ts` and `logout.ts`
+and false of `src/index.ts` — the dispatch, which reads `process.argv[2]` at top
+level and declares no such function. The first honest `--flag` remediation at
+the dispatch point would have been reported as bad advice, in the one file where
+it is good advice. A list of exempt files would have been wrong in the other
+direction: it needs a human to remember the next entrypoint, and it cannot be
+checked. Ask instead what the exemption is *for* — here, that a `--name` in a
+module reading the process command line names a flag the process will parse —
+and test the property the exemption is for, on the file that exercises it. The
+same file also carries `--help` prose today, so the gap was latent rather than
+firing, and latent is the state this is easiest to leave in.
+
+**A vocabulary a negative check judges against has to be the thing being asked
+about.** The module rule asks whether a named parameter is real *anywhere* in
+the registry, and the first version answered a looser question by unioning in
+every zod-object key and every const-object key in `src/` — 1,319 names of which
+982 were not parameters at all. `email` and `scopes` are fields of an
+account record and of an OAuth token; a message misnaming a parameter for
+either cleared the rule with no finding, which is the exact defect the rule
+exists to catch. "Over-approximating is the right direction for a NEGATIVE
+check" is true of a *type* check and false here: a wider union makes the check
+unable to convict, and a guard that cannot convict is not a guard. Narrowing it
+to registration-derived keys cost two real parameters, `playlist_a` and
+`playlist_b`, which reach five tools by spread — the fix was to follow the
+spread, which is bounded because a field object only counts when a registration
+actually spreads it, not to widen the set back. Measure how many names the
+union adds and name a few of them; that measurement is the whole argument.
+
 **A failing test tells you the truth — read the assertion, not the summary.**
 The failure line names the value that broke and where. Skimming the test name
 or the `AssertionError` headline and guessing at the cause is how a
