@@ -35,6 +35,23 @@ import { registerTasteCompositeTools } from '../src/tools/taste_composites.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
+/**
+ * Tools whose `range` is resolved by this server rather than forwarded (#730).
+ *
+ * Every other `range` in this surface is a pass-through to the stats.fm `range`
+ * query parameter, which is the premise this whole file rests on: the enum IS
+ * the upstream contract, because there is no mapping layer to absorb a wrong
+ * value. `statsfm_recent_streams` is now the single exception — its buckets
+ * (`today`/`week`/`month`/`year`/`lifetime`) are calendar windows applied to the
+ * rows in hand, because `/users/{id}/streams/recent` ignores the window
+ * parameters it is given. Its vocabulary is therefore checked from the other
+ * side in `statsfm-stream-window.test.ts`, which pins that each list rejects
+ * the other's members. Excluding it here is what keeps the rule in this file
+ * true: it is a statement about tools that forward to upstream, and diluting
+ * it with a local vocabulary would have made it true of nothing.
+ */
+const LOCAL_RANGE_TOOLS = new Set(['statsfm_recent_streams']);
+
 /** Verified 200 upstream on 2026-09-26. */
 const ACCEPTED = ['weeks', 'months', 'lifetime'];
 /** Verified 400 `invalid range` upstream on 2026-09-26. */
@@ -66,8 +83,9 @@ function collectRangeTools(): RegisteredTool[] {
   registerStatsfmTools(asServer, {} as Parameters<typeof registerStatsfmTools>[1]);
   registerStatsfmTasteTools(asServer, {} as Parameters<typeof registerStatsfmTasteTools>[1]);
   registerTasteCompositeTools(asServer, {} as Parameters<typeof registerTasteCompositeTools>[1]);
-  return registered.filter((tool) => tool.schema.range);
+  return registered.filter((tool) => tool.schema.range && !LOCAL_RANGE_TOOLS.has(tool.name));
 }
+
 
 const RANGE_TOOLS = collectRangeTools();
 
@@ -159,13 +177,32 @@ test('the documented range values are all values the enum accepts', () => {
   // `year` is excluded from the prose candidates: `statsfm_recaps` really does
   // take a calendar `year`, so a correct sentence about that parameter must not
   // be read as a claim about the range enum.
+  //
+  // #730 scoped this scan. The premise is that a `range` literal in these docs
+  // means the UPSTREAM enum, and that stopped being true wherever the prose
+  // documents `statsfm_recent_streams`: its buckets (`today`/`year`) are
+  // correct there and `weeks` is not, in both the cheat-sheet row and the
+  // "Stream windows" section. So a line is skipped when it names a tool that
+  // does NOT forward `range` upstream — keyed on the tool name rather than on
+  // wording, because a wording filter would have let a genuine mistake through
+  // anywhere the prose did not happen to say "rejected", which is the failure
+  // this test exists to catch. The local vocabulary is checked from the other
+  // side in `statsfm-stream-window.test.ts`.
   const candidates = new Set([
     ...ACCEPTED, ...REJECTED.filter((value) => value !== 'year'),
     'day', 'days', '6month', 'all_time', 'alltime',
   ]);
   for (const file of ['docs/statsfm.md', 'docs/taste.md']) {
     const lines = readFileSync(path.join(ROOT, file), 'utf8').split('\n');
+    // The section explaining the split, in the same terms the rest of the file
+    // uses. Its heading itself carries bucket literals, so it is skipped too.
+    const localSection = /###\s+Stream windows/;
+    let inLocalSection = false;
     for (const [index, line] of lines.entries()) {
+      if (localSection.test(line)) inLocalSection = true;
+      else if (inLocalSection && /^##\s/.test(line)) inLocalSection = false;
+      if (inLocalSection) continue;
+      if (line.includes('statsfm_recent_streams')) continue;
       if (!/\brange\b/i.test(line)) continue;
       // A line saying a value is rejected is explaining, not documenting it.
       if (/\b400\b|\brejects?\b|rejected\b|not\s+accepted|\binvalid\b/i.test(line)) continue;
