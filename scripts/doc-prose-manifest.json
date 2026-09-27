@@ -1877,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "d31c370da5da0cbe",
+        "hash": "6a3623334baae931",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1889,8 +1889,12 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "46c5ce02d1cbde05",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
+      },
+      {
+        "hash": "d6f6074447d29264",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -3269,7 +3273,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "44d504557c677700",
+        "hash": "1be10212b9eb890c",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -3587,6 +3591,46 @@
       {
         "hash": "ab62052951deebeb",
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
+      },
+      {
+        "hash": "01c495efa531b454",
+        "label": "5.15 Mood expansion (expandmoodtoqueries, #598)"
+      },
+      {
+        "hash": "4d56cdccd07154a9",
+        "label": "One tool in the moodexpand module. It is alwaysActive (r…"
+      },
+      {
+        "hash": "f014981c3c143b6a",
+        "label": "Inputs: mood (string, required, ≥1 char — free text, e.g…"
+      },
+      {
+        "hash": "febc8be672c9ea3c",
+        "label": "Two paths, one output shape. The tool returns { mood, so…"
+      },
+      {
+        "hash": "1acdd257c113ca3d",
+        "label": "| source | When | model / attempts | |---|---|---| | \"sa…"
+      },
+      {
+        "hash": "4f1eba0856af7a2c",
+        "label": "Why the gate is this server's own. In SDK 1.30 Server.cr…"
+      },
+      {
+        "hash": "6931562532ce61fe",
+        "label": "The model contract. One createMessage per attempt, maxTo…"
+      },
+      {
+        "hash": "eada901b8aea5acd",
+        "label": "Failures are structured, and never a guess. An unreadabl…"
+      },
+      {
+        "hash": "c9c35701a78635ce",
+        "label": "The static map is a fallback, not a stand-in. MOODEXPANS…"
+      },
+      {
+        "hash": "58b6a5c1df2a3e34",
+        "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -5342,13 +5386,6 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "1be10212b9eb890c",
-      "label": "Returns: display name, user ID, URI, profile image URL, …",
-      "date": "2026-09-27",
-      "reason": "reworded the get_user_profile Returns paragraph: the 403 it describes no longer prescribes a grandfathered app, it records the older-registration question as unverified (#1468)"
-    },
-    {
-      "file": "SPEC.md",
       "hash": "1d0730021d0c4a24",
       "label": "Inputs: playlistid (string, required), shared response f…",
       "date": "2026-09-27",
@@ -5367,6 +5404,13 @@
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
       "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "46c5ce02d1cbde05",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
     },
     {
       "file": "SPEC.md",
@@ -5433,6 +5477,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "d31c370da5da0cbe",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5482,8 +5533,8 @@
     }
   ],
   "provenance": {
-    "head": "e984677e085b2eca4cd0974dbc4747145843d4b1",
-    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
+    "head": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
+    "upstream": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
     "behind": false
   }
 }

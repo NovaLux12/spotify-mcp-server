@@ -30,6 +30,11 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  // #895: json mode and structuredContent share one row cap.
+  capRowSections,
+  emitOnce,
+  type SectionCap,
+  // #1318/#1449: the one stats.fm user-identity argument and its deprecated alias.
   resolveStatsfmUserInput,
   StatsfmUserInputFields,
 } from '../shaping.js';
@@ -240,6 +245,76 @@ export function textOut(lines: string[], structured?: Record<string, unknown>): 
   return out;
 }
 
+/**
+ * The ONE json-mode shape for the ten taste_* composites (#895).
+ *
+ * Every upstream payload in this module is a bare collection, so every key is
+ * a row array and every key is capped. `capRowSections` leaves a key alone if
+ * the upstream sent something that is not an array, which is the point: a
+ * malformed body is reported as unreadable rather than rewritten as `[]`.
+ *
+ * The text block is a bounded summary, not a second copy of the payload —
+ * these branches used to stringify the same object into both channels, so a
+ * 124 KB `recentStreams` page was charged twice per call.
+ */
+function jsonUpstream(raw: Record<string, unknown>, cap: number, title: string): ToolOut {
+  // The upstream collections arrive mostly as `{ items: [...] }` wrappers, and
+  // `capRowSections` caps by top-level key. Handing it the wrappers therefore
+  // reported every collection as `unreadable` and returned zero rows — the #804
+  // discipline applied in the wrong place. So the arrays are lifted into a flat
+  // payload, capped in ONE call, and written back into the shape each key
+  // arrived in. The section keys stay the wrapper names (`topTracks`), because
+  // that is the field the caller sees, not the internal `items`.
+  //
+  // `wrapped` records which keys arrived as wrappers, because the writeback has
+  // to put each capped value back where the caller will look for it (#1480). A
+  // BARE array has no `.items`, so it is lifted unchanged and capped at the top
+  // level like any other array — and it must be capped back onto ITSELF.
+  const flat: Record<string, unknown> = {};
+  const wrapped = new Set<string>();
+  for (const [key, value] of Object.entries(raw)) {
+    const items = (value as { items?: unknown } | null | undefined)?.items;
+    // A wrapper with no array `items` is passed through whole, so the helper
+    // reports it `unreadable` instead of this function dropping it silently.
+    flat[key] = Array.isArray(items) ? items : value;
+    if (Array.isArray(items)) wrapped.add(key);
+  }
+  const capped = capRowSections<Record<string, unknown>>(flat, Object.keys(flat), cap);
+  const sections = capped.sections as Record<string, SectionCap>;
+  const shaped: Record<string, unknown> = { ...raw };
+  for (const key of Object.keys(flat)) {
+    // A key the helper could not read is passed through EXACTLY as the handler
+    // produced it — never coerced to `[]` (#804). That discipline is unchanged
+    // by #1480 and is the reason the two shapes below are the only two.
+    if (sections[key]?.unreadable) continue;
+    if (wrapped.has(key)) {
+      // The wrapper keeps its own shape (and any sibling fields it carried):
+      // only its `items` is the row array, so only `items` is replaced.
+      shaped[key] = { ...(shaped[key] as Record<string, unknown>), items: capped[key] };
+    } else {
+      // The BARE ARRAY is the payload at this key, so the capped array replaces
+      // it outright. This branch used to assign `.items` onto the array, which
+      // sets a non-index property that `JSON.stringify` DROPS: the cap was
+      // computed, published in `sections`, and then discarded — so the tool
+      // claimed `{"returned":10,"total":500,"truncated":true}` while shipping
+      // all 500 rows (#1480). `asItems` in this file and in `statsfm_taste.ts`
+      // both accept a bare array, so this is a shape the module really receives.
+      shaped[key] = capped[key];
+    }
+  }
+  shaped.sections = sections;
+  shaped.truncated = capped.truncated;
+  return emitOnce(shaped, (payload) => {
+    const sections = payload.sections as Record<string, SectionCap> | undefined;
+    if (!sections) return `${title} — full payload in structuredContent.`;
+    const parts = Object.entries(sections).map(([key, section]) =>
+      section.unreadable
+        ? `${key} (unreadable)`
+        : `${key}: ${section.returned}/${section.total}`);
+    return `${title} — full payload in structuredContent:\nSections: ${parts.join(', ')}.`;
+  });
+}
+
 function ymd(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
@@ -259,6 +334,9 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     {
       ...StatsfmUserInputFields,
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('UTC date YYYY-MM-DD. Default: yesterday'),
+      // #895: this tool publishes raw upstream collections in json mode, so the
+      // cap needs to be a control the caller can raise, not a fixed constant.
+      max_results: MaxResults,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -270,8 +348,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topArtists: artistsRaw, topTracks: tracksRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topArtists: artistsRaw, topTracks: tracksRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const streams = normalizeStreams(streamsRaw);
       const dayStreams = streams.filter((s) => ymd(s.playedAtMs) === day);
@@ -325,8 +406,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topTracks: tracksRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topTracks: tracksRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const streams = normalizeStreams(streamsRaw);
       const months = summarizeMonths(streams);
@@ -388,8 +472,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topTracks: topRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topTracks: topRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const top = normalizeTopList(topRaw);
       const rawTops = asItems(topRaw);
@@ -421,7 +508,10 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       ];
       if (missing.length > 0) out.push(`missing[]: ${missing.join(' · ')}`);
       if (shaped.footer) out.push(`(${shaped.footer})`);
-      const pagination = paginationInfo({ total: picks.length, offset: 0, limit: null, returned: picks.length });
+      // #895: `returned` is the capped count, not `picks.length` — the array
+      // beside it is `shaped.items`, so reporting the pre-cap number here was
+      // the payload claiming rows it had not sent.
+      const pagination = paginationInfo({ total: picks.length, offset: 0, limit: null, returned: shaped.items.length });
       return {
         content: [{ type: 'text', text: out.join('\n') }],
         structuredContent: listStructuredContent(shaped.items, pagination, { missing, scannedTop: top.length }),
@@ -444,8 +534,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       const range = args.range ?? 'lifetime';
       const artistsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range, limit: '50' });
       if (args.response_format === 'json') {
-        const raw = { topArtists: artistsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topArtists: artistsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const artists = normalizeTopList(artistsRaw);
       if (artists.length === 0) return textOut([`No artist data for "${u}" (range ${range}).`]);
@@ -488,8 +581,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topTracks: topRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topTracks: topRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const top = normalizeTopList(topRaw);
       const rawTops = asItems(topRaw);
@@ -526,6 +622,9 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     {
       ...StatsfmUserInputFields,
       days: z.number().int().min(1).max(30).optional().describe('Window in days back from now. Default: 7'),
+      // #895: this tool publishes raw upstream collections in json mode, so the
+      // cap needs to be a control the caller can raise, not a fixed constant.
+      max_results: MaxResults,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -536,8 +635,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topArtists: artistsRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topArtists: artistsRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const cutoff = Date.now() - days * 86_400_000;
       const window = normalizeStreams(streamsRaw).filter((s) => s.playedAtMs >= cutoff);
@@ -597,8 +699,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '200' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topGenres: genresRaw, topTracks: tracksRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topGenres: genresRaw, topTracks: tracksRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const genres = normalizeTopList(genresRaw);
       if (genres.length === 0) return textOut([`No genre data for "${u}".`]);
@@ -650,6 +755,9 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     {
       ...StatsfmUserInputFields,
       range: rangeSchema,
+      // #895: this tool publishes raw upstream collections in json mode, so the
+      // cap needs to be a control the caller can raise, not a fixed constant.
+      max_results: MaxResults,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -660,8 +768,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '200' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topArtists: artistsRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topArtists: artistsRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const artists = normalizeTopList(artistsRaw);
       const streams = normalizeStreams(streamsRaw);
@@ -692,14 +803,20 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'Listening-clock summary: day-part split (UTC), peak window, and a sequencing note for playlist order. Read-only, no auth.',
     {
       ...StatsfmUserInputFields,
+      // #895: this tool publishes raw upstream collections in json mode, so the
+      // cap needs to be a control the caller can raise, not a fixed constant.
+      max_results: MaxResults,
       response_format: ResponseFormat,
     },
     async (args) => {
       const u = resolveStatsfmUserInput(args as Record<string, unknown>).userId;
       const streamsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' });
       if (args.response_format === 'json') {
-        const raw = { streams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ streams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const streams = normalizeStreams(streamsRaw);
       if (streams.length === 0) return textOut([`No dated streams for "${u}" — no clock to summarize.`]);
@@ -736,8 +853,11 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
       ]);
       if (args.response_format === 'json') {
-        const raw = { topTracks: tracksRaw, topArtists: artistsRaw, recentStreams: streamsRaw };
-        return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: { ...raw } };
+        // #895: this branch shipped the raw upstream page (up to 500 streams,
+        // ~124 KB measured) into BOTH channels, twice, with no cap, while every
+        // prose sibling of it capped. One cap over whatever collections the
+        // payload carries, emitted once.
+        return jsonUpstream({ topTracks: tracksRaw, topArtists: artistsRaw, recentStreams: streamsRaw }, resolveMaxResults(args.max_results), 'stats.fm composite');
       }
       const tops = normalizeTopList(tracksRaw);
       const rawTops = asItems(tracksRaw);
@@ -778,7 +898,10 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       ];
       if (missing.length > 0) out.push(`missing[]: ${missing.join(' · ')}`);
       if (shaped.footer) out.push(`(${shaped.footer})`);
-      const pagination = paginationInfo({ total: queue.length, offset: 0, limit: null, returned: queue.length });
+      // #895: `returned` is the capped count, not `queue.length` — the array
+      // beside it is `shaped.items`, so reporting the pre-cap number here was
+      // the payload claiming rows it had not sent.
+      const pagination = paginationInfo({ total: queue.length, offset: 0, limit: null, returned: shaped.items.length });
       return {
         content: [{ type: 'text', text: out.join('\n') }],
         structuredContent: listStructuredContent(shaped.items, pagination, { user: u, missing }),

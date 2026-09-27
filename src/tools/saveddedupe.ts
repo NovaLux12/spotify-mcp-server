@@ -27,6 +27,8 @@ import {
   completenessFooter,
   truncateItems,
   structuredContent,
+  capRowSections,
+  emitOnce,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -132,10 +134,66 @@ type ToolOut = {
   structuredContent?: Record<string, unknown>;
 };
 
-function shapeResult(rf: ResponseFormatValue, prose: string, payload: SavedDedupeResult): ToolOut {
+/**
+ * The row array `find_duplicate_saved_tracks` publishes (#895).
+ *
+ * `groups` is the findings list, and the prose path already caps it via
+ * `truncateItems`; shipping it whole beside that prose made the machine channel
+ * disagree with the sentence the tool's own description writes. Unlike
+ * `library_hygiene`'s `groups` this one IS the answer rather than the raw scan,
+ * so it is capped rather than withheld — a group is one row however many members
+ * it carries, and a member list is bounded by the library not by a walk.
+ */
+const ROW_ARRAYS = ['groups'] as const;
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction — it names counts and
+ * never interpolates a group.
+ */
+function summarizeDedupe(payload: Record<string, unknown>): string {
+  const sections = payload.sections as
+    | Record<string, { returned: number; total: number; truncated: boolean; unreadable?: boolean }>
+    | undefined;
+  if (!sections) return 'Saved-track duplicate analysis — full analysis in structuredContent.';
+  const parts = Object.entries(sections).map(([key, section]) =>
+    section.unreadable ? `${key} (unreadable)` : `${key}: ${section.returned}/${section.total}`);
+  return `Saved-track duplicate analysis — full analysis in structuredContent:\nSections: ${parts.join(', ')}.`;
+}
+
+/**
+ * Shape one result (#895). The prose modes cap the machine channel through
+ * `capRowSections`; `response_format: 'json'` is the bulk export and returns
+ * the analysis whole. Either way the payload is emitted ONCE, as
+ * `structuredContent`, with a bounded text block beside it.
+ *
+ * The `bulk ||` short-circuit is load-bearing and is NOT an optimisation.
+ * #895's AC1 requires json mode to "still return the full analysis", and
+ * SPEC.md's #895 entry states the same for this tool and `library_hygiene`
+ * together. Without it, a json call with an explicit `max_results` was capped —
+ * the bulk export the contract promises was the one path that lost rows. It
+ * also made this module disagree with `libraryhygiene.ts`, which is the
+ * document both are named in, so the two could no longer be read as one
+ * contract; a caller comparing the two tools' json output saw different shapes
+ * for the same documented promise.
+ *
+ * The cap still applies to the two prose modes, which is where the
+ * `max_results` promise in the tool description is written.
+ */
+function shapeResult(
+  rf: ResponseFormatValue,
+  prose: string,
+  payload: SavedDedupeResult,
+  maxResults?: number,
+): ToolOut {
+  const bulk = rf === 'json';
+  const machine = bulk || maxResults === undefined || !('groups' in payload)
+    ? payload
+    : capRowSections(payload, ROW_ARRAYS, maxResults);
+  if (bulk) return emitOnce(structuredContent(machine), summarizeDedupe);
   return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: structuredContent(payload),
+    content: [{ type: 'text', text: prose }],
+    structuredContent: structuredContent(machine),
   };
 }
 
@@ -548,7 +606,7 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
       }
       const result = await analyze(client, args.include_near_duplicates, args.playlist_id);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      return shapeResult(rf, renderProse(result, maxResults), result);
+      return shapeResult(rf, renderProse(result, maxResults), result, maxResults);
     },
   );
 }
