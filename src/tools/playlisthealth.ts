@@ -45,10 +45,18 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
 
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
-function snapshotDir(): string {
-  const cfg = getConfig() as unknown as Record<string, unknown>;
-  if (typeof cfg.dataDir === 'string' && cfg.dataDir.length > 0) return cfg.dataDir as string;
-  const envDir = process.env.SPOTIFY_MCP_DATA_DIR;
+export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
+  // An explicitly supplied env is authoritative and short-circuits the
+  // process-wide config snapshot. `getConfig()` lazily initialises from
+  // process.env and caches for the life of the process, so consulting it for a
+  // caller that handed us its own env would resolve a path from state that
+  // caller never asked about — and a resolver whose result is later used to
+  // erase files must not do that.
+  if (env === process.env) {
+    const cfg = getConfig() as unknown as Record<string, unknown>;
+    if (typeof cfg.dataDir === 'string' && cfg.dataDir.length > 0) return cfg.dataDir as string;
+  }
+  const envDir = env.SPOTIFY_MCP_DATA_DIR;
   if (envDir && envDir.length > 0) return envDir;
   return join(homedir(), '.spotify-mcp', 'playlist-snapshots');
 }

@@ -91,6 +91,35 @@ A refresh that fails is classified by what the response actually said, so the me
 
 A named code this server has no fix for is quoted verbatim rather than being folded into one of the categories above, and a failure it cannot classify is reported as unclassified rather than guessed at. Every one of these messages names the resolved token file, so with several profiles installed you can tell which token file is the broken one. A transient failure (5xx, unreachable network) is ridden out silently when your current access token is still valid and the call proceeds normally.
 
+#### Disconnecting: `spotify-mcp logout`
+
+There are two separate things to undo when you stop using this server, and only one of them can be done from the command line.
+
+**Local stores.** `spotify-mcp logout` erases the token file and every other local store listed in [PRIVACY.md](../PRIVACY.md#local-stores-and-paths). Each store is resolved through the module that writes it, so the command cannot drift from where the server actually keeps things. Every path it removes is printed, including the files inside a moved directory, so the report can be checked against the disk.
+
+Stores are moved, not deleted: to the freedesktop trash (`gio trash`) where the filesystem supports it, otherwise into a `.spotify-mcp-logout-quarantine-<stamp>` directory beside the original, which the command also prints. Nothing is ever removed by a recursive delete. The token file is the single exception — it is overwritten and unlinked, because it holds a live refresh token and leaving that readable in a trash directory would defeat the purpose.
+
+**The Spotify grant itself.** Spotify publishes no token-revocation endpoint. The official OpenAPI schema has no revoke path, and revocation appears there only as an error condition describing something the *user* does. No client, including this one, can end the access. Remove it at [spotify.com/account/apps](https://www.spotify.com/account/apps/) → Connected Apps → Remove. `logout` prints that address every time so the step cannot be missed, and the exit code reflects only the local half.
+
+What `logout` refuses to erase, and reports instead:
+
+- a store whose real path resolves outside the directory its own module places it in
+- a symlinked store — the link is not this server's to follow
+- a filesystem root, the home directory, or an ancestor of the store's own directory
+- the data directory itself, when `SPOTIFY_MCP_DATA_DIR` is set, because the playlist-health snapshot store resolves to it and it holds every other store; the stores inside it are erased individually instead
+
+A refusal or a failure is a non-zero exit. Reporting success while a live token remained on disk is the failure this command exists to prevent.
+
+| Flag | Effect |
+|---|---|
+| `--dry-run` | List what would be erased; erase nothing and ask nothing |
+| `--keep-backups` | Leave the `backups/` library in place — it is your library, not session state |
+| `--profile <name>` | Act on a named profile's token file, as `auth --profile` does |
+
+`logout` is a CLI command and deliberately **not** a tool: a destructive tool would join the `tools/list` surface and hand every MCP host the ability to erase your credentials unattended.
+
+Before erasing, `logout` asks for confirmation on a terminal and refuses outright when there is none, so it cannot run unattended by accident. The gate is the same `requiredConfirmationRefusal()` that guards destructive tools, and `SPOTIFY_MCP_CONFIRM=never` is the same single bypass — not a second one.
+
 ### Local files: reads and writes are confined
 
 Every tool that writes a local file resolves its destination against a configured root — `SPOTIFY_MCP_EXPORT_DIR` for `export_playlist` and `export_profile_state`, `SPOTIFY_MCP_PORTABILITY_DIR` for the five `export_*` family tools. A relative `output_path` or `output_dir` resolves **inside** that root rather than against the process working directory; an absolute path outside it, a `..` escape, or a symlink leaving it is refused with the resolved path and the root in the message. `export_playlist` also refuses to replace an existing file unless you pass `overwrite: true`.

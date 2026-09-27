@@ -182,7 +182,7 @@ interface MiscStore {
   reports: Record<string, unknown>;
 }
 
-function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
+export function miscFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_EXHAUST2_MISC_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-misc.json');
 }
 

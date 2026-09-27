@@ -68,7 +68,7 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: Record<str
   };
 }
 
-function portabilityDir(env: NodeJS.ProcessEnv = process.env): string {
+export function portabilityDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability');
 }
 
