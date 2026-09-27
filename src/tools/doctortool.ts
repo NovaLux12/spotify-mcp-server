@@ -619,12 +619,17 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
       // a zero here means "nothing was restored", which reads as a broken
       // cache unless the operator also sees that persistence is enabled.
       const persistFailed = rl.cachePersistFailed ?? 0;
+      // Entries dropped by the persisted byte cap (#1249). Distinct from an
+      // allowlist refusal: these were eligible and lost to size, and an
+      // operator seeing `cache_persisted=0` needs to know which it was.
+      const persistOversize = rl.cachePersistOversize ?? 0;
       const persistParts = rl.cachePersist
         ? [
           'cache_persist=on',
           `cache_restored=${rl.cacheRestored ?? 0}`,
           persistFailed > 0 ? `cache_persist_failed=${persistFailed}` : null,
           (rl.cachePersistRefused ?? 0) > 0 ? `cache_persist_refused=${rl.cachePersistRefused}` : null,
+          persistOversize > 0 ? `cache_persist_oversize=${persistOversize}` : null,
         ].filter((p): p is string => p !== null)
         : ['cache_persist=off'];
       const cacheParts = [
