@@ -1,9 +1,8 @@
 {
-  "total": 651,
+  "total": 646,
   "byFile": {
     "tests/auth.tokenpath.test.ts": 3,
     "tests/batch-per-id.test.ts": 3,
-    "tests/branding-notice-guard.test.ts": 1,
     "tests/cache.test.ts": 19,
     "tests/cancellation.test.ts": 1,
     "tests/chunk-caps.test.ts": 1,
@@ -11,7 +10,6 @@
     "tests/client.test.ts": 7,
     "tests/doc-figures.test.ts": 7,
     "tests/doc-links.test.ts": 1,
-    "tests/doc-prose-integrity.test.ts": 3,
     "tests/dry-run-truthfulness.test.ts": 1,
     "tests/error-param-names.test.ts": 11,
     "tests/errors.argument-contract.test.ts": 1,
@@ -61,7 +59,6 @@
     "tests/tests-typecheck-budget-gate.test.ts": 1,
     "tests/token-failure-classification.test.ts": 2,
     "tests/token-refresh-failure-classification.test.ts": 2,
-    "tests/tool.coverage.test.ts": 1,
     "tests/tool.surface.test.ts": 2,
     "tests/tools.artistreleases.test.ts": 3,
     "tests/tools.backup.test.ts": 2,
