@@ -8,12 +8,11 @@ It also carries the product-name decision and the non-affiliation notice
 wording that [#705](https://github.com/NovaLux12/spotify-mcp-server/issues/705)
 landed here, under [Naming decision (2026-09-18)](#naming-decision-2026-09-18)
 and [The non-affiliation notice](#the-non-affiliation-notice). #705 covered the
-non-affiliation half of the MCP `initialize` `instructions` string;
-[#690](https://github.com/NovaLux12/spotify-mcp-server/issues/690) still owns
-the host-guidance half. Whoever lands it should **extend this page** rather
-than create a competing one, and should extend `SERVER_INSTRUCTIONS` in
-`src/index.ts` — leaving the notice in `src/branding.ts` where it is — rather
-than author a second one.
+non-affiliation half of the MCP `initialize` `instructions` string, and
+[#690](https://github.com/NovaLux12/spotify-mcp-server/issues/690) landed the
+host-guidance half on the same string. Both read one constant: the notice from
+`src/branding.ts`, the guidance from `src/serverinstructions.ts`, which
+composes them. Neither authors a second copy.
 
 ## The two rules, and why both survive
 
@@ -230,7 +229,7 @@ reads it from there:
 |---|---|---|
 | `NON_AFFILIATION_NOTICE` | `Independent, unofficial project. Not affiliated with, endorsed by, or sponsored by Spotify.` | The `spotify-mcp doctor` CLI banner on its own; the first sentence of `BRANDING_NOTICE` everywhere else |
 | `TRADEMARK_NOTICE` | `"Spotify" is a trademark of Spotify AB; this project is not a Spotify product.` | Folded into `BRANDING_NOTICE` — no surface carries it alone |
-| `BRANDING_NOTICE` | the two sentences joined | The MCP `initialize` `instructions` string, the `--help` banner, and the `spotify_doctor` prose header |
+| `BRANDING_NOTICE` | the two sentences joined | The head of the MCP `initialize` `instructions` string, the `--help` banner, and the `spotify_doctor` prose header |
 | `SHORT_NON_AFFILIATION_NOTICE` | `Not affiliated with Spotify.` | The 100-character-capped metadata surfaces, via `CANONICAL_DESCRIPTION` |
 
 **Why there are two forms, and why that is not drift.** The MCP Registry caps
@@ -257,7 +256,7 @@ long form to the short form's claim is a change, not a wording tweak.
 | `package.json` `description` | short | What npm renders on the package page |
 | `server.json` `description` | short | What the MCP Registry renders to every host that browses it |
 | `docs/distribution.md` blurbs | short | The copy a directory listing or marketplace card is pasted from |
-| MCP `initialize` `instructions` | long | **The only surface a host-only agent sees.** An OpenClaw session with no shell, no repository and no README gets the tool list and this string and nothing else |
+| MCP `initialize` `instructions` | long | **The only surface a host-only agent sees.** An OpenClaw session with no shell, no repository and no README gets the tool list and this string and nothing else. Since #690 it also carries the host guidance, appended after the notice |
 | `spotify-mcp --help` | long | What a user reads when deciding whether this is an official integration |
 | `spotify-mcp doctor` banner | long | The output users paste into bug threads and issue reports |
 | `spotify_doctor` prose header | long | The agent-facing identity line, rendered by the same function the CLI uses so the two cannot disagree |
@@ -285,6 +284,78 @@ so it fails if `src/index.ts` stops passing the constant — not merely if a
 document stops containing the words. The same file renders the doctor prose,
 invokes `--help` and the CLI doctor, and compares every metadata and document
 surface against the exported constants.
+
+### The `instructions` string after #690: notice first, guidance after
+
+`SERVER_INSTRUCTIONS` (`src/serverinstructions.ts`) is `BRANDING_NOTICE`
+followed by five guidance lines: what the server is, the discovery trio
+(`find_tool` / `inspect_tool` / `toolset_report`), the `dry_run` convention,
+the two toolset knobs, and the receipt lifetime. The notice **leads**, and
+`tests/branding-notice-guard.test.ts` asserts `startsWith` rather than
+`includes`.
+
+**Why the order, and why `startsWith` rather than `includes`.** The claim #705
+is making is that the notice cannot be skipped, and a host that trims or
+summarises a long string keeps its start. A notice demoted to the last
+paragraph of a system prompt is exactly the failure the naming decision would
+not survive, so position carries meaning here and the test has to assert
+position. An `includes` would pass with the notice buried mid-paragraph, which
+is the outcome this ordering exists to prevent.
+
+**Why the constant is not in `src/index.ts`.** This page previously said to
+extend `SERVER_INSTRUCTIONS` where it lived. It does not any more, because
+`src/index.ts` dispatches on `process.argv[2]` at module scope: importing it
+starts a real server and registers the whole default tool surface. A constant
+there can only be read by spawning a process, so every assertion about the
+guidance's content would have to be a spawn, and a documentation generator
+reading it would start a server as a side effect. The constant moved to
+`src/serverinstructions.ts` for that reason; the notice stayed in
+`src/branding.ts`, and nothing re-types either.
+
+**What the guidance deliberately does not contain.**
+
+- *A tool count.* `toolset_report` returns the live registered count, measured
+  at call time. A number in this string is stale the moment a tool is added,
+  and this server has already shipped two bugs of exactly that shape — #803
+  recorded a failed stats.fm stream lookup as `0 streams`, and #997 reported
+  one page of results as a lifetime total. A hardcoded count in a string every
+  host reads is the same defect. The guidance points at `toolset_report`
+  instead.
+- *Credentials or account specifics.* The string is sent to whatever launched
+  the process, so it names no token file, client id or scope value —
+  `tests/credential-doc-guard.test.ts` (#699) holds the docs to the same rule
+  and `tests/server-instructions.test.ts` holds this string to it.
+- *Non-ASCII.* The string lands in terminals, logs and system prompts with
+  widely varying fonts and encodings; an em dash is a mojibake line in
+  somebody's agent context and still reads correctly in a diff.
+- *Spotify marks.* Plain-text attribution only, per the rules above.
+
+**The `dry_run` line is the one that had to be qualified.** The obvious
+wording — "destructive tools preview by default; pass `dry_run:false` to
+apply" — is **false**. `DryRunDefault` defaults `true`, but the playback
+family uses `PlaybackDryRun` (`src/shaping.ts`, #836), which defaults `false`
+on purpose: those mutations are additive and reversible through the
+resume/undo tools. So an omitted `dry_run` **commits** for `play`, `pause`,
+`skip_next`, `set_volume`, `mute` and the rest of that family. Shipping the
+blanket version would have taught an agent to pass `dry_run:false` everywhere
+as "the safe explicit form" — which is the destructive default the flag
+exists to prevent. The instructions state both defaults, name the family, and
+point at each tool's own `inputSchema` as the authority;
+`tests/server-instructions.test.ts` fails if the line is ever "simplified" back
+to the issue's wording.
+
+**A note on how much to trust any of this.** The MCP specification gives
+`instructions` no normative MUST or SHOULD in the 2025-06-18 or 2025-11-25
+revisions — the only requirement language is the schema comment's "MAY be
+added to the system prompt", and the [MCP project's own
+post](https://blog.modelcontextprotocol.io/posts/2025-11-03-using-server-instructions/)
+says plainly that "the exact way that the MCP host uses server instructions is
+up to the implementer, so it's not always guaranteed that they will be
+injected into the system prompt". Claude Code consumes it and truncates it at
+2,048 characters; VS Code/Copilot and Claude Desktop do not surface it. Treat
+this string as a best-effort routing hint and never let the tool contract
+depend on it. That is a reason to keep it short and factual, not a reason to
+leave it unset.
 
 ## Derived listening analytics: the policy and the interpretation
 
