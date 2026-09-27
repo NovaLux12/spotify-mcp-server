@@ -46,16 +46,9 @@ import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
 import { ResponseFormat, normalizePlaylistReference } from '../shaping.js';
+import { textResult } from '../result.js';
 
 const TOOL = 'import_playlist';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
 
 /**
  * A playable Spotify URI: tracks AND episodes both import cleanly. The shared

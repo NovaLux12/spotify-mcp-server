@@ -17,15 +17,10 @@ import {
   nextPageLine,
 } from '../shaping.js';
 import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
+import { emit, formatDuration } from '../result.js';
 
 /** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
 export const SPOTIFY_SEARCH_MAX_LIMIT = 10;
-
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
 
 // Spotify only returns the requested types in the response body. When the
 // caller asks for `types: ["artist"]`, the response has `artists` but no

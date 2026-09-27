@@ -45,6 +45,7 @@ import {
   withMarketSource,
   type MarketResolution,
 } from '../markets.js';
+import { formatDuration } from '../result.js';
 
 // Re-exported so every tool module keeps importing MARKET_CODE (and the
 // market test hook) from this file.
@@ -102,12 +103,6 @@ const SCAN_CAPABILITIES = { maxResults: true, offset: true } as const;
 // into audiobooks.ts; two copies left the show/episode walks with no shared
 // way in, and a market-gated call site that reached for neither simply sent no
 // market.
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
-
 // ------------------------------------------------ get_several_* family (#43)
 // Per-request ID caps for GET /<type>?ids=. Inputs larger than the cap are
 // chunked into multiple queued calls and merged in request order; items

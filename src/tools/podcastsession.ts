@@ -40,6 +40,7 @@ import type {
   SpotifyEpisodeSimple,
   SpotifyPaged,
 } from '../types/spotify.js';
+import { formatDuration } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
 
@@ -125,12 +126,6 @@ const Minutes = z
   .min(1)
   .max(480)
   .describe('Session length in minutes (1–480)');
-
-const formatDuration = (ms: number): string => {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-};
 
 function remainingMs(ep: { duration_ms: number; resume_point?: { fully_played: boolean; resume_position_ms: number } }): number {
   if (!ep.resume_point || ep.resume_point.fully_played) return ep.duration_ms;

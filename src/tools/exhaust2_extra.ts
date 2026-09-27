@@ -29,22 +29,14 @@ import { DryRun, ResponseFormat, describeDryRun, parseSpotifyUri } from '../shap
 import type { ResponseFormatValue } from '../shaping.js';
 import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 import { positionSchema } from '../positionbase.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // local shaping helpers (slice-convention: self-contained)
 // ---------------------------------------------------------------------------
 
 type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
+;
 
 /** Accept a bare playlist/track ID or a spotify:<type>: URI; return the raw ID. */
 function normalizeRef(ref: string): string {
@@ -535,7 +527,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         })),
       };
       if (dry) {
-        return shape(
+        return emit(
           rf,
           `${describeDryRun('fill from search', id, planLines)}\n${picks.slice(0, 10).map((p) => `  + ${p.uri} (via "${p.query}")`).join('\n')}${picks.length > 10 ? `\n  … ${picks.length - 10} more` : ''}${notice ? `\n${notice}` : ''}`,
           { ...payload, dry_run: true },
@@ -553,7 +545,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         ? ` Resulting length unknown: only the first ${scan.returned} item(s) were read, so a pick may already have been in the playlist.`
         : '';
       const prose = `Added ${picks.length} track(s) to "${scan.name ?? id}" (${add.requests} add request(s)); playlist now ${nowTotal ?? 'unknown'} item(s).${truncationProse}`;
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${prose}\n${receiptLines}` : prose,
         { ...payload, ...writeVerdict(add.receipts, picks.length), dry_run: false, requests: add.requests, now_total: nowTotal, receipts: receiptRecords(add.receipts) },
@@ -615,7 +607,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
           : []),
       ];
       if (dry) {
-        return shape(
+        return emit(
           rf,
           `${describeDryRun('expression algebra', args.target_name, planLines)}\n${result.slice(0, 10).map((u) => `  · ${u}`).join('\n')}${result.length > 10 ? `\n  … ${result.length - 10} more` : ''}`,
           { ok: true, dry_run: true, expression: args.expression, refs, sizes, result_count: result.length, result_preview: result.slice(0, 25), requests_read: readRequests, ...truncationFields },
@@ -633,7 +625,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         ? ` The result is INCOMPLETE: ${clipped.map((s) => `"${s.ref}" (${s.returned} of ${s.total ?? '?'} read)`).join(', ')} stopped at the fetch-all cap.`
         : '';
       const prose = `Created "${args.target_name}" (${createdId}) with ${result.length} item(s) from the expression (${add.requests} add request(s)).${truncationProse}`;
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${prose}\n${receiptLines}` : prose,
         { ...writeVerdict(add.receipts, result.length), dry_run: false, playlist: createdId, name: args.target_name, result_count: result.length, refs, sizes, requests: add.requests, requests_read: readRequests, receipts: receiptRecords(add.receipts), ...truncationFields },
@@ -711,7 +703,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
       }
       const ranked = rankCoverCandidates(images);
       if (dry) {
-        return shape(
+        return emit(
           rf,
           describeDryRun('cover from track', id, [
             `Source: ${source}`,
@@ -727,7 +719,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
         try {
           const { buf, bytes } = await fetchCoverJpeg(candidate.url);
           await client.putRaw(`/playlists/${encodeURIComponent(id)}/images`, buf.toString('base64'));
-          return shape(
+          return emit(
             rf,
             `Cover of "${meta.name ?? id}" set from ${trackUri} via ${source} (${candidate.width ?? '?'}px, ${bytes} B).`,
             { ok: true, dry_run: false, playlist: id, track: trackUri, source, image_url: candidate.url, bytes, items_scanned: itemsScanned, playlist_total: playlistTotal },

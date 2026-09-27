@@ -57,29 +57,11 @@ import {
   receiptRetentionLabel,
   MAX_RECEIPTS,
 } from '../receipts.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + result helpers
 // ---------------------------------------------------------------------------
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-
-/** Prose or JSON body; structuredContent is always attached (#52). */
-function emit(
-  fmt: ResponseFormatValue | string | undefined,
-  prose: string,
-  payload: Record<string, unknown>,
-): ToolResult {
-  if (fmt === 'json') {
-    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
-  }
-  return { content: [{ type: 'text', text: prose }], structuredContent: payload };
-}
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;

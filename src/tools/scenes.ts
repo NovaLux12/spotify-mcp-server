@@ -21,6 +21,7 @@ import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/
 import { ResponseFormat, PlaybackDryRun, describeDryRun } from '../shaping.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Sidecar store
@@ -98,18 +99,6 @@ const sceneFields = {
     .describe("Repeat mode: 'off' | 'track' | 'context'"),
   context_uri: z.string().optional().describe('Context URI to start on apply (e.g. spotify:playlist:…)'),
 } as const;
-
-/** Echo-style result mirroring playback.ts mutationResult. */
-function emit(
-  format: string | undefined,
-  echo: Record<string, unknown>,
-  text: string,
-): { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> } {
-  if (format === 'json') {
-    return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  }
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
 
 // ---------------------------------------------------------------------------
 // apply_scene planning
@@ -471,7 +460,7 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       if (args.repeat !== undefined) scene.repeat = args.repeat;
       if (args.context_uri !== undefined) scene.context_uri = args.context_uri;
       if (Object.keys(scene).length === 0) {
-        return emit(args.response_format, { ok: false, error: 'empty_scene' }, 'Scene has no fields to save — provide at least one of device_hint, volume, shuffle, repeat, context_uri.');
+        return emit(args.response_format, 'Scene has no fields to save — provide at least one of device_hint, volume, shuffle, repeat, context_uri.', { ok: false, error: 'empty_scene' });
       }
 
       const store = await loadScenes();
@@ -481,8 +470,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
 
       return emit(
         args.response_format,
-        { ok: true, name: args.name, scene, overwritten: existed, path: scenesFilePath() },
         `${existed ? 'Updated' : 'Saved'} scene "${args.name}" (${Object.keys(scene).join(', ')}) → ${scenesFilePath()}`,
+        { ok: true, name: args.name, scene, overwritten: existed, path: scenesFilePath() },
       );
     },
   );
@@ -526,11 +515,11 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
     async (args) => {
       const store = await loadScenes();
       if (!(args.name in store)) {
-        return emit(args.response_format, { ok: false, error: 'not_found' }, `No scene named "${args.name}".`);
+        return emit(args.response_format, `No scene named "${args.name}".`, { ok: false, error: 'not_found' });
       }
       delete store[args.name];
       await saveScenes(store);
-      return emit(args.response_format, { ok: true, deleted: args.name }, `Deleted scene "${args.name}".`);
+      return emit(args.response_format, `Deleted scene "${args.name}".`, { ok: true, deleted: args.name });
     },
   );
 
@@ -549,8 +538,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
         const known = Object.keys(store).sort();
         return emit(
           args.response_format,
-          { ok: false, error: 'not_found', available: known },
           `No scene named "${args.name}".${known.length ? ` Saved: ${known.join(', ')}.` : ' No scenes saved yet.'}`,
+          { ok: false, error: 'not_found', available: known },
         );
       }
 
@@ -629,8 +618,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       );
       return emit(
         args.response_format,
-        { ok: failed === 0, scene: args.name, device_id: deviceId, applied, skipped, failed, steps: executed },
         `Applied scene "${args.name}": ${applied} applied, ${skipped} skipped, ${failed} failed\n${lines.join('\n')}`,
+        { ok: failed === 0, scene: args.name, device_id: deviceId, applied, skipped, failed, steps: executed },
       );
     },
   );
@@ -663,8 +652,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       if (typeof capturedVol !== 'number') {
         return emit(
           args.response_format,
-          { ok: false, error: 'no_active_device' },
           'No active device — cannot capture the starting volume for a wind-down.',
+          { ok: false, error: 'no_active_device' },
         );
       }
       const startVol = Math.min(100, Math.max(0, Math.round(capturedVol)));
@@ -694,8 +683,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       startWindDown(windDownKey(args.device_id), schedule, args.step_minutes, args.device_id, client);
       return emit(
         args.response_format,
-        echo,
         `Wind-down started from volume ${startVol} → floor ${args.floor_volume} over ${args.minutes}m:\n${lines.join('\n')}\nCancel with cancel_wind_down. Read wind_down_status for per-step progress and failures. The fade runs only while this MCP server process is running — closing the client cancels it.`,
+        echo,
       );
     },
   );
@@ -710,15 +699,15 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
     async (args) => {
       const status = windDownStatus();
       if (!status || (args.device_id && status.key !== windDownKey(args.device_id))) {
-        return emit(args.response_format, { ok: false, error: 'not_found' }, 'No wind-down status is available.');
+        return emit(args.response_format, 'No wind-down status is available.', { ok: false, error: 'not_found' });
       }
       const failures = status.failures.map((failure) =>
         `  ✗ step ${failure.step} (${failure.action}, +${failure.at_minute}m): ${failure.error}`,
       );
       return emit(
         args.response_format,
-        { ...status, failures: status.failures.map((failure) => ({ ...failure })) },
         `Wind-down ${status.state}: ${status.steps_applied} applied, ${status.steps_failed} failed, ${status.steps_planned} planned.${status.last_error ? `\nLast error: ${status.last_error}` : ''}${failures.length ? `\n${failures.join('\n')}` : ''}`,
+        { ...status, failures: status.failures.map((failure) => ({ ...failure })) },
       );
     },
   );
@@ -732,8 +721,8 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       const cancelled = matches && cancelActive();
       return emit(
         args.response_format,
-        { ok: true, cancelled },
         cancelled ? 'Cancelled 1 wind-down.' : 'No active wind-down to cancel.',
+        { ok: true, cancelled },
       );
     },
   );

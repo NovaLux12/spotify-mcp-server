@@ -57,19 +57,7 @@ import {
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { ResponseFormat } from '../shaping.js';
 import type { UserProfile } from '../types/spotify.js';
-
-type ToolOut = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolOut {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-
-function emit(fmt: string | undefined, structured: Record<string, unknown>, text: string): ToolOut {
-  if (fmt === 'json') {
-    return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
-  }
-  return textResult(text, structured);
-}
+import { textResult, emit } from '../result.js';
 
 /**
  * The profile name that means "the account the server started as".
@@ -199,8 +187,8 @@ export function registerAccountsTools(server: McpServer, client: SpotifyClient):
       };
       return emit(
         args.response_format,
-        structured,
         renderAccountList(accounts, registryPath),
+        structured,
       );
     },
   );
@@ -255,8 +243,8 @@ export function registerAccountsTools(server: McpServer, client: SpotifyClient):
       if (target === client.tokenFile) {
         return emit(
           args.response_format,
-          { ok: true, changed: false, profile, token_file: target, acting_account_id: null },
           `Already acting as "${profile}" (${target}); nothing changed.`,
+          { ok: true, changed: false, profile, token_file: target, acting_account_id: null },
         );
       }
       if (!tokenFileIsUsable(target)) {
@@ -334,13 +322,13 @@ export function registerAccountsTools(server: McpServer, client: SpotifyClient):
       };
       return emit(
         args.response_format,
-        structured,
         [
           `Now acting as "${profile}"${summary.display_name ? ` (${summary.display_name})` : ''}.`,
           `Token file: ${target}`,
           'The previous account\'s cached reads and validators were dropped, so nothing it read is served here.',
           ...(failure ? [`Note: the registry could not be updated — ${failure}`] : []),
         ].join('\n'),
+        structured,
       );
     },
   );

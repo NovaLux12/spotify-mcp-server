@@ -27,19 +27,13 @@ import { ResponseFormat } from '../shaping.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { SPOTIFY_SEARCH_MAX_LIMIT } from './search.js';
 import { storePath } from '../config.js';
+import { textResult, emit, type ToolResult } from '../result.js';
 
 /**
  * Results-per-request a replay asks for when the sidecar records no usable
  * limit — the same default the live search tool applies.
  */
 const DEFAULT_REPLAY_LIMIT = 5;
-
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-function textResult(text: string, s?: Record<string, unknown>): ToolResult { return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) }; }
-function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
 
 interface SearchHistoryEntry {
   id: string;
@@ -434,7 +428,7 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
       if (entry.market) params.market = entry.market;
       if (entry.offset) params.offset = String(entry.offset);
       const res = await client.get<unknown>('/search', params);
-      return emit(args.response_format as string, {
+      return emit(args.response_format as string, `Re-ran search "${entry.query}" (${types.join(',')}, limit ${limit}${entry.market ? `, market ${entry.market}` : ''}) — see structuredContent.result.${notice.text}`, {
         ok: true,
         history_id: entry.id,
         query: entry.query,
@@ -451,6 +445,6 @@ export function registerSearchHistoryTools(server: McpServer, client: SpotifyCli
         ...(adjusted ? { limit_clamped_from: usable ? asNumber : entry.limit } : {}),
         ...notice.field,
         result: res,
-      }, `Re-ran search "${entry.query}" (${types.join(',')}, limit ${limit}${entry.market ? `, market ${entry.market}` : ''}) — see structuredContent.result.${notice.text}`);
+      });
     });
 }
