@@ -95,6 +95,18 @@ const parameterAllowlist = new Set([
   // parameters section names `medium_term` for the same reason: it is the
   // documented default of the `?time_range` resource parameter, not a tool.
   'short_term', 'long_term', 'medium_term',
+  // #885: the `match_by` enum member that is the point of the whole
+  // vocabulary — SPEC §4.0.5 has to name all three rules, and the other two
+  // (`uri`, `name`) are single words the scanner ignores. An enum value of a
+  // real parameter, same category as `short_term` above.
+  'name_artist',
+  // #885: the two `playlist_exclude_artists` structuredContent keys that
+  // partition the caller's references. They exist so a caller can tell "this
+  // artist has no track here" from "this reference matched nothing", and
+  // SPEC §4.0.5 has to name them to promise that. A call's own output
+  // describing itself, not a request parameter — same category as the
+  // `DoctorSurface` rows above.
+  'matched_artists', 'unmatched_artists',
   // #602: the account registry's own vocabulary. `account_id` and
   // `display_name` are the two keys the acting-account echo adds to EVERY
   // tool result; the rest are `list_accounts` / `switch_account`

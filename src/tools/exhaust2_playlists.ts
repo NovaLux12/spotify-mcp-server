@@ -15,6 +15,13 @@
  *   • No deprecated endpoints (SPEC §9).
  */
 import { z } from 'zod';
+import {
+  IncludeFeaturedParam,
+  anyArtistMatches,
+  artistCreditsFor,
+  classifyArtistReference,
+  trackMatchesArtist,
+} from '../playlistmatch.js';
 import { capFor } from '../chunk.js';
 import { MARKET_CODE } from './catalog.js';
 import { readFile, readdir } from 'node:fs/promises';
@@ -1091,6 +1098,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       keep_by: z.enum(['uris', 'artist', 'type', 'query']).describe('Match mode for what to KEEP'),
       values: z.array(z.string()).optional().describe('uris mode: track uris to keep'),
       artist: z.string().optional().describe('artist mode: keep tracks by this artist (ID/URI or name)'),
+      include_featured: IncludeFeaturedParam,
       type: z.enum(['track', 'episode']).optional().describe('type mode: keep only this playable type'),
       query: z.string().optional().describe('query mode: keep items whose name contains this substring'),
       response_format: ResponseFormat,
@@ -1110,11 +1118,9 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         if (!args.artist) {
           throw new Error('playlist_keep_only: keep_by=artist requires the `artist` param (an artist ID/URI or name; only tracks by that artist are kept)');
         }
-        const wanted = normalizeArtistRef(args.artist).toLowerCase();
+        const reference = classifyArtistReference(args.artist);
         for (const { artists, row } of rowArtists(p.items)) {
-          if (
-            artists.some((a) => (a.id ?? '').toLowerCase() === wanted || a.name.toLowerCase() === args.artist!.toLowerCase())
-          ) {
+          if (trackMatchesArtist(artists, reference, args.include_featured).matched) {
             keepUris.add(row.uri);
           }
         }
@@ -1136,7 +1142,12 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
           `Keep ${kept.length} item(s), drop ${dropped.length} (${p.name ?? p.id}):`,
           ...view.items.map((u, i) => `  keep ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
-        ]);
+        ], {
+          // #885: the count the artist tools agreed on has to be readable off
+          // the dry run, not only off a committed write.
+          kept_count: kept.length,
+          dropped_count: dropped.length,
+        });
       }
       const res = await atomicReplace(client, p.id, kept.map((r) => r.uri));
       const receiptLines = receiptsLines(res.receipts);
@@ -1204,6 +1215,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       playlist_id: z.string().describe('Playlist to reorder (ID or spotify:playlist: URI)'),
       match_uris: z.array(z.string()).optional().describe('Track uris to move to the top'),
       artist: z.string().optional().describe('Move every track by this artist (ID/URI or name)'),
+      include_featured: IncludeFeaturedParam,
       query: z.string().optional().describe('Move items whose name contains this substring'),
       stable_order: z.boolean().optional().describe('Keep playlist order among matches and non-matches. Default true'),
       response_format: ResponseFormat,
@@ -1214,9 +1226,9 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const p = await loadPlaylistFull(client, args.playlist_id);
       const matchUris = new Set<string>(args.match_uris ?? []);
       if (args.artist) {
-        const wanted = normalizeArtistRef(args.artist).toLowerCase();
+        const reference = classifyArtistReference(args.artist);
         for (const { artists, row } of rowArtists(p.items)) {
-          if (artists.some((a) => (a.id ?? '').toLowerCase() === wanted || a.name.toLowerCase() === args.artist!.toLowerCase())) {
+          if (trackMatchesArtist(artists, reference, args.include_featured).matched) {
             matchUris.add(row.uri);
           }
         }
@@ -1233,7 +1245,13 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         return dryOut('move to top', p.id, [
           `Move ${matched.length} matched item(s) to the front of ${matched.length + rest.length}:`,
           ...ordered.slice(0, 10).map((r, i) => `  ${i + 1}. ${r.uri} "${r.name}"`),
-        ]);
+        ], {
+          // #885: the matched count, readable off the dry run.
+          moved: matched.length,
+          ...(args.artist
+            ? { artist: args.artist, include_featured: args.include_featured, artist_matched_by: classifyArtistReference(args.artist).form }
+            : {}),
+        });
       }
       const res = await atomicReplace(client, p.id, ordered.map((r) => r.uri));
       const receiptLines = receiptsLines(res.receipts);
@@ -1253,11 +1271,18 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_exclude_artists',
-    'Remove every track by one or more artist IDs from a playlist — the "purge the artist" '
-      + 'one-shot. Quota: GET + chunked deletes.',
+    'Remove every track by one or more artists from a playlist — the "purge the artist" one-shot. '
+      + 'Each reference is matched against every credited artist id AND artist name (case-insensitive), '
+      + 'so an id, a spotify:artist: URI, an open.spotify.com URL and a plain name all work; '
+      + '`include_featured=false` narrows that to the primary artist. Before #885 this compared the '
+      + 'reference only against `artist.id`, so a NAME silently matched nothing and the tool reported '
+      + '"nothing to remove" — indistinguishable from an artist absent from the playlist. Same rule and '
+      + 'same `include_featured` as playlist_remove_artist, playlist_keep_artist and playlist_artist_heat. '
+      + 'Quota: GET + chunked deletes. See the artist-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().describe('Playlist to purge (ID or spotify:playlist: URI)'),
-      artist_ids: z.array(z.string()).min(1).max(20).describe('Artist IDs/URIs to exclude (1–20)'),
+      artist_ids: z.array(z.string()).min(1).max(20).describe('Artist IDs, spotify:artist: URIs, open.spotify.com URLs, or names to exclude (1–20)'),
+      include_featured: IncludeFeaturedParam,
       dedupe_scope: z.enum(['playlist', 'library', 'none']).optional().describe(
         'playlist (default): only drop uris duplicated INSIDE this playlist; '
           + 'library: also drop candidates that are saved in /me/tracks; none: drop every candidate',
@@ -1268,11 +1293,20 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      const excluded = new Set(args.artist_ids.map((a) => normalizeArtistRef(a).toLowerCase()));
+      const references = args.artist_ids.map((a) => classifyArtistReference(a));
+      // #885: the shared matcher, id OR name, narrowed by include_featured.
+      // This compared only `a.id` against the normalised reference, so a
+      // plain name never matched and the result was a silent no-op.
       const removable = new Set<string>();
+      const matchedRefs = new Set<string>();
       for (const { artists, row } of rowArtists(p.items)) {
-        if (artists.some((a) => excluded.has((a.id ?? '').toLowerCase()))) removable.add(row.uri);
+        const hit = anyArtistMatches(artists, references, args.include_featured);
+        if (hit) {
+          removable.add(row.uri);
+          matchedRefs.add(hit.reference.id ?? hit.reference.name.toLowerCase());
+        }
       }
+      const excluded = new Set(references.map((r) => r.id ?? r.name.toLowerCase()));
       const scope = args.dedupe_scope ?? 'playlist';
       const dedupe = await resolveDedupeParams(client, p.items, scope);
       const candidates = dedupe.candidates.filter((c) => removable.has(c.uri));
@@ -1282,6 +1316,13 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         playlist: p.id,
         playlist_name: p.name,
         excluded_artists: [...excluded],
+        // #885: which references actually matched a credit, and the other way
+        // round. A caller who passed two artists and got zero removals can now
+        // tell "neither is on this playlist" from "one matched but was deduped
+        // away", which the previous payload could not express.
+        matched_artists: [...matchedRefs],
+        unmatched_artists: [...excluded].filter((ref) => !matchedRefs.has(ref)),
+        include_featured: args.include_featured,
         scope,
         candidates: candidates.map((c) => c.uri),
         removals: positions.length,
@@ -1293,11 +1334,27 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         const changes = [
           `Remove ${positions.length} occurrence(s) of ${candidates.length} track(s) by ${excluded.size} artist(s):`,
           ...candidates.slice(0, 10).map((c) => `  - ${c.uri} (positions ${c.positions.join(', ')})`),
+          // #885: name the references that matched nothing, so a dry run that
+          // plans zero removals says whether the playlist is clean or the
+          // reference was wrong.
+          ...(matchedRefs.size < excluded.size
+            ? [`  No track matched: ${[...excluded].filter((ref) => !matchedRefs.has(ref)).join(', ')}`]
+            : []),
           scope === 'library' && dedupe.libraryOverlap != null
             ? `  ${dedupe.libraryOverlap} candidate(s) are also saved in your library`
             : '',
         ].filter(Boolean);
-        return dryOut('exclude artists', p.id, changes);
+        // #885: the attribution travels on the dry run too. A plan that says
+        // "remove 0" and nothing else is exactly the result a caller cannot
+        // act on, and a dry run is where they look before committing.
+        return dryOut('exclude artists', p.id, changes, {
+          playlist: p.id,
+          excluded_artists: [...excluded],
+          matched_artists: [...matchedRefs],
+          unmatched_artists: [...excluded].filter((ref) => !matchedRefs.has(ref)),
+          include_featured: args.include_featured,
+          removals: positions.length,
+        });
       }
       let requests = 0;
       const writeCap = capFor('playlist_writes');
@@ -1407,9 +1464,14 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'playlist_artist_heat',
     'Local artist-concentration check: top-artist share, an HHI concentration index, and the '
       + 'repeat-offender list with track counts. "Is this mix just one band?" '
-      + 'Quota: 1 GET.',
+      + '`include_featured` (default true) counts every credited artist, so the per-artist track count '
+      + 'agrees with playlist_exclude_artists and playlist_remove_artist for the same reference; '
+      + 'pass false to credit only the primary artist, which is what this tool did before #885 and '
+      + 'lowers the top-artist share. Quota: 1 GET. '
+      + 'See the artist-matching vocabulary in SPEC section 4.',
     {
       playlist_id: z.string().describe('Playlist to analyse (ID or spotify:playlist: URI)'),
+      include_featured: IncludeFeaturedParam,
       top_n: z.number().int().min(1).optional().describe('Artists to list. Default 5'),
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -1420,14 +1482,20 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const p = await loadPlaylistFull(client, args.playlist_id);
       const counts = new Map<string, { name: string; tracks: number }>();
       let trackCount = 0;
+      let creditedCredits = 0;
       for (const { artists } of rowArtists(p.items)) {
         trackCount++;
-        const primary = artists[0];
-        if (!primary) continue;
-        const key = primary.id ?? primary.name.toLowerCase();
-        const entry = counts.get(key) ?? { name: primary.name, tracks: 0 };
-        entry.tracks++;
-        counts.set(key, entry);
+        // #885: every credit, not just artists[0]. A featured track used to be
+        // invisible here while playlist_remove_artist counted it as a match —
+        // so heat could say 3 tracks by X on a playlist the removal tool took
+        // 5 from, with no field recording which rule produced either number.
+        for (const credit of artistCreditsFor(artists, args.include_featured)) {
+          creditedCredits++;
+          const key = credit.id ?? credit.name.toLowerCase();
+          const entry = counts.get(key) ?? { name: credit.name, tracks: 0 };
+          entry.tracks++;
+          counts.set(key, entry);
+        }
       }
       const ranked = [...counts.entries()]
         .map(([key, v]) => ({ key, ...v, share: trackCount ? v.tracks / trackCount : 0 }))
@@ -1439,8 +1507,13 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
+        include_featured: args.include_featured,
         tracks: trackCount,
         distinct_artists: ranked.length,
+        // A track credited to several artists contributes to several shares, so
+        // they need not sum to 1. Carried on the payload rather than left for
+        // the reader to infer from `tracks`.
+        credited_artist_credits: creditedCredits,
         top_artist_share: ranked[0]?.share ?? 0,
         hhi: Number(hhi.toFixed(4)),
         top_artists: ranked.slice(0, topN).map((r) => ({ name: r.name, tracks: r.tracks, share: Number(r.share.toFixed(3)) })),
@@ -1449,7 +1522,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       if (args.response_format === 'json') return shape(rf, '', payload);
       const lines = [
         `"${p.name ?? p.id}" artist heat:`,
-        `  ${trackCount} track(s), ${ranked.length} distinct primary artist(s); top share ${(100 * (ranked[0]?.share ?? 0)).toFixed(1)}%; HHI ${hhi.toFixed(4)}.`,
+        `  ${trackCount} track(s), ${ranked.length} distinct artist(s) counting ${args.include_featured ? 'every credit' : 'primary credits only'}; top share ${(100 * (ranked[0]?.share ?? 0)).toFixed(1)}%; HHI ${hhi.toFixed(4)}.`,
         '  Top:',
         ...ranked.slice(0, topN).map((r) => `    • ${r.name}: ${r.tracks} track(s) (${(100 * r.share).toFixed(1)}%)`),
       ];

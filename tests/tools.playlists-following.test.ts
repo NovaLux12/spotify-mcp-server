@@ -178,6 +178,16 @@ const playableTrack = (id: string, name: string, ms = 200000) => ({
   artists: [{ name: `Artist ${id}` }],
 });
 
+/**
+ * A bare Spotify id is exactly 22 base62 characters, and `get_playlist` routes
+ * both of its id parameters through the shared reference resolver (#914) — the
+ * same contract `get_track` already has. A fixture id that reads like `pl1` is
+ * therefore rejected during validation, before the client is ever reached, so
+ * the `get_playlist` cases name their playlist through this. Tools in this file
+ * that still take a plain string are unaffected and keep the short form.
+ */
+const realPlaylistId = (n: number): string => `pl${n}`.padEnd(22, String(n));
+
 // ---------------------------------------------------------------------------
 // get_user_playlists
 // ---------------------------------------------------------------------------
@@ -278,66 +288,69 @@ describe('get_user_playlists', () => {
 
 describe('get_playlist (metadata + items two-call flow)', () => {
   it('fetches metadata AND items, surfaces embedded cover URL, no images call', async () => {
+    const pl = realPlaylistId(1);
     const h = harness((path) => {
-      if (path === '/playlists/pl1') {
+      if (path === `/playlists/${pl}`) {
         return {
-          ...playlistSimple('pl1', 'Roadtrip'),
+          ...playlistSimple(pl, 'Roadtrip'),
           description: 'Songs for driving',
           images: [{ url: 'https://i.scdn.co/image/cover-300', width: 300, height: 300 }],
         };
       }
-      if (path === '/playlists/pl1/items') {
+      if (path === `/playlists/${pl}/items`) {
         return { items: [{ item: playableTrack('t1', 'Highway') }], total: 1 };
       }
       assert.fail(`unexpected path: ${path}`);
     });
 
-    const out = await h.invoke('get_playlist', { playlist_id: 'pl1' });
+    const out = await h.invoke('get_playlist', { playlist_id: pl });
 
     // Exactly two upstream calls: metadata + first items page.
     assert.deepEqual(
       h.client.calls.map((c) => `${c.method} ${c.path}`),
-      ['GET /playlists/pl1', 'GET /playlists/pl1/items'],
+      [`GET /playlists/${pl}`, `GET /playlists/${pl}/items`],
     );
     assert.deepEqual(h.client.calls[1].arg, { limit: '50' }); // default item limit
 
     const text = textOf(out);
-    assert.match(text, /"Roadtrip" by Owner pl1/);
+    assert.match(text, new RegExp(`"Roadtrip" by Owner ${pl}`));
     assert.match(text, /Description: Songs for driving/);
-    assert.match(text, /URI: spotify:playlist:pl1/);
+    assert.match(text, new RegExp(`URI: spotify:playlist:${pl}`));
     assert.match(text, /Cover image: https:\/\/i\.scdn\.co\/image\/cover-300/);
     assert.match(text, /Tracks \(1 total, showing 1\):/);
     assert.match(text, /1\. "Highway" by Artist t1 \(3:20\) \| URI: spotify:track:t1/);
   });
 
   it('falls back to the images endpoint when metadata has no cover', async () => {
+    const pl = realPlaylistId(2);
     const h = harness((path) => {
-      if (path === '/playlists/pl2') {
-        return { ...playlistSimple('pl2', 'NoArt'), images: [] };
+      if (path === `/playlists/${pl}`) {
+        return { ...playlistSimple(pl, 'NoArt'), images: [] };
       }
-      if (path === '/playlists/pl2/items') {
+      if (path === `/playlists/${pl}/items`) {
         return { items: [], total: 0 };
       }
-      if (path === '/playlists/pl2/images') {
+      if (path === `/playlists/${pl}/images`) {
         return [{ url: 'https://example.com/fallback.jpg' }];
       }
       assert.fail(`unexpected path: ${path}`);
     });
 
-    const out = await h.invoke('get_playlist', { id: 'pl2' });
+    const out = await h.invoke('get_playlist', { id: pl });
 
-    assert.ok(h.client.calls.some((c) => c.path === '/playlists/pl2/images'));
+    assert.ok(h.client.calls.some((c) => c.path === `/playlists/${pl}/images`));
     assert.match(textOf(out), /Cover image: https:\/\/example\.com\/fallback\.jpg/);
     assert.match(textOf(out), /Playlist is empty\./);
   });
 
   it('honours custom item limit and offset', async () => {
+    const pl = realPlaylistId(3);
     const h = harness((path) =>
-      path === '/playlists/pl3'
-        ? { ...playlistSimple('pl3', 'X'), images: null }
+      path === `/playlists/${pl}`
+        ? { ...playlistSimple(pl, 'X'), images: null }
         : { items: [{ item: playableTrack('t9', 'Nine') }], total: 30 },
     );
-    const out = await h.invoke('get_playlist', { id: 'pl3', limit: 10, offset: 20 });
+    const out = await h.invoke('get_playlist', { id: pl, limit: 10, offset: 20 });
 
     assert.deepEqual(h.client.calls[1].arg, { limit: '10', offset: '20' });
     assert.match(textOf(out), /21\. "Nine"/); // numbering accounts for offset
@@ -353,14 +366,15 @@ describe('get_playlist (metadata + items two-call flow)', () => {
     // `collected.length` cursor would re-read offset 2 and never terminate;
     // the recorded offsets below are the proof that the walk went through the
     // client's paged helper instead.
+    const pl = realPlaylistId(4);
     const h = harness((path, arg) => {
-      if (path === '/playlists/pl4') {
+      if (path === `/playlists/${pl}`) {
         return {
-          ...playlistSimple('pl4', 'Filtered'),
+          ...playlistSimple(pl, 'Filtered'),
           images: [{ url: 'https://i.scdn.co/image/pl4', width: 300, height: 300 }],
         };
       }
-      assert.equal(path, '/playlists/pl4/items');
+      assert.equal(path, `/playlists/${pl}/items`);
       const offset = Number((arg as Record<string, string>).offset ?? 0);
       return {
         items: [
@@ -374,7 +388,7 @@ describe('get_playlist (metadata + items two-call flow)', () => {
     });
 
     await h.invoke('get_playlist', {
-      playlist_id: 'pl4',
+      playlist_id: pl,
       fetch_all: true,
       limit: 2,
       market: 'gb',
@@ -389,7 +403,7 @@ describe('get_playlist (metadata + items two-call flow)', () => {
       fields: 'total,items(track(name,uri))',
       additional_types: 'track,episode',
     };
-    const itemCalls = h.client.calls.filter((c) => c.path === '/playlists/pl4/items');
+    const itemCalls = h.client.calls.filter((c) => c.path === `/playlists/${pl}/items`);
     assert.equal(itemCalls.length, 3);
     assert.deepEqual(itemCalls[0].arg, { limit: '2', ...filters });
     // Offsets ascend by the REAL page size (2) — not by the count collected so
@@ -398,15 +412,16 @@ describe('get_playlist (metadata + items two-call flow)', () => {
     assert.deepEqual(itemCalls[2].arg, { limit: '2', ...filters, offset: '4' });
 
     // The metadata GET takes the same three parameters.
-    const metadataCall = h.client.calls.find((c) => c.path === '/playlists/pl4');
+    const metadataCall = h.client.calls.find((c) => c.path === `/playlists/${pl}`);
     assert.deepEqual(metadataCall?.arg, filters);
   });
 
   it('resumes the fetch_all walk from the caller offset, not from zero', async () => {
+    const pl = realPlaylistId(5);
     const h = harness((path, arg) => {
-      if (path === '/playlists/pl5') {
+      if (path === `/playlists/${pl}`) {
         return {
-          ...playlistSimple('pl5', 'Mid'),
+          ...playlistSimple(pl, 'Mid'),
           images: [{ url: 'https://i.scdn.co/image/pl5', width: 300, height: 300 }],
         };
       }
@@ -419,13 +434,13 @@ describe('get_playlist (metadata + items two-call flow)', () => {
       };
     });
 
-    await h.invoke('get_playlist', { playlist_id: 'pl5', fetch_all: true, limit: 1, offset: 4 });
+    await h.invoke('get_playlist', { playlist_id: pl, fetch_all: true, limit: 1, offset: 4 });
 
     // Rows 4 and 5 of a 6-row playlist: the walk continues from where the
     // first page left off rather than re-reading the head of the list.
     assert.deepEqual(
       h.client.calls
-        .filter((c) => c.path === '/playlists/pl5/items')
+        .filter((c) => c.path === `/playlists/${pl}/items`)
         .map((c) => (c.arg as Record<string, string>).offset),
       ['4', '5'],
     );
@@ -434,10 +449,11 @@ describe('get_playlist (metadata + items two-call flow)', () => {
   it('counts and marks unavailable items exactly as get_playlist_items does', async () => {
     // The same stub fixture, fed to both tools: whatever one says about the
     // item count and the unavailable row, the other must say too (#884).
+    const pl = realPlaylistId(6);
     const fixture = (path: string) => {
-      if (path === '/playlists/pl6') {
+      if (path === `/playlists/${pl}`) {
         return {
-          ...playlistSimple('pl6', 'Mixed', 3),
+          ...playlistSimple(pl, 'Mixed', 3),
           images: [{ url: 'https://i.scdn.co/image/pl6', width: 300, height: 300 }],
         };
       }
@@ -451,8 +467,8 @@ describe('get_playlist (metadata + items two-call flow)', () => {
       };
     };
 
-    const combined = await harness(fixture).invoke('get_playlist', { playlist_id: 'pl6' });
-    const itemsOnly = await harness(fixture).invoke('get_playlist_items', { playlist_id: 'pl6' });
+    const combined = await harness(fixture).invoke('get_playlist', { playlist_id: pl });
+    const itemsOnly = await harness(fixture).invoke('get_playlist_items', { playlist_id: pl });
 
     // Same "3 total, showing 3" count on both tools…
     assert.match(textOf(combined), /\(3 total, showing 3\):/);
@@ -1360,20 +1376,25 @@ describe('remove_from_playlist positional receipt verification (#626)', () => {
   // computed from it would be vacuous.
   function removalHarness() {
     let ids = ['a', 'b', 'c', 'd'];
+    // `get_playlist` resolves its reference, so the id has to be real-shaped
+    // (see `realPlaylistId`); `remove_from_playlist` still takes a plain string
+    // and is given the same value, which is the point — the two tools are
+    // naming the same playlist.
+    const pl = realPlaylistId(8);
     const h = harness((path, arg) => {
-      if (path === '/playlists/pl') {
+      if (path === `/playlists/${pl}`) {
         // Serves both the tool's pre-mutation baseline read and any
         // independent get_playlist count.
-        return { id: 'pl', name: 'P', owner: { id: 'o' }, items: { total: ids.length } };
+        return { id: pl, name: 'P', owner: { id: 'o' }, items: { total: ids.length } };
       }
-      if (path === '/playlists/pl/images') {
+      if (path === `/playlists/${pl}/images`) {
         // #659: `get_playlist` falls back to this endpoint when the playlist
         // object carries no embedded cover, so the fixture above — which has
         // none — makes this a real call. The old stub answered `null` and the
         // strict one refuses to invent it. `[]` is the truthful answer here.
         return [];
       }
-      if (path === '/playlists/pl/items') {
+      if (path === `/playlists/${pl}/items`) {
         // The DELETE carries a `tracks` body; the walk carries paging params.
         if (arg && typeof arg === 'object' && 'tracks' in arg) {
           ids = ids.slice(0, -1);
@@ -1393,13 +1414,13 @@ describe('remove_from_playlist positional receipt verification (#626)', () => {
     const h = removalHarness();
 
     const out = await h.invoke('remove_from_playlist', {
-      playlist_id: 'pl',
+      playlist_id: realPlaylistId(8),
       uris: [{ uri: 'spotify:track:d', positions: [3] }],
     });
     // Independent count, taken through a different tool and a different read
     // than the receipt's own verification walk.
     const independent = await h.invoke('get_playlist', {
-      playlist_id: 'pl',
+      playlist_id: realPlaylistId(8),
       response_format: 'json',
     });
     const independentTotal = (
@@ -1900,15 +1921,16 @@ describe('playlist listings shaping (#51/#52/#53)', () => {
   });
 
   it('get_playlist response_format=json dumps metadata plus fetched items', async () => {
-    const metadata = { ...playlistSimple('pl9', 'JsonView'), images: [] };
+    const pl = realPlaylistId(9);
+    const metadata = { ...playlistSimple(pl, 'JsonView'), images: [] };
     const h = harness((path) =>
-      path === '/playlists/pl9' ? metadata : { items: [], total: 0 },
+      path === `/playlists/${pl}` ? metadata : { items: [], total: 0 },
     );
 
-    const out = await h.invoke('get_playlist', { id: 'pl9', response_format: 'json' });
+    const out = await h.invoke('get_playlist', { id: pl, response_format: 'json' });
 
     const parsed = JSON.parse(textOf(out));
-    assert.equal(parsed.playlist.id, 'pl9');
+    assert.equal(parsed.playlist.id, pl);
     // Raw API shape: items arrive as the paged /items response object.
     assert.deepEqual(parsed.items, { items: [], total: 0 });
   });
@@ -2007,14 +2029,14 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
     assert.equal(h.client.calls.length, 1);
     const text = textOf(out);
-    assert.match(text, /Found 1 duplicate group\(s\) across 5 scanned item\(s\):/);
-    assert.match(text, /1\. "Song A" by Artist t1 — 3 occurrence\(s\) \[same URI\]/);
+    assert.match(text, /Found 1 duplicate group\(s\) across 5 scanned item\(s\) under match_by=uri:/);
+    assert.match(text, /1\. "Song A" by Artist t1 — 3 occurrence\(s\) \[match_by=uri\]/);
     assert.match(text, /URI: spotify:track:t1/);
     assert.match(text, /Positions \(0-based\): 0, 2, 4/);
     assert.match(text, /remove_from_playlist using \{ uri, positions \}/);
   });
 
-  it('groups relinked duplicates: same name+artist under different URIs', async () => {
+  it('a relinked pair is not a duplicate under the default uri rule (#885)', async () => {
     const relinked = (id: string) => ({
       type: 'track',
       name: 'Same Song',
@@ -2031,9 +2053,22 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
     const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
 
-    const text = textOf(out);
-    assert.match(text, /Found 1 duplicate group\(s\) across 3 scanned item\(s\):/);
-    assert.match(text, /"Same Song" by The Artist — 2 occurrence\(s\) \[relinked \/ different URIs\]/);
+    // Under the default `uri` rule the relinked pair is NOT a duplicate: two
+    // different URIs are two different rows. This used to report one
+    // `[relinked / different URIs]` group unconditionally, so a caller asking
+    // "are these the same song?" got "yes" from one tool and "no" from
+    // `playlist_dedupe_advanced`. The `name_artist` rule that DOES find this
+    // pair is now opt-in and exercised in tests/playlistmatch.test.ts (#885).
+    assert.equal(textOf(out), 'No duplicates found across 3 scanned item(s) under match_by=uri.');
+
+    // …and asking for the rule that sees the relink finds exactly this pair.
+    const byName = await harness(() => ({ items, total: items.length, limit: 100, offset: 0 })).invoke(
+      'find_duplicates_in_playlist',
+      { playlist_id: 'pl', match_by: 'name_artist' },
+    );
+    const text = textOf(byName);
+    assert.match(text, /Found 1 duplicate group\(s\) across 3 scanned item\(s\) under match_by=name_artist:/);
+    assert.match(text, /"Same Song" by The Artist — 2 occurrence\(s\) \[match_by=name_artist\]/);
     assert.match(text, /URIs: spotify:track:original, spotify:track:relinked-gb/);
     assert.match(text, /Positions \(0-based\): 0, 2/);
   });
@@ -2047,8 +2082,7 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
     const text = textOf(out);
     assert.match(text, /Found 1 duplicate group\(s\)/);
-    assert.match(text, /\[same URI\]/);
-    assert.ok(!text.includes('[relinked'), 'single-URI repeats must stay exact-uri groups');
+    assert.match(text, /\[match_by=uri\]/);
   });
 
   it('reports no duplicates for a clean playlist', async () => {
@@ -2060,7 +2094,7 @@ describe('find_duplicates_in_playlist (#63)', () => {
 
     const out = await h.invoke('find_duplicates_in_playlist', { playlist_id: 'pl' });
 
-    assert.equal(textOf(out), 'No duplicates found across 2 scanned item(s).');
+    assert.equal(textOf(out), 'No duplicates found across 2 scanned item(s) under match_by=uri.');
   });
 
   it('keeps unavailable (null-track) items occupying positions', async () => {
@@ -2155,7 +2189,7 @@ describe('capped playlist walks are disclosed (#864)', () => {
       text.split('\n')[0].includes('TRUNCATED'),
       'the disclosure must come before the group list, not after it',
     );
-    assert.match(text, /Found 1 duplicate group\(s\) across 500 scanned item\(s\):/);
+    assert.match(text, /Found 1 duplicate group\(s\) across 500 scanned item\(s\) under match_by=uri:/);
   });
 
   it('walkTruncationNotice: names the offset, never an age', () => {
@@ -2221,7 +2255,7 @@ describe('capped playlist walks are disclosed (#864)', () => {
     // here rather than `undefined`. Same wording as before #864.
     assert.equal((out.structuredContent as Record<string, unknown>).scan_truncated, false);
     assert.doesNotMatch(textOf(out), /TRUNCATED/);
-    assert.equal(textOf(out), 'No duplicates found across 2 scanned item(s).');
+    assert.equal(textOf(out), 'No duplicates found across 2 scanned item(s) under match_by=uri.');
   });
 
   it('add_to_playlist: the dry run discloses how much of the playlist the dedupe saw', async () => {
@@ -2376,24 +2410,26 @@ describe('#110 playlist_id naming standardisation', () => {
   };
 
   it('accepts canonical playlist_id on every tool that previously required id', async () => {
+    const pl = realPlaylistId(1);
     const h = harness(readResponder);
-    await h.invoke('get_playlist', { playlist_id: 'pl1' });
-    await h.invoke('update_playlist', { playlist_id: 'pl1', name: 'X' });
-    await h.invoke('get_playlist_items', { playlist_id: 'pl1' });
-    await h.invoke('get_playlist_cover', { playlist_id: 'pl1' });
+    await h.invoke('get_playlist', { playlist_id: pl });
+    await h.invoke('update_playlist', { playlist_id: pl, name: 'X' });
+    await h.invoke('get_playlist_items', { playlist_id: pl });
+    await h.invoke('get_playlist_cover', { playlist_id: pl });
 
     assert.ok(h.client.calls.length >= 3, 'every invocation should reach the API');
-    assert.ok(h.client.calls.every((c) => c.path.startsWith('/playlists/pl1')));
+    assert.ok(h.client.calls.every((c) => c.path.startsWith(`/playlists/${pl}`)));
   });
 
   it('keeps the legacy id alias working on all four tools', async () => {
+    const pl = realPlaylistId(2);
     const h = harness(readResponder);
-    await h.invoke('get_playlist', { id: 'pl2' });
-    await h.invoke('update_playlist', { id: 'pl2', name: 'Y' });
-    await h.invoke('get_playlist_items', { id: 'pl2' });
-    await h.invoke('get_playlist_cover', { id: 'pl2' });
+    await h.invoke('get_playlist', { id: pl });
+    await h.invoke('update_playlist', { id: pl, name: 'Y' });
+    await h.invoke('get_playlist_items', { id: pl });
+    await h.invoke('get_playlist_cover', { id: pl });
 
-    assert.ok(h.client.calls.every((c) => c.path.startsWith('/playlists/pl2')));
+    assert.ok(h.client.calls.every((c) => c.path.startsWith(`/playlists/${pl}`)));
   });
 
   it('accepts id and playlist_id together when they agree', async () => {
@@ -2404,15 +2440,32 @@ describe('#110 playlist_id naming standardisation', () => {
   });
 
   it('rejects conflicting id and playlist_id values before any API call', async () => {
+    // Real-shaped ids, because `get_playlist` resolves its reference before the
+    // handler ever sees it — a conflict check fed two nonsense strings would
+    // be passing on a ZodError rather than on the check under test.
+    const a = realPlaylistId(1);
+    const b = realPlaylistId(2);
     for (const tool of ['get_playlist', 'update_playlist', 'get_playlist_items', 'get_playlist_cover']) {
       const h = harness();
       await assert.rejects(
-        () => h.invoke(tool, { playlist_id: 'aaa', id: 'bbb' }),
-        /Conflicting values: playlist_id \("aaa"\) and id \("bbb"\)/,
+        () => h.invoke(tool, { playlist_id: a, id: b }),
+        new RegExp(`Conflicting values: playlist_id \\("${a}"\\) and id \\("${b}"\\)`),
         `${tool} must reject conflicting ids`,
       );
       assert.equal(h.client.calls.length, 0, `${tool} must not call the API on conflict`);
     }
+  });
+
+  it('treats a URI and its bare id as the same value, not a conflict', async () => {
+    // #914: `get_playlist` now normalises both parameters through the shared
+    // resolver BEFORE the conflict check, so the pair
+    // `playlist_id: spotify:playlist:<id>` + `id: <id>` agrees instead of
+    // tripping "Conflicting values". Before the migration the check compared
+    // raw strings and the same entity written two ways looked like a conflict.
+    const pl = realPlaylistId(7);
+    const h = harness(readResponder);
+    await h.invoke('get_playlist', { playlist_id: `spotify:playlist:${pl}`, id: pl });
+    assert.ok(h.client.calls.every((c) => c.path.startsWith(`/playlists/${pl}`)));
   });
 
   it('error when neither parameter is supplied names both accepted params', async () => {

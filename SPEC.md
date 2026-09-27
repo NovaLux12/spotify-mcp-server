@@ -556,12 +556,76 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_followed_artists` | GET | `/me/following?type=artist` — cursor-based pagination: `after` is the artist ID of the last returned item, not a numeric offset |
 | `check_following_artists` | GET | `/me/library/contains?uris=spotify:artist:…` — one URI per artist, same order as the input |
 
+### 4.0.5 Matching vocabulary: duplicates and artist credits (#885)
+
+Sibling playlist tools that agents treat as interchangeable used to apply
+different rules, so one playlist produced a different duplicate count per tool
+and a different artist count per tool, with nothing in the payload saying which
+rule produced it. The vocabulary below is defined once, in
+`src/playlistmatch.ts`, and every tool that reports or collapses duplicates or
+matches a track against an artist goes through it. There is no per-tool
+alternative.
+
+**`match_by` — when two playlist items are the same.** One parameter, declared
+once, accepted by all five duplicate tools: `playlist_health_check`,
+`find_duplicates_in_playlist`, `playlist_dedupe_advanced`,
+`remove_duplicate_playlist_items`, `clean_all_playlists`.
+
+| `match_by` | Rule | Catches |
+|---|---|---|
+| `uri` (default) | exact URI | the same track object added twice |
+| `name_artist` | case-insensitive name + the full set of credited artist names | a relink or remaster published under a new URI |
+| `name` | case-insensitive name only | the widest rule; two different songs sharing a title collapse into one group |
+
+Two consequences are deliberate. `name_artist` **sorts** the artist names before
+comparing, so `"A feat. B"` and `"B feat. A"` do not split one song into two
+groups. And a row with no URI — an unavailable or local item — is never grouped
+or collapsed against anything, because grouping it under an empty key would
+report every unavailable row as a duplicate of every other one.
+
+Every duplicate tool echoes the rule it applied as `match_by` in both
+`structuredContent` and the prose, including when it found nothing. A zero is a
+statement about a named rule; a zero with no rule named is indistinguishable
+from a matcher that matched nothing.
+
+`remove_duplicate_playlist_items` and `clean_all_playlists` also accept the
+retired `include_relinked` boolean for one release. `true` maps to
+`name_artist` and `false` to `uri` — the only two rules it could express. A call
+carrying both inputs where they mean different rules is refused by name rather
+than silently resolved, and a call that used the boolean carries
+`deprecated_inputs` and `deprecation_note` in `structuredContent` plus the same
+one-line note in the text.
+
+**`include_featured` — whether a featured credit counts.** One parameter,
+declared once, accepted by every artist tool: `playlist_artist_heat`,
+`playlist_exclude_artists`, `playlist_remove_artist`, `playlist_keep_artist`,
+`playlist_keep_only`, `playlist_move_to_top`. The default is `true`: count
+every credited artist. `false` credits only the primary (first) credit on each
+track, which is the measurement `playlist_artist_heat` used to produce.
+
+**How an artist reference is matched.** A reference is resolved through the
+shared reference policy (§4.0.4), so a bare 22-character id, a
+`spotify:artist:…` URI and an open.spotify.com artist URL all land on the same
+id, and anything else is treated as a name. A track matches on id **or**
+case-insensitive name, never on a rule that silently excludes one of them — an
+id-shaped reference is tried as an id and, if the row carries no matching id,
+as the literal text the caller passed. `playlist_exclude_artists` additionally
+returns `matched_artists` and `unmatched_artists`, which partition the caller's
+input, so "this artist has no track here" and "this reference was compared
+against the wrong field" are distinguishable from the result alone.
+
+The parity test that holds all of this together is
+`tests/playlistmatch.test.ts`: for one fixture containing a URI repeat, a
+relink, a featured credit and a same-title/different-artist pair, every
+duplicate tool reports the same group count for the same `match_by`, and every
+artist tool agrees on the track count for the same `include_featured`.
+
 ---
 
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **570 tools** (all 570 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 139,718 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **570 tools** (all 570 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 141,637 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1486,7 +1550,7 @@ The tool description changed with it, and that is the part a host reads before t
 
 **A playlist at or below the cap is unchanged**: `truncated: false`, `items_read === items_total`, no `fetch_all_cap` or `truncated_by_cap` in the payload, and no shortfall sentence in the prose. A caller must be able to tell the two apart from the response alone, in either direction.
 
-**Not a migration:** no call that succeeded before fails now, and no call that produced a complete answer produces anything different. What changes is that a partial answer says so. The `[18, 21559]` manifest baseline moved to `[18, 21751]` (+192B, description text only, tool count unchanged). Both figures are measurements, and the endpoint is the one measured on the *merged* tree: `playlist_balance` shares this module with `playlist_clone_snapshot`, so a branch that measures before that sibling lands reports a smaller module than the one that actually ships.
+**Not a migration:** no call that succeeded before fails now, and no call that produced a complete answer produces anything different. What changes is that a partial answer says so. The module's schema baseline moved — description text only, tool count unchanged. The authoritative figures are the generated `schema-budget-table` in `docs/schema-budgets.md`, which is regenerated from the live registry on every change; a hand-copied pair of numbers here is only a second place for the figure to be wrong, and this module is shared with `playlist_clone_snapshot`, so any sibling change moves it again.
 
 #### `merge_playlists`
 Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.
@@ -1626,11 +1690,13 @@ Replace ALL items in a playlist with the supplied URIs, overwriting the current 
 ---
 
 #### `find_duplicates_in_playlist`
-Find duplicate tracks in a playlist: exact URI repeats plus relinked copies of the same song appearing under different URIs (matched on normalised name + artists). Walks every page of items via `client.getAllPages`; reported positions are 0-based API indexes that can be fed straight back into `remove_from_playlist`'s `{ uri, positions }` entries.
+Find duplicate tracks in a playlist under one published rule. `match_by` selects which, and defaults to `uri` (exact repeats). Walks every page of items via `client.getAllPages`; reported positions are 0-based API indexes that can be fed straight back into `remove_from_playlist`'s `{ uri, positions }` entries.
 
-**Inputs:** `playlist_id` (string, required), shared response fields (`response_format`, `max_results`)
+**Inputs:** `playlist_id` (string, required), `match_by` (see [§4.0.5](#405-matching-vocabulary-duplicates-and-artist-credits-885); `uri` | `name_artist` | `name`, default `uri`), shared response fields (`response_format`, `max_results`)
 
-**Returns:** per group: track label, occurrence count and kind (`same URI` vs `relinked / different URIs`), the URIs involved, and 0-based positions; structuredContent includes `scanned` item count.
+**Returns:** per group: track label, occurrence count, the rule that produced the group, the URIs involved, and 0-based positions; structuredContent includes `scanned` and the applied `match_by`. The post-removal verification re-applies the same rule, so "no duplicates remain" is a statement about the rule the caller asked for.
+
+Before #885 this tool counted an exact-URI group and a relinked group as two separate groups and reported no rule, so the same playlist yielded a different count here than in `playlist_health_check` or `playlist_dedupe_advanced`.
 
 ---
 
@@ -1962,6 +2028,25 @@ The `account` row names the acting account's `account_id`, its `id`, its `displa
 
 Requirements are **either-of** where the scope gate is either-of: a caller holding only `playlist-modify-public` can create a playlist, so the doctor does not also ask for `playlist-modify-private`. `upload_playlist_cover` is its own group requiring `ugc-image-upload` **in addition to** a playlist-modify scope, and is not reported at all when neither modify scope is granted — the precondition gap is the actionable one. Under `SPOTIFY_MCP_READONLY` the row is a single `info` explaining that write tools are unregistered, because "the grant is sufficient" would be a verdict on a comparison that did not happen. Skipped requirements are named in the row's detail (`not checked — …`) so an absent gap is legible rather than silent.
 
+
+### 5.14 Spotify reference inspection (#915)
+
+Six local, zero-network tools that parse and canonicalise references using the **same** policy an entity-id parameter is built from. They make no Spotify API call; their purpose is inspection and canonicalisation.
+
+| Tool | Purpose |
+|---|---|
+| `parse_spotify_uri` | one reference → `{ form, kind, id, valid, canonical_uri, error }` |
+| `parse_spotify_uris` | up to 500 references through the same policy |
+| `format_spotify_uri` | build a `spotify:<kind>:<id>` URI from a reference |
+| `canonicalize_spotify_uri` | every accepted form → the one canonical URI |
+| `dedupe_spotify_uris` | order-preserving unique URIs |
+| `spotify_uri_stats` | count references, `group_by` `form` or `kind` |
+
+`parse_spotify_uri` is the tool an agent reaches for to ask "is this a valid reference?", so it must not disagree with the resolver that actually gates the request. `tests/refs.parity.test.ts` is that guarantee: a table of 28 references — every documented form, a lookalike host, an unrelated host, kind mismatches, malformed lengths, an unknown kind, and four `Object.prototype` keys used as entity kinds — is fed to `parse_spotify_uri` **and** to `spotifyId()`, the schema every resolver-backed parameter is built from, and both must return the same verdict and the same bare id.
+
+**The policy, stated once.** A reference is a bare catalog id of exactly 22 URL-safe characters (`user` ids are one or more URL-safe characters), a `spotify:<kind>:<id>` URI, a `spotify://<kind>/<id>` link, or an `open.spotify.com` share URL — including its localised `/intl-<locale>/` form and any query string. The host check is exact-string: `open.spotify.com.evil.test` is rejected. Kinds come from a `Map`, not an object literal, so `spotify:constructor:<id>` cannot resolve a kind. A kind mismatch (`spotify:playlist:…` where a track was expected) is rejected, not reinterpreted.
+
+The other `spotify:`-shaped patterns in `src/` are not a second parser: `src/resources/index.ts` matches a *resource address* (`spotify://playlist/<id>/tracks`) to route a host read, which is a different namespace from an entity reference, and prompt text quotes reference syntax in prose.
 
 ## 6. Resources
 

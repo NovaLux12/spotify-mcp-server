@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 585,393B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 66,492B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 26,607B | 4.3% of the enforced limit |
+| Measured `tools/list` payload | 591,276B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 66,492B | 11.2% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 20,724B | 3.4% of the enforced limit |
 
-Headroom is **26,607B** of the 612,000B enforced limit — 4.3% — so the aggregate budget is **tight**.
+Headroom is **20,724B** of the 612,000B enforced limit — 3.4% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -171,7 +171,7 @@ than maintained.
 | users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
-| playlists | 26 | 24,643 | 26 | 24,643 | 27 | 27,108 |
+| playlists | 26 | 26,562 | 26 | 26,562 | 27 | 29,219 |
 | playlistops | 3 | 4,392 | 3 | 4,392 | 4 | 4,832 |
 | playlistbatch | 3 | 4,896 | 3 | 4,896 | 4 | 5,386 |
 | playlistfollow | 4 | 3,027 | 4 | 3,027 | 5 | 3,330 |
@@ -208,7 +208,7 @@ than maintained.
 | playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
 | playbackintel | 15 | 11,773 | 15 | 11,773 | 16 | 12,951 |
 | scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
-| playlisthealth | 8 | 5,080 | 8 | 5,080 | 9 | 5,588 |
+| playlisthealth | 8 | 5,713 | 8 | 5,713 | 9 | 6,285 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
 | import | 1 | 1,322 | 1 | 1,322 | 2 | 1,455 |
@@ -217,7 +217,7 @@ than maintained.
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,518 | 23 | 17,518 | 24 | 19,270 |
-| exhaust2playlists | 18 | 22,547 | 18 | 22,547 | 19 | 24,802 |
+| exhaust2playlists | 18 | 24,403 | 18 | 24,403 | 19 | 26,844 |
 | exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,092 | 3 | 4,092 | 4 | 4,502 |
 | swarm3discovery | 24 | 22,483 | 24 | 22,483 | 25 | 24,732 |
@@ -229,7 +229,7 @@ than maintained.
 | swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
 | swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
-| swarm4playlists | 18 | 21,751 | 18 | 21,751 | 19 | 23,927 |
+| swarm4playlists | 18 | 23,226 | 18 | 23,226 | 19 | 25,549 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared

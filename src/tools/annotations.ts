@@ -1287,7 +1287,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // tracks without saying it rewrites the whole base. A description that
   // understates what a tool destroys is the #922 class this module keeps
   // paying down. Measured, not derived.
-  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 24643]),
+  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26562]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3027], { scopeKey: 'playlistfollow' }),
@@ -1509,7 +1509,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // measured off the other's tree — this figure is the merged measurement.
   manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11773], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
-  manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5080], { scopeKey: 'playlists' }),
+  manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5713], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 1 tool and same input schema. The baseline in
@@ -1543,7 +1543,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // by name, because those are derived analytics the default registry does not
   // serve and a description must not advertise a tool that is absent. +45B.
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17518], { scopeKey: 'playback' }),
-  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 22547], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
   // shared `DryRunScan` preview and the two scan tools' longer truthful-cost
@@ -1618,7 +1618,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the ceiling and points at the payload fields that say whether the split
   // was whole. The tool's answer is unchanged for any playlist at or below
   // the cap, so this is description text paying for a claim that was false.
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21751], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 23226], { scopeKey: 'playlists' }),
 
 
 ] as const;
