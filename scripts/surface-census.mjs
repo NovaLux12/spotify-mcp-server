@@ -668,6 +668,14 @@ function serializedFinalizedSchemaBytes(tool) {
   return Buffer.byteLength(JSON.stringify({
     description: String(tool.description ?? ''),
     inputSchema: tool.inputSchema ?? {},
+    // `outputSchema` was measured out of existence here for the same reason it
+    // was out of the aggregate measurement (#1376): the field is on the
+    // finalized wire tool, so excluding it reported a per-module byte count
+    // that no host ever received. The `...(x ? {} : null)` form omits the key
+    // entirely when there is no output schema, which is what `JSON.stringify`
+    // does with `undefined` and what keeps a no-schema tool byte-identical to
+    // its pre-#1376 measurement.
+    ...(tool.outputSchema === undefined ? null : { outputSchema: tool.outputSchema }),
   }), 'utf8');
 }
 

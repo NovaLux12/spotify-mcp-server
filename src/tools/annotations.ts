@@ -42,9 +42,8 @@ import {
   ListToolsRequestSchema,
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { getObjectShape, getSchemaDescription, normalizeObjectSchema, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
-import { finalInputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
+import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
+import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -865,12 +864,19 @@ export interface AggregateSurfaceMeasurement {
 }
 
 export function collectAggregateSurfaceMeasurement(server: McpServer): AggregateSurfaceMeasurement {
-  const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry & { annotations?: unknown; title?: string; outputSchema?: unknown; execution?: unknown; _meta?: unknown }> })._registeredTools ?? {};
+  const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry & { annotations?: unknown; title?: string; execution?: unknown; _meta?: unknown }> })._registeredTools ?? {};
   const tools = Object.entries(registry).filter(([, tool]) => tool.enabled !== false).map(([name, tool]) => ({
     name,
     title: tool.title,
     description: tool.description,
     inputSchema: applyStableListDefaults(name, finalInputSchema(tool.inputSchema)),
+    // `outputSchema` was missing from this literal while the boundary emitted
+    // it (#1376), so a tool declaring one was charged nothing for bytes every
+    // host receives. `finalOutputSchema` is the boundary's own projection, so
+    // this measures the payload rather than a second reconstruction of it.
+    // The key is still written for every tool: `JSON.stringify` drops an
+    // `undefined` value, so a tool that declares none costs the same as before.
+    outputSchema: finalOutputSchema(tool.outputSchema),
     annotations: tool.annotations,
     execution: tool.execution,
     _meta: tool._meta,
@@ -1469,6 +1475,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
 interface SchemaRegistryEntry {
   description?: string;
   inputSchema?: unknown;
+  /**
+   * A tool's declared output schema (#1376). Present in the SDK registry and
+   * emitted by the tools/list boundary, but absent from this interface until
+   * now — which is how a budget could be computed over a registry whose type
+   * did not admit the field it was failing to charge for.
+   */
+  outputSchema?: unknown;
   enabled?: boolean;
 }
 
@@ -1692,11 +1705,19 @@ export function moduleToolNames(server: McpServer, moduleKey: string): readonly 
 }
 
 /** UTF-8 bytes for description + the same JSON Schema emitted by tools/list. */
-export function serializedSchemaBytes(schema: Pick<SchemaRegistryEntry, 'description' | 'inputSchema'>, toolName?: string): number {
+export function serializedSchemaBytes(
+  schema: Pick<SchemaRegistryEntry, 'description' | 'inputSchema' | 'outputSchema'>,
+  toolName?: string,
+): number {
   const inputSchema = applyStableListDefaults(toolName ?? '', finalInputSchema(schema.inputSchema));
   return Buffer.byteLength(JSON.stringify({
     description: String(schema.description ?? ''),
     inputSchema,
+    // Same omission the aggregate measurement had (#1376): an output schema is
+    // bytes a host receives, so a module declaring one must be charged for it
+    // against its own ceiling. `undefined` is dropped by JSON.stringify, so a
+    // module declaring none measures exactly as it did before.
+    outputSchema: finalOutputSchema(schema.outputSchema),
   }), 'utf8');
 }
 
@@ -2457,10 +2478,11 @@ export function installToolErrorBoundary(server: McpServer): number {
         if (entry.execution !== undefined) definition.execution = entry.execution;
         if (entry._meta !== undefined) definition._meta = entry._meta;
         if (entry.outputSchema) {
-          const outputObject = normalizeObjectSchema(entry.outputSchema);
-          if (outputObject) {
-            definition.outputSchema = toJsonSchemaCompat(outputObject, { pipeStrategy: 'output' });
-          }
+          // `finalOutputSchema` is the same projection the schema budget
+          // measures with (#1376). Both sides call it so the gate and the wire
+          // cannot disagree about what an output schema serializes to.
+          const outputSchema = finalOutputSchema(entry.outputSchema);
+          if (outputSchema) definition.outputSchema = outputSchema;
         }
         return definition;
       }),
