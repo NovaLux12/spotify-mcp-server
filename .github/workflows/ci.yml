@@ -36,6 +36,15 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Test-tree typecheck budget
+        # #1408. `tsconfig.json` includes only `src`, so the typecheck above has
+        # never seen a test file, and `tsx` strips types rather than checking
+        # them — a test naming a symbol that does not exist runs and passes.
+        # The count is baselined rather than zero: this fails only on an
+        # INCREASE (in total, or in any single file), so the debt can only fall
+        # and each landed fix ratchets the baseline down with --write.
+        run: npm run check:tests-typecheck
+
       - name: Payload-shape guard (no `as any` under src/tools)
         # #758. `as any` at a payload boundary is the cast that turns off the
         # check which would otherwise catch a Spotify field rename, so it is

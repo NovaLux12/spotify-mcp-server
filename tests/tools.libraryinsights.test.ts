@@ -35,6 +35,11 @@ import { StubFromResponder } from './helpers/stub-client.js';
 import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerLibraryInsightsTools, loadGenreTags, type GenreTagStore } from '../src/tools/libraryinsights.js';
 import { initConfig } from '../src/config.js';
+// `SpotifyClient` names the registrar's client parameter below. It was never
+// imported, so that annotation referred to nothing; tsx strips type positions
+// and the suite stayed green. Imported as a type — it is only ever a type
+// position here (#1408).
+import type { SpotifyClient } from '../src/client.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.playlists-following.test.ts)

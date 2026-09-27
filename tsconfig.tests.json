@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2024"]
+  },
+  "include": [
+    "src/**/*",
+    "tests/**/*"
+  ]
+}

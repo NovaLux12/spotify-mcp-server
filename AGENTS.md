@@ -287,6 +287,7 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 | `npm run count:tools -- --write` | Refreshes the generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
+| `npm run check:tests-typecheck` | Typechecks `tests/` and fails only on an INCREASE over `tsconfig.tests-baseline.json`, in total or in any single file (#1408). CI runs this. `--write` refreshes the baseline. |
 | `node scripts/check-doc-tool-counts.mjs` | Fails if a registry-scale tool count (100+, measured) appears in a hand-written `src/` comment or in document prose. Has no npm script — `tests/doc-figures.test.ts` drives it, so CI runs it. `--census-file <path>` reuses a census; `--root <dir>` points it at a copy of the tree. |
 | `node scripts/check-release-history.mjs` | Fails if a release tag has no `CHANGELOG.md` section, a section has no tag, or `package.json` is ahead of the changelog. CI runs this, and CI first runs `git fetch --tags` — `actions/checkout` fetches no tags at the default depth, and the gate exits non-zero rather than comparing an empty list. |
 | `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
@@ -519,6 +520,40 @@ a write tool, check that the read-only gate still hides it.
   `tests/tool.surface.test.ts`, and add the name to `retiredToolNames` in
   `scripts/check-doc-tool-names.mjs` **only** so a migration note can name what
   it replaces.
+
+### The test-tree typecheck budget
+
+`tsconfig.json` includes only `src`, so `npx tsc --noEmit` has never seen a
+test file, and `tsx` strips types rather than checking them. A test that names a
+type which does not exist, calls a generic with a type argument its receiver
+does not accept, or references a variable out of scope runs and passes.
+`tsconfig.tests.json` adds `tests/` and the gate measures the result.
+
+It is a **budget, not a zero gate**. The count is large and fixing it is a
+mechanical change across ~100 files, so the gate compares against
+`tsconfig.tests-baseline.json` and fails only on an **increase** — in the total
+or in any single file, so the count cannot be held flat by fixing one file and
+breaking another. A file with no baseline entry is an automatic failure, so a
+new test cannot arrive carrying errors. `--write` refreshes the baseline; the
+diff is the record of what changed.
+
+Two things make it trustworthy, and both are asserted in
+`tests/tests-typecheck-budget-gate.test.ts`:
+
+- **It fails closed.** `tsc` reports a bad path or an unreadable config as a
+  run-level error (`TS5058`, `TS2688`) with *no* `file(line,col)` prefix. A
+  parser that only matches per-file diagnostics reads that as "zero errors" and
+  the gate reports a comfortable pass having measured nothing. Run-level errors
+  are collected separately and exit non-zero.
+- **It is proven to fail.** Lowering the baseline, introducing a real type
+  error, and pointing the gate at an unreadable project each assert a non-zero
+  exit — against the real CLI, not a reimplementation of it.
+
+Do not silence a new error with `@ts-nocheck`, a blanket `any`, or by widening
+the baseline. The remaining errors are mostly `FakeClient`-shaped test doubles
+drifting from `SpotifyClient`, and they are worth fixing at the source
+signature. When the count reaches 0, this budget is replaced by `tests/**/*`
+joining the main typecheck. Related: #585.
 
 ### The doc-name gate
 

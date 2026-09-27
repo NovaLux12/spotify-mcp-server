@@ -275,7 +275,7 @@
         "label": "3. Commands"
       },
       {
-        "hash": "1d592fc01b13a615",
+        "hash": "56a565a3e2bc8338",
         "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
       },
       {
@@ -445,6 +445,34 @@
       {
         "hash": "3058ab54b677de5a",
         "label": "Retiring a tool name is different: delete it, pin its ab…"
+      },
+      {
+        "hash": "00fffd52e88e682b",
+        "label": "The test-tree typecheck budget"
+      },
+      {
+        "hash": "9e88db1bbcf6de97",
+        "label": "tsconfig.json includes only src, so npx tsc --noEmit has…"
+      },
+      {
+        "hash": "9d960a9928182a98",
+        "label": "It is a budget, not a zero gate. The count is large and …"
+      },
+      {
+        "hash": "2bd95e0fa1b24e53",
+        "label": "Two things make it trustworthy, and both are asserted in…"
+      },
+      {
+        "hash": "5d758ad22d015352",
+        "label": "It fails closed. tsc reports a bad path or an unreadable…"
+      },
+      {
+        "hash": "d460feba5e100e15",
+        "label": "It is proven to fail. Lowering the baseline, introducing…"
+      },
+      {
+        "hash": "62dcb79a42472277",
+        "label": "Do not silence a new error with @ts-nocheck, a blanket a…"
       },
       {
         "hash": "a57f39ddb9273ef5",
@@ -4871,6 +4899,13 @@
     ]
   },
   "retired": [
+    {
+      "file": "AGENTS.md",
+      "hash": "1d592fc01b13a615",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-09-27",
+      "reason": "added the check:tests-typecheck row to the Commands table for #1408, which changed the pinned paragraph"
+    },
     {
       "file": "AGENTS.md",
       "hash": "2baa4ae7670cf60a",

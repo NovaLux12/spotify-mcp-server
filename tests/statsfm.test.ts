@@ -449,7 +449,15 @@ const ENTITY = { track: 5816601, album: 796569, artist: 310770 };
  * Verified live 2026-09-27: `/users/{id}/streams/tracks/{id}/stats` and the
  * artist route answer `{ items: {...} }`, while the album route answers
  * `{ item: {...} }`. `durationMs` and `count` are the entity's real totals.
+ *
+ * The name mirrors `src/tools/statsfm.ts`'s own module-private `J`
+ * (`Record<string, any>`), which is deliberately not exported — so this file
+ * named a type that existed nowhere. tsx strips type positions, so the
+ * annotation vanished at runtime and nothing failed until `tests/` was
+ * typechecked (#1408). Declared here, next to the fixtures that use it.
  */
+type J = Record<string, any>;
+
 function aggregateStats(
   count: number,
   envelope: 'items' | 'item' = 'items',
