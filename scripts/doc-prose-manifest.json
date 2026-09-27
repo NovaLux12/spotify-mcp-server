@@ -2977,6 +2977,50 @@
         "label": "SPOTIFYMCPCONFIRM=never (value exactly never) remains th…"
       },
       {
+        "hash": "5f16d464c4561ea6",
+        "label": "Bulk playlist-item removal gates (#1568)"
+      },
+      {
+        "hash": "33828af75725276c",
+        "label": "Four tools delete from /playlists/{id}/items in a chunke…"
+      },
+      {
+        "hash": "f3b8d63d28ba8bb6",
+        "label": "| Tool | Max removed in one call | Gate | |---|---|---| …"
+      },
+      {
+        "hash": "8a23783a5b78f5e8",
+        "label": "Why two thresholds and not one. The first two are remova…"
+      },
+      {
+        "hash": "9f068f2eea633e5e",
+        "label": "The prompt names the number the write acts on. This is t…"
+      },
+      {
+        "hash": "8cf59122900808f5",
+        "label": "removeplaylistrange — doomed.length, the exact size of t…"
+      },
+      {
+        "hash": "fa54591692b7a070",
+        "label": "playlistexcludeartists — positions.length, the flattened…"
+      },
+      {
+        "hash": "67297c0ab9835217",
+        "label": "movetracksbetweenplaylists — moving.length."
+      },
+      {
+        "hash": "b9a8c66028cf6557",
+        "label": "balanceplaylistpairs — summed over outboundBySrc, the ma…"
+      },
+      {
+        "hash": "9325655b36a9419e",
+        "label": "A refusal is zero deletes, and it leaves nothing behind.…"
+      },
+      {
+        "hash": "e1dcf0d9818da48e",
+        "label": "What is deliberately unchanged. restoreplaylistfromsnaps…"
+      },
+      {
         "hash": "246bac0ce9d16c81",
         "label": "Purpose and provenance on stored-data writes (#708)"
       },
@@ -7102,9 +7146,9 @@
     }
   ],
   "provenance": {
-    "head": "36af21414a43d95f5046fddb69a1c162685481e2",
-    "base": "44d395ddeaab2395d4dd5ae0621bee59774a17a7",
-    "upstream": "44d395ddeaab2395d4dd5ae0621bee59774a17a7",
+    "head": "beb6e7d74120cc0df2518da8e55fa8a9c1dbacd7",
+    "base": "ee364a8ade0db5fd88a2baa75f83aa3e1afb51be",
+    "upstream": "ee364a8ade0db5fd88a2baa75f83aa3e1afb51be",
     "behind": false
   },
   "reanchored": [
