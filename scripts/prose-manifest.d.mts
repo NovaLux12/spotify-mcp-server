@@ -138,9 +138,21 @@ export function proseDrift(
 
 /**
  * One `--reanchor` request, as the CLI parses it: a pinned `file:hash` and the
- * replacement, named either by the paragraph's hash or by its text.
+ * replacement, named by the paragraph's hash, by a `file:hash` qualified to the
+ * same file, or by the replacement's own text.
  */
 export type ProseReanchorRequest = { file: string; hash: string; to: string; reason: string };
+
+/**
+ * The `<file>:<hash>` a `--to` value may be qualified with, or null when it is
+ * not one (#1552).
+ *
+ * Only the tail is shape-tested, because the rest of a `--to` value is arbitrary
+ * replacement prose; the caller decides what to do with a non-null result whose
+ * `file` does not match the `--reanchor` target, and `resolveReanchors` refuses
+ * it by name.
+ */
+export function qualifiedHash(value: string): { file: string; hash: string } | null;
 
 /** Why a reanchor request was refused. Every one of them is the replacement check seen from a side. */
 export type ProseReanchorRefusal = {
@@ -148,6 +160,7 @@ export type ProseReanchorRefusal = {
     | 'unpinned'
     | 'unscanned'
     | 'replacement-absent'
+    | 'replacement-elsewhere'
     | 'chained'
     | 'source-present'
     | 'replacement-pinned';

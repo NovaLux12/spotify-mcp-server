@@ -616,7 +616,7 @@ function proseReanchorRequests() {
     return {
       file,
       hash,
-      to: value(to[index], '--to', '"<the replacement prose, or its hash>"'),
+      to: value(to[index], '--to', '"<the replacement prose, its bare hash, or \\"<file>:<hash>\\">"'),
       reason: value(why[index], '--why', '"why this sentence was reworded"'),
     };
   });
@@ -1123,6 +1123,12 @@ if (args.includes('--prose-sync')) {
       + `\n  reworded in place  --prose-sync --reanchor "<file>:<hash>" --to "<new prose>" --why "<why>"`
       + '\n                         records the old and the new hash; the tool refuses unless the replacement is'
       + '\n                         already in the file, so it can never restore prose that is not there.'
+      // The one asymmetry in the flag set, stated here because it is the thing
+      // that is not guessable from the two argument lists (#1552).
+      + '\n                         `--to` takes the new prose, a bare "<hash>", or a "<file>:<hash>" qualified to the'
+      + '\n                         same file as `--reanchor`. A `--reanchor` key must be qualified because a bare'
+      + '\n                         hash is ambiguous; a `--to` value never is, because the file it lands in is the'
+      + '\n                         file being reanchored. A `--to` qualified to a *different* file is refused by name.'
       + '\n  deliberately gone  --prose-sync --retire "<reason>"'
       + '\n                         records the reason and the date, and names no successor.'
       + '\nProse that vanished because a conflict in a mixed file was resolved with --ours or --theirs is neither:'
