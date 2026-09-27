@@ -687,3 +687,141 @@ test('SPOTIFY_MCP_DISABLE_TOOLS is honoured on the production path (#791 vacuity
   assert.ok(!control.toolNames.has('get_artist_genres'), 'disabling the browse key must remove get_artist_genres from tools/list');
   assert.ok(control.toolNames.size < ungated.toolNames.size, 'the disabled-module profile must have a strictly smaller tool list');
 });
+
+// ------------------------------------------- #1359: the three live call sites
+//
+// #1359 filed against AGENTS.md's never-call table naming /browse/categories
+// while the family still had three live call sites. The table row moved above
+// it; these tests hold the RUNTIME half of that claim, which the doc row and
+// the census's per-tool cross-check both rest on: each of the three must fail
+// loudly, and none may report a failed read as an empty category tree.
+//
+// The premise was re-derived for this change, not inherited: the Feb 2026
+// changelog marks /browse/categories and /browse/categories/{id} [REMOVED] but
+// names no [REMOVED] entry for /{id}/playlists, and the live OpenAPI schema
+// still publishes all three carrying `deprecated: true` with documented 200
+// responses. So the family's runtime truth is registration-dependent, which is
+// why the honest per-tool outcome is a disclosure and not a deletion. Nothing
+// here asserts a live HTTP status — these are fakes, and no probe was run.
+
+/** Registers the three live callers against a client driven by `respond`. */
+function browseCallers(respond: (path: string) => unknown) {
+  const client = makeFakeClient((path) => respond(path));
+  installGatedPathContract(client);
+  const registered: RegisteredTool[] = [];
+  registerCatalogTools(makeServer(registered) as never, client as never);
+  registerExhaust2CatalogTools(makeServer(registered) as never, client as never);
+  return ['get_category', 'browse_category_deepdive', 'category_resolver']
+    .map((name) => find(registered, name));
+}
+
+test('#1359 all three browse-categories callers disclose a gated 403', async () => {
+  // The 403 is the state a current registration is expected to hit. Each tool
+  // must SAY so. `category_resolver` returns a `gated: true` body (its
+  // documented contract); the two catalog tools throw a message naming the
+  // February 2026 removal. None may answer with a category list.
+  const tools = browseCallers((path) =>
+    path.startsWith('/browse/categories') ? new SpotifyApiError(403, 'Forbidden') : null,
+  );
+  for (const tool of tools) {
+    if (tool.name === 'category_resolver') {
+      const out = await tool.handler({ text: 'chill' });
+      assert.equal(out.structuredContent?.gated, true, `${tool.name} must disclose gated: true on a 403`);
+      assert.equal(out.structuredContent?.endpoint, '/browse/categories');
+      assert.match(text(out), /app-registration gated/);
+      continue;
+    }
+    await assert.rejects(
+      tool.handler({ category_id: 'mood' }),
+      (err: Error) => {
+        assert.match(err.message, /browse-category lookup/, `${tool.name} must name the failed lookup`);
+        assert.match(err.message, /Spotify answered 403/);
+        assert.match(err.message, /February 2026/, `${tool.name} must name the removal`);
+        return true;
+      },
+      `${tool.name} must throw on a gated 403 rather than return a category`,
+    );
+  }
+});
+
+test('#1359 category_resolver names the removal on 404 and 410 (#803 class)', async () => {
+  // Before the fix these two statuses rethrew a bare "Forbidden" with nothing
+  // saying the endpoint is gone — the caller could not tell a removed endpoint
+  // from a bad query. A removed endpoint answering is exactly the case the
+  // never-call discussion is about, and it must not surface as raw status.
+  for (const status of [404, 410]) {
+    const [resolver] = browseCallers((path) =>
+      path.startsWith('/browse/categories') ? new SpotifyApiError(status as 404, 'Forbidden') : null,
+    );
+    await assert.rejects(
+      resolver.handler({ text: 'chill' }),
+      (err: Error & { cause?: unknown }) => {
+        assert.match(err.message, new RegExp(`Spotify answered ${status}`), `status ${status} must be reported`);
+        assert.match(err.message, /browse-category lookup/);
+        assert.match(err.message, /February 2026/);
+        assert.match(err.message, /no replacement endpoint/);
+        assert.ok(err.cause instanceof SpotifyApiError, `status ${status} must keep the Spotify error as the cause`);
+        return true;
+      },
+      `a ${status} on /browse/categories must name the removal, not rethrow raw`,
+    );
+  }
+});
+
+test('#1359 category_resolver never reports an unreadable page as an empty catalog', async () => {
+  // The #803 failure mode: a read that did not happen, coerced into a
+  // confident claim about the market. A 204 (client.get resolves null) and a
+  // 200 carrying no `categories.items` both used to become "No browse
+  // categories returned (empty catalog for this market)" — telling the caller
+  // their market has no categories when the truth is that nothing was read.
+  const shapes: Array<[string, unknown]> = [
+    ['204 / no body', null],
+    ['200 without a categories key', {}],
+    ['200 with a non-array items', { categories: { items: 'not-an-array' } }],
+  ];
+  for (const [label, body] of shapes) {
+    const [resolver] = browseCallers(() => body);
+    await assert.rejects(
+      resolver.handler({ text: 'chill' }),
+      (err: Error) => {
+        assert.match(
+          err.message,
+          /could not be answered/,
+          `${label}: must report the read as unanswered, not as an empty catalog`,
+        );
+        assert.match(err.message, /nothing was read/, `${label}: must say nothing was read`);
+        assert.ok(
+          !/empty catalog for this market/.test(err.message),
+          `${label}: must not claim the market's catalog is empty when nothing was read`,
+        );
+        return true;
+      },
+      `${label} must fail loudly rather than report a soft empty answer`,
+    );
+  }
+});
+
+test('#1359 a genuine empty page still reports an empty catalog', async () => {
+  // The guard above must not swallow the one case the old message was right
+  // about: a well-formed 200 whose categories.items really is empty. Proved by
+  // running it, so a fix that simply rejected every empty result would fail.
+  const [resolver] = browseCallers(() => ({ categories: { items: [], total: 0 } }));
+  await assert.rejects(
+    resolver.handler({ text: 'chill' }),
+    /No browse categories returned \(empty catalog for this market\)/,
+    'a well-formed empty page must keep its own distinct message',
+  );
+});
+
+test('#1359 a healthy page still resolves the best match', async () => {
+  // The vacuity guard for the whole file: if the fix made the happy path
+  // unreachable, the four tests above would pass while the tool was broken.
+  const [resolver] = browseCallers((path) =>
+    path.startsWith('/browse/categories')
+      ? { categories: { items: [{ id: 'chill', name: 'Chill' }, { id: 'mood', name: 'Mood' }], total: 2 } }
+      : null,
+  );
+  const out = await resolver.handler({ text: 'chill' });
+  assert.equal(out.structuredContent?.best_match?.id, 'chill');
+  assert.match(text(out), /Best match for "chill"/);
+});
