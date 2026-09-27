@@ -22,7 +22,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { z } from 'zod';
 
-import { registerResources } from '../src/resources/index.js';
+import { registerReadSurfaces } from '../src/resources/register.js';
 import { registerPrompts } from '../src/prompts/index.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { moduleToolNames } from '../src/tools/annotations.js';
@@ -113,7 +113,10 @@ function makeClientStub(opts: StubOptions = {}): SpotifyClient {
 
 async function connect(stub: SpotifyClient): Promise<Client> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
-  registerResources(server, stub);
+  // #685: the whole read surface, through the same helper `src/index.ts` uses.
+  // This file used to register only `registerResources`, which is why the
+  // `{+qs}` twins beside those resources were invisible from here.
+  registerReadSurfaces(server, stub);
   // Resources ARE registered here, so the prompt surface may name them (#715).
   registerPrompts(server, { resourceHints: true });
   const client = new Client({ name: 'tester', version: '0.0.0' });
@@ -164,22 +167,23 @@ test('registers all #59 resource URIs plus format/json twins and templates', asy
 
   const templates = await client.listResourceTemplates();
   const templateUris = templates.resourceTemplates.map((t) => t.uriTemplate).sort();
-  // Every fixed URI has a query twin. #603 widened the saved-library twins
-  // from {?format} to {?format,limit,offset} — the parameterised form that
-  // actually documents the set a host may build a URI from. `spotify://me`
-  // takes no parameters, so its twin is still the bare {?format}.
+  // Every fixed URI has exactly one query-absorbing template. #603 widened the
+  // saved-library parameter sets from {?format} to {?format,limit,offset} — the
+  // parameterised form that actually documents the set a host may build a URI
+  // from. `spotify://me` takes no parameters, so its template is {?format}.
   assert.equal(templateUris.filter((u) => u === 'spotify://me{?format}').length, 1);
   assert.equal(templateUris.filter((u) => u === 'spotify://me/saved/shows{?format,limit,offset}').length, 1);
-  // #603: each parameterised resource also carries a {+qs} catch-all. The MCP
-  // SDK compiles {?a,b,c} to a CONJUNCTIVE, ORDERED regex, so
-  // `?limit=5` alone matches neither the {?…} template nor the bare URI — the
-  // {+qs} twin is the routing mechanism, not a belt-and-braces duplicate.
-  assert.equal(templateUris.filter((u) => u === 'spotify://me/saved/shows{+qs}').length, 1);
-  assert.equal(templateUris.filter((u) => u === 'spotify://me/top/tracks{+qs}').length, 1);
   assert.equal(templateUris.filter((u) => u === 'spotify://me/top/tracks{?format,time_range,limit,offset}').length, 1);
-  // …and playlist tracks exists bare + query-absorbing.
-  assert.ok(templateUris.includes('spotify://playlist/{id}/tracks'));
-  assert.ok(templateUris.includes('spotify://playlist/{id}/tracks{+qs}'));
+  // #685: the `{?…}` form-style matcher is the routing mechanism, so the
+  // `{+qs}` catch-all that used to sit beside it is gone. #1401's
+  // `Rfc6570UriTemplate` reads declared names as an ordered subsequence, so
+  // `?limit=5` alone matches without a second registration claiming it.
+  assert.equal(templateUris.filter((u) => /\{\+/.test(u)).length, 0, 'a {+qs} catch-all twin is back');
+  // …and playlist tracks is one template, not a bare entry plus two twins.
+  assert.equal(templateUris.filter((u) => u === 'spotify://playlist/{id}/tracks{?format,offset,limit}').length, 1);
+  assert.equal(templateUris.filter((u) => u.startsWith('spotify://playlist/{id}/tracks{')).length, 1);
+  // The catalog entity templates arrive through the same harness.
+  assert.ok(templateUris.includes('spotify://artist/{id}{?format}'));
   assert.ok(templates.resourceTemplates.every((template) => template.mimeType === 'text/plain'));
 });
 
