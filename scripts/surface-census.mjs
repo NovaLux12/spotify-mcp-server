@@ -28,6 +28,8 @@ import {
   proseSyncRefusals,
   provenanceStampWarning,
   readFilesAtRef,
+  retirementKey,
+  retirementStanding,
   short,
   stampProvenance,
   syncProseManifest,
@@ -469,6 +471,42 @@ function proseRetireReason() {
 }
 
 /**
+ * The `--corrects "<file>:<hash>"` argument, or undefined when the flag is absent (#1502).
+ *
+ * Names the retirement record this run's records supersede, so a reason that
+ * turns out to have been FALSE can be retracted rather than merely contradicted
+ * by a second, equally-permanent record. The old record is left in place — the
+ * claim that was made, and when, is the evidence a later reader needs — and
+ * `retirementStanding` is what makes the superseded one stop being load-bearing.
+ *
+ * The same empty-value refusal as `--retire`, for the same reason: a flag that
+ * is easy to pass with nothing after it gets passed with nothing after it, and
+ * `--corrects` with no value would be a correction retracting nothing while
+ * reading as one that had retracted something.
+ */
+function proseCorrectsKey() {
+  const index = args.indexOf('--corrects');
+  if (index < 0) return undefined;
+  const key = args[index + 1];
+  if (!key || key.startsWith('-')) {
+    throw new Error(
+      '--corrects requires the key of the record being corrected, as "<file>:<hash>" — e.g. '
+      + '--corrects "SPEC.md:46c5ce02d1cbde05". The key names the RETIREMENT, not the paragraph: a correction '
+      + 'with nothing to retract is a claim about no record, which is the #1439 shape.\n'
+      + 'The key for any retirement is `file` + `:` + its hash, both visible in scripts/doc-prose-manifest.json.',
+    );
+  }
+  if (!key.includes(':')) {
+    throw new Error(
+      `--corrects must name a record as "<file>:<hash>", not "${key}". A bare hash is ambiguous: the same prose `
+      + 'text can be pinned in two files, and a correction that cannot say which record it retracts is not a '
+      + 'correction.',
+    );
+  }
+  return key;
+}
+
+/**
  * The `--allow-stale "<why>"` argument, or undefined when the flag is absent (#1440).
  *
  * Same validation as `--retire` for the same reason: a flag that is easy to pass
@@ -729,6 +767,7 @@ if (proseReportIndex >= 0) {
   const manifest = readProseManifest();
   const report = proseDrift(manifest, documents);
   const provenance = proseProvenanceVerdict(manifest, { ancestor: headContains });
+  const retirements = retirementStanding(manifest);
   console.log(JSON.stringify({
     errors: report.errors,
     currentCount: report.currentCount,
@@ -747,8 +786,19 @@ if (proseReportIndex >= 0) {
       status: provenance.status,
       detail: provenance.detail,
     },
+    // Which retirement reasons a reader should still act on (#1502). A manifest
+    // holding a corrected record and no way to see the correction is a manifest
+    // asserting something untrue with nothing on its face to say so, which is the
+    // state #1502 was filed about. `unknown` and `cyclic` are reported rather than
+    // resolved: a `corrects` naming no record, or one that retracts itself, is a
+    // claim this tool will not make a reading of on the author's behalf.
+    retirements,
   }, null, 2));
-  process.exit(report.errors.length > 0 || provenance.error ? 1 : 0);
+  process.exit(
+    report.errors.length > 0 || provenance.error || retirements.unknown.length > 0 || retirements.cyclic.length > 0
+      ? 1
+      : 0,
+  );
 }
 
 /**
@@ -768,6 +818,7 @@ if (args.includes('--prose-sync')) {
   // on them, which is the one field the record exists to carry.
   const reason = proseRetireReason();
   const allowStale = proseAllowStale();
+  const corrects = proseCorrectsKey();
   const previous = readProseManifest({ required: false });
 
   // Computed before the provenance decision, not after it, and the ordering is
@@ -780,8 +831,28 @@ if (args.includes('--prose-sync')) {
   const result = syncProseManifest(previous, documents, {
     retire: reason,
     reason,
+    corrects,
     date: new Date().toISOString().slice(0, 10),
   });
+
+  // #1502: a `corrects` naming a record that is not in the manifest would be a
+  // retraction of nothing — a claim about no record, in the one file whose value
+  // is that its claims can be trusted. Refused here, before the write, for the
+  // same reason #1440's refusals are: a manifest already carrying a correction
+  // that corrects nothing is worse than no manifest.
+  if (result.unknownCorrection !== null) {
+    const known = (previous.retired ?? []).map(retirementKey);
+    console.error(
+      `Refusing to write a correction of a record that is not in the manifest (#1502).\n\n`
+      + `--corrects "${result.unknownCorrection}" names no retirement in scripts/doc-prose-manifest.json.\n`
+      + (known.length > 0
+        ? `The ${known.length} record(s) it does hold are:\n${known.map((key) => `- ${key}`).join('\n')}\n\n`
+        : 'That manifest holds no retirement records at all.\n\n')
+      + 'A correction that retracts nothing is the #1439 shape: a record that describes a change no tree carried.\n'
+      + 'Check the hash — it is the content hash of the paragraph, and it is in the `retired` array of the manifest.',
+    );
+    process.exit(1);
+  }
 
   // #1440: refuse before the pin is rewritten, not after. A manifest that has
   // already been written with a false reason is worse than one that was not

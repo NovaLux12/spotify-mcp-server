@@ -30,7 +30,13 @@
 export type ProseUnitPin = { hash: string; label: string };
 
 /** A pin that was deliberately dropped, with the reason it was dropped. */
-export type ProseRetirement = ProseUnitPin & { file: string; date: string; reason: string };
+export type ProseRetirement = ProseUnitPin & {
+  file: string;
+  date: string;
+  reason: string;
+  /** The `file:hash` of the retirement this record supersedes, if it is a correction. */
+  corrects?: string;
+};
 
 /**
  * The commits a sync ran against, recorded so a later reader can tell a genuine
@@ -115,12 +121,47 @@ export function proseDrift(
 export function syncProseManifest(
   manifest: ProseManifest,
   documents: ProseDocuments,
-  options: { retire?: string; date: string; reason?: string },
+  options: { retire?: string; date: string; reason?: string; corrects?: string },
 ): {
   manifest: ProseManifest;
   dropped: Array<ProseUnitPin & { file: string }>;
+  /** The records THIS RUN added — what the census reports as the run's effect. */
   retired: ProseRetirement[];
+  /** Every retirement after the write, additions and prior records together. */
+  allRetired: ProseRetirement[];
+  /** The one correction record written, or null when `--corrects` was absent. */
+  correction: ProseRetirement | null;
+  /** The `file:hash` a `--corrects` named that is not in the manifest, or null. */
+  unknownCorrection: string | null;
   refused: boolean;
+};
+
+/**
+ * The `file:hash` key a `corrects` field names.
+ *
+ * A hash alone is not the key: the same prose text can be pinned in two files.
+ *
+ * The parameter is the identity a key is made of, not the whole record: this is
+ * called on pins, on fixtures, and on things that are not retirements at all, and
+ * a signature demanding a `reason` would reject the first two for wanting less
+ * than they were offered.
+ */
+export function retirementKey(entry: { file: string; hash: string }): string;
+
+/**
+ * Which retirement reasons a reader should still act on, and which a later record
+ * retracts.
+ *
+ * `unknown` and `cyclic` are reported rather than resolved — a `corrects` naming
+ * no record, or one that retracts itself, is a claim this will not read on the
+ * author's behalf.
+ */
+export function retirementStanding(manifest: ProseManifest): {
+  active: ProseRetirement[];
+  retracted: ProseRetirement[];
+  correctedBy: Map<string, string[]>;
+  unknown: Array<{ corrects: string; by: string }>;
+  cyclic: string[];
 };
 
 /**

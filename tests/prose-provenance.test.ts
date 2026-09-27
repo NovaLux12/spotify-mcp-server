@@ -98,8 +98,12 @@ import {
   proseSyncRefusals,
   proseUnitHash,
   provenanceStampWarning,
+  retirementKey,
+  retirementStanding,
   stampProvenance,
+  syncProseManifest,
 } from '../scripts/prose-manifest.mjs';
+import type { ProseRetirement } from '../scripts/prose-manifest.mjs';
 import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1185,5 +1189,184 @@ describe('the marker scan skip list states its reason (#1427)', () => {
     for (const dir of ['node_modules', 'dist', 'coverage']) {
       assert.match(declaration, new RegExp(`'${dir}'`), `${dir} is no longer skipped, so a census walk reads generated output as hand-written content`);
     }
+  });
+});
+
+/**
+ * A retirement reason that turns out to be FALSE (#1502).
+ *
+ * A retirement record is a permanent claim about *why* prose left a file, and
+ * until this change there was no way to retract one — only to add a second,
+ * equally-permanent record contradicting it. That leaves a reader holding two
+ * entries with nothing to say which to believe, and leaves the false claim in the
+ * manifest in perpetuity, in the one file whose whole value is being a
+ * trustworthy record of prose loss.
+ */
+describe('retirement corrections (#1502)', () => {
+  const A = { file: 'SPEC.md', hash: '46c5ce02d1cbde05', label: 'Response byte cap' };
+  const B = { file: 'AGENTS.md', hash: '2baa4ae7670cf60a', label: 'recovery recipe' };
+
+  /**
+   * A record written by one `--retire` run: what was claimed, and when.
+   *
+   * Typed as `ProseRetirement` rather than a hand-written shape, so a fixture
+   * that drifts from the real record is a type error rather than a test that
+   * passes against a field nothing writes.
+   */
+  function record(entry: { file: string; hash: string; label?: string }, reason: string, date = '2026-09-27'): ProseRetirement {
+    return { file: entry.file, hash: entry.hash, label: `${entry.label ?? entry.hash}…`, date, reason };
+  }
+
+  it('a correction retracts the reason it supersedes, and keeps the record', () => {
+    // The false one from the issue, the correction, and one untouched record.
+    const falseReason = record(A, 'reworded by #895: the paragraph gained the emitOnce exception');
+    const correction = record(B, 'the paragraph was DELETED, not reworded — see the character-level diff', '2026-09-28');
+    const untouched = record({ file: 'README.md', hash: '178a37f764107949' }, 'reworded by #1402');
+    const manifest = {
+      retired: [falseReason, { ...correction, corrects: retirementKey(A) }, untouched],
+    };
+
+    const standing = retirementStanding(manifest);
+    assert.deepEqual(standing.unknown, [], 'a correction naming a real record is not unknown');
+    assert.deepEqual(standing.cyclic, [], 'and not cyclic');
+    // The retraction is what makes the correction worth anything: the false reason
+    // is no longer in the set a reader acts on.
+    assert.ok(
+      standing.retracted.some((entry) => entry.reason === falseReason.reason),
+      'the superseded reason must be marked retracted',
+    );
+    assert.ok(
+      standing.active.some((entry) => entry.reason === correction.reason),
+      'the correction is the reason that is still load-bearing',
+    );
+    assert.ok(
+      standing.active.some((entry) => entry.reason === untouched.reason),
+      'a record nobody corrected stays active',
+    );
+    assert.equal(standing.active.length + standing.retracted.length, manifest.retired.length, 'every record is one or the other');
+    // Neither record is deleted: the claim that was made, and when, is the evidence
+    // a later reader most needs. Deleting the false one would destroy the record
+    // that a false reason was ever written here.
+    assert.equal(standing.retracted.length + standing.active.length, 3);
+    assert.ok(manifest.retired.includes(falseReason), 'the manifest itself is not rewritten by reading it');
+  });
+
+  it('a correction written by --prose-sync carries its own key, not the one it retracts', () => {
+    // The record is keyed by `file:hash`, so a correction that inherited the
+    // target's file and hash would sit at the SAME key as the record it retracts
+    // — two entries at one key, `corrects` pointing at itself. That is a
+    // self-correction, which the reader refuses, which means a correction could
+    // never succeed. Driving the real sync is what caught it: the unit tests
+    // above all built their correction records by hand and could not see it.
+    const documents = { 'SPEC.md': 'A paragraph that is still here.\n' };
+    const manifest = {
+      files: { 'SPEC.md': [{ hash: 'a'.repeat(16), label: 'A paragraph…' }] },
+      retired: [{ file: 'SPEC.md', hash: '4cba6f94f8fa9fa3', label: 'An older paragraph…', date: '2026-09-27', reason: 'reworded by #895' }],
+    };
+    const result = syncProseManifest(manifest, documents, {
+      retire: 'the recorded reason said reworded; a character-level diff shows two sentences were deleted',
+      reason: 'the recorded reason said reworded; a character-level diff shows two sentences were deleted',
+      corrects: 'SPEC.md:4cba6f94f8fa9fa3',
+      date: '2026-09-28',
+    });
+    assert.equal(result.unknownCorrection, null, 'the target exists, so this is not an unknown correction');
+    const correction = result.retired.find((entry) => entry.corrects === 'SPEC.md:4cba6f94f8fa9fa3');
+    assert.ok(correction, 'a correction record is written');
+    assert.notEqual(retirementKey(correction), 'SPEC.md:4cba6f94f8fa9fa3', 'and it does not occupy the key it retracts');
+
+    // The end state is the one the issue asked for: the false reason stops being
+    // load-bearing, both records survive, and the manifest is not a place that
+    // asserts something untrue with nothing to say so.
+    const standing = retirementStanding({ retired: result.allRetired });
+    assert.deepEqual(standing.cyclic, [], 'a real correction must not read as a cycle');
+    assert.deepEqual(standing.unknown, []);
+    // The fixture also drops its own pinned block, so `retired` is that drop plus
+    // the correction — the assertion is on the target specifically, because a count
+    // would be asserting an accident of the fixture.
+    assert.ok(
+      standing.retracted.some((entry) => entry.hash === '4cba6f94f8fa9fa3'),
+      'the record the correction names is the one that stops being load-bearing',
+    );
+    assert.equal(
+      standing.retracted.filter((entry) => entry.hash === '4cba6f94f8fa9fa3').length,
+      1,
+      'and it is retracted exactly once',
+    );
+    assert.ok(
+      standing.active.some((entry) => /character-level diff/.test(entry.reason)),
+      'while the correction is the reason that is still load-bearing',
+    );
+  });
+
+  it('a --prose-sync correction of a record that is not there refuses rather than writing', () => {
+    // The write must not happen: a correction retracting nothing is the #1439
+    // shape, and the refusal is the whole point.
+    const result = syncProseManifest(
+      { files: { 'SPEC.md': [{ hash: 'a'.repeat(16), label: 'A…' }] }, retired: [] },
+      { 'SPEC.md': 'still here\n' },
+      { retire: 'a reason', reason: 'a reason', corrects: 'SPEC.md:deadbeefdeadbeef', date: '2026-09-28' },
+    );
+    assert.equal(result.refused, true);
+    assert.equal(result.unknownCorrection, 'SPEC.md:deadbeefdeadbeef');
+    assert.deepEqual(result.retired, [], 'and writes no record');
+  });
+
+  it('a correction of a correction still retracts the original', () => {
+    // Transitivity is the part a single-level implementation gets wrong: a reader
+    // who corrects a correction, and stops, leaves the original load-bearing again
+    // with a reason that was already retracted once.
+    const manifest = {
+      retired: [
+        record(A, 'the original, which was false'),
+        { ...record(B, 'the first correction'), corrects: retirementKey(A) },
+        { ...record({ file: 'SPEC.md', hash: 'd31c370da5da0cbe' }, 'the second correction'), corrects: retirementKey(B) },
+      ],
+    };
+    const standing = retirementStanding(manifest);
+    assert.equal(
+      standing.retracted.length,
+      2,
+      'the original and the first correction are both retracted, leaving the second as the live reason',
+    );
+    assert.equal(standing.active.length, 1);
+    assert.match(standing.active[0]!.reason, /second correction/);
+  });
+
+  it('a `corrects` naming no record is reported, not resolved', () => {
+    // Silently ignoring it would write a correction that corrects nothing into
+    // the one file whose value is that its claims can be trusted — the #1439 shape.
+    const manifest = { retired: [{ ...record(A, 'a reason'), corrects: 'SPEC.md:deadbeefdeadbeef' }] };
+    const standing = retirementStanding(manifest);
+    assert.deepEqual(standing.unknown, [{ corrects: 'SPEC.md:deadbeefdeadbeef', by: retirementKey(A) }]);
+    assert.deepEqual(standing.cyclic, []);
+  });
+
+  it('a record that corrects itself is reported, not resolved', () => {
+    // There is no consistent reading of a retraction that retracts itself, and
+    // picking one silently is a guess about what the author meant.
+    const self = { ...record(A, 'why it left'), corrects: retirementKey(A) };
+    const standing = retirementStanding({ retired: [self] });
+    assert.deepEqual(standing.cyclic, [retirementKey(A)]);
+    assert.deepEqual(standing.unknown, []);
+  });
+
+  it('the key is file + hash, because a bare hash is ambiguous', () => {
+    assert.equal(retirementKey(A), 'SPEC.md:46c5ce02d1cbde05');
+    // The same prose text pinned in two files: the collision that makes a bare
+    // hash the wrong key, and the reason the CLI refuses one.
+    assert.notEqual(retirementKey(A), retirementKey({ ...A, file: 'README.md' }));
+  });
+
+  it('a correction resolves transitively without looping forever', () => {
+    // A two-record cycle terminates rather than recursing until the stack gives
+    // out. The `seen` set is what makes that true, and the only way to know is to
+    // run it — a cycle is exactly the input a correct-looking walk hangs on.
+    const one = { ...record(A, 'first'), corrects: retirementKey(B) };
+    const two = { ...record(B, 'second'), corrects: retirementKey(A) };
+    const standing = retirementStanding({ retired: [one, two] });
+    assert.ok(Array.isArray(standing.active));
+    // Both are retracted by each other, so neither is load-bearing; what matters is
+    // that the call returned at all.
+    assert.ok(standing.retracted.length + standing.active.length === 2);
   });
 });

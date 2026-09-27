@@ -327,8 +327,14 @@ export function proseDrift(manifest, documents) {
  * did to the document, one command later. Losing prose has to be a named,
  * dated, reasoned act recorded in the manifest, so that the act is visible in
  * the diff that a reviewer reads.
+ *
+ * `corrects` names the `file:hash` of a retirement record this one supersedes,
+ * and is the only way to record that an earlier reason was false (#1502) — see
+ * `retirementStanding`, which is what makes the correction load-bearing. It is
+ * carried onto every record this run writes, so a run that retires several
+ * paragraphs at once states once which earlier claim they collectively answer.
  */
-export function syncProseManifest(manifest, documents, { retire, date, reason }) {
+export function syncProseManifest(manifest, documents, { retire, date, reason, corrects }) {
   // Stamped on creation and preserved thereafter, and placed first, so the file
   // says what it is to whoever opens it. A pin sitting next to a generator and
   // its `--write` flag looks, at a glance, like one more generated artifact —
@@ -357,6 +363,9 @@ export function syncProseManifest(manifest, documents, { retire, date, reason })
       manifest: next,
       dropped,
       retired: [],
+      allRetired: manifest.retired ?? [],
+      correction: null,
+      unknownCorrection: null,
       refused: true,
     };
   }
@@ -364,14 +373,144 @@ export function syncProseManifest(manifest, documents, { retire, date, reason })
   const retired = retire
     ? dropped.map((entry) => ({ ...entry, date, reason }))
     : [];
-  if (retired.length > 0) {
-    next.retired = [...(manifest.retired ?? []), ...retired].sort((a, b) =>
+
+  // A correction is its OWN record, not a field on whatever this run happened to
+  // retire (#1502). It has to be: the false reason is discovered long after the
+  // run that wrote it, at a moment when nothing is being dropped — so a
+  // `--corrects` that only took effect alongside a fresh retirement would be
+  // unreachable exactly when it is needed. And a newly-retired paragraph is a
+  // DIFFERENT paragraph; stamping the correction onto it would make a record
+  // about paragraph X claim to answer for paragraph Y.
+  let correction = null;
+  if (corrects !== undefined && corrects !== null) {
+    const target = (manifest.retired ?? []).find((entry) => retirementKey(entry) === corrects);
+    if (!target) {
+      return { manifest: next, dropped, retired: [], allRetired: manifest.retired ?? [], correction: null, unknownCorrection: corrects, refused: true };
+    }
+    // The correction needs an identity of its OWN, and it cannot be the target's:
+    // a record is keyed by `file:hash`, so a correction carrying the file and hash
+    // it corrects is indistinguishable from the record it retracts — two entries
+    // at one key, and `corrects` pointing at itself. That is not a data shape, it
+    // is the cycle the reader refuses, and it means a correction can never
+    // succeed.
+    //
+    // So the correction is keyed by the hash of the REASON it carries. That is
+    // unique per distinct reason, it is derived from the claim rather than
+    // assigned, and it makes the collision impossible by construction: correcting
+    // a record with a different reason produces a different key, and correcting
+    // it with the SAME reason it already has is a no-op that the reader can see
+    // as one. The `file` and `label` are carried through so the entry still reads
+    // as "this paragraph, and here is what actually happened to it" — a reader
+    // scanning the array is looking for the paragraph, not the bookkeeping.
+    correction = {
+      file: target.file,
+      hash: proseUnitHash(reason),
+      label: target.label,
+      date,
+      reason,
+      corrects,
+    };
+  }
+
+  const added = correction ? [...retired, correction] : retired;
+  if (added.length > 0) {
+    next.retired = [...(manifest.retired ?? []), ...added].sort((a, b) =>
       `${a.file}:${a.hash}`.localeCompare(`${b.file}:${b.hash}`));
   } else if (manifest.retired) {
     next.retired = manifest.retired;
   }
 
-  return { manifest: next, dropped, retired, refused: false };
+  // `retired` stays "the records THIS RUN added" — the census counts it to report
+  // what the run did, and widening it to the whole set would make that line report
+  // every retirement ever recorded. `allRetired` is the whole post-write set, which
+  // is what a reader needs: a correction names a record that is usually NOT one of
+  // the new ones, so handing back only the additions would make every correction
+  // look like it corrects nothing.
+  return {
+    manifest: next,
+    dropped,
+    retired: added,
+    allRetired: next.retired ?? [],
+    correction,
+    unknownCorrection: null,
+    refused: false,
+  };
+}
+
+/**
+ * The `file:hash` key a `corrects` field names (#1502).
+ *
+ * A hash alone is not the key: the same prose text can be pinned in two files, and
+ * a correction that named only the hash would be ambiguous about which record it
+ * retracts — the same way two documents agreeing about nothing is not agreement.
+ */
+export function retirementKey(entry) {
+  return `${entry.file}:${entry.hash}`;
+}
+
+/**
+ * The retirements a reader should still believe, and the ones a later record
+ * retracts (#1502).
+ *
+ * A retirement reason is a claim about *why* prose left a file, and a false one
+ * is worse than a stale one: the manifest's whole purpose is to be a trustworthy
+ * record, so a reason that turns out to be untrue is a live defect in the one
+ * file whose value is that it can be trusted. The existing remedy was to write a
+ * second, contradictory record — which leaves a reader holding two entries and no
+ * way to tell which to believe, and leaves the false claim in place permanently.
+ *
+ * So a record may carry `corrects`, naming the `file:hash` it supersedes. This
+ * function treats a superseded reason as not load-bearing, which is what makes it
+ * *retractable* rather than merely contradicted. Neither record is rewritten: the
+ * claim that was made, and when, is the evidence a later reader most needs, and
+ * deleting it would destroy the record that a false reason was ever written.
+ *
+ * A `corrects` naming a record that is not in the manifest is not silently
+ * ignored. It is returned in `unknown` so the caller can refuse: a correction of
+ * nothing is a claim about no tree, which is the #1439 shape.
+ *
+ * Corrections are resolved transitively, so a correction of a correction
+ * retracts the original too. A record that corrects itself is reported in
+ * `cyclic` rather than resolved — there is no consistent reading of that, and
+ * picking one silently would be a guess.
+ */
+export function retirementStanding(manifest) {
+  const all = manifest.retired ?? [];
+  const keys = new Set(all.map(retirementKey));
+  const correctedBy = new Map();
+  const unknown = [];
+  const cyclic = [];
+
+  for (const entry of all) {
+    if (entry.corrects === undefined || entry.corrects === null) continue;
+    if (!keys.has(entry.corrects)) {
+      unknown.push({ corrects: entry.corrects, by: retirementKey(entry) });
+      continue;
+    }
+    if (entry.corrects === retirementKey(entry)) {
+      cyclic.push(retirementKey(entry));
+      continue;
+    }
+    const prior = correctedBy.get(entry.corrects) ?? [];
+    prior.push(retirementKey(entry));
+    correctedBy.set(entry.corrects, prior);
+  }
+
+  // A record is retracted exactly when some record names it in `corrects` — which
+  // is the whole rule, and it is already transitive without a walk. A corrects B
+  // and C corrects B retracts B; A corrects B and C corrects A retracts both A and
+  // B, leaving C. A recursive walk is what got this wrong first: it also retracted
+  // the corrections, so a correction of a false reason was itself not load-bearing
+  // and the manifest was left asserting only the original falsehood.
+  const retracted = new Set(correctedBy.keys());
+
+  return {
+    active: all.filter((entry) => !retracted.has(retirementKey(entry))),
+    retracted: all.filter((entry) => retracted.has(retirementKey(entry))),
+    correctedBy,
+    unknown,
+    cyclic,
+  };
 }
 
 /**
