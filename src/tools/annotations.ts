@@ -40,8 +40,10 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
+  type CallToolResult,
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
+import { isTaskCapable, startTask, type PersistentTaskStore } from '../tasks.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
@@ -3456,14 +3458,65 @@ async function validateOutput(entry: RegistryEntry, result: unknown, tool: strin
 }
 
 /**
+ * The `extra` a detached task run is given (#600).
+ *
+ * Only the signal is replaced, and it is replaced with the TASK's signal rather
+ * than the request's. That distinction is the whole of cancellation: by the
+ * time the detached run starts, the `tools/call` it belongs to has already been
+ * answered, so the request's controller is spent, and a host that dropped the
+ * connection would abort a task that is exactly the work it stopped waiting for.
+ *
+ * Everything else — `_meta` (and with it the progress token), `sessionId`,
+ * `sendNotification`, `sendRequest`, `taskStore` — is carried through
+ * unchanged. `_meta` is what keeps the tool's own progress reporting alive
+ * during the background run, and it is the same field a confirmation prompt is
+ * answered over, so a client that can prompt synchronously can prompt here.
+ */
+function withTaskSignal(extra: unknown, signal: AbortSignal): unknown {
+  if (extra === null || typeof extra !== 'object') return { signal };
+  return { ...extra, signal };
+}
+
+/**
+ * The refusal for a task-augmented call this tool cannot serve (#600).
+ *
+ * A client that sends `task` to a tool advertising `taskSupport: 'forbidden'`
+ * negotiated something the server did not offer, which is an invalid-params
+ * mistake by the caller and not a server fault. Thrown rather than returned:
+ * see the call site for why a returned result cannot carry the message.
+ *
+ * Carries `code` directly instead of using `McpError`, which would prefix the
+ * sentence the client actually reads with `MCP error -32602:` — the same
+ * reason `invalidParams` below avoids it. `Protocol._onrequest` reads
+ * `error.code`, so a plain `Error` carrying a numeric code serialises to the
+ * right code with a clean message.
+ */
+function taskAugmentationRefused(tool: string, capable: boolean): Error {
+  const reason = capable
+    ? 'this server was started without an MCP task store'
+    : `${tool} does not support MCP tasks`;
+  return Object.assign(
+    new Error(`Task augmentation refused: ${reason}. Call ${tool} without a task to run it synchronously.`),
+    { code: ErrorCode.InvalidParams },
+  );
+}
+
+/**
  * Replace the SDK's two early tools handlers with the final production boundary.
  * It advertises closed root input objects, rejects unknown keys before any
  * callback runs, preserves parsed handler/output semantics, and turns every
  * failure into a one-line public envelope with diagnostics confined to stderr.
  */
-export function installToolErrorBoundary(server: McpServer): number {
+export function installToolErrorBoundary(
+  server: McpServer,
+  options: { taskStore?: PersistentTaskStore } = {},
+): number {
   const registry = getToolRegistry(server);
   const lowLevelServer = server.server;
+  // #600. Optional so the test harnesses that register a handful of tools keep
+  // working unchanged; a server built by `buildMcpServer` always passes one,
+  // and without one a task-augmented call is refused rather than run inline.
+  const taskStore = options.taskStore;
 
   lowLevelServer.removeRequestHandler('tools/list');
   lowLevelServer.setRequestHandler(ListToolsRequestSchema, () => ({
@@ -3565,6 +3618,34 @@ export function installToolErrorBoundary(server: McpServer): number {
       }
     } catch {
       return validationResult(tool, shape, undefined);
+    }
+
+    // #600: a task-augmented call on a tool that advertises task support. The
+    // work runs detached and the caller gets a task handle; the handle is
+    // returned before any of it has happened, which is the entire point and
+    // also why the confirmation gate below has to be the tool's own.
+    if (request.params.task !== undefined) {
+      if (!taskStore || !isTaskCapable(resolved)) {
+        // A THROWN error, not a returned result. The SDK's `tools/call` wrapper
+        // validates any response to a request that carried `task` against
+        // `CreateTaskResultSchema`, so a `CallToolResult` handed back here is
+        // turned into an opaque `-32602 Invalid task creation result` before it
+        // reaches the client — the refusal would be written and never read.
+        // Throwing bypasses that validation and delivers the sentence.
+        //
+        // Running it synchronously instead would be worse still: the client is
+        // holding a task handle it never received, and a multi-minute tool
+        // would block on a request the client already considers asynchronous.
+        throw taskAugmentationRefused(tool, isTaskCapable(resolved));
+      }
+      return (await startTask({
+        args: parsedArgs,
+        extra,
+        request,
+        taskParams: request.params.task,
+        store: taskStore,
+        run: (signal) => invokeHandler(entry, parsedArgs, withTaskSignal(extra, signal)) as Promise<CallToolResult>,
+      })) as ServerResult;
     }
 
     try {

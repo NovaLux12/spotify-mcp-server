@@ -91,6 +91,7 @@ function sandbox(): Box {
     SPOTIFY_MCP_SNAPSHOT_DIR: join(data, 'swarm3-snapshots'),
     SPOTIFY_MCP_PORTABILITY_DIR: join(data, 'portability'),
     SPOTIFY_MCP_EXPORT_DIR: join(data, 'exports'),
+    SPOTIFY_MCP_TASKS_DIR: join(data, 'tasks'),
   };
   return { home, data, root, env };
 }

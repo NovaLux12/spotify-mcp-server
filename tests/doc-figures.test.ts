@@ -46,6 +46,7 @@ import {
   collectAggregateSurfaceMeasurement,
   registerManifestModules,
 } from '../src/tools/annotations.js';
+import { applyTaskSupport } from '../src/tasks.js';
 import { childExitCode } from './helpers/subprocess-outcome.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -177,6 +178,12 @@ async function measureIndependently() {
     // test exists to catch, aimed at itself.
     applyToolOutputSchemas(server);
     applyToolAnnotations(server);
+    // #600: and the same for the task-support pass, for the same reason. The
+    // measurement charges for `execution`, so a helper that skipped this would
+    // report the eleven task-capable tools as still `forbidden` and hold the
+    // document to a payload no live server produces — the same drift #687
+    // fixed for `outputSchema`, reopened for the field added next.
+    applyTaskSupport(server);
     return collectAggregateSurfaceMeasurement(server);
   } finally {
     await server.close().catch(() => undefined);

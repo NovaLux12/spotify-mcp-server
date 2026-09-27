@@ -74,6 +74,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_PLAYBACKEXT_FILE` | `~/.spotify-mcp/playback-ext.json` | Playback extension sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE` | `~/.spotify-mcp/exhaust2-playback.json` | Playback helper sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_MISC_FILE` | `~/.spotify-mcp/exhaust2-misc.json` | Miscellaneous helper sidecar. |
+| `SPOTIFY_MCP_TASKS_DIR` | `~/.spotify-mcp/tasks` | Directory holding MCP task records for long-running tools (#600): one JSON file per task, directory mode 0700, files mode 0600, at most 200 records, each kept 24 h past its terminal state. A task that was still `working` when the process last stopped is reconciled to `failed` with the reason named — it does not resume, because the work it described was in this process's memory and that memory is gone. Point it at a directory only one server process writes to. |
 
 
 ## Details

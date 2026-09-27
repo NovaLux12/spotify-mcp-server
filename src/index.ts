@@ -27,6 +27,7 @@ import { installAttributionBoundary } from './attribution.js';
 import { installCancellationContextBoundary } from './cancellation.js';
 import { BRANDING_NOTICE, NON_AFFILIATION_NOTICE } from './branding.js';
 import { SERVER_INSTRUCTIONS } from './serverinstructions.js';
+import { PersistentTaskStore, applyTaskSupport, tasksDir } from './tasks.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -97,6 +98,16 @@ async function buildMcpServer(
 ): Promise<McpServer> {
   const { activeSets, overrides, grantedScopes, readOnly } = scope;
 
+  // #600: the MCP Tasks store, built BEFORE the server so it can be passed to
+  // the SDK's constructor — supplying `taskStore` is what makes the SDK install
+  // its own `tasks/get`, `tasks/result`, `tasks/list` and `tasks/cancel`
+  // handlers. Constructing it here rather than lazily also means the restart
+  // reconciliation runs once, at startup, before any task can be read.
+  //
+  // Read-only mode still gets a store: a read-only host can still ask for a
+  // multi-minute export as a task, and the store holds no credentials.
+  const taskStore = new PersistentTaskStore(tasksDir());
+
   const server = new McpServer(
     {
       name: 'spotify-mcp',
@@ -105,8 +116,15 @@ async function buildMcpServer(
     // The second argument, not a field on serverInfo: `instructions` is a
     // ServerOptions member, and the two are easy to confuse when the first
     // call site has only ever taken one.
-    { instructions: SERVER_INSTRUCTIONS },
+    { instructions: SERVER_INSTRUCTIONS, taskStore },
   );
+  // The capability has to be declared or no client will send a `task` field in
+  // the first place. `cancel` and `list` are declared because this store
+  // implements both, and `requests.tools.call` because that is the request
+  // `installToolErrorBoundary` below answers with a task handle.
+  server.server.registerCapabilities({
+    tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } },
+  });
   // Progress-context boundary MUST install before the truncation boundary
   // (#728): both wrap the SDK's tool/registerTool, and progress wraps
   // truncation at call time so any long walks triggered by shaping also see
@@ -232,10 +250,16 @@ async function buildMcpServer(
       `[spotify-mcp] warning: tool annotations applied to ${annotations.annotated}/${annotations.total} registered tools`,
     );
   }
+  // `execution.taskSupport` for the multi-minute tools (#600), stamped before
+  // the budget gates so the advertised payload is the measured one.
+  const taskSupport = applyTaskSupport(server);
+  if (options.announce && taskSupport.stamped === 0) {
+    console.error('[spotify-mcp] warning: no tool was marked task-capable (#600)');
+  }
   // One final tools/list + tools/call boundary runs after every registration:
   // closed input schemas, pre-handler unknown-key rejection, and structured
   // error envelopes for all production tools.
-  installToolErrorBoundary(server);
+  installToolErrorBoundary(server, { taskStore });
   assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
   return server;
 }

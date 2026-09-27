@@ -654,7 +654,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 145,012 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 145,002 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -2391,6 +2391,75 @@ Eight registered tools read `GET /me/player/queue`. Two are left; the other six 
 **`SPOTIFY_MCP_ATTRIBUTION` turns both off, and it is the one opt-OUT switch in this server.** `0`, `false`, `no` and `off` remove the footer and the links. Unset, and any value outside that list, leaves them on — including `enabled`, which reads as "on" for `SPOTIFY_MCP_READONLY`. The direction is deliberate: the default is the legally required state, so a value this server cannot interpret must not be the one that removes a mandatory disclosure. An unrecognised value prints a stderr line naming the accepted spellings, because an operator who set the variable and saw nothing change would otherwise have no way to tell a typo from a deliberate setting.
 
 **One boundary, not sixty edits.** `installAttributionBoundary` in `src/attribution.ts` wraps `server.tool` / `server.registerTool` exactly as the truncation and acting-account boundaries do, and `src/index.ts` installs it LAST so it is the outermost wrapper and the last thing to touch a text block. The ordering against the acting-account echo is not load-bearing — that one writes `structuredContent`, this one writes the text block, so they are disjoint — and it is stated rather than left to be inferred. Sixty module-local edits would be sixty ways for the next module to ship uncredited rows; the boundary is the property that stops that.
+
+
+### 5.17 MCP Tasks for long-running tools (#600)
+
+Eleven tools advertise `execution.taskSupport: "optional"` in `tools/list`. A
+client that speaks the MCP Tasks extension may call one of them with a `task`
+object and get a handle back in under a millisecond; a client that does not
+speak it calls the same tool the same way it always has and gets the same
+synchronous answer it always got. `optional` is load-bearing: `required` would
+break every existing host on a server that gained a feature nobody asked for.
+
+**The list is derived from the code, not from the issue.** #600 attributed the
+problem to `src/client.ts:542-579` and to the stats.fm taste tools; both are
+wrong against the current tree (that range is the ordinary `get` path, and the
+`taste` tools read stats.fm, not the Spotify library). What takes minutes is an
+unbounded walk or a bulk write, so each entry below is a claim about a named
+call site, and the reason is recorded beside it in `src/tasks.ts`:
+
+| Tool | Why it is task-capable | Confirmation |
+|---|---|---|
+| `clean_all_playlists` | `/me/playlists` (`src/tools/playlists.ts:353`) then every playlist's items (`:470`) | `REMOVE_ELICIT_THRESHOLD` |
+| `remove_duplicate_playlist_items` | full items walk per playlist (`:1512`) plus a rescan after each edit (`:1597`) | `REMOVE_ELICIT_THRESHOLD` |
+| `restore_library_snapshot` | `/me/playlists` to build the restore plan (`src/tools/restore.ts:587`) | always asks |
+| `import_from_sidecar` | playlist walk to reconcile, then bulk add | `BATCH_ADD_ELICIT_THRESHOLD` |
+| `export_all_playlists` | playlists plus each one's items (`src/tools/portability.ts:150`, `:247`, `:356`) | — |
+| `export_library_json` | five saved-collection walks issued together (`src/tools/portability.ts:1007-1018`) | — |
+| `backup_library`, `backup_first` | whole-library snapshot, every collection plus every playlist with its items (`src/tools/backup.ts:1011`) | — |
+| `library_hygiene` | full `/me/tracks` walk (`src/tools/libraryhygiene.ts:300`) | — |
+| `find_duplicate_saved_tracks` | full `/me/tracks` walk (`src/tools/saveddedupe.ts:418`) | — |
+| `archive_played_episodes` | `/me/episodes` walk (`src/tools/episodemgmt.ts:101`) plus per-row archives | `ARCHIVE_ELICIT_THRESHOLD` |
+
+A single lookup is not on this list and must not be added to it: `taskSupport` is
+a promise about latency, and a promise made about a tool that returns in 40 ms is
+one the host cannot use.
+
+**A task handle is not a way around the confirmation gate.** There is no
+background implementation of these tools. The detached run invokes the *same
+registered handler* that `tools/call` would have awaited synchronously, with the
+same `extra`, through the same `installToolErrorBoundary`. The code that does
+the writes is the code that asks, so there is no path in which a bulk mutation
+runs without `confirmViaElicitation` — and because `extra` carries the client's
+elicitation support through unchanged, a client that cannot prompt produces the
+same `'unsupported'` verdict it produces synchronously, on which
+`requiredConfirmationRefusal` fails closed. `SPOTIFY_MCP_CONFIRM=never` remains
+the only bypass and is honoured identically in both paths.
+
+**`tasks/cancel` aborts the work, not just the bookkeeping.** The SDK's
+`tasks/cancel` only mutates store status, so this server owns a per-task
+`AbortController` keyed off that transition; the signal replaces the request's
+(now spent) signal in the detached run's `extra` and reaches the real walk
+through `runInCancellationContext`, so a cancelled task stops at the next page
+boundary rather than finishing the work nobody is waiting for.
+
+**Status is never a guess.** `completed` means the handler returned without an
+error; a task whose work errored or was refused is `failed`; an aborted one is
+`cancelled` with a result saying the run stopped partway. A record found
+`working` by a *new* process is reconciled to `failed` naming the interruption —
+it does not resume, because the work it described was in the previous process's
+memory. That is the #803/#830 shape refused: never report `completed` for work
+that did not finish, and name the failing step.
+
+**Where task records live.** `PersistentTaskStore` (`src/tasks.ts`) writes one
+JSON file per task under `SPOTIFY_MCP_TASKS_DIR` (default
+`~/.spotify-mcp/tasks`), directory `0700`, files `0600`, written through a temp
+file and a rename, at most 200 records and 24 h past a terminal state. A record
+that fails to parse is moved aside rather than deleted. The store is registered
+in `LOCAL_STORES` and erased by `logout`; the in-memory store the SDK ships with
+would lose every record on restart, which is what the reconciliation above
+exists to make honest.
 
 
 ## 6. Resources

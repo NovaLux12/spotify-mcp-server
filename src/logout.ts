@@ -60,6 +60,7 @@ import { resolveTokenFile } from './config.js';
 import { historyFilePath, historyLedgerPaths } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
 import { receiptsFilePath, receiptsFilePaths } from './receipts.js';
+import { tasksDir } from './tasks.js';
 import { artistWatchlistPath } from './tools/artistwatch.js';
 import { backupDir } from './tools/backup.js';
 import { requiredConfirmationRefusal } from './tools/confirm.js';
@@ -210,6 +211,18 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     // independent guesses at it (#1385).
     resolve: (env) => receiptsFilePath(env, resolveTokenFile(env)),
     expand: (env) => receiptsFilePaths(env),
+  },
+  {
+    id: 'tasks',
+    label: 'MCP task records',
+    kind: 'dir',
+    envVar: 'SPOTIFY_MCP_TASKS_DIR',
+    // `move` for the reason the receipt ledger gives: a task record says which
+    // tool ran and what it did, which is a description of the user's library
+    // and their own operation history, but it is recoverable history rather than
+    // a live credential. Nothing in it can be replayed against Spotify.
+    erasure: 'move',
+    resolve: (env) => tasksDir(env),
   },
   {
     id: 'scenes',

@@ -105,6 +105,7 @@ function runWithPristineHome(args: string[], home: string) {
     'SPOTIFY_MCP_PORTABILITY_DIR',
     'SPOTIFY_MCP_SNAPSHOT_DIR',
     'SPOTIFY_MCP_EXPORT_DIR',
+    'SPOTIFY_MCP_TASKS_DIR',
   ]) {
     delete env[key];
   }
