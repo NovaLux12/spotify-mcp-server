@@ -99,6 +99,20 @@ export interface DoctorSurface {
   unknown_enable_overrides: string[];
   unknown_disable_overrides: string[];
   read_only: boolean;
+  /**
+   * True when the prompt surface is registered but the resource surface is not
+   * (#715). The two are INDEPENDENT toolsets, so a host that names only
+   * `prompts` gets every prompt with no resource behind any `spotify://` URI a
+   * prompt mentions.
+   *
+   * The prompts degrade honestly in that configuration — the degraded rate-limit
+   * clause points at the 429 the failed call already carries rather than at
+   * `spotify://me/rate-limit` — but a host that asked for prompts and expected
+   * reads has lost a capability, and nothing in the report said so until now.
+   * Derived from the same env and the same granted scopes `src/index.ts` uses to
+   * decide registration, so the two cannot disagree.
+   */
+  prompts_without_resources: boolean;
 }
 
 
@@ -578,6 +592,13 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
   const exposedModules = activeModules.filter(
     (key) => !scopeHidden.has(key) && !hiddenByReadonlySet.has(key),
   );
+  // Same two questions `src/index.ts` asks before it registers each surface,
+  // asked in the same order with the same inputs, so this boolean is the
+  // configuration the running server was actually built under (#715).
+  const resourcesActive =
+    isModuleActive('resources', toolsets.sets, overrides) && !moduleBlockedByScopes('resources', granted);
+  const promptsActive =
+    isModuleActive('prompts', toolsets.sets, overrides) && !moduleBlockedByScopes('prompts', granted);
 
   return {
     registry_available: available,
@@ -596,6 +617,7 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
     unknown_enable_overrides: overrides.unknown.enable,
     unknown_disable_overrides: overrides.unknown.disable,
     read_only: readOnly,
+    prompts_without_resources: promptsActive && !resourcesActive,
   };
 }
 
@@ -615,7 +637,18 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
     `enable_overrides=${surface.enable_overrides.join(',') || '(none)'}`,
     `disable_overrides=${surface.disable_overrides.join(',') || '(none)'}`,
     `read_only=${surface.read_only}`,
+    `prompts_without_resources=${surface.prompts_without_resources}`,
   ];
+  if (surface.prompts_without_resources) {
+    // The prompts still work — they degrade to guidance the failed tool call
+    // already carries rather than to a dead `spotify://` URI (#715) — but the
+    // host asked for prompts and lost the reads they used to lean on, and it
+    // should hear that from the doctor rather than infer it from a silence.
+    details.push(
+      'prompts are served with NO resources registered (independent toolsets): '
+        + 'prompt resource hints are degraded to in-error guidance, and no spotify:// URI will resolve',
+    );
+  }
   if (unknown > 0) {
     details.push(
       `unknown_toolsets=${surface.unknown_toolsets.join(',') || '(none)'}`,
@@ -636,18 +669,25 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
   const unknownNote = surface.unknown_toolsets.length > 0
     ? `; unknown toolsets: ${surface.unknown_toolsets.join(',')}`
     : '';
+  // In the SUMMARY, not just the detail: `renderDoctorProse` prints detail lines
+  // only when verbose, and the CLI subcommand is the one a user pastes into a
+  // bug thread. A trimmed-resource deployment should be legible without
+  // asking for more.
+  const promptsNote = surface.prompts_without_resources
+    ? '; prompts are served WITHOUT resources — their spotify:// hints are degraded, no URI will resolve'
+    : '';
   if (!surface.registry_available) {
     return {
       id: 'surface',
       status: failed ? 'fail' : 'info',
-      summary: `module view resolved from the SPOTIFY_MCP_* env (no live registry to count): ${counts}${unknownNote}`,
+      summary: `module view resolved from the SPOTIFY_MCP_* env (no live registry to count): ${counts}${unknownNote}${promptsNote}`,
       detail: `registry_available=false registered_tools=not-observable — this entry point runs outside the server process; call spotify_doctor in the MCP host for the live count. ${details.join(' ')}`,
     };
   }
   return {
     id: 'surface',
     status: failed ? 'fail' : verdict,
-    summary: `live registry: ${surface.registered_tools} tool(s); ${counts}${unknownNote}`,
+    summary: `live registry: ${surface.registered_tools} tool(s); ${counts}${unknownNote}${promptsNote}`,
     detail: details.join(' '),
   };
 }

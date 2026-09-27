@@ -12,10 +12,63 @@ const TimeRange = z
   .optional()
   .describe('Spotify time range: short_term (4 weeks), medium_term (6 months), long_term (all time)');
 
-const STANDARD_FOOTER =
-  'If any read returns empty (0 tracks/artists/playlists), report it explicitly and suggest a fallback instead of presenting an empty list. If a tool is unavailable (toolset-trimmed) or rate-limited (429), note it with data from spotify://me/rate-limit, wait and retry once before skipping that section — never fail the whole task for one missing step. Validate user-supplied strings (dates as YYYY-MM-DD, playlist names by resolving via get_user_playlists) and ask for clarification rather than guessing.';
+/**
+ * The rate-limit clause of the standard footer, in the two forms it can
+ * honestly take (#715).
+ *
+ * `resources` and `prompts` are INDEPENDENT toolsets (`src/toolsets.ts`), so a
+ * host can serve the prompt surface with no resources registered at all. A
+ * footer that names `spotify://me/rate-limit` regardless is a field that lies
+ * about its value (AGENTS.md §6): the URI is syntactically fine and resolves to
+ * nothing, and a hint pointing at nothing is worse than no hint, because the
+ * agent routes work toward it and finds an absence it cannot explain.
+ *
+ * The degraded clause names the mechanism that IS present in every
+ * configuration: the 429 error itself. The tool error boundary already maps a
+ * 429 to `kind: 'rate_limited'` and puts the parsed `Retry-After` in
+ * `structuredContent.error.retryAfterSec` and in the message text
+ * (`src/tools/annotations.ts`), so the agent already holds the number in the
+ * failed call's own result. No second surface has to be reachable for the
+ * guidance to be actionable.
+ *
+ * The alternative — pointing at a rate-limit TOOL — is deliberately not taken:
+ * every tool module is behind its own toolset key, so naming one reproduces
+ * this exact defect one level down, on a surface the same trim can remove.
+ * The error the agent is already holding cannot be trimmed away from it.
+ */
+const RATE_LIMIT_CLAUSE_WITH_RESOURCES =
+  'If a tool is unavailable (toolset-trimmed) or rate-limited (429), note it with data from spotify://me/rate-limit, wait and retry once before skipping that section';
+const RATE_LIMIT_CLAUSE_WITHOUT_RESOURCES =
+  'If a tool is unavailable (toolset-trimmed), note it and skip that section. If a call is rate-limited (429), the failure already carries the wait: the message names the Retry-After seconds and structuredContent.error.retryAfterSec holds the same number — wait that long and retry once before skipping that section';
 
-export function registerPrompts(server: McpServer): void {
+/**
+ * Shared footer for every numbered prompt. `resourceHints` is false when the
+ * `resources` module is not registered in this session, which is the only
+ * condition under which the resource clause is a claim the server cannot keep.
+ */
+function standardFooter(resourceHints: boolean): string {
+  const rateLimit = resourceHints ? RATE_LIMIT_CLAUSE_WITH_RESOURCES : RATE_LIMIT_CLAUSE_WITHOUT_RESOURCES;
+  return `If any read returns empty (0 tracks/artists/playlists), report it explicitly and suggest a fallback instead of presenting an empty list. ${rateLimit} — never fail the whole task for one missing step. Validate user-supplied strings (dates as YYYY-MM-DD, playlist names by resolving via get_user_playlists) and ask for clarification rather than guessing.`;
+}
+
+export interface PromptRegistrationOptions {
+  /**
+   * Whether the `resources` MCP surface is registered in this session (#715).
+   *
+   * Passed in rather than resolved here because `registerPrompts` cannot see
+   * the toolsets: the decision is made once in `src/index.ts` and the same
+   * boolean must gate BOTH resource registration and the prompt text. Two
+   * independent derivations of "are resources on" are two answers to one
+   * question, and the one that drifts is the one that ships a dead hint.
+   */
+  readonly resourceHints: boolean;
+}
+
+export function registerPrompts(server: McpServer, options: PromptRegistrationOptions): void {
+  const { resourceHints } = options;
+  // Resolved once: every prompt below shares this footer, and the two forms
+  // differ only in the rate-limit clause.
+  const footer = standardFooter(resourceHints);
   // The `prompts/get` boundary is installed HERE rather than in `src/index.ts`
   // beside `installToolErrorBoundary`, because `registerPrompts` is the only
   // way a prompt surface is ever built: production and every test go through
@@ -39,8 +92,10 @@ export function registerPrompts(server: McpServer): void {
             'Queue them with batch_add_to_queue in one call (or preview first with batch_add_to_queue(dry_run=true) / add_to_queue(dry_run=true)).',
             'If get_top_artists or search returns empty, fall back to recently-played seed artists and report what was missing.',
             'If no active device, note it and present the queue as a playlist alternative via create_playlist.',
-            'If rate-limited (429), check spotify://me/rate-limit and retry once.',
-            STANDARD_FOOTER,
+            resourceHints
+              ? 'If rate-limited (429), check spotify://me/rate-limit and retry once.'
+              : 'If rate-limited (429), the failed call already carries the wait: structuredContent.error.retryAfterSec holds the Retry-After seconds — wait that long and retry once.',
+            footer,
           ].join(' '),
         },
       }],
@@ -59,7 +114,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Create a playlist for this mood: "${args.mood}". Use up to 6 search_deep calls with combined keywords, artists, and genres (types=["track"], pages 2 — two 10-result pages per call) to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found. IMPORTANT: preview the plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. If search_deep returns 0 results, report it and suggest a broader mood. ${STANDARD_FOOTER}`,
+          text: `Create a playlist for this mood: "${args.mood}". Use up to 6 search_deep calls with combined keywords, artists, and genres (types=["track"], pages 2 — two 10-result pages per call) to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found. IMPORTANT: preview the plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. If search_deep returns 0 results, report it and suggest a broader mood. ${footer}`,
         },
       }],
     }),
@@ -84,12 +139,20 @@ export function registerPrompts(server: McpServer): void {
       const scope = isAll
         ? 'across all three time ranges'
         : `for the ${args.time_range} window only`;
+      // The zero-tool-call shortcut is a RESOURCE read, so it cannot survive a
+      // trim. Replaced rather than deleted: the agent still wants a cheap
+      // snapshot, and the same data is one tool call away on a surface that a
+      // `resources` trim does not touch. Args are named in the tool's own
+      // vocabulary so `findUndeclaredPromptArgs` keeps holding this to the schema.
+      const snapshotShortcut = resourceHints
+        ? 'For a quick medium_term snapshot without tool calls, read spotify://me/top/tracks and spotify://me/top/artists; those two resources take ?time_range (long_term, medium_term, short_term), ?limit and ?offset, so read spotify://me/top/tracks?time_range=short_term&limit=5 for a recent snapshot.'
+        : 'For a quick medium_term snapshot without summarizing every range, call get_top_tracks (time_range=medium_term, limit=20) and get_top_artists (time_range=medium_term, limit=20); use time_range=short_term, limit=5 for a recent snapshot.';
       return {
         messages: [{
           role: 'user',
           content: {
             type: 'text',
-            text: `Summarize my music taste ${scope}. Call ${calls}. Then write a detailed summary of my taste: genres I gravitate toward, artists I keep coming back to, how my taste has shifted over time${isAll ? '' : ' within this window'}, and what that says about my listening habits. If any range returns 0 items, note it as 'not enough history for this window' rather than inventing genres. For a quick medium_term snapshot without tool calls, read spotify://me/top/tracks and spotify://me/top/artists; those two resources take ?time_range (long_term, medium_term, short_term), ?limit and ?offset, so read spotify://me/top/tracks?time_range=short_term&limit=5 for a recent snapshot. If a tool is unavailable (toolset-trimmed), skip that range with a one-line note. ${STANDARD_FOOTER}`,
+            text: `Summarize my music taste ${scope}. Call ${calls}. Then write a detailed summary of my taste: genres I gravitate toward, artists I keep coming back to, how my taste has shifted over time${isAll ? '' : ' within this window'}, and what that says about my listening habits. If any range returns 0 items, note it as 'not enough history for this window' rather than inventing genres. ${snapshotShortcut} If a tool is unavailable (toolset-trimmed), skip that range with a one-line note. ${footer}`,
           },
         }],
       };
@@ -110,7 +173,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search_deep (types=["track"], pages 2 — two 10-result pages per call, 2–3 broad combined genre/mood/artist queries rather than one search per target track) to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. If combined searches yield <${args.size} candidates after exclusions, issue one more broadened search or paginate the most promising query (offset=20) and report if you could only find N < ${args.size} fresh picks and why. Flag region-unavailable/null items. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them. ${STANDARD_FOOTER}`,
+          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search_deep (types=["track"], pages 2 — two 10-result pages per call, 2–3 broad combined genre/mood/artist queries rather than one search per target track) to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. If combined searches yield <${args.size} candidates after exclusions, issue one more broadened search or paginate the most promising query (offset=20) and report if you could only find N < ${args.size} fresh picks and why. Flag region-unavailable/null items. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them. ${footer}`,
         },
       }],
     });
@@ -140,7 +203,7 @@ export function registerPrompts(server: McpServer): void {
             '(2) DEAD TRACKS — entries whose track is null or flagged unavailable/unplayable, including region-restricted relinks.',
             '(3) SUMMARY TABLE — a summary table with counts per issue.',
             'For every problem entry give its position and URI so I can act with remove_from_playlist. Do NOT remove anything yet — just present findings and ask which fixes to apply.',
-            STANDARD_FOOTER,
+            footer,
           ].join('\n'),
         },
       }],
@@ -162,7 +225,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Give me a listening recap for my ${args.time_range} history. Call get_top_tracks (time_range=${args.time_range}, limit=${args.size}), get_top_artists (time_range=${args.time_range}, limit=${args.size}), and get_recently_played (limit=50) in parallel where possible. Then write an engaging recap: my ${args.size} most-played tracks and artists, patterns across genres/moods/eras, how recently-played confirms or diverges from the charts, one "on repeat" callout, and one "you might be burning out on" callout based on repetition. End with three concrete follow-up suggestions (e.g. a playlist to revisit or an album to try) using real URIs. ${STANDARD_FOOTER}`,
+          text: `Give me a listening recap for my ${args.time_range} history. Call get_top_tracks (time_range=${args.time_range}, limit=${args.size}), get_top_artists (time_range=${args.time_range}, limit=${args.size}), and get_recently_played (limit=50) in parallel where possible. Then write an engaging recap: my ${args.size} most-played tracks and artists, patterns across genres/moods/eras, how recently-played confirms or diverges from the charts, one "on repeat" callout, and one "you might be burning out on" callout based on repetition. End with three concrete follow-up suggestions (e.g. a playlist to revisit or an album to try) using real URIs. ${footer}`,
         },
       }],
     });
@@ -184,7 +247,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. Collect every album ID, then fetch album metadata in chunks of 20 using get_several_albums. From those results, pick albums matching the type filter${args.include_singles === 'true' ? '' : ' (keep only album_type=="album", skip "single" and "compilation")'}. Extract track URIs directly from the album objects returned by get_several_albums (they already include tracks.items for albums ≤50 tracks) — do NOT call get_album_tracks per album. Only call get_album_tracks for albums where total_tracks > 50 or where tracks are missing. If no albums match the type filter, report 0 and skip playlist creation. Collect ALL track URIs into one deduplicated ordered list preserving album order. Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists (fetch_all=true) — page through every playlist until found, otherwise a name match deeper in the user's library would be missed; if it does exist, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Use add_to_playlist in batches of at most 100. IMPORTANT: preview the full plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. Finish with counts: albums walked, unique tracks added, duplicates skipped. ${STANDARD_FOOTER}`,
+          text: `Migrate my saved albums into one playlist. Use get_saved_albums with fetch_all=true to list everything saved. Collect every album ID, then fetch album metadata in chunks of 20 using get_several_albums. From those results, pick albums matching the type filter${args.include_singles === 'true' ? '' : ' (keep only album_type=="album", skip "single" and "compilation")'}. Extract track URIs directly from the album objects returned by get_several_albums (they already include tracks.items for albums ≤50 tracks) — do NOT call get_album_tracks per album. Only call get_album_tracks for albums where total_tracks > 50 or where tracks are missing. If no albums match the type filter, report 0 and skip playlist creation. Collect ALL track URIs into one deduplicated ordered list preserving album order. Check whether a playlist named "${args.playlist_name}" already exists via get_user_playlists (fetch_all=true) — page through every playlist until found, otherwise a name match deeper in the user's library would be missed; if it does exist, reuse its ID, otherwise create it with create_playlist (description "Tracks migrated from my saved albums"). Use add_to_playlist in batches of at most 100. IMPORTANT: preview the full plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. Finish with counts: albums walked, unique tracks added, duplicates skipped. ${footer}`,
         },
       }],
     });
@@ -211,7 +274,7 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Catch me up on podcasts from the last ${args.days} day(s). Prefer show_new_episodes (days=${args.days}, per_show_limit=${args.per_show_limit}, max_shows=${args.max_shows}) to aggregate across saved shows in one call; only fall back to get_saved_shows (fetch_all=true) + list_show_episodes per show if show_new_episodes is unavailable (toolset-trimmed). Keep capped at ${args.per_show_limit} per show, newest first. If no saved shows or no episodes in the lookback window, say so explicitly rather than presenting an empty list. For the list_show_episodes fallback, fetch max_results=${Math.max(args.per_show_limit * 3, 10)} and keep per_show_limit small (default 3) unless I explicitly ask for more. Present grouped by show: episode title, release date, duration, description snippet, and episode URI/ID. Flag anything longer than 90 minutes as a "long listen". At the end ask whether I want any of them queued now via batch_add_to_queue or played directly — do not start playback unprompted. ${STANDARD_FOOTER}`,
+          text: `Catch me up on podcasts from the last ${args.days} day(s). Prefer show_new_episodes (days=${args.days}, per_show_limit=${args.per_show_limit}, max_shows=${args.max_shows}) to aggregate across saved shows in one call; only fall back to get_saved_shows (fetch_all=true) + list_show_episodes per show if show_new_episodes is unavailable (toolset-trimmed). Keep capped at ${args.per_show_limit} per show, newest first. If no saved shows or no episodes in the lookback window, say so explicitly rather than presenting an empty list. For the list_show_episodes fallback, fetch max_results=${Math.max(args.per_show_limit * 3, 10)} and keep per_show_limit small (default 3) unless I explicitly ask for more. Present grouped by show: episode title, release date, duration, description snippet, and episode URI/ID. Flag anything longer than 90 minutes as a "long listen". At the end ask whether I want any of them queued now via batch_add_to_queue or played directly — do not start playback unprompted. ${footer}`,
         },
       }],
     });
@@ -225,15 +288,20 @@ export function registerPrompts(server: McpServer): void {
     {
       artist: z.string().describe('Artist name, ID, or URI'),
     },
-    async (args) => ({
-      messages: [{
-        role: 'user',
-        content: {
-          type: 'text',
-          text: `Deep-dive into the artist "${args.artist}". Resolve the name with search (types=["artist"], limit 10) and confirm with get_artist (genres, images). If search returns 0 artists, report 'no match for "${args.artist}"' and stop. Then call get_artist_albums and get_artist_top_tracks (to identify hits to skip); pick a representative tour: their most recent album, one breakout/earlier album, and one fan favourite (use track order and your judgement — popularity fields are no longer exposed by the API). If get_artist_albums is empty, say so. For each chosen album pull tracks with get_album_tracks (limit 50; if total >50, paginate with offset) and flag unavailable/null tracks. If a track fetch partially fails, present the albums you did retrieve and note the missing one. Note rate limits: 3 album-track fetches are expected; wait and retry once on 429 via spotify://me/rate-limit. Write up: who they are in two sentences, the era-by-era story of the albums you toured, a "start here" 8-track mini-playlist with URIs, and one deep cut worth hearing. When offering to keep the 8-track list as a playlist, preview with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s, skip the call and infer hits to skip from the artist's most-streamed albums via get_artist_albums + get_album_tracks ordering instead. ${STANDARD_FOOTER}`,
-        },
-      }],
-    }),
+    async (args) => {
+      const rateLimitHint = resourceHints
+        ? 'Note rate limits: 3 album-track fetches are expected; wait and retry once on 429 via spotify://me/rate-limit.'
+        : 'Note rate limits: 3 album-track fetches are expected; on 429 the failed call already carries the wait — structuredContent.error.retryAfterSec holds the Retry-After seconds, so wait that long and retry once.';
+      return ({
+        messages: [{
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `Deep-dive into the artist "${args.artist}". Resolve the name with search (types=["artist"], limit 10) and confirm with get_artist (genres, images). If search returns 0 artists, report 'no match for "${args.artist}"' and stop. Then call get_artist_albums and get_artist_top_tracks (to identify hits to skip); pick a representative tour: their most recent album, one breakout/earlier album, and one fan favourite (use track order and your judgement — popularity fields are no longer exposed by the API). If get_artist_albums is empty, say so. For each chosen album pull tracks with get_album_tracks (limit 50; if total >50, paginate with offset) and flag unavailable/null tracks. If a track fetch partially fails, present the albums you did retrieve and note the missing one. ${rateLimitHint} Write up: who they are in two sentences, the era-by-era story of the albums you toured, a "start here" 8-track mini-playlist with URIs, and one deep cut worth hearing. When offering to keep the 8-track list as a playlist, preview with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s, skip the call and infer hits to skip from the artist's most-streamed albums via get_artist_albums + get_album_tracks ordering instead. ${footer}`,
+          },
+        }],
+      });
+    },
   );
 
   // music_briefing — daily/weekly briefing from radar tools (#227).
@@ -275,13 +343,13 @@ export function registerPrompts(server: McpServer): void {
     },
   );
   server.prompt('morning_briefing', 'Morning briefing: new releases + listening streak + top track.', async () => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Give me a morning briefing: call listening_streaks, get_top_tracks (short_term, limit 5), and get_recently_played (limit 10). Summarize streak, top track, and 3 “play next” suggestions with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly rather than inventing content. ${STANDARD_FOOTER}` } }],
+    messages: [{ role: 'user', content: { type: 'text', text: `Give me a morning briefing: call listening_streaks, get_top_tracks (short_term, limit 5), and get_recently_played (limit 10). Summarize streak, top track, and 3 “play next” suggestions with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly rather than inventing content. ${footer}` } }],
   }));
   server.prompt('weekly_digest', 'Weekly digest: taste shift + streaks + recommendations.', async () => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Weekly digest: call taste_shift_report, listening_streaks, and listening_report (medium_term). Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly. ${STANDARD_FOOTER}` } }],
+    messages: [{ role: 'user', content: { type: 'text', text: `Weekly digest: call taste_shift_report, listening_streaks, and listening_report (medium_term). Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly. ${footer}` } }],
   }));
   server.prompt('crate_digging', 'Crate dig deep cuts for your top artists.', { depth: z.coerce.number().int().positive().max(5).optional().describe('Deep cuts per artist (default 3)') }, async (rawArgs) => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for up to 5 artists from get_top_artists (short_term) — if fewer than 5, dig only the ones available and note the shortfall — find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts per artist. Use get_artist_top_tracks to identify hits to skip in one call per artist, then use 1–2 broad search_deep queries (types=["track"], pages 2 — two 10-result pages per call) covering multiple artists/genres rather than one per deep cut, plus get_artist_albums and get_album_tracks (limit 50, paginate if needed) to surface deep cuts. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing. If per-artist searches return 0 deep cuts, report it and suggest broadening. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s for an artist, skip just that artist's hit-skip step and rely on get_artist_albums + get_album_tracks ordering for the same signal; do not abort the whole dig. ${STANDARD_FOOTER}` } }],
+    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for up to 5 artists from get_top_artists (short_term) — if fewer than 5, dig only the ones available and note the shortfall — find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts per artist. Use get_artist_top_tracks to identify hits to skip in one call per artist, then use 1–2 broad search_deep queries (types=["track"], pages 2 — two 10-result pages per call) covering multiple artists/genres rather than one per deep cut, plus get_artist_albums and get_album_tracks (limit 50, paginate if needed) to surface deep cuts. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing. If per-artist searches return 0 deep cuts, report it and suggest broadening. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s for an artist, skip just that artist's hit-skip step and rely on get_artist_albums + get_album_tracks ordering for the same signal; do not abort the whole dig. ${footer}` } }],
   }));
 
   // triage_liked_songs — walk the saved-tracks backlog into bucket

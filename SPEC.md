@@ -2045,6 +2045,24 @@ Three properties hold for every one of them, and each is asserted against the **
 
 **Strictness is about argument names, not encodings.** A *declared* argument still accepts everything it accepted before: the numeric prompt arguments (`size`, `limit`, `batch_size`) are `z.coerce.number()` and keep taking the protocol string, so a host that can only express a scalar is still served. Nothing here decides what a *value* may be spelled as — that is #694, and it is untouched.
 
+### Resource hints degrade with the resources module (#715)
+
+A prompt may name a `spotify://` resource **only when this session registered one.** `prompts` and `resources` are independent toolsets, so the prompt surface can be served with no resources at all: `SPOTIFY_MCP_TOOLSETS=prompts`, or `SPOTIFY_MCP_ENABLE_TOOLS=prompts`, or `SPOTIFY_MCP_DISABLE_TOOLS=resources` under any other spec. In those configurations three prompts named a resource in prose of their own and the shared footer named a fourth — all of which resolve to nothing, and a hint that points at nothing is worse than no hint, because the agent routes work toward it and finds an absence it cannot explain.
+
+The degraded form keeps the guidance and drops the URI:
+
+| | Resources registered | Resources trimmed |
+|---|---|---|
+| Shared footer (12 prompts) | `…rate-limited (429), note it with data from spotify://me/rate-limit, wait and retry once…` | `…on 429 the failure already carries the wait: the message names the Retry-After seconds and structuredContent.error.retryAfterSec holds the same number — wait that long and retry once…` |
+| `music_taste_summary` | "read `spotify://me/top/tracks?time_range=short_term&limit=5` for a recent snapshot" (a zero-tool-call read) | "call `get_top_tracks (time_range=short_term, limit=5)`" — the same data, one tool call away |
+| `dj`, `artist_deep_dive` | "check `spotify://me/rate-limit` and retry once" | the same 429 sentence as the footer |
+
+**The fallback is the failure the agent is already holding, not a second surface.** A 429 arrives as `kind: 'rate_limited'` with the parsed `Retry-After` in the message text and in `structuredContent.error.retryAfterSec` (§8), so the degraded guidance is actionable with nothing else reachable. Naming a rate-limit *tool* instead was rejected deliberately: every tool module sits behind its own toolset key, so that would reproduce this exact defect one level down, on a surface the same trim can remove. A mechanism the agent is already holding cannot be trimmed away from it.
+
+**`registerPrompts(server, options)` takes a required `resourceHints`.** `src/index.ts` resolves "are resources on" once and uses that one boolean both to register the resources and to write the prompt text — two independent derivations of one question are two answers to one, and the drifting one ships a dead hint. The option is required rather than defaulted so no call site can silently receive a lying prompt, for the reason §7's argument contract already states about `installPromptErrorBoundary`.
+
+A trimmed deployment is also reported by `spotify_doctor`: the `surface` row gains `prompts_without_resources` and says so in its summary (§9). `music_briefing` and `triage_liked_songs` never carried a resource clause, so they render identically in both configurations.
+
 ---
 
 ## 8. Error Handling

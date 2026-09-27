@@ -43,6 +43,10 @@ const parameterAllowlist = new Set([
   // report describing its own output, not tools and not parameters.
   'account_probe', 'active_sets', 'exposed_modules', 'hidden_by_trim',
   'inactive_sets',
+  // #715: the same kind of key — a `DoctorSurface` field, reported because a
+  // deployment that trimmed the `resources` toolset still serves prompts, and
+  // their resource hints are degraded. A report describing its own output.
+  'prompts_without_resources',
   'requests_planned', 'token_refresh', 'web_search',
   // #677: the token-endpoint failure classes. RFC 6749 §5.2 error codes the
   // refresh response carries (`invalid_client`, `server_error`) and one

@@ -60,7 +60,12 @@ function promisedResultCeiling(text: string): number {
 
 async function renderAllPrompts(): Promise<Map<string, string>> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
-  registerPrompts(server);
+  // No resources are registered on this server, so the prompt surface is the
+  // TRIMMED one: `resourceHints: false` is the honest value here, not a
+  // convenience default (#715). It does not affect the search limits this file
+  // measures, which is the point — the degradation is confined to the resource
+  // clauses.
+  registerPrompts(server, { resourceHints: false });
   const client = new Client({ name: 'tester', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(clientTransport), client.connect(serverTransport)]);
