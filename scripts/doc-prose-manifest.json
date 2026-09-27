@@ -2849,7 +2849,7 @@
         "label": "A playlist at or below the cap is unchanged: truncated: …"
       },
       {
-        "hash": "c2550abc00703fd9",
+        "hash": "2267dd5aca8f0498",
         "label": "Not a migration: no call that succeeded before fails now…"
       },
       {
@@ -4938,6 +4938,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1d0730021d0c4a24",
+      "label": "Inputs: playlistid (string, required), shared response f…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -4952,13 +4959,6 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "1d0730021d0c4a24",
-      "label": "Inputs: playlistid (string, required), shared response f…",
-      "date": "2026-09-27",
-      "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
-    },
-    {
-      "file": "SPEC.md",
       "hash": "7b610616c97ccf11",
       "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …",
       "date": "2026-09-27",
@@ -4970,6 +4970,13 @@
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "c2550abc00703fd9",
+      "label": "Not a migration: no call that succeeded before fails now…",
+      "date": "2026-09-27",
+      "reason": "reworded to stop hand-copying the swarm4playlists manifest baseline into prose; the generated schema-budget-table in docs/schema-budgets.md is authoritative and any sibling module change moves the number again"
     },
     {
       "file": "SPEC.md",
