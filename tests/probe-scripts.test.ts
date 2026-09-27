@@ -52,6 +52,16 @@ const RUN_TIMEOUT_MS = 60_000;
 /** The id the stubbed `/v1/me` reports. Nothing else may emit it. */
 const FAKE_UID = 'probeuidABCDEFGHIJKLMNOP';
 
+/**
+ * A synthetic playlist id, in the 22-character Spotify shape the script checks
+ * for. Deliberately not a real one: the id this replaced was the maintainer's
+ * private playlist, and moving it from `scripts/contains-check.mjs` into a test
+ * fixture would have shipped exactly the identity the fix exists to remove. A
+ * test asserting "the private id is gone from the source" must not carry the
+ * private id itself, or the assertion is theatre.
+ */
+const FAKE_PLAYLIST_ID = '4Gh2ZqT0cQWJmB8nR1xLpA';
+
 /** Profile fields the stubbed `/v1/users/{id}` and `/v1/me` bodies carry. */
 const FAKE_EMAIL = 'maintainer@example.invalid';
 const FAKE_DISPLAY_NAME = 'Maintainer Example';
@@ -582,7 +592,7 @@ describe('contains-check.mjs (#646)', () => {
     // quietly probes with the first two. A caller who pasted a user id, a
     // playlist id and a track id would otherwise get a clean exit 0 and no
     // indication that their third argument was discarded.
-    const run = box.run('contains-check', ['someone', '37i9dQZF1DXcBWIGoYBM5M', '4uLU6hMCjMI75M1A2tKUQC'], [{ status: 200 }]);
+    const run = box.run('contains-check', ['someone', FAKE_PLAYLIST_ID, '4uLU6hMCjMI75M1A2tKUQC'], [{ status: 200 }]);
 
     assert.equal(run.status, 2, run.output);
     assert.match(run.output, /expected exactly a user id and a playlist id/);
@@ -597,7 +607,7 @@ describe('contains-check.mjs (#646)', () => {
     // "printable, one line": an id with a newline in it is not a Spotify id,
     // and every place the script echoes a rejected value is a place a newline
     // would otherwise break the line a human is reading.
-    const run = box.run('contains-check', ['someone\ninjected: line', '37i9dQZF1DXcBWIGoYBM5M'], [{ status: 200 }]);
+    const run = box.run('contains-check', ['someone\ninjected: line', FAKE_PLAYLIST_ID], [{ status: 200 }]);
 
     assert.equal(run.status, 2, run.output);
     assert.match(run.output, /user-id .* is not a Spotify id/);
@@ -610,14 +620,17 @@ describe('contains-check.mjs (#646)', () => {
     // The user id carries a slash and dots, so the assertion can tell an
     // encoded value from a raw interpolation; the playlist id is a real one so
     // the path segment assertion is against a shape the server accepts.
-    const run = box.run('contains-check', ['user/../id', '37i9dQZF1DXcBWIGoYBM5M'], [{ status: 200 }]);
+    const run = box.run('contains-check', ['user/../id', FAKE_PLAYLIST_ID], [{ status: 200 }]);
 
     assert.equal(run.status, 0, run.output);
     const followers = run.calls.find((c) => c.url.includes('/followers/contains'));
     assert.ok(followers, `no followers/contains probe was issued: ${run.output}`);
     // `.` is an unreserved character and is correctly left alone; the `/`
     // separators are what percent-encoding has to catch here.
-    assert.match(followers.url, /\/v1\/playlists\/37i9dQZF1DXcBWIGoYBM5M\/followers\/contains\?ids=user%2F\.\.%2Fid/);
+    assert.match(
+      followers.url,
+      new RegExp(`\\/v1\\/playlists\\/${FAKE_PLAYLIST_ID}\\/followers\\/contains\\?ids=user%2F\\.\\.%2Fid`),
+    );
     assert.doesNotMatch(followers.url, /ids=user\/\.\.\/id/, 'an id must be percent-encoded, not interpolated raw');
 
     // A playlist id that would traverse the path is refused before any request
@@ -637,7 +650,7 @@ describe('contains-check.mjs (#646)', () => {
       join(profiled.home, '.spotify-mcp/tokens.work.json'),
       JSON.stringify({ access_token: 'stub-work', expires_at: Date.now() + 3_600_000 }),
     );
-    const run2 = profiled.run('contains-check', ['someone', '37i9dQZF1DXcBWIGoYBM5M'], [{ status: 200 }], {
+    const run2 = profiled.run('contains-check', ['someone', FAKE_PLAYLIST_ID], [{ status: 200 }], {
       SPOTIFY_MCP_PROFILE: 'work',
     });
     assert.equal(run2.status, 0, run2.output);
@@ -645,7 +658,7 @@ describe('contains-check.mjs (#646)', () => {
 
     const missing = sandbox();
     rmSync(join(missing.home, '.spotify-mcp/tokens.json'));
-    const noProfile = missing.run('contains-check', ['someone', '37i9dQZF1DXcBWIGoYBM5M'], [{ status: 200 }]);
+    const noProfile = missing.run('contains-check', ['someone', FAKE_PLAYLIST_ID], [{ status: 200 }]);
     assert.equal(noProfile.status, 1, noProfile.output);
     assert.match(noProfile.output, /npm run auth/, 'a missing token file needs the command that makes one');
   });
