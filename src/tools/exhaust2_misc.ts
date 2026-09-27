@@ -40,6 +40,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
+import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 import { getConfig, storePath } from '../config.js';
 import {
   confirmViaElicitation,
@@ -2083,7 +2084,9 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
   server.tool(
     'export_playlist_json',
     'Full-fidelity JSON export of one playlist: items + added_at + added_by + URIs (the '
-      + 'fields CSV/M3U lose). 1 read.',
+      + 'fields CSV/M3U lose). The item walk stops at SPOTIFY_MCP_FETCH_ALL_CAP; a capped walk '
+      + 'says so via items_truncated / truncated_by_cap, and total_tracks is the playlist\'s own '
+      + 'count (null when Spotify states none) — never the number of rows this walk returned.',
     {
       playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       max_results: MaxResults,
@@ -2091,18 +2094,44 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const meta = await client.get<{ name?: string; owner?: { id?: string }; uri?: string; tracks?: { total?: number } }>(`/playlists/${encodeURIComponent(args.playlist_id)}`);
+      // #1533: the inline type modelled only the deprecated `tracks` page, so the
+      // canonical `items` page was invisible to the compiler and a read that
+      // skipped it type-checked. `SpotifyPlaylistPage` is both spellings.
+      const meta = await client.get<{ name?: string; owner?: { id?: string }; uri?: string } & SpotifyPlaylistPage>(
+        `/playlists/${encodeURIComponent(args.playlist_id)}`);
       if (!meta) return emit(rf, `Playlist "${args.playlist_id}" not found.`, { ok: false, error: 'not_found' }, SUMMARISE_JSON);
-      const items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' });
+      // The walk's own verdict rides with its rows, because the array cannot
+      // distinguish "read everything" from "stopped at the cap" (#864) and this
+      // export is the one place a caller would read that length as a size.
+      const walk = await client.getAllPagesWithTruncation<PlaylistRow>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' });
+      const items = walk.items;
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(items, maxResults);
+      // #1533: the playlist's real length, as the server states it. Two sources
+      // in precedence order — the items page this walk actually read, then the
+      // playlist object's canonical `items.total` with the pre-Feb-2026
+      // `tracks.total` as its fallback (`playlistItemTotal`). Same precedence
+      // `fetchPlaylistUris` already uses in `exhaust2_extra.ts`. Neither being
+      // a number is `null`: a length Spotify did not state is not zero and is
+      // not the capped walk's row count. The `?? items.length` this replaces
+      // published a number bounded by fetchAllCap (500 by default) under the
+      // name of the playlist's size, with no marker that it was capped.
+      const reported = walk.reportedTotal ?? playlistItemTotal(meta);
+      const totalTracks = typeof reported === 'number' && Number.isFinite(reported) ? reported : null;
       const doc = {
         playlist: {
           id: args.playlist_id, name: meta.name ?? null, owner: meta.owner?.id ?? null, uri: meta.uri ?? null,
-          total_tracks: meta.tracks?.total ?? items.length,
+          total_tracks: totalTracks,
         },
         exported_at: new Date().toISOString(),
         item_count: items.length, returned: t.returned, truncated: t.truncated,
+        // The SOURCE walk's verdict, under its own names. `truncated` above is
+        // the export SLICE (max_results) — a different cap, and `false` on a
+        // playlist that fits `max_results` but is over fetchAllCap. Both keys
+        // are unconditional: a missing key is a missing disclosure, which is
+        // the shape of the bug this replaces.
+        items_truncated: walk.truncated,
+        truncated_by_cap: walk.truncatedByCap,
         items: t.items.map((r, i) => ({
           position: i,
           uri: r?.item?.uri ?? null,

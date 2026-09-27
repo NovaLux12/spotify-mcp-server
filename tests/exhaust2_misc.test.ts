@@ -34,7 +34,7 @@ type Handler = (args: Record<string, unknown>) => Promise<{
 }>;
 
 function makeClient(overrides: Record<string, unknown> = {}) {
-  return {
+  const base = {
     // The real SpotifyClient always sets this at construction; a stub that
     // omits it is not a client the stores can key by (#1385).
     tokenFile: DEFAULT_TOKEN_FILE,
@@ -45,6 +45,25 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     delete: mock.fn(async () => null),
     getRateLimitStatus: mock.fn(() => ({ cooldownRemainingMs: 0, lastThrottleAt: null, retryAfterSec: null })),
     ...overrides,
+  };
+  return {
+    ...base,
+    // `getAllPages` is `getAllPagesWithTruncation(...).items` in production, so
+    // a tool that asks for the verdict needs the verdict from the fake too.
+    // Derived from whichever `getAllPages` won (the default or an override), so
+    // a test that only teaches the row-producing method still answers this one.
+    //
+    // It reports `truncated: false` / `reportedTotal: null`: a permissive
+    // "everything was fine" answer. A test that is ABOUT the truncation verdict
+    // must override this method directly, or — better — drive the real walk
+    // through `StubSpotifyClient` with a real cap, as the #1533 tests below do.
+    getAllPagesWithTruncation: mock.fn(async (path: string, params?: Record<string, string>, opts?: unknown) => ({
+      items: await (base.getAllPages as (p: string, q?: Record<string, string>, o?: unknown) => Promise<unknown[]>)(path, params, opts),
+      truncated: false,
+      truncatedByCap: false,
+      reportedTotal: null,
+      pages: 1,
+    })),
   } as unknown as import('../src/client.js').SpotifyClient;
 }
 
@@ -892,6 +911,174 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const text = res.content[0].text;
     assert.ok(text.includes('"added_by": "me"'));
     assert.ok(text.includes('"total_tracks": 1'));
+  });
+
+  // ---------------------------------------------------------------------
+  // #1533 — `total_tracks` must be the playlist's real size, never the
+  // capped walk's row count.
+  //
+  // The shape it used to have: read the deprecated `tracks.total` alone, and
+  // when that read failed substitute `items.length` — the count the walk
+  // actually returned, bounded by SPOTIFY_MCP_FETCH_ALL_CAP (500) — and
+  // publish it as the playlist's size. Next to `item_count`, which is the same
+  // number, with no marker anywhere that either was capped.
+  // ---------------------------------------------------------------------
+
+  /**
+   * A real walk over a real cap: `cap` rows out of the `size` the endpoint has,
+   * so the walked count is provably not the playlist's size.
+   * `StubSpotifyClient` supplies the production paging loop, which is the
+   * point — a hand-written `getAllPages` fake could not produce a cap verdict
+   * at all, so a test built on one cannot catch this bug.
+   *
+   * `pageTotal: 'omit'` makes the items endpoint send a page with NO `total`
+   * key, which is the case that separates the two reads: the playlist object
+   * is then the only source that can state a length, and a fixture that sent
+   * `total: 0` instead would be self-contradictory (zero rows, five delivered)
+   * and would assert nothing about the fallback.
+   */
+  function cappedExportClient(opts: {
+    size: number;
+    cap: number;
+    meta: Record<string, unknown>;
+    pageTotal?: number | 'omit';
+  }): StubSpotifyClient {
+    const stub = new StubSpotifyClient({ fetchAllCap: opts.cap });
+    stub.get_('/playlists/pl', { respond: { name: 'MyList', owner: { id: 'me' }, uri: 'spotify:playlist:pl', ...opts.meta } });
+    const rows = Array.from({ length: opts.size }, (_, i) => ({
+      item: { uri: `spotify:track:${i + 1}`, name: `T${i + 1}`, artists: [{ name: 'Adele' }], album: { name: '25' }, duration_ms: 200_000 },
+      added_at: '2026-01-01T00:00:00Z',
+      added_by: { id: 'me' },
+    }));
+    if (opts.pageTotal === 'omit') {
+      stub.get_('/playlists/pl/items', {
+        respond: (call) => {
+          const arg = (call.arg ?? {}) as Record<string, string>;
+          const offset = Number(arg.offset ?? 0) || 0;
+          const limit = Number(arg.limit ?? 100) || 100;
+          // A real paged envelope MINUS `total`: the walk then cannot prove
+          // completeness against a server count, and says so itself.
+          return { items: rows.slice(offset, offset + limit), limit, offset, next: null };
+        },
+      });
+      return stub;
+    }
+    stub.page('/playlists/pl/items', rows, { pageSize: 100, ...(opts.pageTotal !== undefined ? { total: opts.pageTotal } : {}) });
+    return stub;
+  }
+
+  it('export_playlist_json reads the canonical items.total, not the capped row count (#1533)', async () => {
+    // 5 rows exist, the walk is capped at 2, the items page states no total,
+    // and the playlist object carries ONLY the canonical `items.total` — no
+    // `tracks` at all. The 5 can only have come from the canonical page.
+    const stub = cappedExportClient({ size: 5, cap: 2, pageTotal: 'omit', meta: { items: { total: 5 } } });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as {
+      playlist: { total_tracks: number | null };
+      item_count: number;
+      items_truncated: boolean;
+      truncated_by_cap: boolean;
+    };
+
+    assert.equal(doc.playlist.total_tracks, 5, 'the canonical items.total is the playlist size');
+    assert.equal(doc.item_count, 2, 'only the capped rows were walked');
+    assert.notEqual(doc.playlist.total_tracks, doc.item_count,
+      'the two fields must not carry the same number when the walk was capped');
+  });
+
+  it('export_playlist_json reports total_tracks null, not the walked count, when Spotify states no total (#1533)', async () => {
+    // The playlist object carries NEITHER page, and the items page states no
+    // total either. The walked 2 rows are the only number in the response —
+    // and they are not the playlist's size.
+    const stub = cappedExportClient({ size: 5, cap: 2, pageTotal: 'omit', meta: {} });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as {
+      playlist: { total_tracks: number | null };
+      item_count: number;
+      items_truncated: boolean;
+    };
+
+    assert.equal(doc.playlist.total_tracks, null,
+      'a length Spotify never stated is null — not 0, and not the capped walk');
+    assert.equal(doc.item_count, 2, 'the walked rows are still reported, under their own name');
+    assert.equal(doc.items_truncated, true, 'and the walk says it was short');
+  });
+
+  it('export_playlist_json still reads the legacy tracks.total as a fallback (#1533)', async () => {
+    // A grandfathered payload carries only the pre-Feb-2026 `tracks` page.
+    // `deprecated` is not `removed`, so this read must keep working — it is the
+    // FALLBACK, not the only source.
+    const stub = cappedExportClient({ size: 5, cap: 2, pageTotal: 'omit', meta: { tracks: { total: 5 } } });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as { playlist: { total_tracks: number | null } };
+    assert.equal(doc.playlist.total_tracks, 5);
+  });
+
+  it('export_playlist_json prefers the canonical items.total over the legacy one when both are present (#1533)', async () => {
+    // The inverted read order is the defect: `items` is the page Spotify
+    // documents and the one playlists the caller owns actually populate.
+    const stub = cappedExportClient({
+      size: 5, cap: 2, pageTotal: 'omit',
+      meta: { items: { total: 5 }, tracks: { total: 4 } },
+    });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as { playlist: { total_tracks: number | null } };
+    assert.equal(doc.playlist.total_tracks, 5, 'items.total outranks the deprecated tracks.total');
+  });
+
+  it('export_playlist_json marks a capped walk under its own key, apart from the export-slice truncated (#1533)', async () => {
+    // `truncated` is the EXPORT SLICE (max_results). `items_truncated` is the
+    // SOURCE walk (fetchAllCap). They are different caps and a playlist can be
+    // under one and over the other — which is exactly the case the two keys
+    // have to be able to disagree about.
+    const stub = cappedExportClient({ size: 5, cap: 2, pageTotal: 'omit', meta: { items: { total: 5 } } });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as {
+      truncated: boolean;
+      returned: number;
+      items_truncated: boolean;
+      truncated_by_cap: boolean;
+    };
+
+    assert.equal(doc.items_truncated, true, 'the source walk was short');
+    assert.equal(doc.truncated_by_cap, true, 'and the cap is why');
+    assert.equal(doc.truncated, false,
+      'the export slice is a different cap and was NOT reached — the two must not share a key');
+    assert.equal(doc.returned, 2);
+  });
+
+  it('export_playlist_json leaves a whole read unflagged and reports its total (#1533)', async () => {
+    // The other direction: a caller must be able to tell "complete" from
+    // "capped" from the response alone, so the new keys are false here and the
+    // total is the real one.
+    const stub = cappedExportClient({ size: 3, cap: 500, pageTotal: 'omit', meta: { items: { total: 3 } } });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as {
+      playlist: { total_tracks: number | null };
+      item_count: number;
+      items_truncated: boolean;
+      truncated_by_cap: boolean;
+    };
+
+    assert.equal(doc.playlist.total_tracks, 3);
+    assert.equal(doc.item_count, 3);
+    assert.equal(doc.items_truncated, false, 'a whole read is not flagged as short');
+    assert.equal(doc.truncated_by_cap, false);
+  });
+
+  it('export_playlist_json prefers the items page total the walk actually read (#1533)', async () => {
+    // `/playlists/{id}/items` is a paged object with its own `total`. When the
+    // walk read it, that is the count of the thing being exported and it
+    // outranks the playlist object's copy — same precedence
+    // `fetchPlaylistUris` already uses in `exhaust2_extra.ts`.
+    const stub = cappedExportClient({ size: 5, cap: 2, meta: { items: { total: 4 } } });
+    const res = await getHandler('export_playlist_json', stub)({ playlist_id: 'pl', response_format: 'concise' });
+    const doc = JSON.parse(res.content[0].text) as {
+      playlist: { total_tracks: number | null };
+      item_count: number;
+    };
+    assert.equal(doc.playlist.total_tracks, 5, 'the page the walk read states 5; the object says 4');
+    assert.equal(doc.item_count, 2, 'the walk really was capped, so the 5 cannot have come from it');
   });
 
   // #427

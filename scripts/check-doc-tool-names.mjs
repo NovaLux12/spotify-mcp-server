@@ -211,6 +211,15 @@ const parameterAllowlist = new Set([
   'created_new_playlist', 'duplicates_skipped',
   'unavailable_items_skipped', 'batches_sent',
   'rows_read', 'reported_total',
+  // #1533: the two halves of export_playlist_json's count disclosure, which
+  // SPEC.md §5.6 names to keep the two caps from sharing one key. `item_count`
+  // is the row count this call actually returned and `items_truncated` is the
+  // SOURCE walk's verdict beside it — the counterpart of `truncated`, which is
+  // the export SLICE. Both are structuredContent keys on that tool (and
+  // `items_truncated` is also `list_backups`' per-playlist key), not tools and
+  // not request parameters. `truncated_by_cap` is allowlisted below with
+  // `fetch_all_cap` — one entry each for a key more than one PR reports.
+  'item_count', 'items_truncated',
   // #1423: the neighbours of the bounded-read disclosure that are NOT part of
   // it, named in SPEC.md §5 so a new tool does not reinvent one of them as a
   // fourth spelling. All four are structuredContent keys naming a result the

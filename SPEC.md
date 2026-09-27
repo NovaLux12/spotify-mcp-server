@@ -2068,6 +2068,30 @@ Replace a playlist's cover image with a base64-encoded JPEG (max 256 KB decoded)
 
 ---
 
+#### The playlist total in `export_playlist_json` (#1533)
+
+`export_playlist_json` is a durable document format: its output is archived, diffed and re-imported, so its fields are read as facts rather than as a snapshot of one call. `total_tracks` is the playlist's **size**, and the size is not the number of rows the walk returned.
+
+It used to be the deprecated `tracks.total` alone, with `items.length` substituted when that read failed — the count the walk actually returned, bounded by `SPOTIFY_MCP_FETCH_ALL_CAP` (500 by default), published under the playlist's name. The two fields sat next to each other carrying the same capped number, and the payload had no marker that either was capped. That is the §6 shape: a correctly named field that lies about its value.
+
+The total now comes from `playlistItemTotal`, in the precedence the rest of the tree already uses (`fetchPlaylistUris` in `exhaust2_extra.ts`, `loadPlaylistFull` in `swarm3_playlistops.ts`):
+
+| Source | What it is |
+|---|---|
+| `walk.reportedTotal` | The `total` on the items page this walk actually read. A paged object's own count of the thing being exported, so it outranks a second copy of it. |
+| `items.total` | The playlist object's canonical page, which is what Spotify documents and what playlists the caller owns or collaborates on populate. |
+| `tracks.total` | The pre-Feb-2026 spelling, read only as a fallback. `deprecated` is not `removed` and the schema still declares it, so a grandfathered payload can carry only this. |
+
+Neither being a number is `null`. A length Spotify did not state is not zero and is not the walk's row count, and this document format has nowhere to record "unknown" except a null — which is the honest value, and a caller can act on it. The walk's own length stays where it was honest, under `item_count`.
+
+**The two truncations are different caps and have different keys.** `truncated` is the **export slice** — rows withheld from *this payload* by `max_results`, the contract §5 promises. `items_truncated` is the **source walk**, bounded by `SPOTIFY_MCP_FETCH_ALL_CAP`; `truncated_by_cap` says that cap is the reason, as opposed to a walk that ended on a short page while the server's `total` still counted rows. A playlist under `max_results` but over the fetch-all cap has `truncated: false` and `items_truncated: true` — which is precisely the case the two keys exist to be able to disagree about, and the one that used to be invisible. Both are unconditional: a missing key is a missing disclosure.
+
+A whole read is unchanged — `items_truncated: false`, `truncated_by_cap: false`, and `total_tracks` equal to `item_count`. A caller must be able to tell the two cases apart from the response alone, in either direction.
+
+**Not a migration.** No call that succeeded before fails now, and no call over a whole read produces different numbers. What changes is that a partial answer says so. `total_tracks` widens from `number` to `number | null`: a caller that reads a capped export of a playlist whose count was unreadable now gets `null` where it used to get a number bounded by the cap. That is a contract change, and it is why the field is documented here rather than left to the payload.
+
+---
+
 #### `move_items_between_playlists`
 Bulk rehome items between playlists. `mode: copy` leaves the source intact; `mode: move` copies to the
 target and then removes **exactly the occurrences it transferred** from the source.

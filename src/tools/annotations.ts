@@ -2020,20 +2020,18 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // carries both changes. The 23 -> 22 step and the byte rise have different
   // causes, and quoting either side's number would attribute both to one.
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
-  // [27, 24434] measured from the real registrar (tools: 592). #896 moved the
-  // byte figure by +450B with the tool count unchanged:
-  // `playlist_staleness_report` gained the shared `DryRunScan` preview and the
-  // two scan tools' longer truthful-cost prose. A new INPUT property, not a new
-  // tool — so a re-measure of the same surface, not a ceiling raise to make a
-  // breach pass. The derived ceiling follows the baseline.
-  // #1550: +118B, same 27 tools — MEASURED off the real `tools/list`.
-  // `dead_library_finder` already previewed by default (#827); this change adds
-  // only the missing elicitation gate and the description clause that tells a
-  // caller it is there. The bracketed figure is the CURRENT baseline, as
-  // `tests/manifest-comment-baseline.test.ts` requires of every figure quoted in
-  // an entry's comment run — a historical number in brackets reads as a claim
-  // about the entry rather than about the past.
-  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24434], { scopeKey: 'library' }),
+  // [27, 24546] measured from the real registrar (tools: 556). The +230B over
+  // #896's 24,316B is #1533: `export_playlist_json`'s description now names
+  // the item walk's cap, the two truncation keys, and what `total_tracks` is
+  // (and is not) — a description that only held on a whole read has to say
+  // which read it means, the same rule #1388 applied to `playlist_balance`.
+  // The earlier +450B was #896: `playlist_staleness_report` gained the shared
+  // `DryRunScan` preview and the two scan tools' longer truthful-cost prose.
+  // Tool count is unchanged at 27 across both — new INPUT properties and
+  // description text, not new tools — so this is a re-measure of the same
+  // surface, not a ceiling raise to make a breach pass. The derived ceiling
+  // follows the baseline (ceil(24546 * 1.1) = 27001B).
+  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24546], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
   // what the playlist walk costs per ref and that a capped walk reports
