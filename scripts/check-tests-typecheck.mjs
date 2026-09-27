@@ -19,8 +19,10 @@
  *
  * #1478: the comparison used to fail only when the count ROSE. A file whose
  * errors were fixed kept its allowance forever, so slack accumulated
- * silently. The measured consequence on `main` was three baseline entries
- * totalling 5 errors for files that typechecked completely clean — the exact
+ * silently. The measured consequence on the tree #1478 landed on was 15 stale
+ * errors: three baseline entries totalling 5 for files that typechecked
+ * completely clean, plus one entry still holding a 17-error ceiling over a
+ * file that measured 7. The 5 is the exact
  * "5 to give back" the gate advertised, and a total the gate would have
  * refused to let anyone spend honestly, because `--write` refreshes every
  * entry. A budget whose slack is a fiction does not bound anything.

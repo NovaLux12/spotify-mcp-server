@@ -220,9 +220,10 @@ describe('#1408 — the tests/ typecheck budget holds the real tree', () => {
     // each is not merely validated on its own.
     //
     // On the tree this landed on, the baseline claimed 651 across 114 files
-    // while `tsc` emitted 646 across 111 — three entries for files that had
-    // been fixed some time earlier. Reading the baseline alone showed nothing
-    // wrong with it; only the two side by side did.
+    // while `tsc` emitted 636 across 111: three entries for files that had
+    // been fixed some time earlier, plus one entry still carrying ten errors
+    // its file had already paid off. Reading the baseline alone showed nothing
+    // wrong with it; only the two side by side did. (651 - 636 = 15 = 5 + 10.)
     const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'));
     const measured = measureRealTree();
 
