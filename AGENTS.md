@@ -339,6 +339,67 @@ hand-maintained and `--write` does not touch them.** Measure the real
 regenerate the tables. If you raise a ceiling, document the host-session payload
 impact in docs/schema-budgets.md or the PR rationale.
 
+### Resolving a conflict in a file that mixes both (#1384)
+
+Every file in the generated list above is a **mixed** file: it interleaves
+hand-written prose with generated blocks. `--write` is marker-bounded, so it
+can only replace what sits between a BEGIN/END pair — but **you** resolving a
+rebase conflict are not marker-bounded, and in a mixed file `--ours` or
+`--theirs` is a whole-file decision that silently discards whatever hand-written
+prose the losing side carried. The generator has no copy of that prose, so
+nothing restores it, and the generated-block staleness check has no claim on it.
+Both documentation gates stay green on a document that has just lost a section.
+
+This is not hypothetical. During the #1350 work, a rebase conflicted in
+`ARCHITECTURE.md`; `--theirs` reverted a hand-written stats.fm paragraph that
+the incoming commit had just rewritten. It was caught only because an agent
+diffed its own commit, saw a hunk it could not explain, and investigated — which
+is diligence, not a process.
+
+**In a file that mixes generated and hand-written regions, a whole-file conflict
+resolution is not a conflict resolution. It is a silent content deletion with a
+green CI.**
+
+Recover the correct way. Take the **merge base** of the file, then let the
+generator rewrite the marked blocks from the current registry:
+
+```bash
+git checkout --ours ARCHITECTURE.md    # during a rebase, "ours" is the branch you are onto
+npm run count:tools -- --write         # rewrites only what is between markers
+```
+
+That is enough when the only thing that differs is inside generated regions,
+which is the common case. It is **not** enough when both sides edited the same
+hand-written prose: then neither side contains the other's text, and no choice
+of side can be right. Hand-merge those hunks — keep both sides' prose — and
+then run `--write` for the generated parts. `--ours` and `--theirs` are correct
+answers to "which generated block", and silent content deletions to "which
+paragraph".
+
+**The gate (#1384).** `scripts/doc-prose-manifest.json` pins every hand-written
+prose block outside the generated regions, keyed by content hash.
+`npm run count:tools -- --check` fails when a pinned block is no longer in its
+file, naming the paragraph, and `--write` refuses to report success while one is
+missing. Three things follow:
+
+- **Adding prose is free.** A new tool adds a contract paragraph; the pin is
+  keyed on content, so a key that was never pinned cannot be missing. This is
+  deliberate — a gate that punishes ordinary work gets routed around within a
+  week, and a routed-around gate catches nothing.
+- **Changing or deleting prose needs `--prose-sync`.** That command **refuses**
+  to drop a pinned entry and names what vanished. Only
+  `--prose-sync --retire "<reason>"` removes one, and it records the reason and
+  the date permanently. Losing prose has to be a named, dated act, not a side
+  effect.
+- **The pin is hand-maintained on purpose.** It is not in a generated block
+  because `--write` would refresh it: the documented recovery above is "take the
+  merge base, then run `--write`", so a generated pin would have gone green one
+  command after the prose was lost, defeating the gate with its own repair
+  recipe. **Do not move it into a generated block.**
+
+The reasoning, and the alternative that was rejected, are in
+`scripts/prose-manifest.mjs`.
+
 ---
 
 ## 4. The registrar manifest and schema budgets
