@@ -319,16 +319,28 @@
         "label": "In a file that mixes generated and hand-written regions,…"
       },
       {
-        "hash": "8dee38688d31fc51",
-        "label": "Recover the correct way. Take the merge base of the file…"
+        "hash": "f450039b5d6981f8",
+        "label": "Recover the correct way, in this order. --write is a gen…"
       },
       {
-        "hash": "bcdcf13ed135d33e",
+        "hash": "9ce73fed284af803",
         "label": "git checkout --ours ARCHITECTURE.md # during a rebase, \"…"
       },
       {
-        "hash": "8b049ed815b08ef7",
-        "label": "That is enough when the only thing that differs is insid…"
+        "hash": "30576e969763d6aa",
+        "label": "When --prose-report exits 0, the whole-file resolution l…"
+      },
+      {
+        "hash": "72484ff53cac099e",
+        "label": "When it names a paragraph, nothing in that sequence turn…"
+      },
+      {
+        "hash": "64420f1542a03b13",
+        "label": "git show <the-ref-you-dropped>:ARCHITECTURE.md # then ha…"
+      },
+      {
+        "hash": "c9cbea4b473df9fb",
+        "label": "Hand-merge when both sides edited the same prose — keep …"
       },
       {
         "hash": "110bd8f6cf26c25d",
@@ -343,7 +355,7 @@
         "label": "Changing or deleting prose needs --prose-sync. That comm…"
       },
       {
-        "hash": "6f294e33c8fc822a",
+        "hash": "46f9c03312575710",
         "label": "The pin is hand-maintained on purpose. It is not in a ge…"
       },
       {
@@ -4763,6 +4775,34 @@
       "label": "Recover the correct way — take the merge base of the fil…",
       "date": "2026-09-27",
       "reason": "rewrote the #1384 recovery recipe to cover the hand-merge case, which is not a choice of side"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "6f294e33c8fc822a",
+      "label": "The pin is hand-maintained on purpose. It is not in a ge…",
+      "date": "2026-09-27",
+      "reason": "#1435: this bullet justified hand-maintaining the pin by quoting the old recovery verbatim ('take the merge base, then run --write'). That recipe no longer exists, so the quotation was stale. The argument itself is unchanged and still true -- --write is the generated-block step of the recovery, so a generated pin would go green one command after prose loss -- only the quotation was corrected."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "8b049ed815b08ef7",
+      "label": "That is enough when the only thing that differs is insid…",
+      "date": "2026-09-27",
+      "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "8dee38688d31fc51",
+      "label": "Recover the correct way. Take the merge base of the file…",
+      "date": "2026-09-27",
+      "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "bcdcf13ed135d33e",
+      "label": "git checkout --ours ARCHITECTURE.md # during a rebase, \"…",
+      "date": "2026-09-27",
+      "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
     },
     {
       "file": "docs/cookbook.md",

@@ -15,6 +15,40 @@ npm run build   # tsc, then adds the shebang to dist/index.js
 npm test        # node:test runner via tsx — unit tests for the client and every tool module, plus an MCP protocol smoke test
 ```
 
+### Working in a git worktree
+
+`git worktree add` checks out tracked files and nothing else. The new worktree
+has **no `node_modules`** — that directory is not tracked by git, so it does not
+come along. The test suite runs through `tsx`, which Node resolves as a package
+starting from the directory you invoke it in, so a bare worktree fails before a
+single test runs:
+
+    $ node --import tsx --test tests/<file>.test.ts
+    Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /path/to/worktree/
+
+The message names no file in this repository, which is what makes it expensive:
+it reads like a broken checkout rather than a missing install. `npm ci` is the
+fix — `tsx` is a devDependency, so a normal install puts it in the worktree's
+own `node_modules`:
+
+```bash
+npm ci          # in the worktree, exactly as in the primary checkout
+npm test
+```
+
+Two repairs that look right and are not, for the same reason — they only help if
+the tree you pointed at actually *contains* `tsx`. Symlinking or copying another
+checkout's `node_modules` fails whenever that checkout resolves `tsx` from
+further up (a parent directory, or a global install): the link resolves fine, but
+`ls node_modules/tsx` honestly reports "No such file". That is frequently the
+state of the primary checkout itself, so "just copy the primary checkout's
+`node_modules`" is the same failure wearing a friendlier name.
+
+Being **outside** the repository tree is not itself the problem. A worktree
+placed anywhere runs the suite normally once it has a `node_modules`
+containing `tsx` — what matters is what Node can resolve from the worktree, not
+where the worktree sits relative to the primary clone.
+
 ### Environment variables and authentication
 
 No `.env` file is required — env vars can come from your host config or the command line. To use one:

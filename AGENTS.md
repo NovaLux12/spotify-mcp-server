@@ -360,21 +360,35 @@ is diligence, not a process.
 resolution is not a conflict resolution. It is a silent content deletion with a
 green CI.**
 
-Recover the correct way. Take the **merge base** of the file, then let the
-generator rewrite the marked blocks from the current registry:
+Recover the correct way, in this order. `--write` is a **generated-block** repair
+and nothing else: it rewrites what sits between BEGIN/END markers, it has never
+held a copy of your prose, and it exits 1 while a pinned paragraph is missing.
+So diagnose first, then repair each half with the tool that owns it.
 
 ```bash
 git checkout --ours ARCHITECTURE.md    # during a rebase, "ours" is the branch you are onto
+npm run count:tools -- --prose-report  # read-only; exits 1 and names the paragraph if prose was lost
 npm run count:tools -- --write         # rewrites only what is between markers
+npm run count:tools -- --check         # both gates green
 ```
 
-That is enough when the only thing that differs is inside generated regions,
-which is the common case. It is **not** enough when both sides edited the same
-hand-written prose: then neither side contains the other's text, and no choice
-of side can be right. Hand-merge those hunks — keep both sides' prose — and
-then run `--write` for the generated parts. `--ours` and `--theirs` are correct
-answers to "which generated block", and silent content deletions to "which
-paragraph".
+When `--prose-report` exits 0, the whole-file resolution lost no prose, `--write`
+does the generated half, and the sequence ends green. That is the common case.
+
+When it names a paragraph, **nothing in that sequence turns it green**: `--write`
+exits 1 for exactly as long as the paragraph is missing, and the pin is keyed on
+content, so a reworded paragraph reads the same as a deleted one. No command here
+restores it — the generator only ever held the text between the markers, so those
+bytes live in exactly one place, the ref you are about to drop. Take them from
+it:
+
+```bash
+git show <the-ref-you-dropped>:ARCHITECTURE.md   # then hand-restore the named paragraph
+```
+
+Hand-merge when both sides edited the same prose — keep both sides' text.
+`--ours` and `--theirs` are correct answers to "which generated block", and
+silent content deletions to "which paragraph".
 
 **The gate (#1384).** `scripts/doc-prose-manifest.json` pins every hand-written
 prose block outside the generated regions, keyed by content hash.
@@ -392,8 +406,8 @@ missing. Three things follow:
   the date permanently. Losing prose has to be a named, dated act, not a side
   effect.
 - **The pin is hand-maintained on purpose.** It is not in a generated block
-  because `--write` would refresh it: the documented recovery above is "take the
-  merge base, then run `--write`", so a generated pin would have gone green one
+  because `--write` would refresh it, and `--write` is the generated-block step
+  of the documented recovery above: a generated pin would have gone green one
   command after the prose was lost, defeating the gate with its own repair
   recipe. **Do not move it into a generated block.**
 
