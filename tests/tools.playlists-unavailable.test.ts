@@ -238,10 +238,15 @@ describe('playlist_shuffle refuses a playlist with unavailable rows (#860)', () 
     assert.match(textOf(out), /contains 1 unavailable item\(s\) at 1-based position\(s\) 2/);
   });
 
-  it('says the position list is a lower bound when the item walk hit the cap', async () => {
-    // 501 rows against the default fetch-all cap of 500: the walk stops one
-    // row short of the end, so the refusal must not present its count as the
-    // whole truth the way an unqualified count would.
+  it('refuses the truncated read before it publishes a count it cannot vouch for', async () => {
+    // 501 rows against the default fetch-all cap of 500. Two things are true
+    // about this playlist: it holds one unavailable row, and the walk never
+    // reached the end. #1310 made the SECOND fact the one that decides, and
+    // that is the right order — "contains 1 unavailable item(s)" is a number
+    // derived from an incomplete read, and leading with it is the same
+    // coerced-plausible-count failure the issue is filed on. The lower-bound
+    // wording still exists for the callers that DO disclose a truncated read
+    // (union / subtract, below); here the refusal refuses.
     const long = Array.from({ length: 500 }, (_, i) => trackRow(`t${i}`, `Track ${i}`));
     const h = harness({ [BASE]: [unavailableRow(), ...long] });
 
@@ -249,9 +254,9 @@ describe('playlist_shuffle refuses a playlist with unavailable rows (#860)', () 
       () => h.invoke('playlist_shuffle', { playlist_id: BASE, dry_run: false }),
       (error: unknown) => {
         const message = error instanceof Error ? error.message : String(error);
-        assert.match(message, /contains 1 unavailable item\(s\) at 1-based position\(s\) 1/);
-        assert.match(message, /stopped at the configured cap/);
-        assert.match(message, /lower bound/);
+        assert.match(message, /could only be read to the configured fetch-all cap of 500 row\(s\)/);
+        assert.match(message, /past position 500/);
+        assert.doesNotMatch(message, /contains 1 unavailable item\(s\)/, 'a truncated read does not get to state a count');
         return true;
       },
     );
@@ -363,6 +368,29 @@ describe('playlist_subtract refuses a base with unavailable rows (#860)', () => 
     // The base is the playlist being overwritten, so it is the one refused.
     assert.equal(payload.would_refuse, true);
     assert.equal(payload.would_confirm, false, 'there is no prompt to promise — the call throws');
+    assert.deepEqual(writes(h.calls), []);
+  });
+
+  it('states the position count as a lower bound when the base walk hit the cap (#1310)', async () => {
+    // The single-playlist rewrites REFUSE a truncated read before they get
+    // this far (there is no prompt there to disclose into). Subtract is the
+    // other kind of caller: it discloses the incompleteness in its payload and
+    // puts it in front of an elicitation the caller cannot skip. So the
+    // lower-bound wording has to stay live on THIS path — it is the only place
+    // left where a truncated count is shown to a human at all.
+    const long = Array.from({ length: 500 }, (_, i) => trackRow(`t${i}`, `Track ${i}`));
+    const h = harness({ [BASE]: [unavailableRow(), ...long], [SOURCE]: [trackRow('t0', 'Track 0')] });
+
+    await assert.rejects(
+      () => h.invoke('playlist_subtract', { base_playlist_id: BASE, playlists: [SOURCE], dry_run: false }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /contains 1 unavailable item\(s\) at 1-based position\(s\) 1/);
+        assert.match(message, /stopped at the configured cap/);
+        assert.match(message, /lower bound/);
+        return true;
+      },
+    );
     assert.deepEqual(writes(h.calls), []);
   });
 

@@ -15,8 +15,11 @@
  *
  * `OVER_CAP` (600 rows against the default fetch cap of 500) is the fixture
  * the issue's acceptance criterion asks for: the item walk has to hit the cap
- * for real, off the production `getAllPages`, not off a copy that hardcodes
- * one.
+ * for real, off the production `getAllPagesWithTruncation`, not off a copy that
+ * hardcodes one. #1310 later gave that walk a `cap + 1` probe, so this suite's
+ * `verification` expectations on an over-cap playlist are the bounded
+ * `partial` verdict rather than `verified` — the row is still removed, the
+ * tail is still not certified.
  *
  * Run: node --import tsx --test tests/tools.playlisthealth-unavailable-remove.test.ts
  */
@@ -239,7 +242,6 @@ describe('#881 the item walk is the production walk, cap and all', () => {
         [cap - 1],
         'the row at the last position inside the cap must be found — a single-page read would miss it',
       );
-      assert.equal(sc(out).ok, true);
       assert.equal(sc(out).removed, 1);
       assert.deepEqual(
         h.stub.rowsOf(P).length,
@@ -247,6 +249,17 @@ describe('#881 the item walk is the production walk, cap and all', () => {
         'exactly one row leaves — the sweep is targeted, not a rebuild',
       );
       assert.equal(h.stub.rowsOf(P).filter((r) => r === null).length, 0);
+      // #1311: the playlist is LARGER than the cap, so the post-write re-read
+      // cannot certify the whole of it — the row at `cap - 1` was the only
+      // unavailable one the tool could see, and `verified` would be claiming
+      // about the 100 rows it never read. The verdict is bounded, and says so.
+      assert.equal(
+        sc(out).verification,
+        'partial',
+        'a walk that stopped at the cap cannot verify a playlist larger than the cap',
+      );
+      assert.equal(sc(out).truncated, true);
+      assert.equal(sc(out).ok, false, 'a bounded verdict is not a clean success');
       // The read really paged: 600+ rows at 100 per page is more than one
       // request, and the count comes from the mock rather than the tool.
       assert.ok(

@@ -100,6 +100,12 @@ const parameterAllowlist = new Set([
   'created_new_playlist', 'duplicates_skipped',
   'unavailable_items_skipped', 'batches_sent',
   'rows_read', 'reported_total',
+  // #1311: remove_unavailable_playlist_items' bounded-verdict fields. The
+  // tool reports `verification: partial` over a walk that stopped at the cap
+  // and names where the unread region starts, so a caller can tell a bounded
+  // verdict from a real all-clear. structuredContent keys, like the three
+  // above and on the same reasoning.
+  'unread_from_position',
   // #809: create_smart_playlist documents the candidate-pool ceiling it now
   // reports. Both are structuredContent keys on that tool, not parameters and
   // not tools — the description is naming its own output, which is the point.

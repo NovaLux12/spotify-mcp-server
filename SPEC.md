@@ -1360,6 +1360,40 @@ A refusal here is a **result**, not a write, and carries the same payload as eve
 
 **Migration note (breaking, v2.0):** `playlist_trim` now asks before it deletes, and a client that cannot prompt is refused rather than served. Automation that trims unattended sets `SPOTIFY_MCP_CONFIRM=never`; everything else sees the prompt. A trim that used to report "nothing to trim" on a playlist larger than the walk cap now asks instead, because that playlist did have rows to lose.
 
+#### Truncated-read refusal on the single-playlist rewrites (#1310)
+
+`playlist_sort`, `playlist_shuffle`, `playlist_reverse` and `playlist_trim` build the URI list they replace with from a walk bounded by `SPOTIFY_MCP_FETCH_ALL_CAP` (default 500). On a playlist larger than the cap the rows past it are **absent from the PUT**, and an absent row is a deleted row: before this, a 600-row playlist came back 500 rows long and the tool reported `Reversed 500 item(s)`. The count in that sentence was the cap, not the playlist.
+
+Those tools therefore **refuse before the first PUT** when the walk did not reach the end, naming the cap, the number of rows read, the first unread position, and — when Spotify's `items.total` was readable — how many rows past the cap went unread. The remedy is `SPOTIFY_MCP_FETCH_ALL_CAP`, not `remove_unavailable_playlist_items`; the two refusals are worded differently so a caller can tell which one it hit.
+
+`playlist_trim` is refused for `keep_which` `last` and `random` only, and that asymmetry is deliberate. `first` takes a prefix of what was read, which is the playlist's real prefix, and the unread tail is exactly the region a trim deletes anyway — so #872's overwrite gate already discloses the partial read (`only N of M existing row(s) could be read, so the true impact may be larger`) and gates the write, and refusing there would reject a correct, disclosed and consented operation. `last` and `random` need rows the walk never read: their kept set is a *different* set, not a smaller correct one, and the prompt can only say how much is deleted, never which rows survive. Disclosure cannot repair a wrong answer, so those two refuse ahead of the gate.
+
+The walk is bounded, not complete-or-not, so the refusal fires in the second shape too: a page that returns fewer items than the requested `limit` is the normal end-of-data signal, but when the server's own `total` still counts more rows it is not the end. A walk that reads 50 of 600 rows that way is refused as firmly as one that stops at the cap.
+
+What did **not** change, deliberately:
+
+- `playlist_union` and `playlist_subtract` still **disclose** an incomplete read rather than refusing it. They already put the shortfall in the confirmation prompt, and every destructive impact they compute goes through a mandatory elicitation the caller cannot skip, so there is a place for the disclosure to land. A refusal there would remove a prompt that was already doing the honest thing.
+- The #860 unavailable-row guard is unchanged and still fires. On a playlist that is BOTH truncated and holds unavailable rows, the truncation refusal comes first: `contains 1 unavailable item(s)` is a count derived from an incomplete read, and leading with it is the same failure the issue is filed on. The lower-bound wording survives on the union/subtract path, which is the only place a truncated count is still shown to a human.
+- No confirmation gate was added, removed or relaxed. #872's mandatory overwrite gate on `playlist_trim` is untouched and still runs for every non-no-op trim, `first` included; where #1310 refuses (`last`, `random`) it throws ahead of that gate, before any write. `playlist_sort`, `playlist_shuffle` and `playlist_reverse` still have no prompt at all, so for those three the refusal is the only place the shortfall could have been disclosed.
+
+**Migration note (breaking):** a call that previously committed over a playlist larger than `SPOTIFY_MCP_FETCH_ALL_CAP` now fails. Raise the cap above the playlist's row count (or split the playlist) and retry. A `dry_run` still renders its plan with the refusal appended.
+
+**Known gap — the `swarm4_*` slice is not covered by this refusal.** `swarm4_playlists.ts` commits through the same full atomic replace and calls the same #860 guard, but its own `fetchAllItems` walks with a bare `getAllPages` and keeps no truncation verdict, so `assertRewritable` there cannot see one. A `swarm4_*` rewrite of a playlist larger than the cap therefore still deletes the unread tail and still reports a count of what it read. The fix belongs at its single write choke point (`atomicReplace`, whose ten call sites all target the playlist that was loaded), not in a per-tool guard, and is deliberately not half-applied here.
+
+#### Bounded verdicts in `remove_unavailable_playlist_items` (#1311)
+
+The tool this contract names as its remedy walked to the same cap and then reported on the whole playlist as if it had seen all of it: with an unavailable row at index 550 of a 600-row playlist it answered `ok: true`, `verification: "verified"`, `total: 500`, and the prose `No unavailable items in playlist … (500 tracks)`. The post-write re-read was bounded the same way, so `verification: "verified"` meant "the first 500 rows are clean".
+
+`verification` is now a three-valued verdict, and the walk carries the same `cap + 1` probe the rewrites use:
+
+| Value | Meaning | `ok` |
+|---|---|---|
+| `verified` | The whole playlist was read before and after the write, and no unavailable row is left. | `true` |
+| `partial` | A walk stopped at the cap, so the verdict covers the rows that were read and nothing else. Rows from `unread_from_position` onward are unverified, and unavailable rows past the cap may still be present. | `false` |
+| `failed` | The whole playlist was read and unavailable rows are still there — a real negative result. | `false` |
+
+`partial` is deliberately not `failed`: the re-read did not find unavailable rows it never saw. A payload carrying `partial` also gains `truncated: true`, `scan_cap`, `rows_read` and `unread_from_position`; the prose names the cap and the position the unread region starts at. `remove_unavailable_playlist_items` is unchanged on playlists at or below the cap — those still get a real `verified`. A bulk removal over a truncated walk adds one line to the confirmation prompt saying so; the gate itself is unchanged and still fails closed.
+
 #### `merge_playlists`
 Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.
 
