@@ -3273,7 +3273,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "1be10212b9eb890c",
+        "hash": "44d504557c677700",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -5386,6 +5386,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1be10212b9eb890c",
+      "label": "Returns: display name, user ID, URI, profile image URL, …",
+      "date": "2026-09-27",
+      "reason": "reworded by #1468: get_user_profile's Returns said a 403 'names the grandfathering requirement', which was the prescription #1468 removes; the replacement records the older-registration question as unverified and adds that no endpoint replaced /users/{id}"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "1d0730021d0c4a24",
       "label": "Inputs: playlistid (string, required), shared response f…",
       "date": "2026-09-27",
@@ -5533,8 +5540,8 @@
     }
   ],
   "provenance": {
-    "head": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
-    "upstream": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
+    "head": "2bae9375a058da20fa561fb7fe1658bb6152328d",
+    "upstream": "2bae9375a058da20fa561fb7fe1658bb6152328d",
     "behind": false
   }
 }
