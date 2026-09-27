@@ -22,6 +22,7 @@ import { ResponseFormat, PlaybackDryRun, describeDryRun } from '../shaping.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
 import { emit } from '../result.js';
+import { resolveDeviceHint } from '../playbackstores.js';
 
 // ---------------------------------------------------------------------------
 // Sidecar store
@@ -183,20 +184,11 @@ function devSuffix(deviceId: string | null): string {
   return deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : '';
 }
 
-/**
- * Resolve a device hint against GET /me/player/devices: exact id match wins,
- * then case-insensitive name substring. Returns null when nothing matches.
- */
-async function resolveDeviceHint(
-  client: SpotifyClient,
-  hint: string,
-): Promise<{ deviceId: string | null; devices: SpotifyDevice[] }> {
-  const res = await client.get<GetDevicesResponse>('/me/player/devices');
-  const devices = res?.devices ?? [];
-  const exact = devices.find((d) => d.id === hint);
-  const found = exact ?? devices.find((d) => d.name.toLowerCase().includes(hint.toLowerCase()));
-  return { deviceId: found?.id ?? null, devices };
-}
+// The device resolver moved to src/playbackstores.ts (#848). This copy was one
+// of three that had drifted: it matched a name case-insensitively, exhaust2's
+// copy also consulted the sidecar device label, and playbackintel's matched
+// case-SENSITIVELY. The shared one is the superset of all three, so a scene
+// saved against a label now resolves the same way an id always did.
 
 // ---------------------------------------------------------------------------
 // Wind-down engine (in-process timer chain)
@@ -547,8 +539,10 @@ export function registerScenesTools(server: McpServer, client: SpotifyClient): v
       // (dry_run) or executed in strict order: transfer → volume → shuffle →
       // repeat → play.
       let deviceId: string | null = null;
+      let device: SpotifyDevice | null = null;
       if (scene.device_hint !== undefined) {
-        ({ deviceId } = await resolveDeviceHint(client, scene.device_hint));
+        ({ device } = await resolveDeviceHint(client, scene.device_hint));
+        deviceId = device?.id ?? null;
       }
       const steps = planSteps(scene, deviceId);
 

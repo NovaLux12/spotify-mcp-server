@@ -106,7 +106,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **129 tools** (142,737 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **571 tools**, along with **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (144,870 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **556 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
@@ -142,14 +142,17 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | — |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | — |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | — |
+| `src/playbackstores.ts` | Playback sidecar stores and the one device resolver (#848). (0 registered tools) | — |
 | `src/playlistmatch.ts` | The one duplicate and artist matching vocabulary shared by every playlist tool (#885). (0 registered tools) | — |
 | `src/positionbase.ts` | One vocabulary for playlist position bases (#883). (0 registered tools) | — |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | — |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | — |
+| `src/queueanalysis.ts` | Local analyses over one `GET /me/player/queue` read (#847). (0 registered tools) | — |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | — |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | — |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | — |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | — |
+| `src/resources/register.ts` | The one registration order for the read surface (#685). (0 registered tools) | — |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | — |
 | `src/resources/uritemplate.ts` | RFC 6570-conformant matching for the URI templates this server advertises (#1401). (0 registered tools) | — |
 | `src/result.ts` | The one place a tool result is built (#582). (0 registered tools) | — |
@@ -175,7 +178,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- now a registration placeholder only (#791). (0 registered tools) | 0 |
 | `src/tools/exhaust2_extra.ts` | exhaust2 extra slice — the final three playlists-surface tools (#398-#400). (3 registered tools) | 4,092 |
 | `src/tools/exhaust2_misc.ts` | exhaust2 misc slice — feature swarm v1.24.0. (27 registered tools) | 24,316 |
-| `src/tools/exhaust2_playback.ts` | exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379). (23 registered tools) | 17,518 |
+| `src/tools/exhaust2_playback.ts` | exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379). (18 registered tools) | 14,279 |
 | `src/tools/exhaust2_playlists.ts` | exhaust2 playlists slice — feature swarm v1.24.0 (issues #380–#400). (18 registered tools) | 24,403 |
 | `src/tools/exhaustmisc.ts` | exhaustmisc — mop-up for the 60-issue exhaustive sweep. (10 registered tools) | 7,876 |
 | `src/tools/export.ts` | export_playlist (#155): dump a playlist's full item list as an M3U or CSV document — either written to a local file (mode 0600) or returned inline (truncated at max_results rows with a footer noting the full length). (1 registered tool) | 1,363 |
@@ -188,9 +191,10 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 2,751 |
 | `src/tools/moodexpand.ts` | `expand_mood_to_queries` — the one judgement step the mood prompts used to re-invent in prose, extracted into a testable tool (#598). (1 registered tool) | 987 |
 | `src/tools/personalization.ts` | Runtime module for src/tools/personalization.ts. (3 registered tools) | 2,532 |
-| `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 12,210 |
-| `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 8,178 |
-| `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 12 tools: play_on, queue_next, describe_queue, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next + triage extras: get_playback_context, volume_step, market_availability Each tool states its quota cost in words in the description. (15 registered tools) | 11,773 |
+| `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (15 registered tools) | 14,441 |
+| `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 8,331 |
+| `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 11 tools: play_on, queue_next, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next #847 retired describe_queue into `get_queue` view='enriched'. + triage extras: get_playback_context, volume_step, market_availability Each tool states its quota cost in words in the description. (13 registered tools) | 10,315 |
+| `src/tools/playbackpositions.ts` | The canonical playback-position record (#846). (0 registered tools) | — |
 | `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 4,896 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 1,310 |
 | `src/tools/playlistfollow.ts` | Playlist follow/unfollow (#1005, #1099), split out of playlistmisc.ts. (4 registered tools) | 3,027 |
@@ -218,14 +222,14 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/swarm3_discovery.ts` | swarm3 discovery slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 22,483 |
 | `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 18,283 |
 | `src/tools/swarm3_meta.ts` | swarm3 meta slice — 500-tool swarm v1.26.0 (issue #442). (3 registered tools) | 2,023 |
-| `src/tools/swarm3_playback.ts` | swarm3 playback slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 14,043 |
+| `src/tools/swarm3_playback.ts` | swarm3 playback slice — 500-tool swarm v1.26.0 (issue #442). (17 registered tools) | 10,006 |
 | `src/tools/swarm3_playlistops.ts` | swarm3 playlistops slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 29,163 |
 | `src/tools/swarm3_refs.ts` | Curated local Spotify-reference tools (#915). (6 registered tools) | 4,331 |
 | `src/tools/swarm3_shows.ts` | swarm3 shows slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 22,103 |
 | `src/tools/swarm3_snapshots.ts` | swarm3 snapshots slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 23,731 |
 | `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 20,147 |
 | `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 23,228 |
-| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 9,650 |
+| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 10,242 |
 | `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 1,884 |
 | `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 1,663 |
 | `src/tools/users.ts` | Runtime module for src/tools/users.ts. (2 registered tools) | 1,696 |

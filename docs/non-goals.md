@@ -187,8 +187,10 @@ tool calls a Connect control path, and there is no Spotify SDK in the dependency
 list — the server makes Web API calls, so the SDK it depends on is the MCP one.
 
 **Instead.** The device-aware playback family does what the Web API does expose:
-`get_devices` and `compare_devices` read what is available, `switch_device` and
-`transfer_playback` move playback between them, and `play_on` starts it.
+`get_devices` and `compare_devices` read what is available, `transfer_playback`
+moves playback between them — one tool for the whole family since #848, with
+`switch_device` and `handoff` forwarding to it rather than registered beside it
+(#848) — and `play_on` starts it.
 
 **Sources.** `src/index.ts` and the tool modules — no Connect path is called;
 `package.json` (the only runtime dependencies are the MCP SDK, `open` and `zod`).

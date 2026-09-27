@@ -40,6 +40,17 @@ type Call = { method: string; path: string; params?: Record<string, string>; bod
 
 interface ClientOptions {
   getResponse?: (path: string, params?: Record<string, string>) => unknown;
+  /**
+   * The device list `GET /me/player/devices` returns.
+   *
+   * #848 made `transfer_playback` resolve its target through the shared
+   * resolver, so the tool now needs a device list where it used to take the
+   * caller's word for a bare id. It is an option rather than a default so that
+   * a test which does not care about resolution cannot pass by accident: a
+   * silent `[]` would make every transfer refuse with "no device matched", and
+   * a refusal is a passing result for a test that only checks the error text.
+   */
+  devices?: unknown;
 }
 
 function trackFixture(overrides: Partial<Record<string, unknown>> = {}) {
@@ -104,6 +115,7 @@ function makeHarness(opts: ClientOptions = {}) {
   const client = {
     get: async (path: string, params?: Record<string, string>) => {
       calls.push(params === undefined ? { method: 'GET', path } : { method: 'GET', path, params });
+      if (path === '/me/player/devices' && opts.devices !== undefined) return opts.devices;
       return opts.getResponse ? opts.getResponse(path, params) : null;
     },
     post: async (path: string) => {
@@ -554,22 +566,44 @@ test('add_to_queue posts uri and optional device_id as query params', async () =
   );
 });
 
-test('transfer_playback wraps device id in device_ids array', async () => {
-  const { registered, calls } = makeHarness();
+// #848: the surviving transfer tool takes a NAME-OR-ID `device` and resolves
+// it, so a target that is not an exact id costs a device read first. The write
+// itself is unchanged: one PUT, ids wrapped, `play` only when asked for.
+/**
+ * The one device the #848 transfer tests target.
+ *
+ * `resolveDeviceHint` matches an EXACT id without reading the sidecar, so a
+ * single-entry list keeps these tests to a deterministic number of GETs: a
+ * hint that needed the label step would add a disk read whose result depends on
+ * whatever `~/.spotify-mcp` state the ambient environment holds.
+ */
+const TARGET_DEVICE = {
+  id: 'dev2',
+  name: 'Study',
+  type: 'Computer',
+  is_active: false,
+  is_private_session: false,
+  is_restricted: false,
+  volume_percent: 42,
+  supports_volume: true,
+};
+
+test('transfer_playback wraps the resolved device id in device_ids array', async () => {
+  const { registered, calls } = makeHarness({ devices: { devices: [TARGET_DEVICE] } });
 
   const result = await invoke(findTool(registered, 'transfer_playback'), {
-    device_id: 'dev2',
+    device: 'dev2',
     play: true,
   });
 
-  assert.equal(calls[0].method, 'PUT');
-  assert.equal(calls[0].path, '/me/player');
-  assert.deepEqual(calls[0].body, { device_ids: ['dev2'], play: true });
-  assert.match(text(result), /transferred to device dev2/);
+  const put = calls.find((c) => c.method === 'PUT');
+  assert.equal(put?.path, '/me/player');
+  assert.deepEqual(put?.body, { device_ids: ['dev2'], play: true });
+  assert.match(text(result), /Playback transferred to Study/);
 
-  const { registered: r2, calls: c2 } = makeHarness();
-  await invoke(findTool(r2, 'transfer_playback'), { device_id: 'dev2' });
-  assert.deepEqual(c2[0].body, { device_ids: ['dev2'] }); // play omitted when unset
+  const { registered: r2, calls: c2 } = makeHarness({ devices: { devices: [TARGET_DEVICE] } });
+  await invoke(findTool(r2, 'transfer_playback'), { device: 'dev2' });
+  assert.deepEqual(c2.find((c) => c.method === 'PUT')?.body, { device_ids: ['dev2'] }); // play omitted when unset
 });
 
 // ---------------------------------------------------------------- get_devices
@@ -864,15 +898,24 @@ test('play_from_search dry_run resolves the match read-only but never plays it (
   assert.match(text(result), /\[dry run\] start playback on <<untrusted: spotify:track:trk1 >>/);
 });
 
+// #848 changed what "no calls" can mean for this one: the target is now a
+// NAME-or-ID that has to be resolved, so a dry run reads the device list. The
+// claim #57 is protecting is that a preview writes nothing, so that is what is
+// asserted. A device read is a GET, and a preview that PUT nothing cannot have
+// moved playback — which is the harm the flag exists to prevent.
 test('transfer_playback dry_run previews the move without PUT /me/player (#57)', async () => {
-  const { registered, calls } = makeHarness();
+  const { registered, calls } = makeHarness({ devices: { devices: [TARGET_DEVICE] } });
   const result = await invoke(findTool(registered, 'transfer_playback'), {
-    device_id: 'dev2',
+    device: 'dev2',
     play: true,
     dry_run: true,
   });
-  assert.equal(calls.length, 0);
-  assert.match(text(result), /\[dry run\] transfer playback on <<untrusted: dev2 >>/);
+  assert.deepEqual(
+    calls.filter((c) => c.method !== 'GET'),
+    [],
+    'a dry run resolves its target and writes nothing',
+  );
+  assert.match(text(result), /\[dry run\] transfer playback on <<untrusted: Study \(dev2\) >>/);
   assert.match(text(result), /force play on arrival/);
 });
 
@@ -900,11 +943,23 @@ test('get_queue truncates to max_results with shared footer + pagination structu
   assert.equal(sc.remaining, 5);
 });
 
-test('handoff preserves position: transfer, resume at offset, set volume (issue #112)', async () => {
+// #848: the retired `handoff` forwards to `transfer_playback` with
+// `preserve_position: true`, so this is the behaviour `handoff` had and the
+// behaviour its name now buys. The forwarding itself is asserted in
+// tests/tools.playback-collapse.test.ts; what is asserted HERE is that the
+// surviving tool still produces the call sequence `handoff` promised.
+test('transfer_playback with preserve_position transfers, resumes at offset, sets volume (issue #112)', async () => {
     const state = playbackStateFixture(trackFixture());
-    const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
+    const h = makeHarness({
+      devices: { devices: [TARGET_DEVICE] },
+      getResponse: (path) => (path === '/me/player' ? state : undefined),
+    });
 
-    await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', volume: 30 });
+    await invoke(findTool(h.registered, 'transfer_playback'), {
+      device: 'dev2',
+      preserve_position: true,
+      volume: 30,
+    });
 
     const puts = h.calls.filter((c) => c.method === 'PUT');
     assert.equal(puts.length, 3, JSON.stringify(h.calls));
@@ -918,13 +973,20 @@ test('handoff preserves position: transfer, resume at offset, set volume (issue 
 // #830: Spotify declares volume_percent as the required query parameter; the
 // `volume` spelling is silently rejected, so handoff reported a volume it
 // never applied.
-test('handoff normalizes volume with volume_percent, not volume (#830)', async () => {
-  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined) });
+test('a preserved transfer normalizes volume with volume_percent, not volume (#830)', async () => {
+  const h = makeHarness({
+    devices: { devices: [TARGET_DEVICE] },
+    getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined),
+  });
 
-  await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', volume: 30 });
+  await invoke(findTool(h.registered, 'transfer_playback'), {
+    device: 'dev2',
+    preserve_position: true,
+    volume: 30,
+  });
 
   const vol = h.calls.find((c) => c.method === 'PUT' && c.path.startsWith('/me/player/volume'));
-  assert.ok(vol, 'handoff must PUT the requested volume');
+  assert.ok(vol, 'the transfer must PUT the requested volume');
   const qs = new URLSearchParams(vol!.path.split('?')[1]);
   assert.equal(qs.get('volume_percent'), '30');
   assert.equal(qs.get('device_id'), 'dev2');
@@ -932,17 +994,30 @@ test('handoff normalizes volume with volume_percent, not volume (#830)', async (
 });
 
 
-test('handoff dry_run performs zero calls and lists the steps (issue #112)', async () => {
-    const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined) });
+test('a preserved transfer dry_run performs no mutations and lists the steps (issue #112)', async () => {
+    const h = makeHarness({
+      devices: { devices: [TARGET_DEVICE] },
+      getResponse: (path) => (path === '/me/player' ? playbackStateFixture(trackFixture()) : undefined),
+    });
 
-    const out = text(await invoke(findTool(h.registered, 'handoff'), { device_id: 'dev2', dry_run: true }));
+    const out = text(
+      await invoke(findTool(h.registered, 'transfer_playback'), {
+        device: 'dev2',
+        preserve_position: true,
+        dry_run: true,
+      }),
+    );
 
-    assert.equal(h.calls.length, 1, 'only the state read; no mutations');
-    assert.match(out, /\[dry run\] handoff/);
+    assert.deepEqual(
+      h.calls.filter((c) => c.method !== 'GET'),
+      [],
+      'dry run reads the devices and the player, and writes nothing',
+    );
+    assert.match(out, /\[dry run\]/);
     assert.match(out, /Resume at 3:05 into/);
   });
 
-// ---------------------------------------------------------------- handoff plan parity (#841)
+// ------------------------------------------------- transfer plan parity (#841)
 
 type WireCall = { method: string; path: string; body: unknown };
 
@@ -959,15 +1034,34 @@ function performedCalls(calls: Call[]): WireCall[] {
     .map((c) => ({ method: c.method, path: c.path, body: c.body ?? null }));
 }
 
-async function planFor(state: unknown, args: Record<string, unknown> = { device_id: 'dev2' }) {
-  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
-  const preview = await invoke(findTool(h.registered, 'handoff'), { ...args, dry_run: true });
+/**
+ * #848 collapsed the four transfer tools onto `transfer_playback`, so the #841
+ * plan-parity property now has to survive on the survivor. `preserve_position`
+ * is on in every case because that is the mode the old `handoff` used and the
+ * mode whose plan is non-trivial: it is the one with a resume step, and a
+ * resume step is what a plan that disagrees with its commit would lie about.
+ */
+const PRESERVING = { device: 'dev2', preserve_position: true } as const;
+
+async function planFor(state: unknown, args: Record<string, unknown> = {}) {
+  const h = makeHarness({
+    devices: { devices: [TARGET_DEVICE] },
+    getResponse: (path) => (path === '/me/player' ? state : undefined),
+  });
+  const preview = await invoke(findTool(h.registered, 'transfer_playback'), {
+    ...PRESERVING,
+    ...args,
+    dry_run: true,
+  });
   return { h, sc: preview.structuredContent ?? {}, out: text(preview) };
 }
 
-async function commitFor(state: unknown, args: Record<string, unknown> = { device_id: 'dev2' }) {
-  const h = makeHarness({ getResponse: (path) => (path === '/me/player' ? state : undefined) });
-  await invoke(findTool(h.registered, 'handoff'), args);
+async function commitFor(state: unknown, args: Record<string, unknown> = {}) {
+  const h = makeHarness({
+    devices: { devices: [TARGET_DEVICE] },
+    getResponse: (path) => (path === '/me/player' ? state : undefined),
+  });
+  await invoke(findTool(h.registered, 'transfer_playback'), { ...PRESERVING, ...args });
   return h.calls;
 }
 
@@ -985,9 +1079,13 @@ for (const [label, state] of [
   ['playing with an empty item uri', { ...playbackStateFixture(trackFixture()), item: { uri: '' } }],
   ['paused with an empty item uri', { ...playbackStateFixture(trackFixture()), is_playing: false, item: { uri: '' } }],
 ] as Array<[string, unknown]>) {
-  test(`handoff dry-run plan equals the calls the commit performs (${label}, #841)`, async () => {
-    const { h, sc, out } = await planFor(state, { device_id: 'dev2', volume: 30 });
-    assert.equal(h.calls.length, 1, 'dry run performs no mutations');
+  test(`preserving transfer dry-run plan equals the calls the commit performs (${label}, #841)`, async () => {
+    const { h, sc, out } = await planFor(state, { volume: 30 });
+    assert.deepEqual(
+      h.calls.filter((c) => c.method !== 'GET'),
+      [],
+      'dry run performs no mutations',
+    );
 
     const advertised = advertisedPlan(sc);
 
@@ -999,7 +1097,7 @@ for (const [label, state] of [
       'will_resume must be true exactly when the plan contains the play call',
     );
     assert.ok(advertised.length > 0, 'dry run must advertise a plan');
-    assert.deepEqual(advertised, performedCalls(await commitFor(state, { device_id: 'dev2', volume: 30 })));
+    assert.deepEqual(advertised, performedCalls(await commitFor(state, { volume: 30 })));
 
     // The plan is also readable as prose, and every line describes a real call.
     const planText = (sc.plan as Array<{ text: string }>).map((s) => s.text);
@@ -1008,7 +1106,7 @@ for (const [label, state] of [
   });
 }
 
-test('handoff paused dry run advertises no resume and the commit issues no play call (#841)', async () => {
+test('a preserved transfer from a paused session advertises no resume and issues no play call (#841)', async () => {
   const paused = { ...playbackStateFixture(trackFixture()), is_playing: false };
   const { out, sc } = await planFor(paused);
 
@@ -1023,7 +1121,7 @@ test('handoff paused dry run advertises no resume and the commit issues no play 
   ]);
 });
 
-test('handoff plans differ between paused and playing sessions in the promised direction (#841)', async () => {
+test('preserved-transfer plans differ between paused and playing sessions in the promised direction (#841)', async () => {
   const playing = playbackStateFixture(trackFixture());
   const paused = { ...playing, is_playing: false };
 
@@ -1040,21 +1138,53 @@ test('handoff plans differ between paused and playing sessions in the promised d
   assert.equal(performedCalls(await commitFor(paused)).filter((c) => c.path.startsWith('/me/player/play')).length, 0);
 });
 
-test('handoff play:true resumes a paused session and the plan says so (#841)', async () => {
+test('a preserved transfer with play:true resumes a paused session and the plan says so (#841)', async () => {
   const paused = { ...playbackStateFixture(trackFixture()), is_playing: false };
-  const { out, sc } = await planFor(paused, { device_id: 'dev2', play: true });
+  const { out, sc } = await planFor(paused, { play: true });
 
   assert.equal(sc.will_resume, true);
   assert.match(out, /Resume at 3:05 into spotify:track:trk1/);
-  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(paused, { device_id: 'dev2', play: true })));
+  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(paused, { play: true })));
 });
 
-test('handoff play:false preserves the session state rather than forcing a stop (#841)', async () => {
+test('a preserved transfer with play:false preserves the session state rather than forcing a stop (#841)', async () => {
   const playing = playbackStateFixture(trackFixture());
-  const { sc } = await planFor(playing, { device_id: 'dev2', play: false });
+  const { sc } = await planFor(playing, { play: false });
 
   // `play` overrides a PAUSED session only; a running one is preserved either
   // way, and the plan still matches what the commit does.
   assert.equal(sc.will_resume, true);
-  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(playing, { device_id: 'dev2', play: false })));
+  assert.deepEqual(advertisedPlan(sc), performedCalls(await commitFor(playing, { play: false })));
+});
+
+// #848: `play` is deliberately DROPPED from the transfer body when a position
+// is being preserved, because the resume below is what starts playback and a
+// `play: true` here would restart the very track the resume seeks into. Before
+// the collapse these were two tools with two different bodies; after it they are
+// one body, so the interaction is a claim the tool now has to keep.
+test('preserving a position drops play from the transfer body but keeps it for a bare transfer', async () => {
+  const state = playbackStateFixture(trackFixture());
+
+  const preserved = makeHarness({
+    devices: { devices: [TARGET_DEVICE] },
+    getResponse: (path) => (path === '/me/player' ? state : undefined),
+  });
+  await invoke(findTool(preserved.registered, 'transfer_playback'), {
+    device: 'dev2',
+    play: true,
+    preserve_position: true,
+  });
+  const preservePut = preserved.calls.find((c) => c.method === 'PUT' && c.path === '/me/player');
+  assert.deepEqual(preservePut?.body, { device_ids: ['dev2'] });
+  assert.ok(
+    preserved.calls.some((c) => c.method === 'PUT' && c.path.startsWith('/me/player/play?')),
+    'the resume is what starts playback in preserve mode',
+  );
+
+  const bare = makeHarness({ devices: { devices: [TARGET_DEVICE] } });
+  await invoke(findTool(bare.registered, 'transfer_playback'), { device: 'dev2', play: true });
+  assert.deepEqual(
+    bare.calls.find((c) => c.method === 'PUT' && c.path === '/me/player')?.body,
+    { device_ids: ['dev2'], play: true },
+  );
 });

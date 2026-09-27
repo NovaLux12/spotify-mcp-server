@@ -7,7 +7,7 @@
  * `scenes.ts` defaulted it to a commit; and `swarm3_playback` declared a
  * private `DryRunDefault` defaulting to TRUE while the shared fragment it
  * imported from `shaping.ts` advertised no default at all. An agent that
- * learned "omitted means preview" from `mute` would commit a destructive
+ * learned "omitted means preview" from `set_volume` would commit a destructive
  * write through `play`, and a host building a tool catalogue from the schema
  * could not warn the user either way.
  *
@@ -137,10 +137,13 @@ describe('playback dry_run contract (#836)', () => {
     const names = new Set((await playbackDryRunTools()).map((t) => t.name));
     // The preview-by-default tools from the issue. If this list ever needs
     // shrinking, the fix is a deliberate contract change, not a silent one.
+    // #848 folded six of these into two survivors, so the list names the
+    // survivor and the op that stands in for the retired name. Listing the
+    // retired names here would be a check that can never pass; listing the
+    // survivors is the same contract expressed in the vocabulary that exists.
     for (const name of [
-      'mute',
-      'unmute',
-      'switch_device',
+      'set_volume', // was mute, unmute, room_level and apply_volume_plan
+      'transfer_playback', // was switch_device
       'surprise_me',
       'skip_n',
       'pause_everywhere',
@@ -149,10 +152,8 @@ describe('playback dry_run contract (#836)', () => {
       'queue_next_episode',
       'queue_replace_via_playlist',
       'continue_last',
-      'room_level',
       'sleep_timer',
       'resume_playback_position',
-      'apply_volume_plan',
     ]) {
       assert.ok(names.has(name), `${name} must be in the playback set with a published dry_run default`);
     }
@@ -169,9 +170,9 @@ describe('playback dry_run contract (#836)', () => {
     );
   });
 
-  it('publishes the same default for mute/queue_replace_via_playlist as for play/pause', async () => {
+  it('publishes the same default for set_volume/queue_replace_via_playlist as for play/pause', async () => {
     const byName = new Map((await playbackDryRunTools()).map((t) => [t.name, t]));
-    for (const name of ['mute', 'queue_replace_via_playlist', 'play', 'pause']) {
+    for (const name of ['set_volume', 'queue_replace_via_playlist', 'play', 'pause']) {
       assert.equal(byName.get(name)?.defaultValue, false, `${name} must publish default:false`);
     }
   });

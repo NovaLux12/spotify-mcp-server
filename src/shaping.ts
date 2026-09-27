@@ -634,7 +634,278 @@ export function retiredToolAliasMessage(name: string, canonical: string): string
   return `${name} was removed in ${RETIRED_TOOL_ALIASES_REMOVED_IN}; use ${canonical} instead.`;
 }
 
-interface PlaylistInputResolution {
+// ---------------------------------------------------------------------------
+// Retired tools that still FORWARD (#848)
+// ---------------------------------------------------------------------------
+
+/**
+ * The release that stops answering these names. Named once here for the same
+ * reason {@link RETIRED_PLAYLIST_INPUTS_REMOVED_IN} is named once: the notice
+ * in a refusal, the SPEC table and the census must not be able to disagree
+ * about when the name goes away.
+ */
+export const RETIRED_TOOL_FORWARDS_REMOVED_IN = 'v3.0';
+
+export interface RetiredToolForward {
+  /** The surviving tool the call dispatches to. */
+  readonly tool: string;
+  /**
+   * Translate the retired tool's arguments into the survivor's.
+   *
+   * This is the reason #848 needed a new mechanism rather than
+   * {@link LEGACY_TOOL_ALIASES}. That table is a name→name map because every
+   * alias it carries has an IDENTICAL schema to its target — the eight
+   * stats.fm `taste_*` names were the same tool registered twice. #848's names
+   * are not the same tool twice; `handoff` is `transfer_playback` plus
+   * `preserve_position`, and `apply_device_presets` is `set_volume` plus
+   * `op: 'preset'`. A name-only map would forward the arguments unchanged and
+   * the canonical tool would refuse them as unknown parameters, which is a
+   * worse outcome for the caller than the name simply disappearing: they would
+   * get a schema error instead of the behaviour they asked for.
+   *
+   * A rewriter returns the survivor's arguments with no `undefined` values —
+   * `compact` below drops them — so the boundary's unknown-parameter check
+   * then runs against the SURVIVOR's schema, which is where a mistranslation
+   * is caught, before any Spotify request.
+   */
+  readonly rewrite: (args: Readonly<Record<string, unknown>>) => Record<string, unknown>;
+  /** One line naming what to send instead, shown to the caller on every call. */
+  readonly note: string;
+}
+
+/** Drop keys whose value is `undefined`, so a rewriter cannot invent a key. */
+function compact(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+}
+
+/** Carry the arguments a retired tool did not reinterpret, unchanged. */
+function passthrough(
+  args: Readonly<Record<string, unknown>>,
+  known: readonly string[],
+): Record<string, unknown> {
+  return compact(Object.fromEntries(Object.entries(args).filter(([k]) => !known.includes(k))));
+}
+
+/**
+ * Retired tool name → the surviving tool and the flag translation (#848).
+ *
+ * Ten names go away: three of the four transfer tools and seven of the volume
+ * family. Every one of them keeps working for one release through this table,
+ * and the caller's result carries `deprecated_inputs` / `deprecation_note` so
+ * the migration is announced rather than silent.
+ *
+ * It lives beside {@link LEGACY_TOOL_ALIASES} for the reason that table's header
+ * gives: the consumer is the CallTool boundary in `tools/annotations.ts`, and
+ * that module must never statically import a tool registrar. A table of
+ * argument mappings costs nothing to import; the alternative would evaluate
+ * `playback.js` — and with it the `core` toolset's whole surface — in every
+ * process.
+ */
+export const RETIRED_TOOL_FORWARDS: Readonly<Record<string, RetiredToolForward>> = Object.freeze({
+  // --- transfer family → transfer_playback ---------------------------------
+  handoff: {
+    tool: 'transfer_playback',
+    note: 'handoff forwards to transfer_playback with preserve_position: true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['device_id', 'play', 'volume']),
+      device: args.device_id,
+      play: args.play,
+      volume: args.volume,
+      // handoff's whole reason for existing: carry the track and position over
+      // instead of restarting it at 0:00 on the target.
+      preserve_position: true,
+    }),
+  },
+  switch_device: {
+    tool: 'transfer_playback',
+    note: 'switch_device forwards to transfer_playback; pass the device as `device`.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['device_name', 'play']),
+      device: args.device_name,
+      // switch_device defaulted `play` to true and transfer_playback does not;
+      // forwarding without it would silently change "transfer paused" callers
+      // into "starts playing" callers.
+      play: args.play ?? true,
+    }),
+  },
+  transfer_playback_with_state: {
+    tool: 'transfer_playback',
+    note: 'transfer_playback_with_state forwards to transfer_playback with preserve_position and restore_shuffle_repeat both true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['target_device', 'play']),
+      device: args.target_device,
+      play: args.play ?? true,
+      preserve_position: true,
+      restore_shuffle_repeat: true,
+    }),
+  },
+
+  // --- volume family → set_volume ------------------------------------------
+  volume_step: {
+    tool: 'set_volume',
+    note: 'volume_step forwards to set_volume with the same step as delta_step.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['step', 'device_id']),
+      delta_step: args.step,
+      device_id: args.device_id,
+    }),
+  },
+  mute: {
+    tool: 'set_volume',
+    note: 'mute forwards to set_volume with op: mute.',
+    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'mute', device_id: args.device_id }),
+  },
+  unmute: {
+    tool: 'set_volume',
+    note: 'unmute forwards to set_volume with op: unmute.',
+    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'unmute', device_id: args.device_id }),
+  },
+  room_level: {
+    tool: 'set_volume',
+    note: 'room_level forwards to set_volume with op: level and no volume_percent, which copies the active device\'s level to the others.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['exclude_device_id']),
+      op: 'level',
+      exclude_device_id: args.exclude_device_id,
+    }),
+  },
+  apply_device_presets: {
+    tool: 'set_volume',
+    note: 'apply_device_presets forwards to set_volume with op: preset.',
+    rewrite: (args) => compact({ ...passthrough(args, []), op: 'preset' }),
+  },
+  apply_volume_plan: {
+    tool: 'set_volume',
+    note: 'apply_volume_plan forwards to set_volume with op: level and the plan\'s volume as volume_percent.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['volume', 'device_ids']),
+      op: 'level',
+      volume_percent: args.volume,
+      device_ids: args.device_ids,
+      // An OMITTED selection meant "every volume-capable device" to
+      // apply_volume_plan. set_volume's own default is the active device, so
+      // without this the forward would turn a four-speaker write into a
+      // one-speaker one and report success for the three it skipped.
+      ...(args.device_ids === undefined ? { all_devices: true } : {}),
+    }),
+  },
+  plan_volume_level_across_devices: {
+    tool: 'set_volume',
+    note: 'plan_volume_level_across_devices forwards to set_volume with op: level and dry_run: true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['volume', 'device_ids', 'dry_run']),
+      op: 'level',
+      volume_percent: args.volume,
+      device_ids: args.device_ids,
+      // Same "omitted means all" contract as apply_volume_plan, and for the
+      // same reason: this planner listed every device it would have hit.
+      ...(args.device_ids === undefined ? { all_devices: true } : {}),
+      // Forced LAST, and not merely defaulted: this was a read-only planner, and
+      // a caller that passes dry_run: false must still get a plan rather than a
+      // volume write it never asked for. A retired read-only tool must not
+      // become a mutator on the way out.
+      dry_run: true,
+    }),
+  },
+});
+
+/** Every retired name that still forwards, sorted, for gates and docs. */
+export const RETIRED_TOOL_FORWARD_NAMES: readonly string[] = Object.freeze(
+  Object.keys(RETIRED_TOOL_FORWARDS).sort(),
+);
+
+/**
+ * The forward record for a retired name, or `undefined` when `name` was never
+ * one. `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias}
+ * guards its lookup: a tool name reaches here from the wire, and the table is a
+ * frozen object literal that still carries `Object.prototype`.
+ */
+export function resolveRetiredToolForward(name: string): RetiredToolForward | undefined {
+  if (!Object.hasOwn(RETIRED_TOOL_FORWARDS, name)) return undefined;
+  return RETIRED_TOOL_FORWARDS[name];
+}
+
+/**
+ * The one-line migration note for a forwarded call.
+ *
+ * It states the release the name disappears in as well as the replacement,
+ * because a note that only names the replacement leaves a caller with no way to
+ * tell a deprecation from a permanent rename — and that notice-and-code
+ * disagreement is what #1287 and #1099 were both filed for.
+ */
+export function retiredToolForwardNote(alias: string, forward: RetiredToolForward): string {
+  return `${alias} is deprecated and stops being callable in ${RETIRED_TOOL_FORWARDS_REMOVED_IN}. ${forward.note}`;
+}
+
+/** The release that stopped registering the six queue-read tool names (#847). */
+export const RETIRED_QUEUE_TOOLS_REMOVED_IN = 'v3.0';
+
+export interface RetiredQueueTool {
+  /** The surviving tool that answers the same question. */
+  canonical: string;
+  /**
+   * The exact call to make instead, arguments included — what goes in the
+   * refusal's `fix`, which is the one field a migrating caller reads.
+   */
+  call: string;
+}
+
+/**
+ * The six queue-read names withdrawn into two entry points (#847).
+ *
+ * They are NOT in {@link LEGACY_TOOL_ALIASES}, and the difference is about
+ * arguments, not about policy. The eight stats.fm aliases registered with the
+ * same zod shape and the same handler as their canonical name, so
+ * `resolveLegacyToolAlias` alone was a faithful rewrite of the call. None of
+ * these six is argument-compatible: `queue_runtime_report` sends no arguments
+ * at all and its answer is the runtime analysis, while the canonical
+ * `get_queue` with no arguments answers with the raw queue. A name-only
+ * rewrite would have returned a *different, entirely plausible* answer under a
+ * name that used to be right — the same defect class as #803 and #830, where a
+ * value that could not be obtained was filled in with something that looked
+ * true. And `SPOTIFY_MCP_LEGACY_ALIASES=1` must not make them work either,
+ * because that flag means "same call, new name", not "same name, different
+ * question".
+ *
+ * So these refuse, at the CallTool boundary and before any Spotify request,
+ * with the exact replacement call in `fix`. That is the migration a caller
+ * needs; a silent rewrite is not an upgrade, it is a wrong answer with a
+ * familiar name attached.
+ */
+export const RETIRED_QUEUE_TOOLS: Readonly<Record<string, RetiredQueueTool>> = Object.freeze({
+  describe_queue: { canonical: 'get_queue', call: "get_queue with view: 'enriched'" },
+  get_queue_snapshot: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_runtime_report: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_duplicate_check: { canonical: 'get_queue', call: "get_queue with include: ['duplicates']" },
+  queue_profile: { canonical: 'get_queue', call: "get_queue with include: ['profile']" },
+  predict_next_tracks: { canonical: 'peek_next', call: 'peek_next with count (and get_queue with include: [\'runtime\'] for the per-item ETA)' },
+});
+
+/** Every retired queue-read name, for the surface test and the census assertions. */
+export const RETIRED_QUEUE_TOOL_NAMES: readonly string[] = Object.freeze(
+  Object.keys(RETIRED_QUEUE_TOOLS).sort(),
+);
+
+/**
+ * The replacement for a retired queue-read name, or `undefined` when `name`
+ * was never one.
+ *
+ * `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias} uses it:
+ * this is a frozen object literal that still carries `Object.prototype`, and
+ * the name arrives from the wire, so a bare index would answer
+ * `RETIRED_QUEUE_TOOLS['constructor']` with a function.
+ */
+export function resolveRetiredQueueTool(name: string): RetiredQueueTool | undefined {
+  if (!Object.hasOwn(RETIRED_QUEUE_TOOLS, name)) return undefined;
+  return RETIRED_QUEUE_TOOLS[name];
+}
+
+/** The one-line migration note for a retired queue-read name. */
+export function retiredQueueToolMessage(name: string, tool: RetiredQueueTool): string {
+  return `${name} was removed in ${RETIRED_QUEUE_TOOLS_REMOVED_IN}; use ${tool.canonical} instead.`;
+}
+
+export interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];
   /** Deprecated input names actually present on the call. */
@@ -836,6 +1107,101 @@ export function resolvePlaylistInput(
 export const NO_INPUT_DEPRECATION: PlaylistInputResolution = Object.freeze({
   values: [], deprecatedInputs: [], deprecationNote: null,
 });
+
+/**
+ * The release that removes the deprecated scalar input names below (#848).
+ * Named once, for the reason {@link RETIRED_PLAYLIST_INPUTS_REMOVED_IN} is.
+ */
+export const DEPRECATED_INPUT_ALIASES_REMOVED_IN = 'v2.2';
+
+/**
+ * Per-tool deprecated input spellings that are still ACCEPTED (#848).
+ *
+ * Distinct from {@link RETIRED_PLAYLIST_INPUTS}, which are REFUSED: those names
+ * were withdrawn, this one is on its way out and still works. The difference
+ * matters at the boundary, where one list produces a typed refusal and the
+ * other produces a call that runs.
+ *
+ * The legacy name is deliberately ABSENT from the tool's published
+ * `inputSchema`, so it costs no schema bytes in every `tools/list` response —
+ * the same reason #1287 removed the playlist spellings from the schemas instead
+ * of advertising them. Normalisation happens in `installToolErrorBoundary`
+ * before validation, which is the only place that can work: the canonical input
+ * is required, so a call carrying only the legacy name would be refused by
+ * `required_param` before any handler ran.
+ *
+ * Legacy → canonical, per tool. When BOTH are present the canonical one wins
+ * and the call is still reported as deprecated — the caller is mid-migration,
+ * not broken, and refusing would be a worse answer than ignoring the stale key.
+ */
+export const DEPRECATED_INPUT_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  // #848: `transfer_playback` used to take a bare id; it now resolves names,
+  // labels and ids, and `device` is the name that says so.
+  transfer_playback: Object.freeze({ device_id: 'device' }),
+});
+
+/** Every deprecated input spelling still accepted, sorted, for gates and docs. */
+export const DEPRECATED_INPUT_ALIAS_NAMES: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(DEPRECATED_INPUT_ALIASES).flatMap(([tool, aliases]) =>
+      Object.keys(aliases).map((legacy) => [legacy, tool] as const),
+    ),
+  ),
+);
+
+/**
+ * Fold this tool's deprecated input spellings into their canonical names.
+ *
+ * Returns the arguments to validate against, plus the legacy names that were
+ * actually folded — the caller's only evidence, once the legacy key is gone,
+ * that it used one. A caller sending the canonical name gets an empty list and
+ * byte-identical behaviour, which is the property the tests pin.
+ */
+export function normalizeDeprecatedInputs(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+): { args: Record<string, unknown>; deprecated: string[] } {
+  const aliases = DEPRECATED_INPUT_ALIASES[tool];
+  if (aliases === undefined) return { args: args as Record<string, unknown>, deprecated: [] };
+  const deprecated: string[] = [];
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const canonical = Object.hasOwn(aliases, key) ? aliases[key] : undefined;
+    if (canonical === undefined) {
+      out[key] = value;
+      continue;
+    }
+    deprecated.push(key);
+    // Canonical wins when both are present: it is the name the tool documents,
+    // so the stale copy is the one that was going to be dropped anyway.
+    if (out[canonical] === undefined) out[canonical] = value;
+  }
+  return { args: out, deprecated };
+}
+
+/**
+ * The deprecation notice for the input spellings folded on one call.
+ *
+ * Same shape as every other deprecation notice in the repo, so a caller reads
+ * one `deprecated_inputs` / `deprecation_note` pair whichever kind of
+ * deprecation it hit.
+ */
+export function deprecatedInputResolution(deprecated: readonly string[]): PlaylistInputResolution {
+  if (deprecated.length === 0) return { values: [], deprecatedInputs: [], deprecationNote: null };
+  const names = deprecated.map((name) => {
+    const tool = DEPRECATED_INPUT_ALIAS_NAMES[name];
+    const canonical = tool === undefined ? undefined : DEPRECATED_INPUT_ALIASES[tool]?.[name];
+    return canonical === undefined ? name : `${name} → ${canonical}`;
+  });
+  return Object.freeze({
+    values: [],
+    deprecatedInputs: [...deprecated],
+    deprecationNote:
+      `${deprecated.join(', ')} ${deprecated.length === 1 ? 'is' : 'are'} deprecated and ` +
+      `${deprecated.length === 1 ? 'is' : 'are'} removed in ${DEPRECATED_INPUT_ALIASES_REMOVED_IN}; ` +
+      `use ${names.join(', ')} instead.`,
+  });
+}
 
 /**
  * A deprecated TOOL NAME (#1099), as distinct from a deprecated input.
@@ -1108,6 +1474,136 @@ type JsonObject = Record<string, unknown>;
  * gate measures `tools/list`, which a response-time constant cannot affect.
  */
 export const MAX_RESPONSE_BYTES = 64_000;
+
+/** What one named section cost, and what came back (#895). */
+export interface SectionCap {
+  /** Rows actually returned for this section. */
+  returned: number;
+  /** Rows available before capping — the exact count, never the capped one. */
+  total: number;
+  /** True when rows were dropped from this section. */
+  truncated: boolean;
+  /**
+   * True when the field was withheld ENTIRELY rather than sliced.
+   *
+   * Distinct from `returned: 0` on an empty array: this section exists and has
+   * `total` rows, but none of them shipped in this channel. A caller that reads
+   * `returned: 0, truncated: false` would conclude the scan found nothing, which
+   * is the #803 failure class one field over — a value that could not be
+   * delivered recorded as a value that does not exist.
+   */
+  withheld?: boolean;
+  /** How to get the withheld rows, e.g. `response_format: 'json'`. */
+  available_via?: string;
+  /**
+   * True when the payload carried nothing array-shaped at this key.
+   *
+   * A named key that is absent, `null`, or not an array is a value this payload
+   * never carried — reporting `total: 0` for it would state a row count the read
+   * never produced. The key is left in the payload exactly as it was, so the
+   * unreadable thing stays unreadable rather than being coerced into `[]`.
+   */
+  unreadable?: boolean;
+}
+
+/**
+ * The machine-readable row cap, applied per named array (#895).
+ *
+ * `MAX_RESPONSE_BYTES` above is the BACKSTOP: it fires when a tool forgot to
+ * shape its own output, and it pays for that by DROPPING whole top-level
+ * fields. A `library_hygiene` call over the cap loses `groups` entirely rather
+ * than returning the ten rows the caller asked `max_results` for — the caller
+ * gets a smaller answer to a question it did not ask. This helper is the
+ * PRIMARY control the backstop stands behind: it slices the row arrays a tool
+ * names, to that tool's own `max_results`, and leaves every other field
+ * (aggregates, counts, scan metadata) untouched because those are the cheap
+ * fields that describe what happened.
+ *
+ * Three properties make it the thing to reach for rather than a local
+ * `slice(0, cap)`:
+ *
+ *  - **The exact totals survive.** `sections` reports `returned` against
+ *    `total` for every named array, so a capped result is never
+ *    indistinguishable from a complete one — the #803 failure class, where a
+ *    caller cannot tell an answer that was cut down from an answer that was
+ *    whole, and reports it as complete.
+ *  - **Arrays are capped INDEPENDENTLY.** A tool with three sections gets up to
+ *    `max_results` in each, which is what its prose path already renders,
+ *    and what its own description promises. One shared budget across sections
+ *    would silently starve a section the caller can see described in full.
+ *  - **The named arrays keep their keys.** The envelope is added beside the
+ *    payload, not around it, so a consumer reading `structuredContent.groups`
+ *    keeps working; only its length changes, and `sections.groups` says why.
+ *
+ * A name in `withhold` is DELETED rather than sliced, and reported with
+ * `withheld: true` and its exact `total`. This is not a stylistic preference:
+ * a row cap cannot bound a field whose rows are themselves large. Capping
+ * `library_hygiene`'s `groups` to 10 rows still ships up to 10 whole album
+ * groups including each one's `liked_tracks[]` — a payload that grows with the
+ * library while looking capped, which is worse than no cap because it looks
+ * like the cap worked. `groups` is the scanned library, it is the field the
+ * bulk export exists for, and it belongs in `response_format: 'json'`.
+ *
+ * `truncated` is written at the TOP level, and means rows were withheld from
+ * THIS payload. It does not mean a source walk hit `scan_cap`: that is
+ * `truncated_by_cap`, which is a different quantity about a different read, and
+ * a call site that reports both must pass the walk's flag in under that name
+ * rather than letting this one overwrite it.
+ *
+ * The return type states BOTH fields the envelope writes, rather than only
+ * `sections`. Omitting `truncated` made the return type a partial description
+ * of the object actually returned, which is the §6 failure one level up: a
+ * caller reading `capped.truncated` had to widen the type at the call site, and
+ * a test asserting the flag had to cast past the signature that the truncation
+ * boundary in this same file reads (`markedTruncated`). It is written on every
+ * return path, so it belongs in the type.
+ */
+export function capRowSections<T extends JsonObject>(
+  payload: T,
+  arrays: readonly string[],
+  maxResults: number,
+  withhold: readonly string[] = [],
+): T & { truncated: boolean; sections: Record<string, SectionCap> } {
+  const sections: Record<string, SectionCap> = {};
+  const next: JsonObject = { ...payload };
+  for (const key of arrays) {
+    const value = payload[key];
+    if (!Array.isArray(value)) {
+      // Not a coercion site: an absent or non-array value is left exactly as
+      // the handler produced it. Writing `[]` here would report a scan that
+      // found nothing where the truth is that it reported something we could
+      // not read (#804).
+      sections[key] = { returned: 0, total: 0, truncated: false, unreadable: true };
+      continue;
+    }
+    const view = truncateItems(value, maxResults);
+    sections[key] = { returned: view.returned, total: view.total, truncated: view.truncated };
+    next[key] = view.items;
+  }
+  for (const key of withhold) {
+    const value = payload[key];
+    if (value === undefined) {
+      sections[key] = { returned: 0, total: 0, truncated: false, unreadable: true };
+      continue;
+    }
+    const total = Array.isArray(value) ? value.length : 1;
+    sections[key] = {
+      returned: 0,
+      total,
+      truncated: true,
+      withheld: true,
+      available_via: "response_format: 'json'",
+    };
+    delete next[key];
+  }
+  // The issue asks for `truncated: true` on any capped response, and it is the
+  // flag a host and the truncation boundary both look for, so it is stated at
+  // the top level as well as per section. `sections` remains the precise
+  // statement — one boolean cannot say WHICH section lost rows.
+  next.truncated = Object.values(sections).some((section) => section.truncated);
+  next.sections = sections;
+  return next as T & { truncated: boolean; sections: Record<string, SectionCap> };
+}
 
 /**
  * How many omitted field names the receipt enumerates before it reports only
@@ -1850,6 +2346,40 @@ function fmtFieldValue(value: unknown): string | null {
 /** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
 export function jsonResult(raw: Record<string, unknown>): RenderedToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+}
+
+/**
+ * The payload appears ONCE (#895).
+ *
+ * `jsonResult` above puts the same object in both channels, so a host pays for
+ * it twice on every call — a per-call cost, unlike the one-time `tools/list`
+ * schema surface, which is what makes the doubling worth removing. This emits
+ * the object in `structuredContent` and a bounded summary in the text block,
+ * which is the channel a host shows a human.
+ *
+ * **The text block is NOT valid JSON, deliberately.** A mirrored JSON text
+ * block is a second copy of a payload the host already has in
+ * `structuredContent`; replacing it with a pointer is what makes the saving
+ * real. The trade is that a client reading only `content[].text` no longer
+ * finds the object there — which is why this is opt-in per call site rather
+ * than a change to `jsonResult` (SPEC.md §5 promises "the raw API payload as
+ * JSON text", and the ~180 json branches that keep the mirrored form are how
+ * that promise is kept), and why the summary names the channel the data is in
+ * rather than assuming the reader can find it.
+ *
+ * `summarize` receives the payload so a call site can describe what it holds
+ * (section counts, whether anything was capped) rather than emit a constant.
+ * A summary that is itself unbounded is no saving at all, so a caller that
+ * interpolates a list must bound it.
+ */
+export function emitOnce(
+  raw: Record<string, unknown>,
+  summarize: (payload: Record<string, unknown>) => string,
+): RenderedToolResult {
+  return {
+    content: [{ type: 'text', text: summarize(raw) }],
+    structuredContent: raw,
+  };
 }
 
 /**

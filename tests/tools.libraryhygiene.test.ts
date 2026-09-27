@@ -20,6 +20,7 @@ import type { LegacyResponder } from './helpers/stub-client.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../src/types/spotify.js';
 import { registerLibraryHygieneTools } from '../src/tools/libraryhygiene.js';
+import type { SectionCap } from '../src/shaping.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -80,6 +81,39 @@ function harness(responder: Responder = () => null) {
 }
 
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
+
+// ---------------------------------------------------------------------------
+// structuredContent readers
+//
+// `structuredContent` is `Record<string, unknown>` on the wire, so a field read
+// off it is `unknown` until it is checked. These narrow at runtime and THROW
+// when the check fails, which is the point: the cast they replace
+// (`payload.groups as AlbumGroup[]`) would have asserted a shape the payload
+// might not carry, and a test that dies on `undefined.length` says less about
+// which field broke than one that names it. An absent or wrongly-typed field is
+// unanswered, which is not the same as empty — the #803 rule, in the reader.
+// ---------------------------------------------------------------------------
+
+const objectAt = (payload: Record<string, unknown>, key: string): Record<string, unknown> =>
+  recordOf(payload[key], `payload.${key}`);
+
+const arrayAt = (payload: Record<string, unknown>, key: string): unknown[] =>
+  rowsOf(payload[key], `payload.${key}`);
+
+/** Narrow an `unknown` to a record, naming the field when it is not one. */
+function recordOf(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${label} should be an object, got ${value === null ? 'null' : typeof value}`,
+  );
+  return value as Record<string, unknown>;
+}
+
+/** Narrow an `unknown` to an array, naming the field when it is not one. */
+function rowsOf(value: unknown, label: string): unknown[] {
+  assert.ok(Array.isArray(value), `${label} should be an array, got ${typeof value}`);
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -214,7 +248,9 @@ describe('library_hygiene grouping and album lookups', () => {
       alb3: albumFull('alb3', { total_tracks: 8, trackIds: ['t6'] }),
     };
     const h = harness(libraryResponder(tracks, albums));
-    const out = await h.invoke('library_hygiene', {});
+    // #895: `groups` is the raw scan, so the prose modes withhold it and
+    // `response_format: 'json'` is the documented bulk export that ships it.
+    const out = await h.invoke('library_hygiene', { response_format: 'json' });
     const payload = out.structuredContent!;
 
     // One per-id read for every DISTINCT album id, despite alb1 holding three
@@ -502,8 +538,9 @@ describe('library_hygiene edges and shapes', () => {
     const h = harness(libraryResponder(tracks, albums));
     const out = await h.invoke('library_hygiene', { response_format: 'json' });
 
-    // json mode: content text IS the serialized payload.
-    const parsed = JSON.parse(textOf(out));
+    // #895: json mode puts the payload in `structuredContent`; the text block
+    // beside it is a bounded summary, not a second copy of the same object.
+    const parsed = out.structuredContent!;
     assert.deepEqual(Object.keys(parsed).sort(), [
       'album_lookups',
       'counts',
@@ -522,8 +559,9 @@ describe('library_hygiene edges and shapes', () => {
     ]);
     assert.equal(parsed.requests_made, 0);
     assert.equal(parsed.ok, true);
-    assert.equal(parsed.groups.length, 1);
-    const group = parsed.groups[0];
+    const groups = arrayAt(parsed, 'groups');
+    assert.equal(groups.length, 1);
+    const group = recordOf(groups[0], 'groups[0]');
     for (const key of [
       'album_id',
       'album_name',
@@ -538,10 +576,11 @@ describe('library_hygiene edges and shapes', () => {
     ]) {
       assert.ok(key in group, `group missing ${key}`);
     }
-    assert.equal(parsed.groups[0].liked_tracks[0].id, 't1');
-    assert.equal(parsed.near_complete.length, 1);
+    assert.equal(recordOf(rowsOf(group.liked_tracks, 'group.liked_tracks')[0], 'group.liked_tracks[0]').id, 't1');
+    const nearComplete = arrayAt(parsed, 'near_complete');
+    assert.equal(nearComplete.length, 1);
     assert.deepEqual(
-      Object.keys(parsed.near_complete[0]).sort(),
+      Object.keys(recordOf(nearComplete[0], 'near_complete[0]')).sort(),
       [
         'album_id',
         'album_name',
@@ -555,7 +594,7 @@ describe('library_hygiene edges and shapes', () => {
         'total_tracks',
       ],
     );
-    assert.equal(parsed.orphaned_singles.length, 0);
+    assert.equal(arrayAt(parsed, 'orphaned_singles').length, 0);
   });
 
   it('prose totals stay accurate under max_results truncation', async () => {
@@ -583,9 +622,25 @@ describe('library_hygiene edges and shapes', () => {
     assert.equal(renderedBullets.length, 2); // truncated to max_results=2
     assert.match(prose, /1 more/); // continuation footer present
 
-    // Structured payload keeps ALL findings regardless of prose truncation.
+    // #895: the machine channel is capped to the SAME `max_results` the prose
+    // rendered, and says so — it used to ship all three findings beside a
+    // two-row prose block, which is the disagreement the tool's own
+    // description forbids.
     const payload = out.structuredContent!;
-    assert.equal((payload.near_complete as unknown[]).length, 3);
+    assert.equal((payload.near_complete as unknown[]).length, 2);
+    assert.equal(payload.truncated, true);
+    // The real `SectionCap`, not a locally invented subset: the previous
+    // `{ returned; total }` shape had no `withheld`, so the assertion below
+    // could not name it without widening the type at the read site. A
+    // hand-written shadow of a published type is a second declaration of it.
+    const sections = objectAt(payload, 'sections') as Record<string, SectionCap>;
+    assert.equal(sections.near_complete.returned, 2);
+    assert.equal(sections.near_complete.total, 3);
+    // The raw scan is withheld, and its exact size is stated rather than
+    // dropped: `total: 0` would read as "the scan found no albums" (#803).
+    assert.equal(payload.groups, undefined);
+    assert.equal(sections.groups.withheld, true);
+    assert.equal(sections.groups.total, 3);
 
     // Sorted by coverage ratio descending: 0.9 first.
     assert.match(renderedBullets[0], /9\/10/);
@@ -653,8 +708,12 @@ describe('library_hygiene rate-limited partials (#763)', () => {
     // A middle slice of the ids throttles; the reads on either side still land.
     const throttled = tracks.slice(20, 40).map((t) => t.track.album.id);
     const h = harness(libraryResponder(tracks, albums, { throttleIds: throttled, retryAfterSec: 11 }));
+    // #895: `groups` is the raw scan and is withheld in the prose modes, so
+    // the row-level assertions below read the json bulk export while the
+    // partial-run prose is asserted from the prose mode that renders it.
+    const bulk = await h.invoke('library_hygiene', { response_format: 'json' });
+    const payload = bulk.structuredContent!;
     const out = await h.invoke('library_hygiene', {});
-    const payload = out.structuredContent!;
 
     assert.equal(payload.album_lookups.rate_limited, true);
     assert.equal(payload.album_lookups.retry_after_sec, 11);
@@ -669,6 +728,13 @@ describe('library_hygiene rate-limited partials (#763)', () => {
     assert.equal(resolved.length, 40);
     assert.equal((payload.groups as Array<{ total_tracks: number | null }>)
       .filter((g) => g.total_tracks === null).length, 20);
+    // The prose mode withheld them, and said so with the exact count rather
+    // than shipping an empty array that would read as "no albums found".
+    const prosePayload = out.structuredContent!;
+    assert.equal(prosePayload.groups, undefined);
+    const proseSections = prosePayload.sections as Record<string, { withheld?: boolean; total: number }>;
+    assert.equal(proseSections.groups.withheld, true);
+    assert.equal(proseSections.groups.total, 60);
     // #1224: the throttled ids are named with their reason, so a caller can
     // tell a rate-limited read from an album with no track total.
     const unresolved = payload.album_lookups.unresolved as Array<{ id: string; status: number | null }>;

@@ -1897,6 +1897,10 @@
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
+        "hash": "d6f6074447d29264",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
+      },
+      {
         "hash": "470609f52057944b",
         "label": "Paging signal (any tool that reads one offset page of a …"
       },
@@ -2005,11 +2009,11 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "2faa3b67da2098a6",
-        "label": "setvolume Set playback volume."
+        "hash": "66e3fb1c786c4502",
+        "label": "setvolume Set playback volume on one device, on a select…"
       },
       {
-        "hash": "6768c82e14144549",
+        "hash": "fc75371744054907",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
@@ -2029,12 +2033,36 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "f893bbcb5997f4c8",
-        "label": "getqueue Get the current playback queue."
+        "hash": "64174ad41209825a",
+        "label": "getqueue Read the playback queue. This and peeknext are …"
       },
       {
-        "hash": "fd7e8cfa2ec64fa8",
+        "hash": "089c51ca39b529c4",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "5f92ff11ed9c5f03",
+        "label": "Quota: exactly one GET /me/player/queue per call, whatev…"
+      },
+      {
+        "hash": "93342f1083c07fd2",
         "label": "Returns: currently playing item, plus the up-next list (…"
+      },
+      {
+        "hash": "93919fcf18191b1e",
+        "label": "runtime.currenttrackremainingms needs a second endpoint.…"
+      },
+      {
+        "hash": "63445fa3d53d8b36",
+        "label": "peeknext Short lookahead at the queue: the next N items …"
+      },
+      {
+        "hash": "5cb52c2779a8f8e2",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "3c2e2b5b300cef1a",
+        "label": "Quota: 1 read. The per-item ETA the retired predictnextt…"
       },
       {
         "hash": "b74cd36a3aecdf2c",
@@ -2065,11 +2093,11 @@
         "label": "Returns: array of devices with id, name, type (computer/…"
       },
       {
-        "hash": "2135657c32d98771",
-        "label": "transferplayback Move playback to a different device."
+        "hash": "6ddc8b5b4f1387f9",
+        "label": "transferplayback Move playback to a different device, na…"
       },
       {
-        "hash": "b4bd14dafa27f92a",
+        "hash": "9c1e3ac2a2fd9443",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
@@ -2103,6 +2131,58 @@
       {
         "hash": "db84d8bb9489dc23",
         "label": "A 404 means \"not available in this market\"; a 429 or tra…"
+      },
+      {
+        "hash": "08ccf5fcd0d60b2b",
+        "label": "The one playback-position record (#846)"
+      },
+      {
+        "hash": "d52a519e537911c7",
+        "label": "Three sidecars each persisted \"where was I listening\" in…"
+      },
+      {
+        "hash": "9522e13ba63ac0f9",
+        "label": "There is now one record shape, in the playback-extension…"
+      },
+      {
+        "hash": "2954d67eef1a2568",
+        "label": "| Field | Notes | |---|---| | id | Canonical id. The too…"
+      },
+      {
+        "hash": "cc215eb437f38b5b",
+        "label": "legacy is the losslessness contract: two of the three le…"
+      },
+      {
+        "hash": "7f195872ae9a6712",
+        "label": "Tools. captureplaybackposition and checkpointplayback ar…"
+      },
+      {
+        "hash": "0ea6371a77a2084c",
+        "label": "The reads work before the migration too. A legacy bookma…"
+      },
+      {
+        "hash": "f0a5823c45b14d3c",
+        "label": "migrateplaybackpositions is the one-time, idempotent imp…"
+      },
+      {
+        "hash": "9cfdaff5c7a8bc7b",
+        "label": "Idempotent by origin + originid provenance, not by a mar…"
+      },
+      {
+        "hash": "da2b757bca7d1332",
+        "label": "Refuses rather than partially applies. A legacy sidecar …"
+      },
+      {
+        "hash": "c4e4291b2ca38826",
+        "label": "A missing store is the first-run case, not a fault. A si…"
+      },
+      {
+        "hash": "b23cbb88cc04d32b",
+        "label": "Legacy bookmark files are renamed to .migrated, never un…"
+      },
+      {
+        "hash": "9b535f4b07a8a55c",
+        "label": "Breaking (v3): captureplaybackposition returns { bookmar…"
       },
       {
         "hash": "c22fd82314f73994",
@@ -3273,7 +3353,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "1be10212b9eb890c",
+        "hash": "44d504557c677700",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -3633,6 +3713,22 @@
         "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
       },
       {
+        "hash": "4e3c8b62c78e2722",
+        "label": "5.16 Queue-read migration (#847)"
+      },
+      {
+        "hash": "99735d4ceb7d6401",
+        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
+      },
+      {
+        "hash": "506b2b63abfcd761",
+        "label": "| Retired name | Call that replaces it | What moved | |-…"
+      },
+      {
+        "hash": "0d718e4d575069af",
+        "label": "These six are deliberately NOT reachable through SPOTIFY…"
+      },
+      {
         "hash": "f3e70de12e2dc0f1",
         "label": "6. Resources"
       },
@@ -3649,8 +3745,8 @@
         "label": "A fixed resource that reads a paged endpoint accepts its…"
       },
       {
-        "hash": "ee57237e3d75af26",
-        "label": "Each parameterised resource registers three entries, not…"
+        "hash": "88447ec01ecbe698",
+        "label": "Each parameterised resource registers two entries, not o…"
       },
       {
         "hash": "0c44ce16df872864",
@@ -3669,12 +3765,12 @@
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "32f6226ccd12e7a5",
+        "hash": "571f5e33b7546f6a",
         "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "fd63592042568bb1",
-        "label": "The {+qs} twin is the catch-all for query strings this s…"
+        "hash": "ec9547275c52004a",
+        "label": "A catch-all twin was the wrong way to absorb a query str…"
       },
       {
         "hash": "dba777829aa263b2",
@@ -3701,7 +3797,7 @@
         "label": "limit is bounded to 1–50 and offset to ≥0 before forward…"
       },
       {
-        "hash": "f4ada5ba1d8690a5",
+        "hash": "8338d74b1e7ef4f2",
         "label": "Normalising silently is a reason to publish the bound, s…"
       },
       {
@@ -3717,8 +3813,8 @@
         "label": "| Template | Endpoint | Parameters | |---|---|---| | spo…"
       },
       {
-        "hash": "7a1d95f8d80f8908",
-        "label": "The chapters pair registers before the bare audiobook pa…"
+        "hash": "e95b22038ccb22af",
+        "label": "These two shapes no longer compete, so their order carri…"
       },
       {
         "hash": "d7ba81d3e4062a7f",
@@ -3745,7 +3841,7 @@
         "label": "It renders id, name, type, isactive and volumepercent th…"
       },
       {
-        "hash": "f0bf0983efcc2748",
+        "hash": "87e02589ab499f7e",
         "label": "The endpoint takes no query parameters (the OpenAPI sche…"
       },
       {
@@ -5393,6 +5489,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1be10212b9eb890c",
+      "label": "Returns: display name, user ID, URI, profile image URL, …",
+      "date": "2026-09-27",
+      "reason": "reworded by #1468: get_user_profile's Returns said a 403 'names the grandfathering requirement', which was the prescription #1468 removes; the replacement records the older-registration question as unverified and adds that no endpoint replaced /users/{id}"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "1d0730021d0c4a24",
       "label": "Inputs: playlistid (string, required), shared response f…",
       "date": "2026-09-27",
@@ -5404,6 +5507,27 @@
       "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…",
       "date": "2026-09-27",
       "reason": "#1423 renamed the bounded-read disclosure fields to rows_read and reported_total across SPEC.md, so the pinned Field/Meaning table row and the at-or-below-the-cap paragraph were deliberately reworded, not lost to a conflict"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "2135657c32d98771",
+      "label": "transferplayback Move playback to a different device.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "2faa3b67da2098a6",
+      "label": "setvolume Set playback volume.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "32f6226ccd12e7a5",
+      "label": "Before #1401 the server routed around this by depending …",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5432,6 +5556,20 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "6768c82e14144549",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "7a1d95f8d80f8908",
+      "label": "The chapters pair registers before the bare audiobook pa…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5467,6 +5605,13 @@
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "b4bd14dafa27f92a",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #848: set_volume and transfer_playback became the two union-schema tools for the collapsed transfer and volume families, so each tool's SPEC.md summary line and Inputs table now describes the wider argument space rather than the pre-collapse one."
     },
     {
       "file": "SPEC.md",
@@ -5526,10 +5671,52 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "ee57237e3d75af26",
+      "label": "Each parameterised resource registers three entries, not…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f0bf0983efcc2748",
+      "label": "The endpoint takes no query parameters (the OpenAPI sche…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f4ada5ba1d8690a5",
+      "label": "Normalising silently is a reason to publish the bound, s…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "f6c48865c9488f32",
       "label": "The {?…} template is still registered and still earns it…",
       "date": "2026-09-27",
       "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f893bbcb5997f4c8",
+      "label": "getqueue Get the current playback queue.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #847: both paragraphs belong to the get_queue SPEC entry the collapse rewrote — the heading now names the two surviving queue-read entry points and the six registrations they replaced, and the Returns line now names the analyses that moved behind include: rather than a flat up-next list."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fd63592042568bb1",
+      "label": "The {+qs} twin is the catch-all for query strings this s…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fd7e8cfa2ec64fa8",
+      "label": "Returns: currently playing item, plus the up-next list (…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #847: both paragraphs belong to the get_queue SPEC entry the collapse rewrote — the heading now names the two surviving queue-read entry points and the six registrations they replaced, and the Returns line now names the analyses that moved behind include: rather than a flat up-next list."
     },
     {
       "file": "SPEC.md",

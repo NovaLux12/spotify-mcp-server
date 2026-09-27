@@ -285,18 +285,24 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // so catalog-backed reads are served from the short-TTL cache (~5 min)
   // while /me/player* paths bypass it and stay live (#32/#54).
   //
-  // Every resource is registered twice: once at its bare URI (exact-string
-  // lookup in the SDK) and once as a `{?format}` template — the SDK's
-  // form-style query operator only matches when a query string is present,
-  // so bare requests hit the fixed entry and `?…` requests hit the twin.
-  // Both share one renderer; `wantsJson` picks prose vs raw JSON.
+  // A resource is registered at its bare URI and, once, as a query-absorbing
+  // template. Two entries rather than one because the MCP SDK resolves
+  // `resources/read` by **exact URI string** first, so a fixed registration can
+  // only ever answer the bare URI — `spotify://me?format=json` is a different
+  // key and reaches the template. Two rather than three because the third —
+  // a `{+qs}` catch-all beside the `{?…}` template — is gone (#685): the
+  // `{?…}` entry, compiled by `Rfc6570UriTemplate`, already matches the bare
+  // URI, every declared parameter in any order, any subset, and any undeclared
+  // pair. Both entries share one renderer, so `?format=json` and the bare read
+  // are two spellings of one answer; `wantsJson` picks prose vs raw JSON.
 
   /**
-   * Register `render` at `uri` and at its `?format=json` template twin.
+   * Register `render` at `uri` and at the one query-absorbing template that
+   * serves every URI carrying a query string (#685).
    *
    * `params` is a list of `[name, doc]` pairs rather than bare names, so the
    * bound, default and valid values of every parameter are stated once in the
-   * registry and reach all three registered entries. #883's lens applies to
+   * registry and reach both registered entries. #883's lens applies to
    * resources for the same reason it applies to tools: these parameters are
    * where a natural-language request becomes a number, and this read
    * *silently* normalises rather than failing. `?limit=999` clamps to 50 and
@@ -306,8 +312,13 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
    * number is the only warning, and a number is not a warning. So the range,
    * the default and the legal values of an enum are stated in the description
    * the caller reads before building the URI.
+   *
+   * The template is the advertising surface: it names the parameter set a host
+   * may build a URI from, and its own zero-variable expansion is the bare URI,
+   * so a host that hands back the `uriTemplate` string it just read resolves to
+   * the documented defaults rather than to "resource not found".
    */
-  const registerResourcePair = (
+  const registerResource = (
     name: string,
     uri: string,
     description: string,
@@ -326,60 +337,39 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         throw error;
       }
     };
-    // #603: when a resource takes real query parameters, BOTH the parameter
-    // set and the `?format=json` twin are named on every registered entry.
-    // Each entry is its own line in `resources/templates/list` with its own
-    // description, and a host reading the template entry sees only that one —
-    // a parameter set documented solely on the bare entry does not reach the
-    // reader who is about to build a URI with it.
+    // #603: when a resource takes real query parameters, BOTH the parameter set
+    // and the `?format=json` form are named on every registered entry. Each
+    // entry is its own line in a listing with its own description, and a host
+    // reading the template entry sees only that one — a parameter set
+    // documented solely on the bare entry does not reach the reader who is
+    // about to build a URI with it.
     const suffix =
       params && params.length > 0 ? ` Parameters: ${params.map(([p, doc]) => `?${p} (${doc})`).join(', ')}.` : '';
     const jsonNote = ' (?format=json returns raw JSON)';
+    const query = ['format', ...(params ?? []).map(([p]) => p)];
     server.resource(name, uri, { description: `${description}${suffix}`, mimeType: 'text/plain' }, renderWithApiErrors);
+    // #1401: the `{?…}` entry is a real router, not one plus a decoy. It used
+    // to be the SDK's stricter `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$`, which
+    // needed every parameter present and adjacent, so
+    // `…?time_range=short_term&limit=5` matched nothing and the advertised
+    // entry could never route. What it replaced — a `{+qs}` catch-all — is
+    // gone, and the thing that has to keep working in its place is spelled
+    // out above: an undeclared parameter, a typo, or a declared one sent in
+    // an order the template does not expand to still routes here, because
+    // `matchFormStyle` reads the declared names as an ordered subsequence and
+    // lets everything else through. A *path* difference still matches nothing:
+    // the matcher requires a real `?`, so `spotify://me/saved/tracksX` is a
+    // different resource and is rejected, where the SDK's bare `(.+)` matched
+    // it and served saved tracks.
     server.resource(
       `${name}-query`,
-      new ResourceTemplate(
-        new Rfc6570UriTemplate(
-          `${uri}${params && params.length > 0 ? `{?format,${params.map(([p]) => p).join(',')}}` : '{?format}'}`,
-        ),
-        { list: undefined },
-      ),
+      new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{?${query.join(',')}}`), { list: undefined }),
       {
         description: `Query-string variant of '${uri}'${jsonNote}${suffix}`,
         mimeType: 'text/plain',
       },
       renderWithApiErrors,
     );
-    // #1401: both entries above are now real routers, not one plus a decoy.
-    // The `{?…}` entry is compiled by `Rfc6570UriTemplate`, so it matches the
-    // URIs RFC 6570 says the template expands to — declared parameters in
-    // declaration order, any subset of them, undeclared pairs allowed between.
-    // It used to be the SDK's stricter `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$`,
-    // which needed every parameter present and adjacent, so
-    // `…?time_range=short_term&limit=5` matched nothing and the advertised
-    // entry could never route.
-    //
-    // The `{+qs}` entry is the catch-all for query strings this server does not
-    // model — a typo, an undeclared parameter, a parameter sent in an order the
-    // template does not expand to. It is also what keeps a *path* difference
-    // from resolving: its matcher requires a real `?`, so
-    // `spotify://me/saved/tracksX` is a different resource and is rejected,
-    // where the SDK's bare `(.+)` matched it and served saved tracks.
-    //
-    // The `{?…}` template is still what `resources/templates/list` advertises,
-    // and its description is where the parameter set is documented for a host
-    // reading the listing.
-    if (params && params.length > 0) {
-      server.resource(
-        `${name}-qs`,
-        new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{+qs}`), { list: undefined }),
-        {
-          description: `Catch-all query variant of '${uri}'${jsonNote}${suffix}`,
-          mimeType: 'text/plain',
-        },
-        renderWithApiErrors,
-      );
-    }
   };
 
   // --- #603: query-parameter parsing for the paged resources -----------------
@@ -417,11 +407,13 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // move it here and the registered description follows.
   const LIMIT_DOC = '1-50, default 20; values outside the range are clamped';
   const OFFSET_DOC = 'zero-based, default 0';
+  /** The playlist-items page is the one window here that is 1–100, not 1–50. */
+  const PLAYLIST_TRACKS_LIMIT_DOC = '1-100, default 100; values outside the range are clamped';
   const TIME_RANGE_DOC = 'long_term | medium_term | short_term, default medium_term; any other value reads medium_term';
   const CURSOR_DOC = 'Unix epoch milliseconds';
 
   // spotify://me — current user profile
-  registerResourcePair(
+  registerResource(
     'me',
     'spotify://me',
     "Current user profile ('?format=json' returns the raw API object)",
@@ -437,7 +429,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   );
 
   // spotify://player/state — current playback state (live; never cached)
-  registerResourcePair(
+  registerResource(
     'player-state',
     'spotify://player/state',
     "Current Spotify playback state (live; '?format=json' returns the raw API object)",
@@ -467,7 +459,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   );
 
   // spotify://player/queue — current queue (live)
-  registerResourcePair(
+  registerResource(
     'player-queue',
     'spotify://player/queue',
     "Current playback queue ('?format=json' returns the raw API object)",
@@ -499,7 +491,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // to start with a `get_devices` tool call, costing a turn and quota to learn
   // a fact that is ambient state. Same row renderer as the tool, so the two
   // cannot drift on the #855 volume guard — see src/devices.ts.
-  registerResourcePair(
+  registerResource(
     'player-devices',
     'spotify://player/devices',
     "Available Spotify Connect devices, with the active one flagged (live; '?format=json' returns the raw API object)",
@@ -528,7 +520,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // spotify://me/top/tracks — top tracks, windowed by query parameters (#603).
   // The rows and the header shape are the ones get_top_tracks prints, so a
   // host that has read one has read the other.
-  registerResourcePair(
+  registerResource(
     'top-tracks',
     'spotify://me/top/tracks',
     "User's top tracks ('?format=json' returns the raw API object)",
@@ -575,7 +567,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   );
 
   // spotify://me/top/artists — top artists, windowed by query parameters (#603).
-  registerResourcePair(
+  registerResource(
     'top-artists',
     'spotify://me/top/artists',
     "User's top artists ('?format=json' returns the raw API object)",
@@ -626,7 +618,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // unknown query parameters with a 400, so a resource that advertised `?offset`
   // would fail rather than page. `after`/`before` are Unix-ms cursors: page
   // forward with the earliest `played_at` on the page.
-  registerResourcePair(
+  registerResource(
     'recently-played',
     'spotify://me/recently-played',
     "Recently played tracks ('?format=json' returns the raw API object)",
@@ -678,7 +670,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   );
 
   // spotify://me/playlists — all user playlists
-  registerResourcePair(
+  registerResource(
     'playlists',
     'spotify://me/playlists',
     "All user playlists, names and IDs ('?format=json' returns the raw items)",
@@ -746,7 +738,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     collection: string,
     renderProse: (items: T[], header: string) => string,
   ): void => {
-    registerResourcePair(
+    registerResource(
       name,
       uri,
       label,
@@ -864,7 +856,12 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
 
   // --- #218: additional saved-library resources --------------------------------
 
-  // spotify://me/saved/tracks — paginated with ?offset&limit, prose "name by artist | URI"
+  // spotify://me/saved/tracks — paginated with ?offset&limit, prose "name by artist | URI".
+  // #685: this was the one resource still registering its three entries by
+  // hand, with the parameter set written out twice. It is the same
+  // bare-plus-one-query-template shape `registerResource` describes, so it
+  // goes through it and keeps its own renderer and bounds — the difference is
+  // the wording in the description, not the wiring.
   (() => {
     const uri = 'spotify://me/saved/tracks';
     const parseWithPagination = (url: URL) => {
@@ -897,13 +894,16 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       const footer = hasMore ? `\n... more available — re-read with ?offset=${offset + entries.length}` : '';
       return text(uri, `${header}\n${lines.join('\n')}${footer}`);
     };
-    // #603: same rule as registerResourcePair — the parameter set and the
-    // ?format=json twin are named on each entry, not only on the bare one.
-    const paramNote = ` Parameters: ?offset (${OFFSET_DOC}), ?limit (${LIMIT_DOC}).`;
-    const jsonNote = ' (?format=json returns raw JSON)';
-    server.resource('saved-tracks', uri, { description: `Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-query', new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{?format,offset,limit}`), { list: undefined }), { description: `Query-string variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-qs', new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{+qs}`), { list: undefined }), { description: `Catch-all query variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
+    registerResource(
+      'saved-tracks',
+      uri,
+      "Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)",
+      render,
+      [
+        ['offset', OFFSET_DOC],
+        ['limit', LIMIT_DOC],
+      ],
+    );
   })();
 
   // spotify://me/followed/artists — cursor walk via /me/following
@@ -936,7 +936,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         withCapFooter(uri, `Followed artists (${shownCount(disclosure)}):\n${lines.join('\n')}`, disclosure, cap),
       );
     };
-    registerResourcePair('followed-artists', uri, "Artists you follow ('?format=json' returns the raw items)", render);
+    registerResource('followed-artists', uri, "Artists you follow ('?format=json' returns the raw items)", render);
   })();
 
   // spotify://me/saved/audiobooks — /me/audiobooks
@@ -1009,7 +1009,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         withCapFooter(uri, `Saved audiobooks (${items.length}):\n${renderRows(items).join('\n')}`, disclosure, cap),
       );
     };
-    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render, [
+    registerResource('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render, [
       ['limit', LIMIT_DOC],
       ['offset', OFFSET_DOC],
     ]);
@@ -1068,28 +1068,32 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     return text(uri, `${header}\n${lines.join('\n')}${footer}`);
   };
 
+  // #685: ONE template for this shape, carrying ?offset/?limit/?format in a
+  // trailing form-style expression, so the bare URI and every query variant
+  // reach the same renderer. It used to be two entries — a bare pattern the
+  // SDK could not match with a query string, and a `{+qs}` catch-all standing in
+  // for one it could. The two shapes are disjoint from
+  // `spotify://playlist/{id}` in `src/resources/templates.ts` because that
+  // pattern's `([^/,]+)` capture must be followed by end-of-string, so
+  // whichever module is registered first `spotify://playlist/pl1/tracks` routes
+  // here and `spotify://playlist/pl1` routes there.
   server.resource(
     'playlist-tracks',
-    new ResourceTemplate('spotify://playlist/{id}/tracks', { list: undefined }),
+    new ResourceTemplate(
+      new Rfc6570UriTemplate('spotify://playlist/{id}/tracks{?format,offset,limit}'),
+      { list: undefined },
+    ),
     {
       description:
-        "A playlist's tracks, paginated via ?offset/&limit ('?format=json' returns the raw API object)",
-        mimeType: 'text/plain',
+        "A playlist's tracks, paginated via ?offset/&limit ('?format=json' returns the raw API object)"
+        + ` Parameters: ?offset (${OFFSET_DOC}), ?limit (${PLAYLIST_TRACKS_LIMIT_DOC}), ?format=json.`,
+      mimeType: 'text/plain',
     },
-    async (uri: URL) => renderPlaylistTracks(uri.href),
-  );
-  // …and URIs carrying ?format/?offset/?limit hit this one: a single {+qs}
-  // capture absorbs ANY query string, because the SDK's {?…} form-style
-  // operator would require every named parameter to be present and ordered.
-  server.resource(
-    'playlist-tracks-query',
-    new ResourceTemplate(new Rfc6570UriTemplate('spotify://playlist/{id}/tracks{+qs}'), { list: undefined }),
-    { description: 'Query-string variant of playlist-tracks (?format=json, ?offset, ?limit)', mimeType: 'text/plain' },
     async (uri: URL) => renderPlaylistTracks(uri.href),
   );
 
   // spotify://me/listening-history — last 20 recently played (live)
-  registerResourcePair(
+  registerResource(
     'listening-history',
     'spotify://me/listening-history',
     "Recent listening history (last 20, live; '?format=json' returns raw API object)",
@@ -1114,7 +1118,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // branch that did not exist, so the sidecar path is removed rather than
   // implemented — the honest reading is the one that actually runs, and
   // #604's acceptance criteria explicitly allow dropping the claim.
-  registerResourcePair(
+  registerResource(
     'genre-heatmap',
     'spotify://me/genre-heatmap',
     "Genre counts over a live sample of your top artists (medium term, up to 50 — not your followed artists); the rendered output names the source and how many artists were read ('?format=json' returns the counts with their coverage)",
@@ -1207,7 +1211,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // spotify://me/rate-limit — last throttle state (#56/#59): surfaces the
   // most recent Retry-After/backoff event so agents can make informed
   // wait-vs-abort decisions without a tool call.
-  registerResourcePair(
+  registerResource(
     'rate-limit',
     'spotify://me/rate-limit',
     "Last rate-limit event: Retry-After/wait or 'never throttled'",

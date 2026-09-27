@@ -36,7 +36,7 @@
  * to do with this change. What is asserted instead is the machine-independent
  * fact those thresholds were a proxy for: how many tool modules the process
  * evaluates. Measured on both dists of the same tree, that is 18 under
- * `playback` where it was 69, for the identical 106 tools.
+ * `playback` where it was 69, for the identical 100 tools.
  * `scripts/measure-startup.mjs` is the harness for the wall-clock and RSS
  * numbers; ARCHITECTURE.md records the interleaved A/B, including the part
  * that does not flatter the change (peak RSS rises under a trimmed toolset,
@@ -225,14 +225,22 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     const playback = await recordStartup('playback');
 
     // 18 measured on the machine this landed on; 69 before the change, for the
-    // identical 106-tool surface. The bound is deliberately loose so an
+    // identical 100-tool surface. The bound is deliberately loose so an
     // unrelated future transitive import does not redden the build, while
     // still failing loudly if the gate stops gating — a revert to static
     // imports puts every one of the 66 back.
+    //
+    // 106 -> 107 is #846's one added name, `migrate_playback_positions`,
+    // registered under `playbackext` and so in scope here. It is the only
+    // tool this change adds: the other three writers/readers were REWIRED
+    // onto the shared position record rather than added alongside it.
     assert.ok(
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
+    // Four deltas land on this number, and the comment has to carry all of them
+    // or the next reader attributes a change to the wrong one.
+    //
     // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
     // registers under every toolset — the `prompts` set is in the default
     // install and the four mood prompts name this tool, and a prompt naming a
@@ -241,7 +249,30 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // lands in EVERY trimmed surface, not only the default one. Stated rather
     // than absorbed, because the next person to add a helper will hit the same
     // number and should know they will.
-    assert.equal(playback.toolCount, 107, 'the playback surface itself must not change');
+    //
+    // 107 -> 108 (#846): `migrate_playback_positions`, the one-time import of
+    // the three legacy playback-position stores. It is the only tool that
+    // change adds; the other three writers/readers were REWIRED onto the
+    // shared record rather than added alongside it.
+    //
+    // 108 -> 102 (#847): six queue readers collapsed into `get_queue` and
+    // `peek_next`. The retired names still forward for one release, so the
+    // tools a caller can name did not shrink by six — the registrations did,
+    // and this is the count of registrations.
+    //
+    // 102 -> 92 (#848): the same kind of collapse, ten registrations this time.
+    // Four transfer tools and eight volume writers of `PUT /me/player/volume`
+    // became one `transfer_playback` and one `set_volume`, whose two schemas
+    // carry the union of the flags the twelve each needed. Each retired name
+    // still resolves — `RETIRED_TOOL_FORWARDS` in `src/shaping.ts` forwards it
+    // to the survivor with the flags that made it itself, for one release — so
+    // a caller of an old name keeps working, but it is a registration rather
+    // than a tool, and tools are what this number counts. The two behaviour
+    // differences the collapse does make (a device that resolved only by id
+    // now also resolves by its sidecar label, and a resume that silently
+    // landed at 0:00 is now seek-corrected) are additive and narrowing
+    // respectively, never a removed capability.
+    assert.equal(playback.toolCount, 92, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -256,47 +287,16 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
 
   it('evaluates every manifest module for the default install', async () => {
     const full = await recordStartup('all');
-    // A tripwire, deliberately a literal: it is here to catch surface growth
-    // nobody intended. #1099 grew 592 -> 594 by adding the two deprecated
-    // `pin_playlist` / `unpin_playlist` aliases beside their canonical
-    // replacements; #638 then took it back down by removing the eight tools
-    // whose only endpoint Spotify deleted in February 2026. Writing each change
-    // down rather than widening the assertion to a computed one is the point:
-    // a number that moves for a stated reason is information, and one that
-    // moves silently is the failure this tripwire exists to catch.
-    //
-    // #602 grew 587 -> 589 by adding `list_accounts` / `switch_account` —
-    // the account registry's two tools, both of which the issue asked for by
-    // name, and neither of which replaces an existing tool.
-    //
-    // #695 took the default surface 589 -> 578 by withholding eleven derived
-    // listening-analytics tools unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is
-    // set. A DELIBERATE reduction, not surface loss: the opted-in surface is
-    // byte-identical to the 589 this tripwire used to pin, which
-    // tests/analytics-optin-registry.test.ts asserts over a real server. A
-    // silent drop from here would mean the gate took something it was not
-    // supposed to take.
-    //
-    // Measured from the live registry on the post-rebase tree, not derived by
-    // subtracting: main moved underneath this branch twice, and the removals
-    // did not compose with the other changes to the plain arithmetic.
-    //
-    // #908 took the full surface from 589 -> 581 by dropping the eight legacy
-    // `taste_*` alias registrations, each a duplicate of a canonical
-    // `statsfm_*` tool with the same params and the same handler. They are not
-    // in this number's arithmetic because they were never in the manifest — a
-    // registration with no row of its own, which is exactly why removing them
-    // could not be seen in a per-module diff and had to be measured.
+    // The same four deltas as the `playback` figure above, measured on the full
+    // surface: 570 -> 571 (#598), 571 -> 572 (#846), 572 -> 566 (#847), and
+    // 566 -> 556 (#848, the same ten). Each is a registration count, and the
+    // forwarding aliases add no line here.
     //
     // The message says "full surface", not "default surface": since #889 an
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
-    // tool. Same choice, and the same trade, as the `playback` figure above.
-    assert.equal(full.toolCount, 571, 'the full (TOOLSETS=all) surface must be unchanged');
-    // `annotations.ts` registers verify_receipt itself, so it is in the
-    // manifest's file list without being imported through a thunk.
+    assert.equal(full.toolCount, 556, 'the full (TOOLSETS=all) surface must be unchanged');
     const missing = REGISTRAR_MANIFEST
       .map((module) => module.file.replace(/^src\/tools\//, '').replace(/\.ts$/, ''))
       .filter((stem) => !full.toolModules.includes(stem));

@@ -36,8 +36,9 @@ import {
   describeDryRun,
   DryRunScan,
   readString,
+  capRowSections,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
 import { getConfig, storePath } from '../config.js';
 import { loadTokens } from '../auth.js';
@@ -57,11 +58,55 @@ import {
   receiptRetentionLabel,
   MAX_RECEIPTS,
 } from '../receipts.js';
-import { emit } from '../result.js';
+import { emit, type EmitOptions } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + result helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * #895: in `json` mode this module prints a bounded summary of the payload,
+ * not the payload. The host already has the whole thing as `structuredContent`,
+ * so printing it too charged the host twice for one object — and these payloads
+ * carry capped section sets, so the second copy is the expensive one.
+ *
+ * This is the shared `emit`'s `jsonSummary` option rather than a module-local
+ * wrapper: a wrapper re-implements the prose/json dispatch, which is the drift
+ * #582 exists to prevent, and `emit` is the one name the consolidation gate
+ * counts copies of. A constant is the honest form of "every call site in this
+ * module chooses to summarise" — it says so without a second implementation.
+ */
+const SUMMARISE_JSON: EmitOptions = { jsonSummary: summarizeExhaust2 };
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction: capped-section counts
+ * plus at most six scalar counters, never a row.
+ */
+const SUMMARY_COUNT_FIELDS = 6;
+
+function summarizeExhaust2(payload: Record<string, unknown>): string {
+  const sections = payload.sections as Record<string, SectionCap> | undefined;
+  const parts: string[] = [];
+  if (sections) {
+    for (const [key, section] of Object.entries(sections)) {
+      parts.push(
+        section.unreadable
+          ? `${key} (unreadable)`
+          : `${key}: ${section.returned}/${section.total}`,
+      );
+    }
+  }
+  const counts = Object.entries(payload)
+    .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
+    .slice(0, SUMMARY_COUNT_FIELDS)
+    .map(([key, value]) => `${key}=${value as number}`);
+  const tail = [
+    parts.length > 0 ? `Sections: ${parts.join(', ')}.` : '',
+    counts.length > 0 ? `Counts: ${counts.join(', ')}.` : '',
+  ].filter(Boolean).join(' ');
+  return `Full payload in structuredContent.${tail.length > 0 ? ` ${tail}` : ''}`;
+}
 
 const HOUR_MS = 3_600_000;
 const DAY_MS = 86_400_000;
@@ -316,12 +361,12 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         return emit(rf, `[dry run] quick_save_now (${source}) — nothing was changed.\n${plan}`, {
           ok: uris.length > 0, dry_run: true, source, uris,
           ...(uris.length === 0 ? { hint: 'Nothing currently playing and no recent plays found.' } : {}),
-        });
+        }, SUMMARISE_JSON);
       }
       await modifyLibrary(client, uris, 'save');
       return emit(rf, `Saved ${uris.length} track${uris.length === 1 ? '' : 's'} to library (${source}):\n${picks.map((p) => `  • ${p.name ?? p.uri}`).join('\n')}`, {
         ok: true, source, saved: uris, count: uris.length,
-      });
+      }, SUMMARISE_JSON);
     },
   );
 
@@ -415,7 +460,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       return emit(rf, lines.join('\n'), {
         ok: true, since_hours: args.since_hours, new_releases: freshAlbums, new_episodes: newEpisodes,
         show_backlog: backlog, listening, budgets: { max_artists: args.max_artists, max_shows: args.max_shows },
-      });
+      }, SUMMARISE_JSON);
     },
   );
 
@@ -483,7 +528,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       lines.push('', '## Top artists');
       topArtists.slice(0, 10).forEach((a, i) => lines.push(`${i + 1}. ${a.name} (${a.plays} plays)`));
       lines.push('', payload.window_note);
-      return emit(rf, lines.join('\n') + archivedLine, payload);
+      return emit(rf, lines.join('\n') + archivedLine, payload, SUMMARISE_JSON);
     },
   );
 
@@ -559,7 +604,13 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         discovery_ratio: discoveryRatio,
         saved_tracks: saved.length,
       };
-      if (args.output_format === 'json' || rf === 'json') return emit(rf, JSON.stringify(payload, null, 2), payload);
+      // #895: this used to stringify the payload and hand the STRING to emit(, SUMMARISE_JSON)
+      // as the prose, which emit(, SUMMARISE_JSON) then ignored in favour of stringifying the
+      // same object again for the text block. Two serializations, one of them
+      // thrown away. `tops` is left whole on purpose: it is bounded upstream at
+      // `limit: '50'` per range, not an unbounded scan, so a row cap here would
+      // trim an already-bounded answer and say nothing useful in its place.
+      if (args.output_format === 'json' || rf === 'json') return emit(rf, '', payload, SUMMARISE_JSON);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const lines: string[] = [`# Year in review — ${year}`, ''];
       for (const r of ranges) {
@@ -575,7 +626,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       lines.push('', '## Library growth');
       for (const [y, n] of [...growthByYear.entries()].sort()) lines.push(`- ${y}: ${n} saved tracks`);
       lines.push('', `Discovery ratio (approx, last 90d): ${discoveryRatio}`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -615,7 +666,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       await saveMiscStore(s);
       return emit(rf, `Checkpoint "${label}" saved (${cp.tracks.length} tracks, ${cp.artists.length} artists, ${args.time_range}).`, {
         ok: true, label, tracks: cp.tracks.length, artists: cp.artists.length, time_range: args.time_range, saved_at: cp.saved_at,
-      });
+      }, SUMMARISE_JSON);
     },
   );
 
@@ -638,12 +689,12 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       if (args.from === undefined || args.to === undefined) {
         return emit(rf, `Available checkpoints (${labels.length}): ${labels.join(', ') || 'none — create one with taste_checkpoint'}`, {
           ok: false, available: labels,
-        });
+        }, SUMMARISE_JSON);
       }
       const a = s.checkpoints[args.from];
       const b = s.checkpoints[args.to];
       if (!a || !b) {
-        return emit(rf, `Unknown checkpoint(s): ${[!a && args.from, !b && args.to].filter(Boolean).join(', ')}. Available: ${labels.join(', ')}`, { ok: false, available: labels });
+        return emit(rf, `Unknown checkpoint(s): ${[!a && args.from, !b && args.to].filter(Boolean).join(', ')}. Available: ${labels.join(', ')}`, { ok: false, available: labels }, SUMMARISE_JSON);
       }
       const key = (t: { name: string; artist_names: string[] }) => `${t.name.toLowerCase()}::${t.artist_names.map((x) => x.toLowerCase()).sort().join('|')}`;
       const aT = new Set(a.tracks.map(key));
@@ -680,7 +731,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       lines.push(`Artists: ${payload.new_artists.length} new, ${payload.dropped_artists.length} dropped (Jaccard ${payload.jaccard_artists})`);
       if (rising.length) lines.push('', `Genres rising: ${rising.map(([g, n]) => `${g} (${n})`).join(', ')}`);
       if (falling.length) lines.push(`Genres falling: ${falling.map(([g, n]) => `${g} (${n})`).join(', ')}`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -707,7 +758,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       const dw = await findPlaylistByName(client, 'Discover Weekly');
       if (!dw) {
-        return emit(rf, 'Could not find "Discover Weekly" in your playlists (it appears in /me/playlists only while active — try again on a refresh).', { ok: false, error: 'source_not_found' });
+        return emit(rf, 'Could not find "Discover Weekly" in your playlists (it appears in /me/playlists only while active — try again on a refresh).', { ok: false, error: 'source_not_found' }, SUMMARISE_JSON);
       }
       const rows = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(dw.id)}/items`, { limit: '100' });
       const current = rows.map((r) => r?.item?.uri).filter((u): u is string => typeof u === 'string');
@@ -735,7 +786,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       };
       if (args.save_after && archive) {
         if (dryRun) {
-          return emit(rf, `${describeDryRun('sync Discover Weekly', args.archive_name, [`Would replace ${archive.name} with ${current.length} tracks`])}`, { ...payload, dry_run: true });
+          return emit(rf, `${describeDryRun('sync Discover Weekly', args.archive_name, [`Would replace ${archive.name} with ${current.length} tracks`])}`, { ...payload, dry_run: true }, SUMMARISE_JSON);
         }
         if (current.length > 0) {
           const writeCap = capFor('playlist_writes');
@@ -757,7 +808,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           if (u && fresh.includes(u)) lines.push(`  • ${r.item?.name ?? u} — ${r.item?.artists?.map((a) => a.name).join(', ') ?? ''}${liked.has(u) ? ' [liked]' : ''}`);
         }
       }
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -825,7 +876,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           // a preview that under-reports it, in the one place the caller is
           // already being told to wait.
           requests_planned: deadLibraryRequestBound(args.max_playlists),
-        });
+        }, SUMMARISE_JSON);
       }
       const snapshot = quotaSnapshot(client);
       const windowRemaining = quotaWindowRemaining(client);
@@ -889,7 +940,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
             requests_made: 0,
             ...quotaDelta(client, snapshot),
             ...shrinkWarrant,
-          });
+          }, SUMMARISE_JSON);
       }
 
       const saved = await client.getAllPages<{ added_at?: string; track?: { uri?: string; name?: string; artists?: Array<{ name: string }> } }>('/me/tracks', { limit: '50' });
@@ -915,7 +966,12 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           return !Number.isFinite(added) || added <= cutoff;
         })
         .map((s) => ({ uri: s.track!.uri, name: s.track!.name ?? 'unknown', added_at: s.added_at ?? '' }));
-      const payload = {
+      // #895: `candidates` and `details` are the same rows shipped twice, whole,
+      // in every mode — a scan of a large library returned the full dead-track
+      // set to a caller that had asked for `max_results`. Both are capped, and
+      // `count` keeps the exact pre-cap total so "how many were there" survives.
+      const capForScan = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const payload = capRowSections({
         ok: true, scanned: { saved_tracks: saved.length, playlists: playlistsScanned, recent_plays: recent.length },
         candidates: candidates.map((c) => c.uri),
         details: candidates,
@@ -923,15 +979,16 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         estimated_requests_max: estimatedRequestsMax,
         ...quotaDelta(client, snapshot),
         ...shrinkWarrant,
-      };
-      if (candidates.length === 0) return emit(rf, 'No dead tracks found — nothing to remove.', payload);
+      }, ['candidates', 'details'], capForScan);
+      if (candidates.length === 0) return emit(rf, 'No dead tracks found — nothing to remove.', payload, SUMMARISE_JSON);
       await modifyLibrary(client, candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string'), 'remove');
-      const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      const t = truncateItems(candidates, maxResults);
+      // The SAME cap the payload rows already went through, so the prose list
+      // and `sections.details` cannot disagree about how many rows exist.
+      const t = truncateItems(candidates, capForScan);
       const lines = [`Removed ${candidates.length} dead track(s):`];
       t.items.forEach((c) => lines.push(`  • ${c.name} (saved ${c.added_at || 'unknown'})`));
       if (t.footer) lines.push(`(${t.footer})`);
-      return emit(rf, lines.join('\n'), { ...payload, removed: candidates.length });
+      return emit(rf, lines.join('\n'), { ...payload, removed: candidates.length }, SUMMARISE_JSON);
     },
   );
 
@@ -974,11 +1031,11 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
             : `Would create playlist "${label}"`,
           ...plays.slice(0, 5).map((p) => `${p.track.name ?? p.track.uri}`),
         ];
-        return emit(rf, describeDryRun('week-in-review', label, changes), payload);
+        return emit(rf, describeDryRun('week-in-review', label, changes), payload, SUMMARISE_JSON);
       }
       let id = existing?.id ?? null;
       if (existing && !args.rerun) {
-        return emit(rf, `Playlist "${label}" already exists and rerun=false — nothing changed.`, { ...payload, ok: false, error: 'exists' });
+        return emit(rf, `Playlist "${label}" already exists and rerun=false — nothing changed.`, { ...payload, ok: false, error: 'exists' }, SUMMARISE_JSON);
       }
       if (!id) {
         const created = await client.post<{ id: string }>('/me/playlists', { name: label, public: false, description: `Plays from ${isoDay(start)} to ${isoDay(end)} — created by week_in_review_playlist` });
@@ -992,7 +1049,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + writeCap) });
         }
       }
-      return emit(rf, `"${label}" ready: ${uris.length} track(s), ${isoDay(start)} → ${isoDay(end)}.`, { ...payload, playlist_id: id });
+      return emit(rf, `"${label}" ready: ${uris.length} track(s), ${isoDay(start)} → ${isoDay(end)}.`, { ...payload, playlist_id: id }, SUMMARISE_JSON);
     },
   );
 
@@ -1052,7 +1109,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       for (const m of modules) lines.push(`  • ${m.module}: ${m.status}${m.status === 'scope_gated' ? ` (needs ${m.required_write_scopes.join(', ')})` : ''}`);
       lines.push('', 'Read-only modules: always callable.');
       if (probeResult) lines.push('', `Probe: ${probeResult}`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1102,7 +1159,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const lines = [`Quota probe (${args.probe_set}):`, ''];
       for (const m of map) lines.push(`  • ${m.endpoint}: ${m.status}${m.detail ? ` — ${m.detail}` : ''}`);
       lines.push('', `Client rate-limit state: cooldown ${rateLimit.cooldownRemainingMs}ms, last throttle ${rateLimit.lastThrottleAt ?? 'none'}`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1167,7 +1224,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
             playlists_to_scan_max: maxLists,
             item_pages_per_playlist_max: Math.max(1, Math.ceil(perPlaylistCap / 100)),
             requests_made: 0,
-          });
+          }, SUMMARISE_JSON);
       }
 
       const gate = quotaPreflight(client);
@@ -1177,7 +1234,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           // #896: was `limit + 1`, which priced the list walk and none of the
           // per-playlist paging — the real default cost is 251, not 51.
           requests_planned: stalenessRequestBound(maxLists, perPlaylistCap),
-        });
+        }, SUMMARISE_JSON);
       }
       const snapshot = quotaSnapshot(client);
       const windowRemaining = quotaWindowRemaining(client);
@@ -1248,7 +1305,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         lines.push(`• ${r.name} — ${r.items} items, median age ${r.median_age_days ?? '?'}d, ${r.added_last_90d} added last 90d (oldest ${r.oldest ?? '?'})`);
       }
       if (t.footer) lines.push(`(${t.footer})`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1316,7 +1373,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         lines.push(`• ${r.name} — ${r.unplayed} unplayed (~${r.backlog_hours}h), newest ep ${r.newest_episode ?? '?'}`);
       }
       if (t.footer) lines.push(`(${t.footer})`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1341,7 +1398,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         books = await client.getAllPages<{ audiobook?: { id?: string; name?: string } }>('/me/audiobooks', { limit: '50' }, { maxItems: args.max_audiobooks });
       } catch (e) {
         if (e instanceof SpotifyApiError && e.status === 403) {
-          return emit(rf, 'Audiobooks are app-registration/market gated — your app registration is not entitled to audiobook endpoints (market-gated to US/UK/CA/IE/NZ/AU).', { ok: false, error: 'gated', status: 403 });
+          return emit(rf, 'Audiobooks are app-registration/market gated — your app registration is not entitled to audiobook endpoints (market-gated to US/UK/CA/IE/NZ/AU).', { ok: false, error: 'gated', status: 403 }, SUMMARISE_JSON);
         }
         throw e;
       }
@@ -1374,7 +1431,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const lines = [`Audiobook progress (${rows.length} books):`, ''];
       for (const r of t.items) lines.push(`• ${r.title} — ${r.percent}% (${r.chapters_done}/${r.chapters_total} chapters), ~${r.remaining_hours}h left`);
       if (t.footer) lines.push(`(${t.footer})`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1402,31 +1459,31 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         const all = args.book_uri ? (s.bookmarks[key] ?? []) : Object.values(s.bookmarks).flat();
         const lines = [`Chapter bookmarks (${all.length}):`];
         for (const b of all) lines.push(`• [${b.book_uri}] ${b.label} @ ${Math.round(b.position_ms / 1000)}s${b.chapter_name ? ` (${b.chapter_name})` : ''}`);
-        return emit(rf, all.length ? lines.join('\n') : 'No bookmarks saved yet.', { ok: true, bookmarks: all });
+        return emit(rf, all.length ? lines.join('\n') : 'No bookmarks saved yet.', { ok: true, bookmarks: all }, SUMMARISE_JSON);
       }
       if (args.op === 'save') {
         if (!args.book_uri || !args.label) {
-          return emit(rf, 'save requires book_uri and label.', { ok: false, error: 'missing_params' });
+          return emit(rf, 'save requires book_uri and label.', { ok: false, error: 'missing_params' }, SUMMARISE_JSON);
         }
         if (isDryRun(args)) {
-          return emit(rf, describeDryRun('save bookmark', key, [`Would save "${args.label}" @ ${args.position_ms}ms`]), { ok: true, dry_run: true });
+          return emit(rf, describeDryRun('save bookmark', key, [`Would save "${args.label}" @ ${args.position_ms}ms`]), { ok: true, dry_run: true }, SUMMARISE_JSON);
         }
         const list = s.bookmarks[key] ?? [];
         list.push({ book_uri: args.book_uri, label: args.label, position_ms: args.position_ms, ...(args.chapter_name ? { chapter_name: args.chapter_name } : {}), created_at: new Date().toISOString() });
         s.bookmarks[key] = list;
         await saveMiscStore(s);
-        return emit(rf, `Bookmark "${args.label}" saved @ ${args.position_ms}ms for ${key}.`, { ok: true, label: args.label, book_uri: key, position_ms: args.position_ms });
+        return emit(rf, `Bookmark "${args.label}" saved @ ${args.position_ms}ms for ${key}.`, { ok: true, label: args.label, book_uri: key, position_ms: args.position_ms }, SUMMARISE_JSON);
       }
       // delete
-      if (!args.book_uri) return emit(rf, 'delete requires book_uri.', { ok: false, error: 'missing_params' });
+      if (!args.book_uri) return emit(rf, 'delete requires book_uri.', { ok: false, error: 'missing_params' }, SUMMARISE_JSON);
       const before = s.bookmarks[key] ?? [];
       const kept = args.label ? before.filter((b) => b.label !== args.label) : [];
       if (isDryRun(args)) {
-        return emit(rf, describeDryRun('delete bookmarks', key, [`Would remove ${before.length - kept.length} bookmark(s)`]), { ok: true, dry_run: true, removed: before.length - kept.length });
+        return emit(rf, describeDryRun('delete bookmarks', key, [`Would remove ${before.length - kept.length} bookmark(s)`]), { ok: true, dry_run: true, removed: before.length - kept.length }, SUMMARISE_JSON);
       }
       s.bookmarks[key] = kept;
       await saveMiscStore(s);
-      return emit(rf, `Removed ${before.length - kept.length} bookmark(s) for ${key}.`, { ok: true, removed: before.length - kept.length, remaining: kept.length });
+      return emit(rf, `Removed ${before.length - kept.length} bookmark(s) for ${key}.`, { ok: true, removed: before.length - kept.length, remaining: kept.length }, SUMMARISE_JSON);
     },
   );
 
@@ -1489,7 +1546,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         t.items.forEach((a) => lines.push(`  • [${a.album_type?.trim() || '(untyped)'}] ${a.name} (${a.release_date ?? '?'})`));
         if (t.footer) lines.push(`(${t.footer})`);
       }
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1530,7 +1587,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         return emit(rf, describeDryRun(`playlist from tags [${args.tags.join(', ')}]`, name, [
           `Would put ${uris.length} matched track(s) into "${name}" (${args.mode})`,
           ...matched.slice(0, 5).map((r) => `${r.track!.name} — ${r.track!.artists?.map((a) => a.name).join(', ') ?? ''}`),
-        ]), payload);
+        ]), payload, SUMMARISE_JSON);
       }
       let id: string | null = args.playlist_id ?? null;
       if (!id && args.mode === 'refresh') {
@@ -1549,7 +1606,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           await client.post(`/playlists/${encodeURIComponent(id)}/items`, { uris: uris.slice(i, i + writeCap) });
         }
       }
-      return emit(rf, `"${name}" (${args.mode}) ready with ${uris.length} matched track(s).`, { ...payload, playlist_id: id });
+      return emit(rf, `"${name}" (${args.mode}) ready with ${uris.length} matched track(s).`, { ...payload, playlist_id: id }, SUMMARISE_JSON);
     },
   );
 
@@ -1580,7 +1637,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const today = isoDay(Date.now());
       const todays = s.journal.filter((e) => e.ts.slice(0, 10) === today);
       const lines = [`Journal entry appended (${todays.length} today, ${s.journal.length} total):`, `  ${entry.ts} ${args.tag ? `#${args.tag} ` : ''}${args.note}`];
-      return emit(rf, lines.join('\n'), { ok: true, entry, today_count: todays.length, total: s.journal.length });
+      return emit(rf, lines.join('\n'), { ok: true, entry, today_count: todays.length, total: s.journal.length }, SUMMARISE_JSON);
     },
   );
 
@@ -1600,7 +1657,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       const meta = await client.get<{ name?: string; owner?: { id?: string } }>(`/playlists/${encodeURIComponent(args.playlist_id)}`);
-      if (!meta) return emit(rf, `Playlist "${args.playlist_id}" not found.`, { ok: false, error: 'not_found' });
+      if (!meta) return emit(rf, `Playlist "${args.playlist_id}" not found.`, { ok: false, error: 'not_found' }, SUMMARISE_JSON);
       const items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' });
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(items, maxResults);
@@ -1620,7 +1677,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ...rows.map((r) => `| ${r.join(' | ')} |`),
         ...(t.footer ? ['', `(${t.footer})`] : []),
       ].join('\n');
-      return emit(rf, md, { ok: true, playlist: meta.name ?? args.playlist_id, items: items.length, returned: t.returned, truncated: t.truncated });
+      return emit(rf, md, { ok: true, playlist: meta.name ?? args.playlist_id, items: items.length, returned: t.returned, truncated: t.truncated }, SUMMARISE_JSON);
     },
   );
 
@@ -1646,7 +1703,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         .filter((r) => r.show?.uri)
         .map((r) => `    <outline type="rss" text="${esc(r.show!.name ?? 'unknown')}" xmlUrl="" htmlUrl="${esc(r.show!.external_urls?.spotify ?? `https://open.spotify.com/show/${r.show!.uri!.split(':').at(-1)}`)}"/>`);
       const xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<opml version="2.0">', '  <head><title>Spotify saved shows</title></head>', '  <body>', ...outlines, '  </body>', '</opml>', ''].join('\n');
-      return emit(rf, xml, { ok: true, count: outlines.length, disclosure: 'RSS feed URLs are not exposed by the Spotify API — entries link to Spotify show pages.' });
+      return emit(rf, xml, { ok: true, count: outlines.length, disclosure: 'RSS feed URLs are not exposed by the Spotify API — entries link to Spotify show pages.' }, SUMMARISE_JSON);
     },
   );
 
@@ -1708,7 +1765,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ],
       };
       const json = args.pretty ? JSON.stringify(bundle, null, 2) : JSON.stringify(bundle);
-      return emit(rf, json, { ok: true, ...(Object.keys(unreadable).length > 0 ? { unreadable_stores: unreadable } : {}), ...({ bundle } as unknown as Record<string, unknown>) });
+      return emit(rf, json, { ok: true, ...(Object.keys(unreadable).length > 0 ? { unreadable_stores: unreadable } : {}), ...({ bundle } as unknown as Record<string, unknown>) }, SUMMARISE_JSON);
     },
   );
 
@@ -1728,9 +1785,9 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       const start = Date.parse(`${args.week_start}T00:00:00Z`);
-      if (!Number.isFinite(start)) return emit(rf, `Invalid week_start "${args.week_start}" — use YYYY-MM-DD.`, { ok: false, error: 'bad_param' });
+      if (!Number.isFinite(start)) return emit(rf, `Invalid week_start "${args.week_start}" — use YYYY-MM-DD.`, { ok: false, error: 'bad_param' }, SUMMARISE_JSON);
       if (start < Date.now() - 95 * DAY_MS) {
-        return emit(rf, `${args.week_start} is older than the ~90-day recently-played window — Spotify will return nothing useful for it.`, { ok: false, error: 'outside_window' });
+        return emit(rf, `${args.week_start} is older than the ~90-day recently-played window — Spotify will return nothing useful for it.`, { ok: false, error: 'outside_window' }, SUMMARISE_JSON);
       }
       const plays = await loadPlaysBetween(client, start, start + 7 * DAY_MS, 1000);
       const counts = new Map<string, { name: string; artists: string; plays: number }>();
@@ -1755,7 +1812,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       t.items.forEach((x, i) => lines.push(`${i + 1}. ${x.name} — ${x.artists} (${x.plays} plays)`));
       if (t.footer) lines.push(`(${t.footer})`);
       lines.push('', `Per day: ${[...perDay.entries()].sort().map(([d, n]) => `${d}: ${n}`).join(' · ')}`);
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1779,7 +1836,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       // Bounded tail read (#628): never load an unbounded ledger into memory.
       let rows: LogRow[] = await readHistory({ tokenFile: client.tokenFile });
       if (rows.length === 0) {
-        return emit(rf, 'No mutation history found (history is opt-in: set SPOTIFY_MCP_HISTORY=1).', { ok: false, error: 'no_history' });
+        return emit(rf, 'No mutation history found (history is opt-in: set SPOTIFY_MCP_HISTORY=1).', { ok: false, error: 'no_history' }, SUMMARISE_JSON);
       }
       if (args.from) rows = rows.filter((r) => (r.ts ?? '') >= args.from!);
       if (args.to) rows = rows.filter((r) => (r.ts ?? '').slice(0, 10) <= args.to!);
@@ -1787,7 +1844,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const t = truncateItems(rows, maxResults);
       if (args.format === 'csv') {
         const csv = ['ts,who,method,path,snapshot_id', ...t.items.map((r) => [r.ts ?? '', r.who ?? '', r.method ?? '', r.path ?? '', r.snapshot_id ?? ''].map((f) => `"${f.replace(/"/g, '""')}"`).join(','))].join('\n');
-        return emit(rf, csv, { ok: true, rows: t.returned, total: rows.length, truncated: t.truncated });
+        return emit(rf, csv, { ok: true, rows: t.returned, total: rows.length, truncated: t.truncated }, SUMMARISE_JSON);
       }
       const md = [
         '| Timestamp | Who | Method | Path | Snapshot |',
@@ -1795,7 +1852,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ...t.items.map((r) => `| ${r.ts ?? ''} | ${r.who ?? ''} | ${r.method ?? ''} | ${r.path ?? ''} | ${r.snapshot_id ?? ''} |`),
         ...(t.footer ? ['', `(${t.footer})`] : []),
       ].join('\n');
-      return emit(rf, md, { ok: true, rows: t.returned, total: rows.length, truncated: t.truncated });
+      return emit(rf, md, { ok: true, rows: t.returned, total: rows.length, truncated: t.truncated }, SUMMARISE_JSON);
     },
   );
 
@@ -1816,7 +1873,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       const receipt = verifyReceipt(args.mutation_id, client.tokenFile);
       if (!receipt) {
-        return emit(rf, receiptMissMessage(args.mutation_id, process.env, client.tokenFile), { ok: false, error: 'unknown_receipt' });
+        return emit(rf, receiptMissMessage(args.mutation_id, process.env, client.tokenFile), { ok: false, error: 'unknown_receipt' }, SUMMARISE_JSON);
       }
       const invert = receipt.kind === 'playlist_items'
         ? `DELETE /playlists/${receipt.id ?? '?'}/items with ${receipt.uris.length} uri(s)`
@@ -1840,7 +1897,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         uris: receipt.uris, planned_inversion: invert, check: checkResult,
         reversible: receipt.kind === 'playlist_items' || receipt.kind === 'library',
       };
-      return emit(rf, describeDryRun('undo', args.mutation_id, changes) + (checkResult ? `\nCheck: ${checkResult}` : ''), payload);
+      return emit(rf, describeDryRun('undo', args.mutation_id, changes) + (checkResult ? `\nCheck: ${checkResult}` : ''), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1883,7 +1940,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const lines = [`Receipt lookup (${rows.length} match(es)):`];
       for (const r of rows) lines.push(`• ${r.receipt_id} — ${r.kind}${r.id ? ` ${r.id}` : ''} ${r.verified ? 'VERIFIED' : 'UNVERIFIED'} (${r.uris.length} uri(s))`);
       if (rows.length === 0) lines.push('  (none — issue a mutation first, or receipts were evicted)');
-      return emit(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1902,7 +1959,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       const meta = await client.get<{ name?: string; owner?: { id?: string }; uri?: string; tracks?: { total?: number } }>(`/playlists/${encodeURIComponent(args.playlist_id)}`);
-      if (!meta) return emit(rf, `Playlist "${args.playlist_id}" not found.`, { ok: false, error: 'not_found' });
+      if (!meta) return emit(rf, `Playlist "${args.playlist_id}" not found.`, { ok: false, error: 'not_found' }, SUMMARISE_JSON);
       const items = await client.getAllPages<PlaylistRow>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '100' });
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(items, maxResults);
@@ -1924,7 +1981,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           added_by: r?.added_by?.id ?? null,
         })),
       };
-      return emit(rf, JSON.stringify(doc, null, 2), doc as unknown as Record<string, unknown>);
+      return emit(rf, JSON.stringify(doc, null, 2), doc as unknown as Record<string, unknown>, SUMMARISE_JSON);
     },
   );
 
@@ -1978,7 +2035,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           `Scenes with dead device hints: ${deadScenes.join(', ') || 'none'}`,
           args.prune ? 'Re-run with dry_run=false to prune.' : 'Pass prune=true to remove them.',
         ]);
-        return emit(rf, scenesLoadError ? `WARNING: ${scenesLoadError}\n${prose}` : prose, payload);
+        return emit(rf, scenesLoadError ? `WARNING: ${scenesLoadError}\n${prose}` : prose, payload, SUMMARISE_JSON);
       }
       for (const label of deadPresets) delete ext.devicePresets[label];
       if (!scenesLoadError) {
@@ -1991,6 +2048,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         rf,
         scenesLoadError ? `WARNING: ${scenesLoadError}\n${summaryText}` : summaryText,
         { ...payload, pruned: true },
+        SUMMARISE_JSON,
       );
     },
   );
