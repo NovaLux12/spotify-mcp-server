@@ -104,9 +104,12 @@ access. `logout` prints the address on every run so you cannot finish the job
 without seeing it.
 
 If `SPOTIFY_MCP_DATA_DIR` is set, the playlist-health snapshot store resolves to
-that data directory itself, which holds every other store. Logout keeps the
-directory and erases the stores inside it individually rather than taking the
-whole lot.
+that data directory itself, and a few other stores live inside it too (logout
+names how many it found). Logout keeps the directory and erases the stores
+inside it individually rather than taking the whole lot. Setting this variable
+does not relocate the rest of them: the token file, the mutation ledger, the
+receipts, scenes, genre tags and the other sidecars keep resolving to their own
+directories, `~/.spotify-mcp/` unless their own variable is set.
 
 Options: `--dry-run` lists what would go and removes nothing, `--keep-backups`
 leaves the `backups/` library in place, and `--profile <name>` targets a named

@@ -20,9 +20,11 @@ the reader who wanted it.
 
 **What this file deliberately does not contain.** No tool counts, no payload
 byte figures, no line numbers. Those are measurements, they are generated, and
-`tests/doc-figures.test.ts` and `tests/non-goals.test.ts` both fail if one is
-typed into prose here. Where a size or a count matters to a decision, this
-document points at the generated table that carries it.
+`tests/non-goals.test.ts` fails if one is typed into prose here — it is the test
+that holds this line for the one page that carries no generated block, while
+`tests/doc-figures.test.ts` holds it for the pages that do. Where a size or a
+count matters to a decision, this document points at the generated table that
+carries it.
 
 ## Still open, deliberately not decided here
 
