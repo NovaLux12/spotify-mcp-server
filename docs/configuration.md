@@ -108,6 +108,7 @@ What `logout` refuses to erase, and reports instead:
 - a symlinked store — the link is not this server's to follow
 - a filesystem root, the home directory, or an ancestor of the store's own directory
 - the data directory itself, when `SPOTIFY_MCP_DATA_DIR` is set, because the playlist-health snapshot store resolves to it and it holds every other store; the stores inside it are erased individually instead
+- a store that is the wrong kind on disk — most often a **directory** sitting where the config declares a single file, such as a folder named `scenes.json`. Anything running as you can create one, and containment cannot catch it, because a directory at that path is inside its own store directory by construction. `logout` refuses rather than moving it, names the entries at the top level so you can recognise the path, and leaves it in place. Removing it is yours to do by hand.
 
 A refusal or a failure is a non-zero exit. Reporting success while a live token remained on disk is the failure this command exists to prevent.
 

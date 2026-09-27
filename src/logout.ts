@@ -25,7 +25,11 @@
  *   belongs.** Containment is decided on the REAL path (via `realpathAllowingMissing`),
  *   because a check run on the raw string is bypassable by a symlinked parent —
  *   the same class as #623. A symlinked store is refused too: the link is not
- *   ours to follow, and the target is not what the user asked about.
+ *   ours to follow, and the target is not what the user asked about. So is a
+ *   path whose kind is not the kind the owning module declared (#1309): a
+ *   directory sitting at `scenes.json` is inside its own store directory by
+ *   construction, so containment cannot see it, and moving it would erase a tree
+ *   this server never wrote. The refusal names what is actually there.
  * - **Reversible where reversibility is possible.** Sidecars move to the
  *   freedesktop trash (`gio trash`) or, on filesystems that refuse trashing
  *   (tmpfs, some network mounts), into a quarantine directory beside the
@@ -45,6 +49,7 @@
 
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import type { Dirent, Stats } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -403,6 +408,19 @@ export async function planErasure(
       continue;
     }
 
+    // A file-kind store whose path is a directory is refused (#1309). Checked
+    // last of the refusals on purpose: the reason this branch produces reads the
+    // directory, and it should only ever read one already shown to sit inside
+    // its own store directory.
+    if (store.kind === 'file' && !info.isFile()) {
+      decisions.push({
+        store,
+        action: 'refuse',
+        reason: await unexpectedKindReason(store, info),
+      });
+      continue;
+    }
+
     decisions.push(null); // resolved in the second pass
   }
 
@@ -449,6 +467,81 @@ function dangerousEraseTarget(pathReal: string, rootReal: string, home: string):
   return null;
 }
 
+/**
+ * How many entries a refusal names before it counts the rest.
+ *
+ * The point of naming them is that the user can recognise the path and decide
+ * for themselves. The cap keeps a store pointed at something large — a home
+ * directory, a checkout — from turning one refusal line into a page of output.
+ */
+const MAX_NAMED_ENTRIES = 12;
+
+/**
+ * Refuse a file-kind store whose path is not a file (#1309).
+ *
+ * `logout` erases by the *declared* kind, and a `kind: 'file'` path that is a
+ * **directory** passed both refusals that did exist — the symlink rule, and
+ * containment, which a directory at `scenes.json` satisfies by construction
+ * because its own root is `dirname(path)`. The whole tree was moved while the
+ * report named one path, the directory, and nothing inside it.
+ * `docs/configuration.md` promises every removed path is printed so the report
+ * can be checked against the disk, and for that shape it was not.
+ *
+ * The refusal, not the erasure, is the point: the path is not what the user was
+ * asked about, which is the same ground the symlink rule refuses one branch
+ * above, and a stale store is a far cheaper outcome than erased user data. So
+ * the reason names what is actually there — a directory the user may not
+ * recognise is not something to leave for them to work out alone.
+ *
+ * **The reverse is deliberately not a refusal.** A `kind: 'dir'` path holding a
+ * regular file is erased, because the harm is not symmetric: this side removes
+ * exactly one inode, at the store's own path, non-recursively and reversibly,
+ * and that path is what the user asked about. Refusing it would mean logout
+ * could never clear that store and would exit non-zero forever over a
+ * leftover. What it gets is the naming fix in {@link storeContents} — before
+ * this, a file at a dir-kind path was erased and reported as `[]` files, a path
+ * removed and named by nothing.
+ */
+async function unexpectedKindReason(store: LocalStore, info: Stats): Promise<string> {
+  // Neither a file nor a directory — a fifo, socket or device node. Nothing
+  // worth enumerating, and the shape alone is reason enough to stop.
+  if (!info.isDirectory()) {
+    return 'is not a regular file, which is the kind this store is declared to be; refusing rather than erasing a path of a kind nothing here wrote';
+  }
+
+  const entries = await readdirEntries(store.path);
+  return (
+    'is a directory, not a file, which is the kind this store is declared to be; ' +
+    `refusing rather than moving it. ${await describeEntries(entries)}`
+  );
+}
+
+/** Read the top level only. A refusal names contents, it does not walk them. */
+async function readdirEntries(path: string): Promise<Dirent[] | null> {
+  try {
+    return await fs.readdir(path, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+}
+
+async function describeEntries(entries: Dirent[] | null): Promise<string> {
+  if (entries === null) return 'its contents could not be read';
+  if (entries.length === 0) return 'it is empty';
+  const names = entries
+    .map((entry) => `${entry.name}${entry.isDirectory() ? '/' : ''}`)
+    .sort((a, b) => a.localeCompare(b));
+  const shown = names.slice(0, MAX_NAMED_ENTRIES);
+  const more = names.length - shown.length;
+  const noun = names.length === 1 ? 'entry' : 'entries';
+  // "top level" is load-bearing. The path is printed above, so the user can go
+  // and look, but a report that read as an inventory would be making a promise
+  // this does not keep.
+  return `it holds ${names.length} top-level ${noun}: ${shown.join(', ')}${
+    more > 0 ? `, and ${more} more` : ''
+  }`;
+}
+
 export type EraseStatus = 'erased' | 'refused' | 'failed';
 
 export interface EraseOutcome {
@@ -483,6 +576,31 @@ export async function enumerateFiles(target: string): Promise<string[]> {
 /** Quarantine directory for stores the filesystem will not let us trash. */
 function quarantineDir(target: string, stamp: string): string {
   return join(dirname(target), `.spotify-mcp-logout-quarantine-${stamp}`);
+}
+
+/**
+ * Every path a move will take with it, for the report.
+ *
+ * Asked of the filesystem rather than of the store's declared `kind`, because
+ * the declared kind is exactly the thing that can be wrong (#1309). Two shapes
+ * it gets wrong:
+ *
+ * - a regular file at a `kind: 'dir'` path. `enumerateFiles` on a file is `[]`,
+ *   so the path was moved and the report named no files at all.
+ * - anything moved by `gio trash`. The store is gone from its own path by the
+ *   time an after-the-move enumeration could run, and the trash is not somewhere
+ *   this process can walk, so that enumeration returned `[]` too.
+ *
+ * So it is read once, before the move, and handed back by {@link moveAside}.
+ */
+async function storeContents(path: string): Promise<string[]> {
+  try {
+    const info = await fs.lstat(path);
+    if (info.isDirectory()) return await enumerateFiles(path);
+  } catch {
+    /* unreadable or already gone: name the path we tried to move */
+  }
+  return [path];
 }
 
 /**
@@ -528,19 +646,29 @@ async function shredFile(path: string): Promise<string | null> {
  * original (same filesystem, so `rename` cannot fail with EXDEV). If both
  * refuse, the store is left untouched and the failure is reported — there is no
  * unlink fallback.
+ *
+ * What the store covered is enumerated here, before the move, and handed back
+ * for the report. Enumerating afterwards cannot answer the question: a trashed
+ * store is gone from `store.path` and the trash has no destination we can walk,
+ * and a store whose declared kind does not match what is there has nothing to
+ * walk in the first place — a regular file at a `kind: 'dir'` path enumerates
+ * as no files at all, which is a path removed and named by nothing (#1309).
  */
 async function moveAside(
   store: LocalStore,
   stamp: string,
   allowGioTrash: boolean,
-): Promise<{ mechanism: 'gio-trash' | 'quarantine'; destination?: string } | { error: string }> {
-  const files = store.kind === 'dir' ? await enumerateFiles(store.path) : [store.path];
+): Promise<
+  | { mechanism: 'gio-trash' | 'quarantine'; destination?: string; files: string[] }
+  | { error: string }
+> {
+  const files = await storeContents(store.path);
   let trashFailure: string | null = null;
 
   if (allowGioTrash) {
     try {
       await run('gio', ['trash', '--', store.path]);
-      return { mechanism: 'gio-trash' };
+      return { mechanism: 'gio-trash', files };
     } catch (err) {
       trashFailure = (err as Error).message.split('\n')[0];
     }
@@ -551,7 +679,7 @@ async function moveAside(
     await fs.mkdir(qdir, { recursive: true, mode: 0o700 });
     const destination = join(qdir, basename(store.path));
     await fs.rename(store.path, destination);
-    return { mechanism: 'quarantine', destination };
+    return { mechanism: 'quarantine', destination, files };
   } catch (err) {
     const why = (err as Error).message.split('\n')[0];
     return {
@@ -590,7 +718,7 @@ export async function eraseStore(
     status: 'erased',
     mechanism: moved.mechanism,
     destination: moved.destination,
-    files: store.kind === 'dir' ? await enumerateFiles(moved.destination ?? store.path) : [store.path],
+    files: moved.files,
   };
 }
 
@@ -734,11 +862,19 @@ export function renderReport(
     for (const o of quarantined) lines.push(`  ${o.destination}`);
   }
 
+  // A refused store is still on disk, and it produces no outcome — only
+  // `action: 'erase'` stores are ever handed to `eraseStore` — so counting
+  // outcomes alone printed "Local stores cleared" directly beneath a list of
+  // stores that were not cleared. The exit code has always counted refusals
+  // (see `runLogout`); this line now agrees with it.
+  const refusedCount = decisions.filter((d) => d.action === 'refuse').length;
+  const incomplete = notErased.length > 0 || refusedCount > 0;
+
   lines.push('');
   lines.push(
-    notErased.length === 0
-      ? 'Local stores cleared. `spotify-mcp auth` reconnects.'
-      : 'Logout incomplete — see the stores above that are still on disk.',
+    incomplete
+      ? 'Logout incomplete — see the stores above that are still on disk.'
+      : 'Local stores cleared. `spotify-mcp auth` reconnects.',
   );
   lines.push(`Revoke the Spotify access token at ${MANUAL_REVOCATION_URL}`);
   lines.push('');
