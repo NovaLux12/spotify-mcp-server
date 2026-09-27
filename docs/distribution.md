@@ -95,16 +95,21 @@ release. The `Publish` workflow is the only publisher: it runs the locked
 install, typecheck, tests, and build, then publishes the npm package and the
 versioned `server.json` to the official MCP Registry.
 
-Because release-please creates the tag with `GITHUB_TOKEN`, GitHub suppresses
-the tag event that would normally start `Publish`. After the release is
-visible, dispatch it explicitly at the tag:
+Merging the release PR is the last human step. The tag it creates starts
+`Publish` on its own — `release.yml` dispatches the guarded workflow at the tag
+it just pushed — so there is nothing to dispatch by hand. Do not run
+`gh workflow run publish.yml` against a release tag: it races the automatic
+dispatch, and npm versions are immutable, so the second attempt fails on a
+version that already exists. That instruction was here once, and following it
+caused a double publish on 2026-09-25.
+
+To watch the run the tag started:
 
 ```bash
 VERSION="X.Y.Z"                 # replace with the release PR version
 TAG="v${VERSION}"
 
 gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
-gh workflow run publish.yml --ref "$TAG"
 RUN_ID="$(gh run list --workflow publish.yml --limit 20 \
   --json databaseId,headBranch,status,conclusion,url \
   --jq "map(select(.headBranch == \"${TAG}\")) | .[0].databaseId")"
@@ -129,12 +134,23 @@ curl --fail --silent --show-error \
 
 A 404 from that `npm view` right after a publish is npm propagation, not a
 missing artifact — do not re-publish on it. CONTRIBUTING.md §3 has the
-cache-busted read and the recovery command.
+cache-busted read.
+
+The same lag makes `publish-mcp-registry` fail with
+`version 'X.Y.Z' was not found` moments after a successful npm publish: that
+job checks that npm actually serves the new version, and npm takes minutes to
+make one visible. It is a propagation race, not a broken release. Recover with
+a failed-jobs-only re-run, which re-runs the registry job without re-attempting
+the immutable npm publish:
+
+```bash
+gh run rerun "$RUN_ID" -R NovaLux12/spotify-mcp-server --failed
+```
 
 The npm command must print the exact version without the leading `v`; both
 `server.json` checks and the Registry `isLatest` check must return `true`.
 The publish workflow skips an npm version that is already present, so a
-partial failure is recovered with `gh run rerun "$RUN_ID" --failed`; do not
+partial failure is recovered with the failed-jobs-only re-run above; do not
 retag or overwrite an already published version. Deprecate an unsafe npm
 version with `npm deprecate`, mark the corresponding Registry version
 deprecated through the Registry status path, and ship a new patch release with
