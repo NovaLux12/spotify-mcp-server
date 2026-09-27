@@ -240,6 +240,17 @@ const parameterAllowlist = new Set([
   // reports about its own result, not routing to another tool.
   'sample_limit', 'sample_returned', 'sample_truncated', 'sample_oldest',
   'sample_newest', 'sample_unreadable_reason',
+  // #730: the keys `statsfm_recent_streams` reports about the window it
+  // applied. `range_resolved` echoes the applied UTC edges so a caller can
+  // verify them; the counts separate what stats.fm returned from what the
+  // window kept, so a filtered page is not read as a count for the period; and
+  // the two page keys carry the observed span, because the route returns a
+  // fixed unpaged recent page and a bucket wider than that page is a filter
+  // rather than a measurement. Every one is a structuredContent key on that
+  // tool — a call describing its own result, not a tool or a request parameter.
+  'range_resolved', 'returned_before_window', 'returned_after_window',
+  'excluded_by_window', 'unreadable_timestamps',
+  'page_oldest', 'page_newest', 'page_may_not_cover_window',
   // #839: the local-sidecar corruption contract. SPEC.md and
   // docs/configuration.md now say what a caller gets when a sidecar exists but
   // cannot be read — the file and the parse failure, where the bytes were
