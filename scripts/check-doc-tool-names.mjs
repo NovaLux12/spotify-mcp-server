@@ -48,6 +48,18 @@ const parameterAllowlist = new Set([
   'invalid_client', 'server_error', 'network_unreachable',
   // Enum values and explicitly-removed field names, not parameters.
   'appears_on', 'available_markets',
+  // #639: the rest of the February 2026 [REMOVED] field names, which SPEC.md
+  // and the `get_me` contract now name so a caller does not go looking for a
+  // field the API no longer sends. Same category as `available_markets` above:
+  // a removed API field, never a tool and never a request parameter.
+  'album_group', 'explicit_content', 'linked_from',
+  // #639: the coverage keys the removed-field rollups publish alongside their
+  // buckets, so a census that could only group some of its rows says how many
+  // it actually reached instead of reporting a total that does not add up.
+  // structuredContent keys describing a call's own output, not parameters.
+  'albums_labelled', 'albums_without_label',
+  'shows_with_publisher', 'shows_without_publisher',
+  'releases_labelled', 'releases_without_label',
   // `time_range` enum members of the /me/top/* personalization tools. #807's
   // SPEC entry names them as the windows taste_shift_report compares, and as
   // the two halves of the `window_sizes` it returns.

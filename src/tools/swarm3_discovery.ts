@@ -26,6 +26,7 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { probeArtistReleases } from '../artistreleases.js';
+import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 import type { ArtistReleaseProbe } from '../artistreleases.js';
 // Two imports from the same module, deliberately: `artist-albums-limit-guard.test.ts`
 // pins the first as an exact statement, and a merged import would silently fail it.
@@ -324,6 +325,25 @@ const nowMs = (): number => Date.now();
 // Registration
 // ---------------------------------------------------------------------------
 
+/**
+ * A release's type, for the discography rollups.
+ *
+ * #639: `album_group` was removed from Album in February 2026. These call sites
+ * used to read `a.album_group ?? a.album_type ?? 'album'` — which survives,
+ * because `album_type` is a REQUIRED field the API still sends and is what
+ * `include_groups` filters on. What did not survive is the terminal: `'album'`
+ * is a fabricated release type, and in `artist_catalog_stats` the bucket feeds a
+ * published singles-to-albums ratio, so a fabricated bucket there silently
+ * distorts a number the tool reports as a finding.
+ *
+ * So the chain stops at the field that is real, and a row with neither reports
+ * `'(untyped)'` — a token that says the type is unknown rather than asserting a
+ * category nobody read.
+ */
+function releaseTypeOf(album: { album_type?: string; album_group?: string }): string {
+  return album.album_type?.trim() || '(untyped)';
+}
+
 export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyClient): void {
   // -------------------------------------------------------- 1. artist_deep_dive
   server.tool(
@@ -351,7 +371,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const byYear = new Map<number, number>();
       const collabs = new Map<string, { name: string; count: number }>();
       for (const a of albums) {
-        const g = a.album_group ?? a.album_type ?? 'album';
+        const g = releaseTypeOf(a);
         counts[g] = (counts[g] ?? 0) + 1;
         const y = yearOf(a.release_date);
         if (y !== null) byYear.set(y, (byYear.get(y) ?? 0) + 1);
@@ -445,7 +465,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const lines = trunc.items.map((a, i) => {
         const gap = orderedGaps[i] ?? 0;
         const gapTxt = gap > 0 ? ` (+${gap}d)` : '';
-        return `- ${a.release_date ?? '?'}${gapTxt} | ${a.album_group ?? a.album_type ?? 'album'} | "${a.name}" | ${a.total_tracks ?? '?'} tracks | ${a.uri}`;
+        return `- ${a.release_date ?? '?'}${gapTxt} | ${releaseTypeOf(a)} | "${a.name}" | ${a.total_tracks ?? '?'} tracks | ${a.uri}`;
       });
       if (trunc.footer) lines.push(`(${trunc.footer})`);
       const header = `Discography timeline for ${args.artist_id} (${chrono.length} dated releases`
@@ -677,7 +697,17 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         : null;
       const lines = [
         `Latest release${prev ? ` (previous was "${prev.name}", ${prev.release_date})` : ''}:`,
-        `  "${latest.name}" | ${latest.release_date} | ${latest.album_group ?? latest.album_type} | ${full?.label ?? (latestUnresolved.length > 0 ? 'label UNREAD (album read failed — not an unknown label)' : 'label unknown')}`,
+        // #639: the old three-way branch distinguished a FAILED album read
+        // ("label UNREAD") from an album with no label ("label unknown"), but
+        // the field is now simply gone — so every successfully-read album
+        // printed "label unknown", which reads as a property of the release.
+        // The removed-field case now says so in its own words.
+        `  "${latest.name}" | ${latest.release_date} | ${latest.album_group ?? latest.album_type} | ${
+          full?.label
+            ?? (latestUnresolved.length > 0
+              ? 'label UNREAD (album read failed — not an unknown label)'
+              : 'label NOT REPORTED (Spotify removed `label` from album payloads in Feb 2026)')
+        }`,
         daysAgo !== null ? `  released ${daysAgo} day${daysAgo === 1 ? '' : 's'} ago` : '',
         gapToPrev !== null ? `  gap since previous release: ${gapToPrev} days` : '',
         tracks.length ? `  runtime: ${fmtDur(runtime)} across ${tracks.length} listed tracks` : '',
@@ -989,7 +1019,9 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
   server.tool(
     'label_explorer',
     'Census of record labels across your saved albums (label comes from a per-id full-album fan-in); pass a label '
-      + 'name to list just that label\'s albums in your library. Quota: 1 walk + 1 GET /albums/{id} per album.',
+      + 'name to list just that label\'s albums in your library. Spotify removed `label` from album payloads in '
+      + 'February 2026, so on a current registration the census reports `available: false` with a reason rather '
+      + 'than grouping every album under a placeholder. Quota: 1 walk + 1 GET /albums/{id} per album.',
     {
       label: z.string().min(1).optional().describe('Exact-ish label name to filter to (case-insensitive)'),
       saved_cap: z.number().int().min(1).max(2000).optional()
@@ -1004,22 +1036,42 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       if (saved.length === 0) throw new Error('Your saved-album library is empty');
       const { byId: full, unresolved: censusUnresolved } = await fetchFullAlbums(client, saved.map((r) => r.album.id));
       const unreadableSaved = new Set(censusUnresolved.map((u) => u.id));
-      const census = new Map<string, Array<{ id: string; name: string; release_date: string | null; artists: string[] }>>();
-      for (const row of saved) {
-        // #1224: an album whose read failed is EXCLUDED from the census and
-        // named below. Filing it under "(unknown label)" would report a failed
-        // lookup as a real label — the #803 failure, one word away.
-        if (unreadableSaved.has(row.album.id)) continue;
-        const lbl = full.get(row.album.id)?.label ?? '(unknown label)';
-        const bucket = census.get(lbl) ?? [];
-        bucket.push({
-          id: row.album.id,
-          name: row.album.name,
-          release_date: row.album.release_date ?? null,
-          artists: (row.album.artists ?? []).map((a) => a.name),
-        });
-        census.set(lbl, bucket);
+      // #1224 (kept): an album whose read failed is EXCLUDED from the census
+      // and named below, so a failed lookup is not filed as a real label.
+      const readable = saved.filter((row) => !unreadableSaved.has(row.album.id));
+      // #639: `label` was removed from Album in Feb 2026, so `?? '(unknown
+      // label)'` here put EVERY successfully-read album in one bucket and
+      // reported `distinct_labels: 1` as a finding. An album with no value is
+      // now in no bucket, and the coverage below is published instead.
+      const { groups: census, reported, missing } = facetGroups(readable, (row) => full.get(row.album.id)?.label);
+      if (census.size === 0) {
+        const reason = facetUnavailableReason('label', 'album');
+        const note = unreadableNote(censusUnresolved);
+        return emit(
+          rf,
+          [
+            `Label census across ${readable.length} readable saved album${readable.length === 1 ? '' : 's'}: unavailable.`,
+            reason,
+            ...(note ? [`(${note} — those saved albums could not be read either.)`] : []),
+          ].join('\n'),
+          {
+            saved_albums_scanned: saved.length,
+            albums_readable: readable.length,
+            album_unresolved: censusUnresolved,
+            available: false,
+            reason,
+            distinct_labels: 0,
+            labels: [],
+          },
+        );
       }
+      const shapeAlbum = (row: (typeof readable)[number]) => ({
+        id: row.album.id,
+        name: row.album.name,
+        release_date: row.album.release_date ?? null,
+        artists: (row.album.artists ?? []).map((a) => a.name),
+      });
+      const albumsIn = (label: string) => (census.get(label) ?? []).map(shapeAlbum);
       const filter = args.label ? normalizeName(args.label) : null;
       const names = [...census.keys()].sort((a, b) => {
         if (filter) {
@@ -1039,13 +1091,19 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
           : `Label census across ${saved.length} saved albums (top ${trunc.items.length} labels):`,
         '',
         ...trunc.items.map((l) => {
-          const albums = census.get(l) as Array<{ name: string; release_date: string | null }>;
+          const albums = albumsIn(l);
           return `- ${l} — ${albums.length} album${albums.length === 1 ? '' : 's'}${
             albums.length <= 5 ? `: ${albums.map((x) => `"${x.name}" (${x.release_date ?? '?'})`).join(', ')}` : ''
           }`;
         }),
       ];
       if (trunc.footer) lines.push(`(${trunc.footer})`);
+      if (missing > 0) {
+        lines.push(
+          `(${facetCoverageNote(reported, readable.length, 'readable saved album')}`
+            + ' carry no label because Spotify removed the field; they are excluded, not filed under a placeholder label.)',
+        );
+      }
       const censusNote = unreadableNote(censusUnresolved);
       if (censusNote) {
         lines.push(
@@ -1058,10 +1116,15 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
         albums_readable: saved.length - censusUnresolved.length,
         album_unresolved: censusUnresolved,
         distinct_labels: census.size,
+        // #639: coverage is part of the answer. `albums_labelled` + the
+        // `albums_unlabelled` remainder are what make the bucket totals
+        // checkable against `albums_readable` instead of merely plausible.
+        albums_labelled: reported,
+        albums_without_label: missing,
         labels: trunc.items.map((l) => ({
           label: l,
           album_count: (census.get(l) as Array<unknown>).length,
-          albums: census.get(l),
+          albums: albumsIn(l),
         })),
         label_filter: args.label ?? null,
         truncated_by_cap: saved.length >= cap,
@@ -1646,7 +1709,7 @@ export function registerSwarm3DiscoveryTools(server: McpServer, client: SpotifyC
       const byYear = new Map<number, number>();
       let trackSum = 0;
       for (const a of albums) {
-        const g = a.album_group ?? a.album_type ?? 'album';
+        const g = releaseTypeOf(a);
         counts[g] = (counts[g] ?? 0) + 1;
         trackSum += a.total_tracks ?? 0;
         const y = yearOf(a.release_date);

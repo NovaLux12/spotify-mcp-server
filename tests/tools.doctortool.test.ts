@@ -385,13 +385,20 @@ describe('spotify_doctor', () => {
     assert.match(row.summary, /fetch_all_cap=500 max_items=50/);
   });
 
-  it('premium info row always present and points at get_me.product', async () => {
+  // #639: the row's load-bearing property is that it is ALWAYS PRESENT. The
+  // static row used to tell a reader to go and read `get_me.product`, which is
+  // a field Spotify removed in February 2026, so the pointer named a read that
+  // cannot return the answer. It still has to be here — a reader who arrives
+  // wondering why a Premium call 403s finds nothing to explain it otherwise —
+  // but it must not send anyone to a dead field.
+  it('premium info row is always present and names the removal, not get_me.product', async () => {
     await writeTokenFile(VALID_TOKENS());
     const { invoke } = harness();
     const res = await invoke();
     const row = res.structuredContent?.rows?.find((r) => r.id === 'premium');
     assert.equal(row?.status, 'info');
-    assert.match(row!.summary, /get_me/);
+    assert.match(row!.summary, /February 2026/);
+    assert.doesNotMatch(row!.summary, /get_me/);
   });
 
   it('structured content carries diagnostic rows while prose renders status glyphs', async () => {

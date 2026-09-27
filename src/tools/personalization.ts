@@ -121,9 +121,11 @@ export function registerPersonalizationTools(server: McpServer, client: SpotifyC
         limit: String(args.limit ?? 20),
         offset: String(args.offset ?? 0),
       };
-      // /me/top/artists rows carry followers/popularity, which
-      // SpotifyArtistFull (modelled on GET /artists/{id}) does not declare —
-      // SpotifyArtistRow is the shared row for exactly that widening.
+      // #639: `followers` and `popularity` were removed from Artist in Feb 2026,
+      // so /me/top/artists no longer carries them. The reads below stay behind
+      // their `typeof … === 'number'` guards and omit the line when absent; a
+      // grandfathered registration that still sends one has it printed.
+      // SpotifyArtistRow is the shared row for that widening.
       const result = await client.get<SpotifyPaged<SpotifyArtistRow>>('/me/top/artists', params);
       if (!result) throw new Error('Could not retrieve top artists');
 

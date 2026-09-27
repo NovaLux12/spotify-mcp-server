@@ -19,6 +19,7 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { publisherAttribution } from '../removed.js';
 import {
   MARKET_CODE,
   getWithMarketFallback,
@@ -101,9 +102,19 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
 
       const authors = audiobook.authors.map((a) => a.name).join(', ');
       const narrators = audiobook.narrators.map((n) => n.name).join(', ') || 'none listed';
+      // #639: `publisher` is gone, so the fallback that used to open this line
+      // printed `Unknown publisher` on every audiobook a current registration
+      // returned. A real publisher still prints — the line is unchanged for a
+      // pre-Nov-2024 registration — and without one the line drops to the
+      // chapter count rather than opening with a parenthesis that attributes
+      // the edition to nothing.
+      const publisher = publisherAttribution(audiobook.publisher);
+      const credits = publisher
+        ? `${publisher}${audiobook.edition ? ` (${audiobook.edition})` : ''}`
+        : (audiobook.edition ?? '');
       const lines = [
         `"${audiobook.name}" by ${authors}, narrated by ${narrators}`,
-        `${audiobook.publisher ?? 'Unknown publisher'}${audiobook.edition ? ` (${audiobook.edition})` : ''} | ${audiobook.total_chapters} chapters`,
+        credits ? `${credits} | ${audiobook.total_chapters} chapters` : `${audiobook.total_chapters} chapters`,
         audiobook.description,
         `Languages: ${audiobook.languages.join(', ')} | Explicit: ${audiobook.explicit ? 'yes' : 'no'}`,
         `URI: ${audiobook.uri}`,

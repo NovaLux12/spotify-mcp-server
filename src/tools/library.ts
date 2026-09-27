@@ -30,6 +30,7 @@ import {
   type ReceiptClient,
 } from '../receipts.js';
 import { getConfig } from '../config.js';
+import { publisherByline } from '../removed.js';
 import {
   classifySpotifyReference,
   spotifyUriFromClassification,
@@ -788,7 +789,7 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     'search_saved_shows',
     'Search saved podcast shows (bounded walk + client-side filter). Quota: GET /me/shows paged.',
     {
-      query: z.string().optional().describe('Substring match against show name/publisher'),
+      query: z.string().optional().describe('Substring match against show name and publisher. Spotify removed `publisher` from show payloads in February 2026, so the publisher half can only match on an app registration created before November 2024; on a current registration this is a name search that reports 0 publisher matches rather than pretending to have searched publishers.'),
       max_results: MaxResults,
       scan_cap: z.number().int().min(1).max(2000).optional().describe('Maximum saved items to scan; defaults to SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
@@ -804,6 +805,15 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
       const shows = all.filter((i) => i?.show);
       const unavailable = all.length - shows.length;
       let filtered = shows;
+      // #639: `publisher` is gone from show payloads, so this clause matches
+      // nothing on any registration created after November 2024. It is KEPT
+      // rather than deleted, for the same reason `publisherByline` keeps a
+      // publisher a payload really carried: a grandfathered registration still
+      // sends the field, and dropping the clause would take away a search that
+      // works for those users. What was wrong was never the matching — it is
+      // that a 0-result publisher search was indistinguishable from a library
+      // with no shows by that publisher, so the description now says the half
+      // only matches pre-Nov-2024 registrations.
       if (args.query) { const q = args.query.toLowerCase(); filtered = filtered.filter(i => i.show.name.toLowerCase().includes(q) || (i.show.publisher ?? '').toLowerCase().includes(q)); }
       const t = truncateItems(filtered, cap(args));
       const pagination = paginationInfo({ total: filtered.length, returned: t.items.length });
@@ -1028,7 +1038,7 @@ function renderAlbumLine(lines: string[], item: SavedAlbumItem, detailed = false
 }
 
 function renderShowLine(lines: string[], item: SavedShowItem, detailed = false): void {
-  let line = `  • "${item.show.name}" by ${item.show.publisher ?? 'unknown publisher'} (${item.show.total_episodes} episodes) | URI: ${item.show.uri}`;
+  let line = `  • "${item.show.name}"${publisherByline(item.show.publisher)} (${item.show.total_episodes} episodes) | URI: ${item.show.uri}`;
   if (detailed) line += ` | Added: ${item.added_at}`;
   lines.push(line);
 }

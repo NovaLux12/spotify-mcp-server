@@ -586,7 +586,7 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     id: 'premium',
     status: 'info',
     summary:
-      'Premium requirement not introspectable from local state alone: playback control (play/pause/seek/volume/queue) requires Premium — verify via get_me product field or run doctor with live probe',
+      'Premium requirement not introspectable at all: playback control (play/pause/seek/volume/queue) requires Premium, and Spotify removed the `product` field from `GET /me` in February 2026, so neither local state nor the API can name the tier. The live probe reports the tier as undeterminable; a Premium-required call answers 403',
   });
   try {
     const rl = client.getRateLimitStatus();
@@ -733,6 +733,10 @@ async function storeRows(): Promise<DoctorRow[]> {
 /** Live account probe: report classified failures rather than silently omitting them. */
 async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
   try {
+    // #639: `product` and `country` were removed from `/me` in Spotify's
+    // February 2026 changes (see `src/removed.ts`), so on any registration
+    // newer than Nov-2024 they are absent. They are read as-is — no default —
+    // and the row below says which of them the payload actually carried.
     const me = await client.get<{
       id?: string;
       display_name?: string;
@@ -749,14 +753,19 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
       }];
     }
     const rows: DoctorRow[] = [];
-    const product = me.product ?? 'unknown';
-    const country = me.country ?? 'unknown';
+    // Read as-is. `product`/`country` arrive only on a pre-Nov-2024
+    // registration; `null` here means "this payload did not carry it", which
+    // is a different fact from a tier of "unknown" and must not be printed as
+    // though it were a reading.
+    const product: string | undefined = me.product;
+    const country: string | undefined = me.country;
     const name = me.display_name ?? me.id;
+    const notReturned = 'not returned (removed from /me in Feb 2026)';
     rows.push({
       id: 'account',
       status: 'info',
-      summary: `account: ${name} (${me.id}) product=${product} country=${country}`,
-      detail: `display_name=${name} id=${me.id} product=${product} country=${country}`,
+      summary: `account: ${name} (${me.id}) product=${product ?? notReturned} country=${country ?? notReturned}`,
+      detail: `display_name=${name} id=${me.id} product=${product ?? notReturned} country=${country ?? notReturned}`,
     });
     if (product === 'free' || product === 'open') {
       rows.push({
@@ -769,6 +778,17 @@ async function accountRows(client: SpotifyClient): Promise<DoctorRow[]> {
         id: 'account_premium',
         status: 'pass',
         summary: 'account is Premium — playback control available',
+      });
+    } else {
+      // #639: this branch used to be absent, so on every current registration
+      // the `account_premium` row vanished with no row and no explanation —
+      // a caller scanning for a Premium verdict found nothing and could read
+      // the silence as "no problem found". The row now states why it is
+      // undeterminable.
+      rows.push({
+        id: 'account_premium',
+        status: 'info',
+        summary: 'subscription tier not determinable: Spotify removed the `product` field from `GET /me` in February 2026, so doctor cannot tell Premium from Free. A Premium-required call answers 403 instead.',
       });
     }
     return rows;

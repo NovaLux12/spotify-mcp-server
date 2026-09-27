@@ -872,7 +872,7 @@ List an album's tracks with pagination.
 #### `get_me`
 Get the current user's Spotify profile.
 
-**Returns:** display name, user ID, email (requires `user-read-email`), country and subscription level (require `user-read-private`), URI.
+**Returns:** display name, user ID, URI. Spotify removed `email`, `country`, `product`, `followers` and `explicit_content` from `GET /me` in February 2026, so on a current registration they are not returned and are omitted rather than placeholdered; a grandfathered registration that still sends one has it printed.
 
 ---
 
@@ -885,7 +885,7 @@ Get full details for a podcast show.
 | `id` | string | yes | Show ID |
 | `market` | string | no | ISO 3166-1 alpha-2 country code |
 
-**Returns:** name, description, publisher, explicit, total_episodes, languages, media_type, URI, and a ten-row episode preview (name, duration_ms, release_date, resume_point, URI). When the show holds more, the card states how many episodes of how many it showed and points at `list_show_episodes`.
+**Returns:** name, description, explicit, total_episodes, languages, media_type, URI, and a ten-row episode preview (name, duration_ms, release_date, resume_point, URI). `publisher` was removed from show payloads in February 2026, so it is omitted from this card rather than printed as a placeholder. When the show holds more, the card states how many episodes of how many it showed and points at `list_show_episodes`.
 
 ---
 
@@ -985,6 +985,32 @@ payloads. One contract covers all of them:
   tracks and no deep cuts — `label_explorer` excludes it from the census rather
   than filing it under `(unknown label)`, and `artist_latest_release_report`
   prints `label UNREAD` rather than `label unknown`.
+- **A field Spotify removed is never a bucket (#639).** A *failed read* is only
+  half the way a value can go missing, and #639 is the other half: Spotify
+  removed `label` and `publisher` from Album/Show payloads in February 2026, so
+  a `?? '(unknown label)'` fallback did not file the failures under a placeholder
+  — it filed every **successful** read there, and published
+  `distinct_labels: 1` as a finding. Every rollup that groups on a removed field
+  now groups only the rows that actually carry one, publishes the coverage that
+  makes its totals checkable (`albums_labelled`/`albums_without_label`,
+  `shows_with_publisher`/`shows_without_publisher`,
+  `releases_labelled`/`releases_without_label`), and returns
+  `available: false` with a `reason` naming the changelog when **no** row carries
+  the field. The tools that matched on it, rather than counted it, are the worse
+  case and are handled separately below. `src/removed.ts` holds the one
+  transcribed list; the fixture-backed guard is `tests/removed-fields.test.ts`.
+- **A removed facet that is searched is not "no results" (#639).**
+  `find_show_by_publisher` matched on `publisher`, which is gone, so its
+  predicate degraded to a substring test against the literal placeholder — a real
+  query ("Wondery") matched nothing and was reported as `0 publisher match(es)`
+  with a scan note blaming page coverage, while a query of `"unknown"` matched
+  every row and marked each one `publisher_match: true`. It now detects the
+  absent facet, falls back to name matching only, reports
+  `publisher_facet_available: false` and `publisher_matches: null` (**not** `0`,
+  which is indistinguishable from "this publisher publishes none of these"), and
+  says in prose that the zero means "not searched", not "none found".
+  `search_saved_shows` had the same dead clause — `show.publisher ?? ''` can
+  never match a non-empty query — and is name-only now.
 - **#1093 accounting is unchanged.** `counts.requested == counts.resolved +
   counts.missing_ids.length` still holds; a per-id `unresolved` entry plays the
   part the null slot played in the batch response. `albums_runtime_batch` keeps
@@ -1551,7 +1577,7 @@ Get full details for an audiobook.
 | `id` | string | yes | Audiobook ID |
 | `market` | string | no | ISO 3166-1 alpha-2 country code |
 
-**Returns:** name, authors, narrators, description, publisher, total_chapters, media_type, URI, and a ten-row chapter preview. When the book holds more, the card states how many chapters of how many it showed and points at `get_audiobook_chapters`.
+**Returns:** name, authors, narrators, description, edition, total_chapters, media_type, URI, and a ten-row chapter preview. `publisher` was removed from audiobook payloads in February 2026 and is omitted. When the book holds more, the card states how many chapters of how many it showed and points at `get_audiobook_chapters`.
 
 ---
 
@@ -1794,7 +1820,7 @@ Known limitations to document and handle:
 | **Queue opacity** | `GET /me/player/queue` returns items but positions are not editable |
 | **Registration-gated reads** | The batch lookup wrappers (`GET /tracks?ids=` family) and `GET /artists/{id}/top-tracks` remain registered, but an app registration without the relevant grant answers `403`. This is registration-dependent, not a per-endpoint property of the tool: a grandfathered registration still answers `200`, and the same paths are still published by Spotify's live OpenAPI schema carrying `deprecated: true` even where the February 2026 changelog marks them `[REMOVED]`. The single runtime classification source is `GATED_FAMILIES` in `src/gating.ts` (`GATED_PATH_PATTERNS` is derived from it, and `src/tools/exhaust2_enggating.ts` re-exports the pair for historical import paths). Each family records the tools it ships and whether a 403 is met by a replacement read or a plain-English explanation. The family list includes `/artists/{id}/top-tracks` and the multi-id batch paths; `/me/{type}/contains` is still classified but has **no live call site**, because every reader moved onto `/me/library/contains`, which is not gated. The README's [Registration-gated endpoints](README.md#registration-gated-endpoints) table is generated from that array, so it cannot name a family the classifier rejects. |
 | **Removed ≠ gated** | A `[REMOVED]` changelog label is not by itself a single runtime fact, and the two halves must not be confused. A **gated** family has a graceful shape left: the call still happens and the 403 becomes a stated reason or a replacement read, so the tool still answers, and deleting its wrapper makes it worse. An endpoint with **no live call site** must have none, because a 403-tolerant wrapper will happily degrade a removed endpoint into a soft, wrong answer — there the *call* is the bug and the only honest outcomes are to migrate it or delete the tool. #638 removed six tools on that second basis; see [AGENTS.md §2](AGENTS.md#2-endpoints-that-are-blocked-or-deprecated). |
-| **Removed fields** | `popularity`, `followers`, `available_markets` no longer returned on tracks, artists, albums |
+| **Removed fields** | The authoritative list lives in `src/removed.ts`, transcribed from Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026) and cross-checked against the live OpenAPI schema. Removed: `album_group`, `available_markets` (album/audiobook/chapter/show/track), `label`, `popularity` (album/artist/track), `followers` (artist/user), `publisher` (show/audiobook), `linked_from`, and on the user profile `country`, `email`, `explicit_content`, `followers`, `product`. **Not** removed: `album.external_ids` and `track.external_ids` — both were marked `[REMOVED]` in February and restored by the [March 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/march-2026), so code reading them is correct. The changelog and the OpenAPI schema disagree (the schema still declares `available_markets` on `TrackObject` and the removed user-profile fields on `PrivateUserObject`); the changelog wins, because it is the dated statement of intent. A removed field is omitted, or reported as unavailable with a reason — never defaulted to `0`, `''`, a placeholder string, or a bucket key. |
 | **Unified library API** | `save_to_library`/`remove_from_library`/`check_in_library` use `PUT/DELETE/GET /me/library` with **URIs** in any mix (including artist/user/playlist follow state on check). It is the **only** library write/read path: the per-type `/me/{type}s` write endpoints and the `/me/{type}s/contains` reads were removed by Spotify in February 2026, and the three tools that used them were deleted in #638. The `/me/{type}s` **list** endpoints (`GET /me/tracks` and friends) are unaffected and still live. |
 | **Playlist items path** | All playlist item operations use `/playlists/{id}/items` (not `/tracks`) as of Feb 2026 |
 | **Audiobooks market-gated** | Audiobook endpoints only available in US, UK, Canada, Ireland, New Zealand, Australia |

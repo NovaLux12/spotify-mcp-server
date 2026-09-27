@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 604,409B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 606,353B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 68,407B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 16,591B | 2.7% of the enforced limit |
+| Headroom | 14,647B | 2.4% of the enforced limit |
 
-Headroom is **16,591B** of the 621,000B enforced limit — 2.7% — so the aggregate budget is **tight**.
+Headroom is **14,647B** of the 621,000B enforced limit — 2.4% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -142,11 +142,11 @@ than maintained.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 26,883 | 31 | 26,883 | 32 | 29,572 |
-| library | 13 | 12,521 | 13 | 12,521 | 14 | 13,774 |
+| catalog | 31 | 27,222 | 31 | 27,222 | 32 | 29,945 |
+| library | 13 | 12,814 | 13 | 12,814 | 14 | 14,096 |
 | playback | 16 | 12,077 | 16 | 12,077 | 17 | 13,285 |
 | following | 3 | 2,502 | 3 | 2,502 | 4 | 2,753 |
-| users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
+| users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
 | playlists | 26 | 26,214 | 26 | 26,214 | 27 | 28,836 |
@@ -197,12 +197,12 @@ than maintained.
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
 | exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
-| swarm3discovery | 24 | 22,286 | 24 | 22,286 | 25 | 24,515 |
-| swarm3bdiscovery | 24 | 19,952 | 24 | 19,952 | 25 | 21,948 |
-| swarm3shows | 24 | 21,457 | 24 | 21,457 | 25 | 23,603 |
+| swarm3discovery | 24 | 22,483 | 24 | 22,483 | 25 | 24,732 |
+| swarm3bdiscovery | 24 | 20,147 | 24 | 20,147 | 25 | 22,162 |
+| swarm3shows | 24 | 22,103 | 24 | 22,103 | 25 | 24,314 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
-| swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
+| swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
 | swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
 | swarm3playlistops | 24 | 31,587 | 24 | 31,587 | 25 | 34,746 |
 | swarm3snapshots | 24 | 23,449 | 24 | 23,449 | 25 | 25,794 |

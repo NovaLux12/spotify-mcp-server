@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { isGatedError, isRemovedEndpointFailure } from '../gating.js';
+import { publisherByline } from '../removed.js';
 import type {
   SpotifyTrack,
   SpotifyArtistFull,
@@ -758,7 +759,10 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       if (!show) throw new Error(`Show "${args.id}" not found`);
 
       const lines = [
-        `"${show.name}" by ${show.publisher ?? 'unknown publisher'}`,
+        // #639: `publisher` was removed from Show payloads in Feb 2026. When it
+        // is absent the byline is dropped rather than filled with a stand-in
+        // that reads like a publisher named "unknown publisher".
+        `"${show.name}"${publisherByline(show.publisher)}`,
         show.description,
         `Episodes: ${show.total_episodes} | Explicit: ${show.explicit ? 'yes' : 'no'}`,
         `Languages: ${show.languages.join(', ')} | Media type: ${show.media_type}`,
@@ -826,8 +830,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       lines.push(`URI: ${episode.uri}`);
 
       return withMarketSource(
+        // #639: `show.publisher` is offered here as a projection but the field
+        // was removed from Show payloads in Feb 2026, so it always renders
+        // nothing. Replaced with a field the show payload still carries,
+        // rather than left as a projection a caller can select and never get.
         renderSingle(args.response_format, episode as unknown as Record<string, unknown>, lines, [
-          ['show.publisher', 'Show publisher'],
+          ['show.total_episodes', 'Show episode count'],
         ]),
         market,
       );
@@ -837,7 +845,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
   // get_me
   server.tool(
     'get_me',
-    "Get the current user's Spotify profile: display name, user ID, email, country, and subscription level. Email requires the user-read-email scope; country and product require user-read-private.",
+    "Get the current user's Spotify profile: display name, user ID, and URI. Spotify removed `email`, `country`, `product`, `followers` and `explicit_content` from `GET /me` in February 2026, so on a current registration none of them is returned and this tool omits them rather than reporting a placeholder; a grandfathered registration that still sends one has it printed.",
     { response_format: ResponseFormat },
     async (args) => {
       const user = await client.get<UserProfile>('/me');
@@ -1076,7 +1084,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       return renderList(args.response_format, shows, {
         header: `Shows (${shows.length}):`,
         line: (show) =>
-          `  • "${show.name}" by ${show.publisher ?? 'unknown publisher'} (${show.total_episodes} episodes) | URI: ${show.uri}`,
+          `  • "${show.name}"${publisherByline(show.publisher)} (${show.total_episodes} episodes) | URI: ${show.uri}`,
         continuable: false,
         maxResults: args.max_results,
         unresolved: missing,
@@ -1260,8 +1268,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
             const ownerName = owner?.display_name ?? owner?.id ?? 'unknown';
             extra = ` by ${ownerName}`;
           } else if (kind === 'show') {
-            const pub = (o.publisher as string | undefined) ?? 'unknown publisher';
-            extra = ` by ${pub}`;
+            extra = publisherByline(o.publisher as string | undefined);
           } else if (kind === 'episode') {
             const show = (o.show as { name?: string } | undefined)?.name ?? '';
             if (show) extra = ` — ${show}`;
@@ -1426,7 +1433,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
     'Validate ISO 3166-1 market codes against GET /markets (cached) and optionally return the account market from /me. Quota: 1–2 calls.',
     {
       markets: z.array(MARKET_CODE).optional().describe('Market codes to validate (2-letter). If omitted, just lists valid markets / account market.'),
-      include_account_market: z.boolean().optional().describe('Include account country from /me'),
+      include_account_market: z.boolean().optional().describe('Include account country from /me. Spotify removed `country` from `GET /me` in February 2026, so on a current registration this is always null and the tool says so rather than inventing a market.'),
       response_format: ResponseFormat,
     },
     async (args) => {

@@ -13,6 +13,11 @@
  *   • Feb-2026 API shape: NO popularity/followers/available_markets/genres
  *     fields are read anywhere — those fields are gone from the API. The
  *     explicit / is_local / is_playable / restrictions flags are fine.
+ *     `label` is gone from album payloads too, so `saved_albums_by_label`
+ *     groups only the albums that carry one, publishes
+ *     `albums_labelled`/`albums_without_label` so the buckets add up, and
+ *     answers `available: false` with a reason when none do. See
+ *     `src/removed.ts`.
  *   • Read-only slice: no mutations, so dry_run appears only on the
  *     multi-walk scans where a request-cost preview is useful (repo convention
  *     from #57 applied to heavy scans).
@@ -40,6 +45,7 @@ import type {
   SpotifyPlaylistSimple,
   PlaylistItemObject,
 } from '../types/spotify.js';
+import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -403,7 +409,9 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
   // 2. saved_albums_by_label
   server.tool(
     'saved_albums_by_label',
-    'Group your saved albums by record label (from each album payload) and rank labels by count. Read-only.',
+    'Group your saved albums by record label (from each album payload) and rank labels by count. Read-only. '
+      + 'Spotify removed `label` from album payloads in February 2026, so on a current registration this reports '
+      + '`available: false` with a reason rather than grouping every album under a placeholder.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -413,19 +421,51 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const albums = await loadSavedAlbums(client, walkCap(scan_cap));
-      const entries = sortedTally(tally(albums, (a) => a.label ?? '(no label in payload)'));
+      // #639: `label` was removed from Album in Feb 2026. The old
+      // `a.label ?? '(no label in payload)'` put every saved album in one
+      // bucket and published `distinct_labels: 1` as a finding about the
+      // library. An album with no value is now in no bucket, and the
+      // coverage is published instead.
+      const { groups: byLabel, reported, missing } = facetGroups(albums, (a) => a.label);
+      if (byLabel.size === 0) {
+        const reason = facetUnavailableReason('label', 'album');
+        return shapeResult(
+          rf,
+          `Saved albums by label (${albums.length} album(s)): unavailable. ${reason}`,
+          {
+            ...listStructuredContent([], paginationInfo({ total: 0, returned: 0 })),
+            total_albums: albums.length,
+            albums_labelled: reported,
+            albums_without_label: missing,
+            available: false,
+            reason,
+            distinct_labels: 0,
+          },
+        );
+      }
+      const entries = sortedTally(new Map([...byLabel].map(([label, rows]) => [label, rows.length])));
       const t = truncateItems(entries, maxResults);
       const lines = [
         `Saved albums by label (${albums.length} album(s), ${entries.length} distinct label(s)).`,
         ...t.items.map(([label, n]) => `  • ${label}: ${n}`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
+      if (missing > 0) {
+        lines.push(
+          `(${facetCoverageNote(reported, albums.length, 'saved album')} carry no label because Spotify removed the `
+            + 'field; they are excluded, not filed under a placeholder label.)',
+        );
+      }
       const payload: Record<string, unknown> = {
         ...listStructuredContent(
           t.items.map(([label, count]) => ({ label, count })),
           paginationInfo({ total: t.total, returned: t.returned }),
         ),
         total_albums: albums.length,
+        // #639: coverage, so the bucket counts are checkable against
+        // `total_albums` instead of merely plausible.
+        albums_labelled: reported,
+        albums_without_label: missing,
         distinct_labels: entries.length,
         truncated: t.truncated,
       };
