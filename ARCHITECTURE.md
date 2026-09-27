@@ -121,7 +121,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/audiobookview.ts` | The audiobook and chapter prose renderers, shared by the audiobook tools and the `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` resource templates (#603). (0 registered tools) | 119 |
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 941 |
 | `src/branding.ts` | The non-affiliation notice (#705) — the one place that owns the wording. (0 registered tools) | 63 |
-| `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 513 |
+| `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 526 |
 | `src/cachepersist.ts` | Optional cross-process persistence for the immutable read cache (#893, A16-019). (0 registered tools) | 692 |
 | `src/cancellation.ts` | Per-request cancellation context for MCP `tools/call` (#676). (0 registered tools) | 121 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
