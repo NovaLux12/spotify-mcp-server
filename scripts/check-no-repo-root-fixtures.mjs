@@ -61,6 +61,17 @@ const GUARDED_DIR = 'tests';
 /** `mkdtemp(` / `mkdtempSync(`, not `fs.mkdtemp` re-exported under a namespace. */
 const MKDEMP_CALL = /(?<![\w$.])mkdtemp(?:Sync)?\s*\(/g;
 
+/**
+ * `MKDEMP_CALL` widened to also match `mkdir` / `mkdirSync`.
+ *
+ * **Not a gate.** It exists so the cost of widening can be measured against the
+ * real tree — see `widenedMkdirMeasurements`. Every call it matches today is a
+ * false positive, which is the entire justification for the `mkdtemp`-only
+ * scope, so the number belongs somewhere it can be re-derived rather than in a
+ * docstring that goes stale the next time a test is added.
+ */
+const WIDENED_MKDEMP_CALL = /(?<![\w$.])(?:mkdtemp|mkdir)(?:Sync)?\s*\(/g;
+
 /** `const NAME = mkdtemp(…)` — the definitions a derived root can come from. */
 const MKDEMP_DEFINITION =
   /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(?:await\s+)?mkdtemp(?:Sync)?\s*\(/g;
@@ -322,18 +333,59 @@ function sourceKey(file, sources) {
  * by a caller.
  *
  * **Scope: `mkdtemp`, not `mkdir`.** `mkdtemp` is the primitive that creates a
- * fixture *root* — the directory whose whole subtree is scratch. `mkdir` is
- * nearly always called on a subdirectory of such a root (`mkdir(join(dir,
- * 'docs'))`, where `dir` came from a tmpdir `mkdtemp` a line earlier), and
- * proving those safe needs inter-procedural tracking of every local, not just
- * the `mkdtemp` bindings this guard reads. Adding `mkdir` to the pattern
- * produced 52 findings on a tree that is in fact clean, which is the shape of
- * gate that gets switched off inside a release. A `mkdir` rooted directly at the
- * repository is not covered, and no test in this tree does one; the census
- * marker scan's dot-skip (#1238) is what keeps such a directory from reaching
- * the docs, and `git status --porcelain` is what reports it.
+ * fixture *root* — the directory whose whole subtree is scratch, and the one
+ * call whose argument *is* the root. `mkdir` is nearly always called on a
+ * subdirectory of such a root (`mkdir(join(dir, 'docs'))`, where `dir` came
+ * from a tmpdir `mkdtemp` a line earlier), so there is no anchor: deciding
+ * those calls safe means resolving a local across statements, and a wrong
+ * resolution is a false red, which is how a gate gets ignored. Widening the
+ * pattern to match `mkdir` as well therefore reports dozens of findings on a
+ * tree that is in fact clean. That count is deliberately **not** written here:
+ * it moves every time a test is added, so a figure in this paragraph would be
+ * wrong within a release — the exact rot §6 of AGENTS.md describes. Measure it
+ * instead, with `widenedMkdirMeasurements` below, which re-runs this collector
+ * with the call pattern widened. A false positive costs one edit; a false
+ * negative costs an agent a hand-edit of a generated block.
+ *
+ * **The residual risk, stated honestly.** A `mkdir` rooted directly at the
+ * repository is not covered, and the two things that used to be named as its
+ * backstop do not hold it up:
+ *
+ *  - The census marker scan skips *dot-entries* (#1238). `scanGeneratedMarkers`
+ *    skips an entry when `entry.name.startsWith('.')`, so a fixture directory
+ *    named `.census-fixture-…` is invisible to it — but that is a property of
+ *    the *name*, not of its being a leak. A `mkdir(join(ROOT, 'scratch'))` is
+ *    not a dot-entry and the scan walks straight into it. The dot-skip is not a
+ *    mitigation for an uncovered `mkdir`; it is a mitigation for the one leak
+ *    that happened to be named like a dot-entry.
+ *  - `git status --porcelain` does not report an **empty** untracked directory,
+ *    because git does not track empty directories at all. A `mkdir` that is
+ *    killed before its first write leaves no entry to report, so the signal
+ *    only exists once something has been written into the directory.
+ *
+ * What is left is the honest version: the static gate covers `mkdtemp`, and a
+ * repo-rooted `mkdir` is caught by a reviewer reading the diff, not by this
+ * file. No test in this tree roots a `mkdir` at the repository — every widened
+ * finding resolves to a `tmpdir()` root, which `widenedMkdirMeasurements`
+ * re-derives on each run rather than a comment asserting it.
  */
 export function collectRepoRootFixtureErrors(source, file, sources = new Map()) {
+  return collectWithPattern(source, file, sources, MKDEMP_CALL);
+}
+
+/**
+ * The same collector, with the call pattern supplied by the caller.
+ *
+ * This exists so the `mkdir` boundary can be *measured* rather than asserted in
+ * prose. `WIDENED_MKDEMP_CALL` matches `mkdir` as well, and running it over the
+ * real tree reproduces the false-positive count the docstring above cites — so
+ * if a future change makes widening viable (every `mkdir` in `tests/` rooted at
+ * a resolvable `tmpdir()`), the measurement falls and the boundary is
+ * re-arguable from evidence instead of from a number nobody rechecked. A
+ * boundary justified by a hand-typed figure is the same rot §6 of AGENTS.md
+ * describes, one level down.
+ */
+export function collectWithPattern(source, file, sources = new Map(), pattern = MKDEMP_CALL) {
   const code = blankNonCode(source);
   const key = sourceKey(file, sources);
   // Judge the file against the real tree, with itself present: a fixture that
@@ -344,7 +396,7 @@ export function collectRepoRootFixtureErrors(source, file, sources = new Map()) 
   const allowed = tmpdirDerivedRoots(key, tree);
   const lines = source.split('\n');
   const found = [];
-  for (const match of code.matchAll(MKDEMP_CALL)) {
+  for (const match of code.matchAll(pattern)) {
     const open = code.indexOf('(', match.index);
     const body = callBody(code, open);
     if (body === null) continue;
@@ -356,6 +408,26 @@ export function collectRepoRootFixtureErrors(source, file, sources = new Map()) 
   return found.map(
     (hit) => `${file}:${hit.line}: fixture directory is not rooted at os.tmpdir() (${hit.root ?? 'unrecognised root'}) — ${hit.text}`,
   );
+}
+
+/**
+ * What widening the gate to `mkdir` would cost, as `file:line` strings over the
+ * real `tests/` tree. Not a gate — a measurement, consumed by the boundary test.
+ *
+ * Every entry is a *false* positive today: the `mkdir` is on a subdirectory of a
+ * fixture root, which the guard resolves only for `mkdtemp`. That is the whole
+ * argument for the boundary, so it is worth being able to re-run rather than
+ * quote. Exported so the test measures the real tree instead of asserting a
+ * count that drifts.
+ */
+export function widenedMkdirMeasurements(sources) {
+  const findings = [];
+  for (const { file, code } of sources.values()) {
+    for (const error of collectWithPattern(code, file, sources, WIDENED_MKDEMP_CALL)) {
+      findings.push(error.split(' — ')[0].replace(/ \(.*\)$/, ''));
+    }
+  }
+  return findings;
 }
 
 function walk(directory) {

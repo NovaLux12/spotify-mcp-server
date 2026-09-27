@@ -65,11 +65,18 @@ const MARKER_SCAN_EXTENSIONS = new Set([
 /**
  * Directories skipped wholesale, in addition to every dot-entry (#1238).
  *
- * Dot-entries matter beyond tidiness: tests create fixture directories *inside*
- * the repository (`mkdtemp(join(ROOT, '.census-fixture-'))`) and the test runner
- * executes test files in parallel, so a scan that did not skip dot-directories
- * could read a half-written fixture from a sibling test and report a phantom
- * orphan. Same TDZ reason as above for being module-scope.
+ * Dot-entries are skipped because they are VCS and tool metadata (`.git`,
+ * `.github`, `.gitignore`) that is not authored prose, and because the #1383
+ * census fixture used to be created *inside* the repository as
+ * `.census-fixture-…`, where a scan running beside a parallel test could read a
+ * half-written file and report a phantom orphan. That fixture is now rooted at
+ * `os.tmpdir()` (#1417), so the parallel-read argument no longer has a call site
+ * — it is kept because the skip is a *name* rule and the class of leak it was
+ * added for is the class most likely to come back, not because any current test
+ * does it. A future non-dot fixture directory in the repository is NOT covered
+ * by this rule and will be walked; see the residual-risk note in
+ * `check-no-repo-root-fixtures.mjs`. Same TDZ reason as above for being
+ * module-scope.
  */
 const MARKER_SCAN_SKIP = new Set(['node_modules', 'dist', 'coverage', 'outbox', 'logs', 'backups']);
 
