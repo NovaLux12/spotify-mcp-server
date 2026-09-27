@@ -7,6 +7,13 @@ import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
 import { registerPlaylistMiscTools } from '../src/tools/playlistmisc.js';
 import { registerPlaylistFollowTools } from '../src/tools/playlistfollow.js';
+import {
+  classifyToolAnnotations,
+  MUTATING_PREFIXES,
+  DESTRUCTIVE_PREFIXES,
+  READ_ONLY_PREFIXES,
+  READ_ONLY_OVERRIDES,
+} from '../src/tools/annotations.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -157,6 +164,178 @@ describe('unpin_playlist',()=>{
     const out=await h.invoke('unpin_playlist',{playlist_id:'pl1'});
     assert.equal(h.client.calls.length,0);
     assert.match(textOf(out),/Cancelled/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1100 — unpin_playlist refuses in the same shape as pin_playlist
+//
+// This is a safety change, so every test below is about the gate FAILING
+// CLOSED. The bug was not that unpin could write without confirmation — it
+// could not, and still cannot — but that the two halves of one feature
+// disagreed about what "refused" looks like: pin returned a machine-readable
+// `reason` while unpin threw a bare Error. A host that keys off that
+// discriminator had to special-case one of its own inverse pair.
+//
+// Assertions are on PARSED STRUCTURE (structuredContent fields), never on
+// substrings of the prose: `text.includes('elicitation_failed')` would pass on
+// a payload that merely mentioned the word, which is the exact class of
+// decoration AGENTS.md §6 warns about.
+// ---------------------------------------------------------------------------
+
+describe('unpin_playlist refusal contract (#1100)', () => {
+  /**
+   * Drive unpin_playlist to the point where the verdict is decided, with the
+   * elicitation stub installed, and return both the recorded calls and the
+   * result so a test can assert on each independently.
+   *
+   * No `server` property at all = a host that never advertised elicitation,
+   * which is how an unpromptable client reaches the `unsupported` verdict.
+   */
+  const attempt = (elicitResult?: unknown) => {
+    const h = harness(() => null, elicitResult);
+    return h.invoke('unpin_playlist', { playlist_id: 'pl1', dry_run: false })
+      .then((out) => ({ out, deletes: h.client.calls.filter((c) => c.method === 'DELETE') }));
+  };
+
+  it('refuses EVERY non-confirming verdict without a DELETE (the fail-closed core)', async () => {
+    // Each row: a host that cannot produce an explicit accept. If any of these
+    // ever writes, the gate has been weakened — that is the whole assertion.
+    const refusals = [
+      { label: 'declined', elicit: { action: 'decline' } },
+      { label: 'cancel', elicit: { action: 'cancel' } },
+      { label: 'accept-without-confirm', elicit: { action: 'accept', content: { confirm: false } } },
+      { label: 'malformed-result', elicit: { nothing: 'usable' } },
+      { label: 'transport-error', elicit: new Error('elicitation transport failed') },
+      { label: 'unpromptable-host', elicit: undefined },
+    ] as const;
+
+    for (const { label, elicit } of refusals) {
+      const { out, deletes } = await attempt(elicit);
+      assert.equal(deletes.length, 0, `${label}: an unconfirmed unpin must never reach Spotify`);
+      assert.equal(out.structuredContent?.ok, false, `${label}: refusal must be ok:false`);
+      assert.equal(out.structuredContent?.cancelled, true, `${label}: refusal must be cancelled:true`);
+    }
+  });
+
+  it('carries a machine-readable `reason` on every refusal that distinguishes one', async () => {
+    // The discriminator a host keys off. Before #1100 the 'error' verdict threw
+    // instead, so this field did not exist for two of the three outcomes.
+    const cases = [
+      { label: 'transport-error', elicit: new Error('boom'), reason: 'elicitation_failed' },
+      { label: 'unpromptable-host', elicit: undefined, reason: 'confirmation_unavailable' },
+    ] as const;
+
+    for (const { label, elicit, reason } of cases) {
+      const { out } = await attempt(elicit);
+      assert.equal(
+        out.structuredContent?.reason,
+        reason,
+        `${label}: structuredContent.reason must be the discriminator, not prose`,
+      );
+      // Guard against the substring trap: a payload that merely NAMED the value
+      // in prose while omitting the field would pass a text check. The field
+      // assertion above is the real one; this documents why it is a field read.
+      assert.equal(typeof out.structuredContent?.reason, 'string');
+    }
+  });
+
+  it('a declined prompt refuses with no `reason` — the shape pin_playlist already returns', async () => {
+    // Deliberate asymmetry, pinned: `declined` is the human's own "no", so the
+    // payload is the bare {ok:false, cancelled:true} and carries no reason.
+    // Asserting an exact object (not a field or two) is what stops a future
+    // edit from quietly bolting an extra field onto this specific verdict.
+    const { out } = await attempt({ action: 'decline' });
+    assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
+  });
+
+  it('refuses in the SAME shape as pin_playlist for the same verdict (#1100 was the divergence)', async () => {
+    // The regression that matters: parity is asserted by comparing the two
+    // tools' payloads for the same stubbed verdict, not by re-asserting each
+    // tool's values. If one half of the pair drifts, this fails even if both
+    // still pass their own standalone tests.
+    for (const [label, elicit] of [
+      ['declined', { action: 'decline' }],
+      ['transport-error', new Error('boom')],
+      ['unpromptable-host', undefined],
+    ] as const) {
+      const unpin = await attempt(elicit);
+      const pinHarness = harness(() => null, elicit);
+      const pin = await pinHarness.invoke('pin_playlist', { playlist_id: 'pl1', dry_run: false });
+      assert.deepEqual(
+        unpin.out.structuredContent,
+        pin.structuredContent,
+        `${label}: pin and unpin must return an identical refusal payload`,
+      );
+      assert.equal(
+        textOf(unpin.out).replace(/pin\b/g, 'unpin'),
+        textOf(pin),
+        `${label}: the human-readable refusal must also match across the pair`,
+      );
+    }
+  });
+
+  it('SPOTIFY_MCP_CONFIRM=never remains the one sanctioned bypass, and only for it', async () => {
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    try {
+      // Any value other than the exact string is not the bypass.
+      for (const notNever of ['', 'yes', '1', 'NEVER', 'never ']) {
+        process.env.SPOTIFY_MCP_CONFIRM = notNever;
+        const { deletes } = await attempt(undefined);
+        assert.equal(
+          deletes.length,
+          0,
+          `SPOTIFY_MCP_CONFIRM=${JSON.stringify(notNever)} must not unlock the gate`,
+        );
+      }
+
+      process.env.SPOTIFY_MCP_CONFIRM = 'never';
+      const { deletes } = await attempt(undefined);
+      assert.equal(deletes.length, 1, 'the deliberate automation bypass must still write');
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
+    }
+  });
+
+  it('a confirmed prompt is the only path that DELETEs, and it deletes the library URI', async () => {
+    const { out, deletes } = await attempt({ action: 'accept', content: { confirm: true } });
+    assert.equal(deletes.length, 1);
+    assert.equal(deletes[0].path, '/me/library?uris=spotify%3Aplaylist%3Apl1');
+    assert.equal(out.structuredContent?.ok, true);
+  });
+
+  it('advertises destructiveHint: true, and the hint comes from the OVERRIDES table', async () => {
+    // The hint a host reads before deciding whether to auto-approve. It is a
+    // static annotation applied by applyToolAnnotations, NOT the elicitation
+    // gate: this test is about classification, and the gate is covered by the
+    // fail-closed tests above.
+    const annotations = classifyToolAnnotations('unpin_playlist');
+    assert.equal(annotations.destructiveHint, true, 'unpin_playlist removes a library entry');
+    assert.notEqual(annotations.readOnlyHint, true, 'a write must not claim readOnlyHint');
+
+    // The premise this fix rests on, asserted so it cannot rot silently. `unpin`
+    // is in NEITHER prefix list (both regexes are anchored, and the mutating
+    // list has `pin` but not `unpin`), so the name alone classified a library
+    // removal as a harmless write — that is why the OVERRIDES row exists. If a
+    // future edit adds `unpin` to either list, this fails and the row should be
+    // deleted rather than left as a second source of truth that can disagree
+    // with the first. Note the honest corollary: the tool is ALSO absent from
+    // MUTATING_PREFIXES, which is why the surface audit needed the audited
+    // DESTRUCTIVE_OVERRIDES escape rather than mutating-verb membership.
+    assert.equal(DESTRUCTIVE_PREFIXES.test('unpin_playlist'), false);
+    assert.equal(MUTATING_PREFIXES.test('unpin_playlist'), false);
+    assert.equal(READ_ONLY_PREFIXES.test('unpin_playlist'), false);
+
+    // #1099 renames the pair to follow_playlist/unfollow_playlist, and
+    // `unfollow` is ALREADY in both prefix lists — so the renamed tool is
+    // classified correctly with no override at all. Asserted here so the
+    // rename carries this fix across rather than needing it re-applied.
+    assert.equal(DESTRUCTIVE_PREFIXES.test('unfollow_playlist'), true);
+    assert.equal(MUTATING_PREFIXES.test('unfollow_playlist'), true);
+
+    // Not in the audited READ-ONLY override set: a tool may not be both.
+    assert.equal(READ_ONLY_OVERRIDES.has('unpin_playlist'), false);
   });
 });
 

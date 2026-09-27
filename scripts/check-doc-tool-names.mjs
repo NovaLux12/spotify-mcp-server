@@ -160,6 +160,11 @@ const documentedMetadata = new Set([
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
   'rate_limited', 'unavailable', 'statsfm_resource_not_found', 'conflict',
   'unknown_param', 'unknown_tool', 'playlist_changed_since_read',
+  // #1100: the confirmation-refusal `reason` discriminators documented in
+  // SPEC.md. `declined` needs no entry — SPEC states that field is ABSENT for
+  // that verdict, so there is nothing to backtick. These two name the refusal
+  // shape a host parses, not a tool, a parameter, or a metadata key.
+  'elicitation_failed', 'confirmation_unavailable',
 ]);
 /**
  * Range vocabulary (#720). The JSON-example check already rejects a bad

@@ -2488,33 +2488,37 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
   });
 
   it('unpin accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
-    for (const [label, result, shouldWrite] of [
-      ['accepted', accept, true],
-      ['declined', { action: 'decline' }, false],
-      ['error', new Error('transport failed'), false],
+    // #1100: unpin_playlist now uses the shared requiredConfirmationRefusal
+    // guard, so every refusal verdict RETURNS a result carrying a
+    // machine-readable `reason` instead of throwing. The old test asserted
+    // assert.rejects for 'error' and 'unsupported'; that assertion encoded the
+    // shape the fix removed, so it is replaced by the refusal contract rather
+    // than deleted (the "does not write" half is kept and is the safety part).
+    for (const [label, result, shouldWrite, expectedReason] of [
+      ['accepted', accept, true, undefined],
+      ['declined', { action: 'decline' }, false, undefined],
+      ['error', new Error('transport failed'), false, 'elicitation_failed'],
     ] as const) {
       const h = harness(undefined, registerPlaylistFollowTools, result);
-      if (label === 'error') {
-        await assert.rejects(
-          h.invoke('unpin_playlist', { playlist_id: 'pl1' }),
-          /Elicitation failed/,
-        );
-      } else {
-        await h.invoke('unpin_playlist', { playlist_id: 'pl1' });
-      }
+      const out = await h.invoke('unpin_playlist', { playlist_id: 'pl1' });
       assert.equal(
         h.client.calls.filter((c) => c.method === 'DELETE').length,
         shouldWrite ? 1 : 0,
         label,
       );
+      if (expectedReason === undefined) continue;
+      // Parsed structure, not a substring: 'elicitation_failed' must be the
+      // payload's `reason` field, not merely a word somewhere in the prose.
+      assert.equal(out.structuredContent?.reason, expectedReason, label);
+      assert.equal(out.structuredContent?.ok, false, label);
+      assert.equal(out.structuredContent?.cancelled, true, label);
     }
 
     const unsupported = harness(undefined, registerPlaylistFollowTools);
-    await assert.rejects(
-      unsupported.invoke('unpin_playlist', { playlist_id: 'pl1' }),
-      /Elicitation unavailable/,
-    );
+    const refused = await unsupported.invoke('unpin_playlist', { playlist_id: 'pl1' });
     assert.equal(unsupported.client.calls.length, 0);
+    assert.equal(refused.structuredContent?.reason, 'confirmation_unavailable');
+    assert.equal(refused.structuredContent?.ok, false);
 
     const previous = process.env.SPOTIFY_MCP_CONFIRM;
     process.env.SPOTIFY_MCP_CONFIRM = 'never';

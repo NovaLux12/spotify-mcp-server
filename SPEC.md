@@ -1055,6 +1055,25 @@ A response carrying no `total` leaves the row-count check unset rather than gues
 
 `dry_run` results are unchanged: no request is sent, nothing is verified, and these fields describe the write as it would land rather than as it landed.
 
+#### Confirmation-refusal payload contract (#1100)
+
+A confirmation-gated write that is refused returns a **result**, never an exception. The refusal is a normal tool result whose `structuredContent` carries `ok: false` and `cancelled: true`, and — where the verdict distinguishes one refusal from another — a machine-readable `reason` discriminator:
+
+| Verdict | `reason` | Meaning |
+|---|---|---|
+| `declined` | *(absent)* | The human explicitly declined. The bare `{ok: false, cancelled: true}` **is** the signature; a reason field here would imply the tool could not tell a "no" from a failure. |
+| `error` | `elicitation_failed` | The prompt was attempted and failed on the wire. A dead gate must not become an ungated write, so the write is refused. |
+| `unsupported` | `confirmation_unavailable` | The client never advertised elicitation, and `SPOTIFY_MCP_CONFIRM` is not `never`. There was never a human to ask. |
+
+**This is the contract for every tool that gates on `confirmViaElicitation` + `requiredConfirmationRefusal`**, which is the fail-closed pair in `src/tools/confirm.ts`. `SPOTIFY_MCP_CONFIRM=never` remains the only bypass, and it is deliberate: an operator must set that value on purpose. No other `ElicitVerdict` member proceeds, and the closed-union default refuses rather than falling through.
+
+Two properties are worth stating because they are the ones a host depends on:
+
+- **The verdict is machine-readable, not prose.** A caller distinguishes "the human said no" from "we could not ask" from the parsed `reason` field, never by matching text. Both halves of the pin/unpin pair return an identical payload for the same verdict, so a host needs no per-tool special case for a tool and its own inverse.
+- **A refusal is a result, not a crash.** An unpromptable host previously got a bare thrown `Error` from `unpin_playlist` on the failure verdicts while `pin_playlist` returned a structured refusal (#1100). That is fixed, and it is a visible behaviour change for any host that distinguished the two: a failure to establish confirmation is a refusal, not an exceptional condition. The gate itself is unchanged — every verdict other than `confirmed` still stops the write.
+
+Annotations are orthogonal to this gate and do not substitute for it. `destructiveHint: true` is a static host hint applied after registration; it never prompts, and a tool carrying it is still gated (and vice versa). `unpin_playlist` carries it because it removes a library entry the user may have curated by hand, and `unpin` matches no `DESTRUCTIVE_PREFIXES` entry — the hint is stated through the `OVERRIDES` table rather than by widening a prefix, so #1099's planned rename to the `unfollow` verb needs no re-application (`unfollow` is already a destructive prefix, and that row retires with the old name).
+
 #### Playlist set/diff input contract (#912)
 
 All playlist set-operation, diff, overlap, intersection, union, subtraction, merge, following, and pair-analysis tools compose the same typed fragments from `src/shaping.ts`. Playlist references accept a raw ID, `spotify:playlist:` URI, or Spotify playlist URL and are normalized to the ID used in `/playlists/{id}` paths.
