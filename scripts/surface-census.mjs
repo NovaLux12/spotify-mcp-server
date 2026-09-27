@@ -203,6 +203,7 @@ const {
   loadManifestRegistrars,
   registerManifestModule,
   applyToolAnnotations,
+  applyToolOutputSchemas,
   assertToolNamingPolicy,
   collectAggregateSurfaceMeasurement,
   AGGREGATE_SURFACE_LIMITS,
@@ -1228,11 +1229,16 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
     });
     // The aggregate figures (#1241) must come from the same measurement
     // `assertAggregateSurfaceBudget` gates on, which is taken *after* the
-    // naming-policy check and the annotation pass — not from the wire payload
-    // the stdio read above returns. Run the same two steps `src/index.ts` runs
-    // in the same order, then measure.
+    // naming-policy check, the output-schema pass and the annotation pass —
+    // not from the wire payload the stdio read above returns. Run the same
+    // steps `src/index.ts` runs in the same order, then measure. #687: the
+    // output-schema pass has to be here for the same reason the annotation
+    // pass is — `collectAggregateSurfaceMeasurement` charges for
+    // `outputSchema`, so a census that skipped it would report a surface
+    // smaller than the one startup enforces.
     const registeredNames = Object.keys(server._registeredTools ?? {});
     assertToolNamingPolicy(registeredNames);
+    applyToolOutputSchemas(server);
     applyToolAnnotations(server);
     const aggregateSurface = collectAggregateSurfaceMeasurement(server);
     if (aggregateSurface.toolCount !== live.size) {

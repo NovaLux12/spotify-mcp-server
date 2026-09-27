@@ -42,14 +42,13 @@ export function finalInputSchema(input: unknown): Record<string, unknown> {
  * first time either moves. The budget then reports a confident number about a
  * payload nobody sends.
  *
- * Deliberately NOT symmetric with `finalInputSchema`, and the asymmetry is
- * recorded rather than smoothed over:
- *   - `$schema` survives here and is deleted for inputs. Output schemas are
- *     new to the surface (#687 was declined), so there is no shipped wire
- *     shape to preserve — but deleting the key is a *change to what hosts
- *     receive*, which is a different change from measuring what they already
- *     receive. On the current tree it is 52B per declaring tool, so it is
- *     worth doing deliberately rather than folding into a measurement fix.
+ * Symmetric with `finalInputSchema` on `$schema`: both projections delete it.
+ * It was kept here for as long as no tool declared one, on the reasoning that
+ * deleting a key hosts already receive is a different change from measuring
+ * what they receive. #687 is the day a tool actually declares a schema, and it
+ * is 52B of every declaring tool's payload for a statement about the JSON
+ * Schema draft rather than about the result — so the deletion is now a
+ * deliberate change, made here, with the input side agreeing.
  *
  * `additionalProperties` is likewise not forced here, but the reason to
  * expect it anyway is worth writing down, because it is the trap for whoever
@@ -69,7 +68,16 @@ export function finalOutputSchema(output: unknown): Record<string, unknown> | un
   if (!output) return undefined;
   const objectSchema = normalizeObjectSchema(output as Parameters<typeof normalizeObjectSchema>[0]);
   if (!objectSchema) return undefined;
-  return toJsonSchemaCompat(objectSchema, { pipeStrategy: 'output' });
+  const schema = toJsonSchemaCompat(objectSchema, { pipeStrategy: 'output' });
+  // `$schema` is deleted for the reason recorded above and now acted on. This
+  // is the day a tool actually declares one (#687), and it is 52B of every
+  // declaring tool's payload: it names the JSON Schema DRAFT rather than
+  // anything about the result, and no host needs it — the tools/list envelope
+  // already says which protocol version it is speaking. `finalInputSchema` has
+  // always deleted it; the output projection is measured rather than
+  // hypothetical now, so the two sides agree.
+  delete schema.$schema;
+  return schema;
 }
 
 // ---------------------------------------------------------------------------
@@ -2188,4 +2196,303 @@ export function untrustedStore(store: string, contents: string, max = UNTRUSTED_
  */
 export function labelOfStore(store: string): string {
   return `<<untrusted-store: ${neutralise(store, 64)}>>`;
+}
+
+// ---------------------------------------------------------------------------
+// Published output schemas (#687)
+// ---------------------------------------------------------------------------
+
+/**
+ * A closed `z.object()` is the WRONG shape for an output schema, and this is
+ * the one place that choice is made.
+ *
+ * The SDK's zod→JSON-Schema conversion emits `additionalProperties: false` for
+ * a bare `z.object()`. These payloads are not closed: a census of `src/tools`
+ * counted hundreds of distinct top-level key names, and the shared emitters
+ * spread caller-supplied `extra` keys over the common ones
+ * ({@link listStructuredContent}). A closed schema would publish a contract
+ * the server breaks on its first response, and it breaks in the worst
+ * direction — a host validating strictly would REJECT a perfectly good payload
+ * over an endpoint-specific key like `scanned` or `counts`, while this
+ * server's own `safeParseAsync` in `validateOutput` would not have noticed.
+ *
+ * `.passthrough()` (equivalently `z.looseObject`) makes the published schema
+ * OPEN, so the declaration and the runtime check agree, and the declared
+ * properties document the common shape rather than whitelist it.
+ */
+
+/**
+ * The list family: what a tool returning a bounded page of rows publishes.
+ *
+ * `items` is `z.array(z.unknown())` on purpose. The rows are endpoint objects
+ * (a `Track`, an `Episode`, a stats.fm row) whose shape belongs to
+ * `src/types/spotify.ts`, not to a shared output contract, and a schema that
+ * tried to describe one would be a second, drifting copy of it. What a host
+ * needs from here is that the key is an array — which is what lets an agent
+ * branch on `items.length` instead of regexing prose.
+ *
+ * `total` is `number | null` because an endpoint that does not report a size
+ * says so with `null` ({@link paginationInfo}), and a schema that demanded a
+ * number would reject that honest answer. `truncated` / `returned` /
+ * `remaining` are what the truncation boundary injects when it caps a walk
+ * ({@link installTruncationBoundary}); every field is optional because
+ * `applyResponseCap` can drop top-level keys entirely.
+ *
+ * The nested `pagination` block is deliberately NOT declared, and the reason is
+ * budget rather than doubt: {@link listStructuredContent} always emits it, but
+ * declaring it costs a measured +113B per tool (219B → 332B for the
+ * `next_offset` field alone), which does not fit the aggregate headroom this
+ * rollout is sized against. `next_offset` is also published at the TOP level by
+ * the truncation boundary, so a host is not left without a paging signal. A
+ * maintainer holding a byte warrant adds the block here, once, for every tool.
+ */
+export const ListOutput = z
+  .object({
+    items: z.array(z.unknown()).optional(),
+    truncated: z.boolean().optional(),
+    total: z.number().nullable().optional(),
+    returned: z.number().optional(),
+    remaining: z.number().optional(),
+  })
+  .passthrough();
+
+/**
+ * The mutation family: what a tool that changed — or previewed a change to —
+ * something publishes.
+ *
+ * These are the fields the #687 report names as the ones an agent currently has
+ * to regex out of prose: `ok`, `dry_run`, `receipt`. Declaring them is what
+ * lets a host branch instead of matching text, which is what makes a long
+ * tool-chain reliable.
+ *
+ * `receipt` is nullable because a dry run, a refusal and a cancelled
+ * confirmation all return without one; the key is what a host branches on, and
+ * its absence is the answer.
+ */
+export const MutationOutput = z
+  .object({
+    ok: z.boolean().optional(),
+    dry_run: z.boolean().optional(),
+    cancelled: z.boolean().optional(),
+    receipt: z.string().nullable().optional(),
+  })
+  .passthrough();
+
+/**
+ * The card family: a single entity, or a diagnostic that reports on several.
+ *
+ * Near-empty by design, and that is the honest shape rather than a shrug: a
+ * single-object tool publishes whatever the endpoint returned, and no two
+ * endpoints agree on what that is. What changes for a host is the DECLARATION —
+ * that the tool returns a structured object, and that the object is open.
+ * Before this, a host could not tell a tool that emits `structuredContent` from
+ * one that does not, which is the ambiguity #687 exists to remove.
+ */
+export const CardOutput = z.object({}).passthrough();
+
+/**
+ * Every family, by the key {@link OUTPUT_SCHEMA_BY_MODULE} names.
+ *
+ * `list` currently has no publisher: the two modules that would take it are in
+ * {@link PENDING_OUTPUT_SCHEMA_MODULES} on budget grounds, recorded in the
+ * comment there. It is kept, and tested against the real
+ * `listStructuredContent` output, so that moving either module is a one-line
+ * change against a shape already proven against the emitter — rather than a
+ * re-derivation at the moment the bytes are scarce and nobody has time for it.
+ * Nothing publishes it today, so it is not a contract a host can rely on.
+ */
+export const OUTPUT_SCHEMA_FAMILIES = Object.freeze({
+  list: ListOutput,
+  mutation: MutationOutput,
+  card: CardOutput,
+} as const);
+
+export type OutputSchemaFamily = keyof typeof OUTPUT_SCHEMA_FAMILIES;
+
+/**
+ * Modules that MUST NOT be given an `outputSchema` (#687).
+ *
+ * This is the half of the issue that is a correctness problem rather than a
+ * feature, and it is why the change is not a blanket sweep. The SDK — and this
+ * server's own `validateOutput` — REFUSE a result that declares an output
+ * schema and returns no `structuredContent`:
+ *
+ *   > Output validation error: Tool X has an output schema but no structured
+ *   > content was provided
+ *
+ * So declaring one on a tool with a prose-only path turns that path from a
+ * working response into a thrown error on every call that takes it. Measured
+ * against the pinned SDK with a live server, not inferred from reading it.
+ *
+ * These entries are MODULE-level because that is the grain at which the
+ * behaviour is knowable: a module either routes through an emitter that always
+ * attaches a payload, or it does not. The four mechanisms that produce a
+ * prose-only result, all of them present in this tree:
+ *
+ *   - `EmitOptions.proseCarriesPayload: false` — `playback.ts` only.
+ *   - `textResult(text)` with no second argument — `playlists.ts`,
+ *     `playlistbatch.ts` and `queueops.ts`.
+ *   - `renderSingle()` in `concise`/`detailed` — `catalog.ts`, `audiobooks.ts`.
+ *   - an early `return { content: [...] }` before the payload exists — the
+ *     "No results found." paths in `search.ts` and `statsfm.ts`.
+ *
+ * "No second argument" is the operative half of the second mechanism, and it
+ * is worth stating precisely because getting it wrong is silent in the
+ * dangerous direction: `textResult(text, payload)` DROPS the payload when
+ * `payload` is falsy, so a two-argument call whose second argument is a
+ * possibly-undefined variable is a prose-only path wearing a payload's
+ * clothes. Every call site in this list passes an object literal, checked by
+ * reading them.
+ *
+ * The list is not a judgement call: `tests/output-schema-declaration.test.ts`
+ * re-derives it from the sources and fails when the two disagree in EITHER
+ * direction, so a module that grows a prose-only path is caught by a test
+ * rather than in production.
+ */
+export const PROSE_ONLY_MODULES: ReadonlySet<string> = new Set([
+  'src/tools/artistwatch.ts',
+  'src/tools/audiobooks.ts',
+  'src/tools/catalog.ts',
+  'src/tools/personalization.ts',
+  'src/tools/playback.ts',
+  'src/tools/playlistbatch.ts',
+  'src/tools/playlists.ts',
+  'src/tools/queueops.ts',
+  'src/tools/scenes.ts',
+  'src/tools/search.ts',
+  'src/tools/searchdive.ts',
+  'src/tools/statsfm.ts',
+]);
+
+/**
+ * Modules verified prose-SAFE that publish no schema yet (#687).
+ *
+ * The third state, and the reason this is not a two-way choice. A module here
+ * has been checked against every prose-only mechanism listed above and has
+ * none, so a declaration here would be correct — it is absent because the
+ * aggregate surface gate has no room for it, not because the behaviour is
+ * unsafe. That distinction is the whole reason this set exists: without it,
+ * every module awaiting a byte warrant would be indistinguishable from one
+ * that cannot take a schema, and the second of those is the dangerous one.
+ *
+ * Moving a module from here into {@link OUTPUT_SCHEMA_BY_MODULE} is a one-line
+ * change with a family, and the startup gate says immediately if the bytes do
+ * not fit.
+ */
+export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
+  'src/tools/accounts.ts',
+  'src/tools/analytics.ts',
+  'src/tools/annotations.ts',
+  'src/tools/audiobookcopilot.ts',
+  'src/tools/backup.ts',
+  'src/tools/backupfirst.ts',
+  'src/tools/browse.ts',
+  'src/tools/episodemgmt.ts',
+  'src/tools/exhaust2_catalog.ts',
+  'src/tools/exhaust2_extra.ts',
+  'src/tools/exhaust2_misc.ts',
+  'src/tools/exhaust2_playback.ts',
+  'src/tools/exhaust2_playlists.ts',
+  'src/tools/exhaustmisc.ts',
+  'src/tools/freshness.ts',
+  'src/tools/import.ts',
+  'src/tools/library.ts',
+  'src/tools/following.ts',
+  'src/tools/libraryanalytics.ts',
+  'src/tools/libraryinsights.ts',
+  'src/tools/moodexpand.ts',
+  'src/tools/playbackext.ts',
+  'src/tools/playbackintel.ts',
+  'src/tools/playlistdna.ts',
+  'src/tools/playlisthealth.ts',
+  'src/tools/playlistmisc.ts',
+  'src/tools/podcastsession.ts',
+  'src/tools/portability.ts',
+  'src/tools/playlistops.ts',
+  'src/tools/restore.ts',
+  'src/tools/backup_delete.ts',
+  'src/tools/saveddedupe.ts',
+  'src/tools/libraryhygiene.ts',
+  'src/tools/export.ts',
+  'src/tools/searchhistory.ts',
+  'src/tools/showradar.ts',
+  'src/tools/smart.ts',
+  'src/tools/statsfm_taste.ts',
+  'src/tools/undo.ts',
+  'src/tools/swarm3_analytics.ts',
+  'src/tools/swarm3_discovery.ts',
+  'src/tools/swarm3_library.ts',
+  'src/tools/swarm3_playback.ts',
+  'src/tools/swarm3_playlistops.ts',
+  'src/tools/swarm3_refs.ts',
+  'src/tools/swarm3_shows.ts',
+  'src/tools/swarm3_snapshots.ts',
+  'src/tools/swarm3b_discovery.ts',
+  'src/tools/swarm4_playlists.ts',
+  'src/tools/taste_composites.ts',
+  'src/tools/taste_playlist.ts',
+  'src/tools/users.ts',
+]);
+
+/**
+ * Modules that DO publish an output schema, and which family (#687).
+ *
+ * Keyed by module rather than by tool name for two reasons. It is one change
+ * per family rather than per tool, which is what the issue asked for and what
+ * keeps this from rotting into hundreds of near-identical lines; and a tool NAME
+ * is something a rename can silently invalidate, while a module is the key the
+ * prose analysis, the schema budget and the census are all written against.
+ *
+ * This is a DELIBERATELY PARTIAL rollout and the omission is a budget
+ * decision, not an oversight. What is published is the whole of the cheapest
+ * family ({@link CardOutput}) plus one always-confirmation-gated write module
+ * ({@link MutationOutput}) — the surface where an agent was most reduced to
+ * reading the wording of a sentence to learn whether a write happened.
+ *
+ * The binding constraint is not the default session. It is the surface the
+ * `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` opt-in registers, which the same gate
+ * measures: `AGGREGATE_SURFACE_LIMITS` is enforced against whichever surface is
+ * live, while `defaultMaxBytes` was sized for the default one. Both figures
+ * below are MEASURED through `collectAggregateSurfaceMeasurement` — the same
+ * projection startup enforces, not the census's echo of a baseline:
+ *
+ *   default surface     600,474B -> 601,554B   headroom 10,446B  (1.71%, `tight`)
+ *   analytics opt-in ON 610,462B -> 611,542B   headroom    458B  (0.07%, `effectively exhausted`)
+ *
+ * Those three modules cost +1,080B. Measured per tool on this tree, a family
+ * costs {@link ListOutput} 235B, {@link MutationOutput} 195B, {@link CardOutput}
+ * 75B, so the rest of the prose-safe set can be sized without re-running
+ * anything: `library` alone is over 3,000B, more than the entire budget the
+ * opt-in has left.
+ *
+ * That is the finding worth carrying forward, and it is a budget decision the
+ * maintainer owns rather than one this change should make by spending the last
+ * 458B on a contract. Raising `defaultMaxBytes` was declined for the reason
+ * `TOOL_SURFACE_BUDGET` states in its own words — "reclaim-first remains the
+ * rule for any single edit" — and because open epic #565 exists to shrink
+ * exactly this payload. Issue #687's ">= 90% of tools" target is not reachable
+ * at the current ceiling by any rollout order; only a reclaim or a raise gets
+ * there, and both are above this change.
+ */
+export const OUTPUT_SCHEMA_BY_MODULE: Readonly<Record<string, OutputSchemaFamily>> = Object.freeze({
+  // The write surface. `ok` / `dry_run` / `cancelled` / `receipt` is the whole
+  // reason #687 was filed: an agent confirming a mutation has been guessing at
+  // these four from the wording of a sentence.
+  'src/tools/playlistfollow.ts': 'mutation',
+  // Diagnostics. A card declares almost nothing about its contents; what it
+  // declares is that the tool returns an object rather than prose.
+  'src/tools/doctortool.ts': 'card',
+  'src/tools/swarm3_meta.ts': 'card',
+});
+
+/**
+ * The family a module publishes, or `undefined` when it publishes none.
+ *
+ * `hasOwnProperty` rather than a lookup, so a module literally named
+ * `constructor` or `toString` cannot inherit a family from `Object.prototype`.
+ */
+export function outputSchemaFamilyForModule(module: string): OutputSchemaFamily | undefined {
+  return Object.prototype.hasOwnProperty.call(OUTPUT_SCHEMA_BY_MODULE, module)
+    ? OUTPUT_SCHEMA_BY_MODULE[module]
+    : undefined;
 }
