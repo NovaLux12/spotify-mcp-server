@@ -289,14 +289,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     const full = await recordStartup('all');
     // The same four deltas as the `playback` figure above, measured on the full
     // surface: 570 -> 571 (#598), 571 -> 572 (#846), 572 -> 566 (#847), and
-    // 566 -> 556 (#848, the same ten). Each is a registration count, and the
-    // forwarding aliases add no line here.
+    // 566 -> 556 (#848, the same ten), then 556 -> 558 (#727, the two lane
+    // reads). Each is a registration count, and the forwarding aliases add no
+    // line here.
     //
     // The message says "full surface", not "default surface": since #889 an
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    assert.equal(full.toolCount, 556, 'the full (TOOLSETS=all) surface must be unchanged');
+    assert.equal(full.toolCount, 558, 'the full (TOOLSETS=all) surface must be unchanged');
     const missing = REGISTRAR_MANIFEST
       .map((module) => module.file.replace(/^src\/tools\//, '').replace(/\.ts$/, ''))
       .filter((stem) => !full.toolModules.includes(stem));

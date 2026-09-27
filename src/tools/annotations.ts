@@ -432,14 +432,16 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
     // decision to be visible, not to be routed around. The tool unlinks a file the user cannot
     // recover, so its name should say what it does.
     album: 8, apply: 4, artist: 35, check: 6, delete: 4, episode: 5, export: 10,
-    // `list` 11 -> 12 for `list_accounts` (#602). The budget table exists to
-    // make this decision visible rather than to route around it, and the
-    // decision is that the multi-account listing belongs in the `list` family
-    // with the eleven reads beside it: it IS a read, it answers "what is here",
-    // and a ninth verb family for two tools would cost a host two new prefixes
-    // to learn. It is a registry listing with no Spotify request beyond one
-    // `GET /me` for the acting account.
-    filter: 4, find: 11, get: 59, library: 8, list: 12, listening: 17,
+    // `list` 11 -> 12 for `list_accounts` (#602), then 12 -> 13 for
+    // `list_lanes` (#727). The budget table exists to make this decision
+    // visible rather than to route around it, and the decision is the same
+    // both times: a registry listing belongs in the `list` family with the
+    // other reads beside it. It IS a read, it answers "what is here", and a
+    // new verb family for one tool would cost a host a prefix to learn.
+    // `list_lanes` reads the lane manifest and issues one
+    // `GET /playlists/{id}` per lane — the same read cost as the
+    // `list_scenes` / `list_backups` registry listings above it.
+    filter: 4, find: 11, get: 59, library: 8, list: 13, listening: 17,
     play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
     save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
     split: 5, statsfm: 38, taste: 16, top: 6, track: 4, uri: 4,
@@ -1586,7 +1588,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // paying down. Measured, not derived.
   manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26562]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
-  manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
+  // #727: `batch_add_to_playlist` and `move_items_between_playlists` each gained
+  // a lane alternative to their target. Same 3 tools; the byte move is entirely
+  // the four new `*_lane` inputs and the reworded descriptions that name them.
+  // MEASURED by zeroing the baseline and reading the startup gate's own
+  // figure, not estimated.
+  manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 5558], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3807], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
@@ -1963,6 +1970,16 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5713], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
+  // #727: the lane registry. Two READ-ONLY tools, so `readOnlySafe: true` —
+  // `list_lanes` and `lane_status` issue `GET /playlists/{id}` reads and no
+  // write of any kind, which is what keeps them visible in a read-only session.
+  // The lane→playlist RESOLUTION lives in `src/lanes.ts` and is called by the
+  // writing tools (playlistbatch), not here; this row is the read side.
+  // 1,824B is MEASURED — the baseline was zeroed and the startup gate printed
+  // `2 tools/1824B`, the same projection `tools/list` gives a host. No ceiling
+  // was hand-raised: the derived ceiling is 1 tool / 2,007B, so the next tool
+  // or description edit to this module has to come back through here.
+  manifestEntry('lanes', 'lanes', lazyModule('./lanes.js', 'registerLaneTools'), [2, 1824], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 1 tool and same input schema. The baseline in
   // the entry below moved because import_playlist's description now names the

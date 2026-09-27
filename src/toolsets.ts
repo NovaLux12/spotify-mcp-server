@@ -20,7 +20,7 @@
 
 // BEGIN:generated surface-census
 // Production surface (generated; run `npm run count:tools -- --write` after registry changes):
-// 556 tools, 17 fixed resources, 28 resource templates, and 14 prompts.
+// 558 tools, 17 fixed resources, 28 resource templates, and 14 prompts.
 // END:generated surface-census
 
 /**
@@ -50,6 +50,7 @@
  *                     tools/playlisthealth.ts   (health/followers/collab/snapshots)
  *                     tools/playlistbatch.ts    (batch add/copy/move)
  *                     tools/playlistmisc.ts     (pin/unpin/templates)
+ *                     tools/lanes.ts           (lane registry: list_lanes, lane_status)
  *                     tools/exhaust2_playlists.ts, tools/exhaust2_extra.ts, tools/swarm3_playlistops.ts, tools/swarm3_snapshots.ts, tools/swarm4_playlists.ts (playlist set-ops/snapshot/resequence)
  *   library         → tools/library.ts          (saved-library read/write)
  *                     tools/following.ts        (artist/playlist following)
@@ -81,7 +82,7 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
-  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra', 'swarm3playlistops', 'swarm3snapshots', 'swarm4playlists'],
+  playlists: ['playlists', 'users', 'playlisthealth', 'playlistbatch', 'playlistmisc', 'exhaust2playlists', 'exhaust2extra', 'swarm3playlistops', 'swarm3snapshots', 'swarm4playlists', 'lanes'],
   library: ['library', 'following', 'libraryanalytics', 'portability', 'episodemgmt', 'exhaust2misc', 'swarm3library'],
   personalization: ['personalization', 'swarm3analytics'],
   statsfm: ['statsfm'],

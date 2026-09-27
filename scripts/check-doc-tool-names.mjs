@@ -567,6 +567,14 @@ const documentedMetadata = new Set([
   // not a parameter — `saved_vs_playlist_coverage` has returned it since #732
   // and `playlist_staleness_report` now does too.
   'quota_hit_at_playlist',
+  // #727: the lane registry's per-lane row and its summary counts. These are
+  // structuredContent keys, and the SPEC contract is specifically about WHICH
+  // of them count lanes that were read and which count lanes that could NOT be
+  // — so a doc that could not name them would describe the payload without
+  // saying what the numbers mean. Not tools and not parameters.
+  'unreadable_reason', 'lane_count', 'unreadable_lane_count',
+  'snapshot_total', 'snapshot_taken_at', 'resolved_lane_count',
+  'unresolved_lane_count', 'no_snapshot_lane_count', 'drifted_lane_count',
   // #897: the two Spotify album fields the §5.3 `library_hygiene` contract has
   // to name, because the whole point of the change is WHERE they come from —
   // `album_type` and `total_tracks` are required members of the API's

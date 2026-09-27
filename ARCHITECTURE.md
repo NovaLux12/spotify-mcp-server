@@ -149,6 +149,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | — |
 | `src/http.ts` | The opt-in Streamable HTTP transport (#599). (0 registered tools) | — |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | — |
+| `src/lanes.ts` | The server-side lane registry (#727). (0 registered tools) | — |
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | — |
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | — |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | — |
@@ -200,6 +201,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/following.ts` | Runtime module for src/tools/following.ts. (3 registered tools) | 2,502 |
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 2,672 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. (1 registered tool) | 1,322 |
+| `src/tools/lanes.ts` | Lane registry tools (#727). (2 registered tools) | 1,824 |
 | `src/tools/library.ts` | Runtime module for src/tools/library.ts. (13 registered tools) | 13,018 |
 | `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (3 registered tools) | 2,498 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 804 |
@@ -210,7 +212,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 8,331 |
 | `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 11 tools: play_on, queue_next, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next #847 retired describe_queue into `get_queue` view='enriched'. + triage extras: get_playback_context, volume_step, market_availability Each tool states its quota cost in words in the description. (13 registered tools) | 10,315 |
 | `src/tools/playbackpositions.ts` | The canonical playback-position record (#846). (0 registered tools) | — |
-| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 4,896 |
+| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 5,558 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 1,310 |
 | `src/tools/playlistfollow.ts` | Playlist follow/unfollow (#1005, #1099), split out of playlistmisc.ts. (4 registered tools) | 3,807 |
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 5,713 |

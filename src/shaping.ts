@@ -3127,6 +3127,16 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/backup_delete.ts',
   'src/tools/saveddedupe.ts',
   'src/tools/libraryhygiene.ts',
+  // #727. Verified prose-safe: both tools return `structuredContent` on every
+  // path (the prose and JSON branches build the same payload and both hand it
+  // to `textResult` / the content block), so there is no prose-only path for an
+  // output schema to break. It is absent on budget grounds like the rest of
+  // this set — and additionally because neither tool's payload is the `list`
+  // family: `list_lanes` publishes `lanes[]`, not `items[]`, so publishing
+  // `ListOutput` would declare a key no host receives while saying nothing
+  // about the two fields that matter here (`unreadable_lane_count` and
+  // `unresolved_lane_count`, the counts of what could NOT be read).
+  'src/tools/lanes.ts',
   'src/tools/export.ts',
   'src/tools/searchhistory.ts',
   'src/tools/showradar.ts',

@@ -2106,8 +2106,10 @@ were never transferred stay in the source.
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `source_playlist_id` | string | yes | Source playlist ID, `spotify:playlist:` URI, or URL |
-| `target_playlist_id` | string | yes | Target playlist ID, `spotify:playlist:` URI, or URL |
+| `source_playlist_id` | string | one of two | Source playlist ID, `spotify:playlist:` URI, or URL. Provide exactly one of `source_playlist_id` or `source_lane` |
+| `source_lane` | string | one of two | Lane name resolving to the source playlist. Provide exactly one of `source_playlist_id` or `source_lane` |
+| `target_playlist_id` | string | one of two | Target playlist ID, `spotify:playlist:` URI, or URL. Provide exactly one of `target_playlist_id` or `target_lane` |
+| `target_lane` | string | one of two | Lane name resolving to the target playlist. Provide exactly one of `target_playlist_id` or `target_lane` |
 | `mode` | `'copy' \| 'move'` | no | `copy` = leave source intact; `move` = remove from source after copy (default: `copy`) |
 | `dedupe` | boolean | no | Skip tracks already in target, and de-duplicate repeats within the source. Default: `true` |
 | `filter` | string | no | Only transfer tracks whose name or artist name contains this string (case-insensitive) |
@@ -2122,6 +2124,69 @@ disagrees with `transferred` throws rather than reporting success. Elicitation f
 `dry_run` returns would_transfer and would_remove_occurrences and issues no writes.
 
 ---
+
+#### Lanes (#727)
+
+A **lane** is a short label the operator chooses for a playlist, held in one
+server-side registry (`~/.spotify-mcp/lanes.json`, or `SPOTIFY_MCP_LANES_FILE`).
+A lane is a second *input* that produces a playlist id, not a fourth way to
+write one: the manifest's `playlist` value is passed through the same
+normalizer every other playlist argument uses, so an id, a `spotify:playlist:`
+URI, and an open.spotify.com URL all resolve identically and there is no second
+acceptance rule to drift.
+
+The host re-derivation this removes is not cosmetic. Two hosts resolving `OSM`
+can disagree — after a rename, or when two playlists share a name — and when
+they do the write lands in the wrong playlist and nothing in the response says
+so. The server already owns the write path, so it owns the mapping too.
+
+`list_lanes` and `lane_status` are read-only and issue no write.
+
+| Tool | Inputs | Returns |
+|---|---|---|
+| `list_lanes` | `response_format`, `max_results` | Every lane in the manifest: `lane`, `known`, `playlist_id`, `description`, `track_count`, `unreadable_reason`, plus `lane_count` and `unreadable_lane_count` / `unreadable_lanes[]` |
+| `lane_status` | `lane` (omit for all), `response_format`, `max_results` | The same per-lane row plus `snapshot_id`, `snapshot_total`, `snapshot_taken_at`, `drift`, `staleness`; and `resolved_lane_count`, `unresolved_lane_count`, `unreadable_lane_count`, `no_snapshot_lane_count`, `drifted_lane_count` |
+
+**A failed playlist read is reported as a failed read.** A lane whose playlist
+404s is listed with `track_count: null` and a redacted reason (status and
+Spotify's own reason code — never `err.message`, which an upstream error body
+can fill with private ids), and is excluded from the counts above. It is never
+reported as `0 tracks`: that is the #803 shape one field over, and it would tell
+an agent branching on the count that a *deleted* playlist is an *empty* one.
+`track_count` comes from `playlistItemTotal` — the canonical `items.total`, with
+the upstream-deprecated `tracks.total` as a fallback — so a current payload is
+read and a grandfathered one still is.
+
+**Drift is `null` where it is unknown.** A lane with no playlist-health snapshot
+reports `staleness: "no_snapshot"` and `drift: null`, which is not the same claim
+as zero; a lane whose playlist could not be read reports `staleness:
+"unreadable"` and likewise no drift. `drifted_lane_count` counts only lanes
+actually compared, so "0 drifted" reads correctly next to "2 lanes could not be
+read".
+
+**An unknown lane is an error, never a silent fallback.** A `*_lane` argument
+that is not in the manifest is refused with the known lane names and the
+manifest path, and — distinguishing a typo from a registry that was never
+written — says so explicitly when the manifest holds no lanes at all. It is
+never treated as "no lane given", never guessed at, and never allowed to fall
+back to some other playlist. Two manifest entries differing only by case
+(`OSM` and `osm`) are also refused, naming both, rather than resolved by
+insertion order. A `playlist` value that is not a valid reference fails the whole
+load with the offending lane named; a missing file is a first run, not a
+corruption, and reads as an empty registry.
+
+**`target_lane` is an alternative to `target_playlist_id`, not an addition.**
+Exactly one of each pair is required. Both supplied is refused, naming both
+fields, rather than silently preferring one — a caller who set both would
+otherwise believe the lane was honoured when the id won; neither supplied is
+refused too. Both checks run before any Spotify request, so a bad target costs
+nothing. `batch_add_to_playlist` takes `target_lane`; `move_items_between_playlists`
+takes `source_lane` and `target_lane`, resolved independently. With no manifest,
+every explicit-id call behaves exactly as it did before lanes existed.
+
+The registry is a local store: it is in `LOCAL_STORES` (`src/config.ts`) and
+erased by `logout` by move alongside the other preference sidecars, so a user
+who runs `logout` to disconnect is not left with a record of their playlists.
 
 ### 5.7 Following
 

@@ -69,6 +69,7 @@ import { miscFilePath } from './tools/exhaust2_misc.js';
 import { exhaust2PlaybackFile } from './tools/exhaust2_playback.js';
 import { watermarkFilePath } from './tools/freshness.js';
 import { genreTagsPath } from './tools/libraryinsights.js';
+import { lanesFilePath } from './lanes.js';
 import { portabilityDir } from './tools/portability.js';
 import { snapshotDir as playlistHealthSnapshotDir } from './tools/playlisthealth.js';
 import { playbackExtFile } from './tools/playbackext.js';
@@ -239,6 +240,20 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     envVar: 'SPOTIFY_MCP_GENRE_TAGS_FILE',
     erasure: 'move',
     resolve: (env) => genreTagsPath(env),
+  },
+  {
+    // The lane registry (#727). Erasing the Spotify token must not leave
+    // behind the mapping from the user's own lane labels to their playlist
+    // ids — that is the same class of local record `accounts` and
+    // `taste-feedback` were missed for (#1434). `move`, not `shred`: it holds
+    // playlist references, never token material, so a mistaken logout is
+    // recoverable by moving the file back.
+    id: 'lanes',
+    label: 'Lane registry',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_LANES_FILE',
+    erasure: 'move',
+    resolve: (env) => lanesFilePath(env),
   },
   {
     id: 'playback-extensions',

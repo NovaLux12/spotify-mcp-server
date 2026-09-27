@@ -869,6 +869,17 @@ export const LOCAL_STORES: readonly LocalStoreSpec[] = [
     resolve: (env) => env.SPOTIFY_MCP_GENRE_TAGS_FILE ?? join(storeDir(), 'genre-tags.json'),
   },
   {
+    // The lane registry (#727). A local file, not a secret, and it holds no
+    // credentials — it maps a user-chosen label to a playlist reference, so
+    // `logout` erases it by MOVE alongside the other preference sidecars.
+    id: 'lanes',
+    label: 'Lane registry',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_LANES_FILE',
+    defaultPath: '~/.spotify-mcp/lanes.json',
+    resolve: (env) => env.SPOTIFY_MCP_LANES_FILE ?? join(storeDir(), 'lanes.json'),
+  },
+  {
     id: 'playback-extensions',
     label: 'Playback extensions',
     kind: 'file',

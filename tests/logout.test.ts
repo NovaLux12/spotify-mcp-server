@@ -63,6 +63,7 @@ function sandbox(): { root: string; home: string; env: NodeJS.ProcessEnv } {
     SPOTIFY_MCP_RECEIPTS_DIR: join(root, 'receipts'),
     SPOTIFY_MCP_SCENES_FILE: join(root, 'scenes.json'),
     SPOTIFY_MCP_GENRE_TAGS_FILE: join(root, 'genre-tags.json'),
+    SPOTIFY_MCP_LANES_FILE: join(root, 'lanes.json'),
     SPOTIFY_MCP_PLAYBACKEXT_FILE: join(root, 'playback-ext.json'),
     SPOTIFY_MCP_SEARCH_HISTORY_FILE: join(root, 'search-history.json'),
     SPOTIFY_MCP_FRESHNESS_STATE: join(root, 'freshness.json'),
