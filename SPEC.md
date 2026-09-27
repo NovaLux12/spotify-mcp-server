@@ -638,7 +638,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **571 tools** (all 571 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **129 tools** / 142,737 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **572 tools** (all 572 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **129 tools** / 142,737 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -889,6 +889,90 @@ A 404 means "not available in this market"; a 429 or transport failure is a
 statement about the run, not about the market, and is reported as such with
 its reason so a throttled sweep cannot read as a clean sweep of
 unavailability.
+
+#### The one playback-position record (#846)
+
+Three sidecars each persisted "where was I listening" in their own shape, under
+their own key scheme, with their own id generator — `exhaust2-playback.json`
+under `checkpoints` (`cp-YYYY-MM-DDTHH:MM`), `playback-extensions.json` under
+`states` (the caller's slot name), and one file per record under
+`backups/playback-bookmark-*.json` (an ISO id with `:`/`.` → `-`). Nothing could
+list them together and a position saved by one tool could not be continued by
+another.
+
+There is now **one record shape**, in the playback-extensions sidecar under its
+own `positions` key — a new key rather than a reuse of `states`, because
+`states` backs `save_playback_state`/`restore_playback_state` and holds a whole
+`PlaybackState` the #833 restore path reads. The other four keys in that file
+(`devicePresets`, `sessions`, `smartRules`, `showDigest`, `states`) are
+untouched.
+
+| Field | Notes |
+|---|---|
+| `id` | Canonical id. The tool-reported id for a fresh write, or the migration-assigned id for an imported one. |
+| `label` / `note` | The free-text slot. The three legacy stores spelled it `label`, `note` and `name`; one field, whichever the source had. `null` when there was none. |
+| `saved_at` | ISO 8601. One timestamp, used for both the id and the field, so they cannot disagree. |
+| `device_id` / `device_name` | `null` when not captured. |
+| `track_uri` / `track_name` | `null` when nothing was playing. |
+| `position_ms` | Offset within the track. |
+| `is_playing` | Boolean. |
+| `context_uri` | Album/playlist context when one was captured, else `null`. |
+| `shuffle_state` / `repeat_state` | **`null` means "not captured"**, which is not the same as `false`. The bookmark shape never recorded them, so a migrated bookmark reports `null` rather than a default that reads as a fact. |
+| `origin` | `bookmark` \| `checkpoint` \| `playback_state` — which store wrote it. |
+| `origin_id` | The key it had there. Together with `origin` this is the **idempotency key**. |
+| `legacy` | The source record, verbatim. |
+
+`legacy` is the losslessness contract: two of the three legacy shapes stored a
+whole `PlaybackState`, and flattening it would throw away anything the
+migration failed to anticipate. So every imported record keeps its original
+whole. A flattening bug therefore costs a default, never user data.
+
+**Tools.** `capture_playback_position` and `checkpoint_playback` are the
+writers of the record. `list_playback_bookmarks`, `resume_playback_position`,
+`delete_playback_bookmark` and `continue_last` are thin wrappers over it, and
+all four accept either a canonical `id` or the legacy `origin_id`, so an id
+handed out before the migration still resolves.
+
+**The reads work before the migration too.** A legacy bookmark file, exhaust2
+checkpoint or `states` entry whose `origin_id` is not in the store is still
+returned by `list_playback_bookmarks` / `resume_playback_position` /
+`continue_last`. Consolidating the format must not make a position the user
+already saved unreachable in the meantime. For the same reason
+`delete_playback_bookmark` removes the legacy original as well as the canonical
+row — deleting only the canonical row would leave the position visible in the
+very listing it was just deleted from.
+
+**`migrate_playback_positions`** is the one-time, idempotent import. It reports
+`imported`, `already_present`, a per-source breakdown, the `.migrated` renames
+it made, and — separately from every total — an `unreadable[]` list naming each
+record it could **not** read and why, so no total can be read as "everything
+migrated" when something did not.
+
+- **Idempotent** by `origin` + `origin_id` provenance, not by a marker flag, so
+  a position added *after* a run is still picked up by a later one.
+- **Refuses rather than partially applies.** A legacy sidecar that exists but
+  cannot be parsed is fatal: nothing is written, the bytes are preserved to
+  `<file>.corrupt`, and every original is still on disk to retry from. A
+  half-finished migration that drops the readable records behind an unreadable
+  one is worse than no migration. A refused run reports `imported: 0` even when
+  it had already staged records in memory, because reporting those counts
+  alongside a refusal tells the caller records were imported when not a byte
+  was written.
+- A **missing** store is the first-run case, not a fault. A single unparseable
+  bookmark *file* is non-fatal — it is named with its reason and the rest still
+  migrate, because aborting a 400-record migration over one bad file is the
+  worse outcome.
+- Legacy bookmark files are **renamed** to `.migrated`, never unlinked.
+
+**Breaking (v3):** `capture_playback_position` returns
+`{ bookmarked, position, path }` where `path` is the sidecar and `position` is
+the canonical record; it previously returned `{ bookmarked, bookmark, path }`
+with `captured_at` and one file per bookmark. `list_playback_bookmarks` sorts by
+`saved_at` rather than by id, because a canonical id is not a timestamp.
+`delete_playback_bookmark` describes and removes a record in the shared store,
+not a file. A **new** `checkpoint_playback` record no longer stores the whole
+`PlaybackState` (queue and `disallows`); it stores the fields a resume reads.
+An unmigrated one keeps its state under `legacy`.
 
 ---
 

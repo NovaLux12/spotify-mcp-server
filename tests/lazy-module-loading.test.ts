@@ -225,10 +225,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     const playback = await recordStartup('playback');
 
     // 18 measured on the machine this landed on; 69 before the change, for the
-    // identical 106-tool surface. The bound is deliberately loose so an
+    // then-identical surface. The bound is deliberately loose so an
     // unrelated future transitive import does not redden the build, while
     // still failing loudly if the gate stops gating — a revert to static
     // imports puts every one of the 66 back.
+    //
+    // 106 -> 107 is #846's one added name, `migrate_playback_positions`,
+    // registered under `playbackext` and so in scope here. It is the only
+    // tool this change adds: the other three writers/readers were REWIRED
+    // onto the shared position record rather than added alongside it.
     assert.ok(
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
@@ -241,7 +246,12 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // lands in EVERY trimmed surface, not only the default one. Stated rather
     // than absorbed, because the next person to add a helper will hit the same
     // number and should know they will.
-    assert.equal(playback.toolCount, 107, 'the playback surface itself must not change');
+    //
+    // 107 -> 108 (#846): `migrate_playback_positions`, the one-time import of
+    // the three legacy playback-position stores. It is the only tool that
+    // change adds; the other three writers/readers were REWIRED onto the
+    // shared record rather than added alongside it.
+    assert.equal(playback.toolCount, 108, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -294,7 +304,10 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // asserting a number this tripwire has never measured.
     // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
     // tool. Same choice, and the same trade, as the `playback` figure above.
-    assert.equal(full.toolCount, 571, 'the full (TOOLSETS=all) surface must be unchanged');
+    // 571 -> 572 (#846): `migrate_playback_positions`, the same one tool as
+    // above. So the two deltas are 106->107->108 and 570->571->572, and this
+    // tripwire still catches a third.
+    assert.equal(full.toolCount, 572, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

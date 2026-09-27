@@ -1574,7 +1574,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8178], { scopeKey: 'playback' }),
+  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [14, 8852], { scopeKey: 'playback' }),
   // playbackintel 11,837 -> 11,882B (+45) is #851: market_availability's
   // description now names the concurrent batch, is_playable, and the
   // per-market failure reason it reports. Tool count is unchanged at 15 — the
@@ -1619,7 +1619,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `weekday_heatmap` no longer point at `listening_report` / `listening_heatmap`
   // by name, because those are derived analytics the default registry does not
   // serve and a description must not advertise a tool that is absent. +45B.
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17518], { scopeKey: 'playback' }),
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17781], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
@@ -1674,7 +1674,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
     gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 18951 },
   }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
+  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14471], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 24 / 18 tools and same input schemas.
   // restore_playlist_from_snapshot and apply_snapshot_changes now say that
