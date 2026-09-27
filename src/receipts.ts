@@ -760,23 +760,64 @@ export async function issueReceipt(
             missing = [];
           }
         } else {
-          const survivors = [...counts.entries()].filter(([, n]) => n > 0);
-          missing = survivors.map(([uri]) => uri);
-          verified = missing.length === 0;
+          // #1252: an empty survivor list is not evidence that anything was
+          // removed — only evidence that nothing was COUNTED. Those are
+          // different facts and this branch used to conflate them.
+          //
+          // `sawWholeList` is the walk's own statement that it really did see
+          // every row. A `204`, an empty body or a non-JSON payload (all of
+          // which `client.get` answers as `null`) breaks the walk before it is
+          // set, leaving every count at 0; so does a playlist longer than the
+          // 500-row window whose response carried no `total` to detect the
+          // window with. Either way `counts` is empty, `survivors` is empty,
+          // and the old `verified = missing.length === 0` reported a removal
+          // nothing had checked.
+          //
+          // The rows that could still hold a claimed uri may sit past the page
+          // that failed, so the absence claim needs the whole list. It does not
+          // get it, so withhold it. This is the shape of #803 — a correctly
+          // named field whose value is a fiction — with the fiction in a count.
+          //
+          // The reason goes in `unmet`, not `missing` (#879): nothing was
+          // observed to still be present, so the uri list stays empty, and
+          // `missing` is consumed as data by `writeVerdict` and `undo`.
+          if (!sawWholeList) {
+            verified = false;
+            missing = [];
+            unmet = 'absence check could not run — the re-read did not return the whole playlist, so no row was observed and "nothing survived" is not evidence that anything was removed';
+          } else {
+            const survivors = [...counts.entries()].filter(([, n]) => n > 0);
+            missing = survivors.map(([uri]) => uri);
+            verified = missing.length === 0;
+          }
         }
       }
     }
     if (_windowExceeded) _reason = 'window exceeded — playlist larger than verifiable window (500 rows)';
   } else if (opts.kind === 'library') {
     // /me/library/contains takes ≤50 uris per call; chunk and OR the results.
+    //
+    // #1252: a chunk that did not answer is a chunk that was NOT observed.
+    // `client.get` answers `null` for a 204, an empty body and a non-JSON
+    // payload, and a short or non-array body is equally unusable — every one
+    // of those leaves that chunk's uris looking absent. For a removal that is
+    // indistinguishable from "they are gone" and the receipt reported
+    // VERIFIED on a read that never happened; for a save it is
+    // indistinguishable from "they were never saved" and the receipt reported
+    // every uri as missing, which `undo_mutation` and the library tool
+    // payloads read as data. `observed` records which chunks really answered,
+    // so neither `missing` nor `after` is ever built out of one that did not.
     const present = new Set<string>();
+    const observed = new Set<string>();
     for (let i = 0; i < opts.uris.length; i += LIBRARY_CONTAINS_CHUNK) {
       const chunk = opts.uris.slice(i, i + LIBRARY_CONTAINS_CHUNK);
       const flags = await client.get<boolean[]>('/me/library/contains', {
         uris: chunk.join(','),
       });
+      if (!Array.isArray(flags) || flags.length < chunk.length) continue;
+      for (const uri of chunk) observed.add(uri);
       chunk.forEach((uri, j) => {
-        if (flags?.[j]) present.add(uri);
+        if (flags[j]) present.add(uri);
       });
     }
     // Save expects everything present; removal expects everything absent —
@@ -789,7 +830,22 @@ export async function issueReceipt(
       missing = opts.uris.filter((u) => present.has(u));
       after = opts.uris.length - missing.length;
     }
-    verified = missing.length === 0;
+    const unread = opts.uris.filter((u) => !observed.has(u));
+    if (unread.length > 0) {
+      // A uri no chunk answered for was neither observed present nor observed
+      // absent, so it is neither missing nor confirmed: drop it from `missing`
+      // rather than file a guess there, and leave `after` unset instead of
+      // counting a read that never happened. The reason goes in `unmet`
+      // (#879) — `reason` is gated on `windowExceeded` and is only spread into
+      // the receipt when that flag is set, so a value written there would be
+      // dropped from both the persisted receipt and the prose.
+      missing = missing.filter((u) => observed.has(u));
+      after = undefined;
+      verified = false;
+      unmet = `presence check could not run for ${unread.length} of ${opts.uris.length} uri(s) — /me/library/contains returned no usable answer, so "not present" means unread, not ${expectPresent ? 'absent' : 'present'}`;
+    } else {
+      verified = missing.length === 0;
+    }
   } else {
     // playlist_meta: the mutation succeeded if the playlist itself resolves.
     // Verified independent of `uris` (often empty here) — a failed fetch must
@@ -871,15 +927,16 @@ export function formatReceipt(
     return lines.join('\n');
   }
   if (!expectsPresence(r, opts)) {
-    lines.push(
-      r.missing.length > 0
-        ? `  still-present uris: ${r.missing.join(', ')}`
-        : '  all uris confirmed absent',
-    );
+    if (r.missing.length > 0) lines.push(`  still-present uris: ${r.missing.join(', ')}`);
+    // #1252: the confirmation line is earned by the verdict, not by an empty
+    // list. An UNVERIFIED receipt whose failure is not a set of uris (a read
+    // that came back unreadable, a check that could not run) has an empty
+    // `missing` by construction, and printing "all uris confirmed absent"
+    // beside it stated the opposite of what the receipt just said.
+    else if (r.verified) lines.push('  all uris confirmed absent');
   } else {
-    lines.push(
-      r.missing.length > 0 ? `  missing uris: ${r.missing.join(', ')}` : '  all uris confirmed',
-    );
+    if (r.missing.length > 0) lines.push(`  missing uris: ${r.missing.join(', ')}`);
+    else if (r.verified) lines.push('  all uris confirmed');
   }
   return lines.join('\n');
 }
