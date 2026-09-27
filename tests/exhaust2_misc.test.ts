@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { registerExhaust2MiscTools } from '../src/tools/exhaust2_misc.js';
 import { saveMiscStore } from '../src/tools/exhaust2_misc.js';
+import { classifyToolAnnotations } from '../src/tools/annotations.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from '../src/tools/catalog.js';
 import { finalInputSchema } from '../src/shaping.js';
 import { issueReceipt } from '../src/receipts.js';
@@ -68,6 +69,26 @@ function registrationShapes(): Map<string, Record<string, unknown>> {
   } as unknown as McpServer;
   registerExhaust2MiscTools(server, makeClient());
   return shapes;
+}
+
+/**
+ * Split a registrar source file into one text block per registered tool, so a
+ * source-level rule (#827: a mutating tool must branch on `isDryRun(args)`) can
+ * be asserted per tool instead of once for the whole file.
+ *
+ * Scoping per tool is what makes the rule STRONGER, not weaker: a whole-file
+ * check is satisfied by a single `isDryRun(` anywhere in the module, so a
+ * mutating tool that read the raw flag would still pass.
+ */
+function toolSourceBlocks(src: string): Array<[string, string]> {
+  const starts: Array<{ name: string; at: number }> = [];
+  const re = /server\.tool\(\s*\n?\s*'([a-z0-9_]+)'/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) starts.push({ name: m[1]!, at: m.index });
+  return starts.map((s, i) => [
+    s.name,
+    src.slice(s.at, starts[i + 1]?.at ?? src.length),
+  ]);
 }
 
 /**
@@ -365,27 +386,50 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   it('every dry_run guard in the slice sits behind the shared default (#827)', () => {
-    // Published contract: any tool in this slice that exposes dry_run says it
-    // defaults to true, so a host building a catalogue can tell preview from
-    // commit without probing the handler.
+    // Published contract: any MUTATING tool in this slice that exposes dry_run
+    // says it defaults to true, so a host building a catalogue can tell
+    // preview from commit without probing the handler.
+    //
+    // #896 scoped this to mutating tools. It used to be blanket, over every
+    // tool exposing the flag — which meant a read-only scan report could only
+    // ever be a preview, and the honest fix for that (`playlist_staleness_report`
+    // gaining an opt-in cost preview, which is the shared `DryRunScan`
+    // fragment) was unreachable. The exemption is not a hand-kept list: it is
+    // the repo's own name-driven classifier, so a tool that later starts
+    // writing cannot quietly inherit it.
     const shapes = registrationShapes();
     const flagged = [...shapes].filter(([, shape]) => 'dry_run' in shape).map(([name]) => name);
     assert.ok(flagged.length >= 7, `expected the mutating tools to expose dry_run, got ${flagged.join(', ')}`);
-    for (const name of flagged) {
+    const isReadOnly = (name: string): boolean => classifyToolAnnotations(name).readOnlyHint === true;
+    const mutating = flagged.filter((name) => !isReadOnly(name));
+    assert.ok(mutating.length >= 7, `expected the mutating tools to expose dry_run, got ${flagged.join(', ')}`);
+    for (const name of mutating) {
       assert.equal(publishedDryRunDefault(shapes.get(name)), true, `${name} must publish dry_run default true`);
     }
 
-    // And the source: no guard may read the raw optional flag, and no tool may
-    // reach for the defaultless `DryRun` fragment. Both are how an omitted flag
-    // turned into a commit.
+    // And the source: no MUTATING tool's handler may read the raw optional
+    // flag, and no tool may reach for the defaultless `DryRun` fragment. Both
+    // are how an omitted flag turned into a commit. Scoped per tool block
+    // rather than to the whole file, because a read-only scan preview must
+    // branch on the raw `args.dry_run` — `isDryRun` defaults TRUE, which for a
+    // report tool would mean it could only ever preview.
     const src = readFileSync(join(REPO_ROOT, 'src/tools/exhaust2_misc.ts'), 'utf8');
-    assert.equal(src.includes('args.dry_run'), false, 'a dry_run guard must go through isDryRun(args), not args.dry_run');
+    for (const [name, block] of toolSourceBlocks(src)) {
+      if (isReadOnly(name)) continue;
+      if (!flagged.includes(name)) continue;
+      assert.equal(/\bargs\.dry_run\b/.test(block), false, `${name} is mutating: a dry_run guard must go through isDryRun(args), not args.dry_run`);
+      assert.equal(/\bisDryRun\(/.test(block), true, `${name} is mutating and exposes dry_run: it must branch on isDryRun(args)`);
+    }
     assert.equal(/\bdry_run:\s*DryRun\s*,/.test(src), false, 'a mutating tool must not declare the defaultless DryRun fragment');
   });
 
-  // #408
-  it('dead_library_finder dry-runs unplayed, playlist-absent candidates', async () => {
-    const h = getHandler('dead_library_finder', makeClient({
+  // #408 / #896
+  it('dead_library_finder dry run reports the bound, not a scan it already performed', async () => {
+    // #896: the dry run used to sit at the END of the handler, so it answered
+    // `count` only by having already walked /me/tracks, 1000 recent plays and
+    // 50 playlists x 500 items. `dry_run` DEFAULTS TO TRUE, so the
+    // documented-safe path was the most expensive call in the module.
+    const client = makeClient({
       getAllPages: mock.fn(async (path: string) => {
         if (path.startsWith('/me/tracks')) return [{ added_at: '2020-01-01T00:00:00Z', track: { uri: 'spotify:track:dead', name: 'Old' } }];
         if (path === '/me/playlists') return [{ id: 'p1', name: 'P' }];
@@ -393,9 +437,35 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
         return [];
       }),
       get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [] } : null)),
-    }));
+    });
+    const h = getHandler('dead_library_finder', client);
     const res = await h({ min_age_days: 30, dry_run: true, response_format: 'concise' });
     assert.ok(res.content[0].text.includes('[dry run]'));
+    // The preview must not have done the work it is previewing.
+    assert.equal(client.getAllPages.mock.callCount(), 0, 'a dry run must not walk /me/tracks or /me/playlists');
+    assert.equal(client.get.mock.callCount(), 0, 'a dry run must not walk recently-played');
+    const sc = res.structuredContent as Record<string, unknown>;
+    // Requirement 3: the candidate set is NOT knowable from the arguments, so
+    // the preview says so. Reporting 0 would be the #803 class of lie.
+    assert.equal(sc.count, null, 'an uncomputable preview must report null, not 0');
+    assert.equal(sc.candidates_known, false);
+    assert.ok(typeof sc.estimated_requests_max === 'number' && (sc.estimated_requests_max as number) > 0);
+  });
+
+  // #408
+  it('dead_library_finder dry_run:false still performs the full scan', async () => {
+    const client = makeClient({
+      getAllPages: mock.fn(async (path: string) => {
+        if (path.startsWith('/me/tracks')) return [{ added_at: '2020-01-01T00:00:00Z', track: { uri: 'spotify:track:dead', name: 'Old' } }];
+        if (path === '/me/playlists') return [{ id: 'p1', name: 'P' }];
+        if (path.startsWith('/playlists/p1/items')) return [];
+        return [];
+      }),
+      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [] } : null)),
+    });
+    const h = getHandler('dead_library_finder', client);
+    const res = await h({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.ok(client.getAllPages.mock.callCount() > 0, 'the committing path must still scan');
     assert.equal((res.structuredContent as { count: number }).count, 1);
   });
 

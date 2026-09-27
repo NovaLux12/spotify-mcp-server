@@ -195,7 +195,7 @@ than maintained.
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
-| exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
+| exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
 | swarm3discovery | 24 | 22,286 | 24 | 22,286 | 25 | 24,515 |
 | swarm3bdiscovery | 24 | 19,952 | 24 | 19,952 | 25 | 21,948 |

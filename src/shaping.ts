@@ -87,6 +87,34 @@ export const DryRunDefault = DryRun.default(true).describe(
 export const isDryRun = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
 
 /**
+ * The read-only SCAN contract (#896).
+ *
+ * A scan tool issues no writes, so previewing it is about COST, not safety: the
+ * question a caller asks of a `dry_run` here is "how many requests is this
+ * going to spend", and the answer must come from the ARGUMENTS — never from
+ * performing the scan to find out. `swarm3_library`'s tools already declared
+ * this fragment locally; `playlist_staleness_report` shipped with no preview at
+ * all while defaulting to ~251 requests, and `dead_library_finder` declared one
+ * that ran its whole ~280-request scan BEFORE branching on it. Three modules,
+ * three different ideas of what the flag means — which is the shape of bug
+ * #896, and the reason the fragment lives here once.
+ *
+ * Opt-IN (no default), matching the other read-only scans: these tools change
+ * nothing, so previewing by default would suppress the report rather than
+ * protect anything. The mutating family keeps `DryRunDefault` above, whose
+ * default-TRUE is a safety property, not a cost one.
+ *
+ * A conforming scan preview therefore: issues ZERO requests, reports a request
+ * BOUND derived from the inputs, and says explicitly which part of the answer
+ * is unknown until the scan runs. Reporting `0 items` for a plan it could not
+ * compute is the #803 class of lie, not a cautious answer.
+ */
+export const DryRunScan = z
+  .boolean()
+  .optional()
+  .describe('Preview only: report the request cost of the scan without performing it (default false)');
+
+/**
  * The playback mutation contract (#836). Two contradictory `dry_run` contracts
  * used to ship under one parameter name: `exhaust2_playback.ts` defaulted an
  * omitted field to a preview, while `playback.ts` / `queueops.ts` /

@@ -203,6 +203,12 @@ const documentedMetadata = new Set([
   // that verdict, so there is nothing to backtick. These two name the refusal
   // shape a host parses, not a tool, a parameter, or a metadata key.
   'elicitation_failed', 'confirmation_unavailable',
+  // #896: `quota_hit_at_playlist` is the key a paged scan reports to say WHICH
+  // playlist a mid-walk 429 stopped it at, so a caller can tell a partial
+  // result from a complete one. It is a structuredContent key, not a tool and
+  // not a parameter — `saved_vs_playlist_coverage` has returned it since #732
+  // and `playlist_staleness_report` now does too.
+  'quota_hit_at_playlist',
 ]);
 /**
  * Range vocabulary (#720). The JSON-example check already rejects a bad
