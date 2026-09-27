@@ -13,6 +13,11 @@
  *   - Error mapping: structured {error:{message}} bodies win; missing bodies
  *     fall back to per-status generic messages (403/404/503).
  *   - 204 No Content on GET returns null (never parses empty JSON).
+ *   - The read cache (#660): a repeated read costs one fetch, a mutation drops
+ *     the reads it could have changed, a volatile path never caches, and
+ *     `disableCache` turns the whole thing off. Each asserts an EXACT fetch
+ *     count — a hit, a miss and a bypass are indistinguishable in a body that
+ *     merely came back the same.
  *   - Unreadable mutation bodies (#674): a 2xx write whose body will not parse
  *     resolves to null, never throws a raw SyntaxError, still invalidates the
  *     read cache and still lands in the history ledger; a rejected write
@@ -1163,6 +1168,238 @@ describe('SpotifyClient', () => {
       const result = await client.get('/me/player');
       assert.equal(result, null);
       assert.equal(apiCalls().length, 1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // 6a. The read cache (#660)
+  //
+  // The cache is the one part of `get` the rest of this file cannot see. Every
+  // other test here counts requests as though each read reached the network,
+  // which is a fine assumption for a hit and a fine assumption for a miss —
+  // and the two are exactly what this block separates.
+  //
+  // Why fetch counts and not equality assertions: "two reads returned the same
+  // object" is satisfied by a client with no cache at all, and "the re-read
+  // differs from the first" is satisfied by a client that always refetches.
+  // Only the number of requests on the wire distinguishes serving an entry
+  // from going to Spotify, so every test below pins that number exactly. The
+  // bodies are stamped with a generation counter for the second half of the
+  // same reason: when a count alone cannot say WHICH body came back (a
+  // revalidation, a raced fill), the generation says whether the value served
+  // is the one the pre-mutation read saw or the post-mutation one.
+  //
+  // These go through the real `get`, not `tests/helpers/stub-client.ts`. That
+  // helper overrides `get` itself and constructs with `disableCache: true`,
+  // both deliberately: it exists so tool tests get the production PAGING walk
+  // without a token file, a retry queue or a cache. The cache is inside the
+  // method it overrides, so a stub that answered `get` directly could not
+  // reach the hit branch, the fill, or the invalidation — there is nothing to
+  // stub here that would not be the code under test.
+  // -------------------------------------------------------------------------
+
+  describe('read cache (#660)', () => {
+    /**
+     * A responder whose GET bodies carry a fresh generation number.
+     *
+     * A write answers with a snapshot id and does NOT consume a generation, so
+     * "generation 2" always means the second GET Spotify saw — the counter
+     * measures reads, which is what the assertions are about.
+     */
+    function generationResponder(state: { reads: number }): (url: string, init: RequestInit) => Response {
+      return (_url, init) =>
+        (init.method ?? 'GET').toUpperCase() === 'GET'
+          ? jsonResponse({ generation: ++state.reads })
+          : jsonResponse({ snapshot_id: 'snap-1' });
+    }
+
+    it('serves a repeated catalog read from the entry: two GETs, one fetch', async () => {
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/albums/A1');
+      const second = await client.get<{ generation: number }>('/albums/A1');
+
+      assert.equal(state.reads, 1, `two identical reads must cost one fetch, saw ${state.reads}`);
+      assert.deepEqual(first, { generation: 1 });
+      // The generation is the point: a second fetch would answer 2 here, and
+      // this is what makes the count above mean "served from the entry" rather
+      // than "the two reads happened to look alike".
+      assert.deepEqual(second, { generation: 1 }, 'the second read was answered from the entry, not refetched');
+      assert.equal(client.cache?.size, 1);
+    });
+
+    it('keys the entry on the whole path, so a different resource is a different read', async () => {
+      // A key that dropped the id — or kept only the path's first segment —
+      // would answer this second read with the first album's body, and a test
+      // that only compared the two results would see one plausible object and
+      // pass. The generation counter is what makes the collision visible.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/albums/A1');
+      const second = await client.get<{ generation: number }>('/albums/B2');
+
+      assert.equal(state.reads, 2, 'two different albums are two reads');
+      assert.deepEqual(first, { generation: 1 });
+      assert.deepEqual(second, { generation: 2 }, 'the second read returned the second album, not the first');
+    });
+
+    it('a library write drops the library read it could have changed: the re-read refetches', async () => {
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/me/tracks', { limit: '50', offset: '0' });
+      const cached = await client.get<{ generation: number }>('/me/tracks', { limit: '50', offset: '0' });
+      assert.equal(state.reads, 1, 'control: the pre-write read really was cached');
+      assert.deepEqual(cached, first);
+
+      // `PUT /me/library` is the post-February-2026 save endpoint (AGENTS.md
+      // §2). Every cacheable `/me/` read is in its blast radius.
+      await client.put('/me/library', { uris: ['spotify:track:t1'] });
+
+      const after = await client.get<{ generation: number }>('/me/tracks', { limit: '50', offset: '0' });
+      assert.equal(state.reads, 2, 'the re-read after the write must reach the network');
+      // The failure this guards is not a crash but a plausible wrong answer:
+      // the pre-write body, served as if it were current, for the whole TTL.
+      assert.deepEqual(after, { generation: 2 }, 'the value served is the one Spotify sent AFTER the write');
+    });
+
+    it('a write the plan does not classify clears every cached read (fail-closed)', async () => {
+      // The other half of `afterMutation`, and the one that owns the
+      // `this.cache?.clear()` the scoped path replaced: a write endpoint
+      // nothing has classified has an unknown blast radius, so it drops
+      // everything rather than guess. cache.test.ts asserts the entry count
+      // reaches zero; this asserts the consequence — the next read actually
+      // goes to the network and comes back with the new body.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      await client.get('/albums/A1');
+      await client.get('/artists/B2/albums', { limit: '20' });
+      assert.equal(state.reads, 2);
+
+      // Not a real endpoint on purpose: it stands for any write a future
+      // Spotify release adds, which is exactly the case no rule covers.
+      await client.post('/some/future/endpoint', {});
+
+      const after = await client.get<{ generation: number }>('/artists/B2/albums', { limit: '20' });
+      assert.equal(state.reads, 3, 'an unclassified write must not leave a readable entry behind');
+      assert.deepEqual(after, { generation: 3 });
+      assert.equal(client.cache?.size, 1, 'only the re-read remains');
+    });
+
+    it('bypasses the cache for /me/player: two GETs, two fetches', async () => {
+      // Playback state changes out from under the server, so a cached read of
+      // it is a stale "now playing" an agent then acts on. The generations
+      // make the point that the count alone cannot: the two answers differ,
+      // so the second one demonstrably came from Spotify.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/me/player');
+      const second = await client.get<{ generation: number }>('/me/player');
+
+      assert.equal(state.reads, 2, 'playback state must be re-read, not replayed from an entry');
+      assert.deepEqual(first, { generation: 1 });
+      assert.deepEqual(second, { generation: 2 });
+      assert.equal(client.cache?.size, 0, 'a volatile read is never retained');
+
+      // Same rule for the nested volatile path.
+      await client.get('/me/player/recently-played', { limit: '20' });
+      await client.get('/me/player/recently-played', { limit: '20' });
+      assert.equal(state.reads, 4, 'recently-played is /me/player*, so it bypasses too');
+      assert.equal(client.cache?.size, 0);
+    });
+
+    it('bypasses the cache for a volatile path that carries a query string', async () => {
+      // The query is the part that can defeat a prefix check. A bypass written
+      // as a comparison against the raw target (or one that matched only the
+      // path before the caller added params) would cache this read and freeze
+      // playback state for the TTL.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/me/player', { market: 'US' });
+      const second = await client.get<{ generation: number }>('/me/player', { market: 'US' });
+
+      // Pin that the request really did carry the query, so this cannot pass by
+      // testing a bare `/me/player` twice.
+      assert.equal(apiCalls()[0]?.url, apiUrl('/me/player?market=US'));
+      assert.equal(state.reads, 2, 'a volatile path with a query string must still bypass');
+      assert.deepEqual(first, { generation: 1 });
+      assert.deepEqual(second, { generation: 2 });
+      assert.equal(client.cache?.size, 0);
+    });
+
+    it('bypasses the cache for /me/top, the personal charts', async () => {
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/me/top/artists', { limit: '20' });
+      const second = await client.get<{ generation: number }>('/me/top/artists', { limit: '20' });
+
+      assert.equal(state.reads, 2, 'personal charts move under the server; they are not cached');
+      assert.deepEqual(first, { generation: 1 });
+      assert.deepEqual(second, { generation: 2 });
+      assert.equal(client.cache?.size, 0);
+    });
+
+    it('the volatile prefixes do not widen into the rest of /me/', async () => {
+      // The mirror of the three tests above, and the guard on the fix for
+      // them. `startsWith('/me/player')` is a deliberate, narrow claim: widen
+      // it to `/me/play` and every library read silently stops being cached
+      // too, which costs a refetch per read and looks like a performance
+      // regression rather than a policy change. Nothing else in the suite
+      // would notice.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const client = new SpotifyClient();
+      const first = await client.get<{ generation: number }>('/me/playlists', { limit: '50' });
+      const second = await client.get<{ generation: number }>('/me/playlists', { limit: '50' });
+
+      assert.equal(state.reads, 1, '/me/playlists is not a volatile path and must still be cached');
+      assert.deepEqual(second, first);
+      assert.equal(client.cache?.size, 1);
+    });
+
+    it('disableCache: true makes two identical reads two fetches', async () => {
+      // Carries its own control. A test that only asserted "two fetches" for
+      // the disabled client would also pass if the harness never cached
+      // anything; the enabled client in the same test is what makes the
+      // contrast mean something.
+      await seedTokens();
+      const state = { reads: 0 };
+      responder = generationResponder(state);
+
+      const enabled = new SpotifyClient();
+      const disabled = new SpotifyClient({ disableCache: true });
+      assert.notEqual(enabled.cache, null, 'control: the default client has a cache');
+      assert.equal(disabled.cache, null, 'disableCache is a missing cache, not an empty one');
+
+      await enabled.get('/albums/A1');
+      await enabled.get('/albums/A1');
+      assert.equal(state.reads, 1, 'control: the default client answered the second read from the entry');
+
+      await disabled.get('/albums/A1');
+      await disabled.get('/albums/A1');
+      assert.equal(state.reads, 3, 'a client with the cache disabled must not answer the second read');
     });
   });
 
