@@ -1797,7 +1797,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // and the figure came from the startup budget gate's own report. Writing an
   // estimate here would have set a ceiling that the first real `tools/list` on
   // any host either clears by luck or breaches.
-  manifestEntry('tastejukebox', 'tastejukebox', lazyModule('./statsfm_jukebox.js', 'registerStatsfmJukeboxTools'), [1, 2359], { scopeKey: 'playlists' }),
+  //
+  // #1514 moved the shared `statsfm_user` example handle to a placeholder
+  // (+10 B on the field's description). This tool spreads
+  // `StatsfmUserInputFields`, so it pays the same +12 B as `tasteplaylist`.
+  // RE-MEASURED on the rebased tree, not carried over: 2359 B -> 2371 B
+  // (+12 B), tool count unchanged at 1. Carrying the pre-#1514 figure forward
+  // would have set a ceiling the tree does not actually meet.
+  manifestEntry('tastejukebox', 'tastejukebox', lazyModule('./statsfm_jukebox.js', 'registerStatsfmJukeboxTools'), [1, 2371], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 825], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops
