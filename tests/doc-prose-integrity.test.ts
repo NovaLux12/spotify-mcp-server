@@ -57,7 +57,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describeDocument, proseDrift, proseUnitHash, proseUnitLabel, splitProseUnits } from '../scripts/prose-manifest.mjs';
+import { describeDocument, proseDrift, proseUnitHash, proseUnitLabel, qualifiedHash, splitProseUnits } from '../scripts/prose-manifest.mjs';
 import { writeProvenanceFile } from './helpers/prose-tree.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -1124,7 +1124,6 @@ describe('hand-written prose integrity (#1384)', () => {
     assert.match(errors[0], /docs\/new\.md/);
     assert.match(errors[0], /no manifest entry claims it/);
   });
-
   it('reports a pin whose document is not scanned', async () => {
     // The opposite direction, and the one that produces a gate that is green
     // forever. A pin for a file that does not exist can never fail, so it
@@ -1145,5 +1144,189 @@ describe('hand-written prose integrity (#1384)', () => {
     assert.equal(errors.length, 1, `expected only the unscanned document, got:\n${errors.join('\n')}`);
     assert.match(errors[0], /docs\/gone\.md/);
     assert.match(errors[0], /can never fail/);
+  });
+});
+
+/**
+ * The shape of a `--to` value, and the asymmetry with `--reanchor` (#1552).
+ *
+ * `--reanchor` requires `"<file>:<hash>"` and refuses a bare hash as ambiguous,
+ * because the same prose can be pinned in two files. So the natural next move is
+ * to qualify `--to` the same way — and that used to be read as a search for the
+ * literal 30-character string `SPEC.md:1bd9ce1b66814558`, producing a refusal
+ * naming the wrong problem ("the replacement is not in SPEC.md", when the hash
+ * was in SPEC.md the whole time). Nothing marked the difference between the two
+ * arguments, so the trap cost a third dogfood use of the operation to find.
+ *
+ * The two halves of this file are deliberately different kinds of evidence.
+ * `qualifiedHash` is pure, so the *shape* rules are asserted directly and
+ * exhaustively — including the inputs that must NOT read as keys, which are the
+ * half a shape test usually omits and the half that decides whether the change
+ * is safe. The CLI tests then prove the *message*: that a qualified `--to` is
+ * accepted end to end, that a mismatched file is refused by name rather than
+ * searched for, and that refusing still means not writing.
+ */
+describe('reanchor argument shapes (#1552)', () => {
+  const HASH = 'd6f6074447d29264';
+
+  it('reads a <file>:<hash> qualifier, and only that shape', () => {
+    // The positive cases, including the one that is not obvious: the qualifier
+    // is read off the LAST colon, because a repository path is allowed to
+    // contain one. Splitting on the first would read `docs/a:b.md:<hash>` as the
+    // file `docs/a` and then refuse a request that is perfectly well formed.
+    assert.deepEqual(qualifiedHash('SPEC.md:d6f6074447d29264'), { file: 'SPEC.md', hash: HASH });
+    assert.deepEqual(
+      qualifiedHash('docs/distribution.md:a1b2c3d4e5f60718'),
+      { file: 'docs/distribution.md', hash: 'a1b2c3d4e5f60718' },
+    );
+    assert.deepEqual(qualifiedHash('docs/a:b.md:0123456789abcdef'), { file: 'docs/a:b.md', hash: '0123456789abcdef' });
+
+    // The negatives, which are the load-bearing half. Every one of these is a
+    // value a caller can genuinely pass as `--to`, and each must come back null
+    // so that it is read as replacement *prose* rather than as a key.
+    for (const value of [
+      'A paragraph of ordinary prose with no colon at all.',
+      // A colon, and a 16-hex run — but not at the end. The tail is what has to
+      // be the hash, or any prose mentioning a pinned hash would be read as a key.
+      'The hash d6f6074447d29264 belongs to the paragraph below.',
+      // Ends in 16 hex, but the whole value is not a key because the colon is
+      // preceded by nothing: a leading colon leaves no file to read.
+      ':d6f6074447d29264',
+      // Uppercase is not the hash shape. A pin is lower-case, and a case-folded
+      // match would invent a hit rather than report one.
+      'SPEC.md:D6F6074447D29264',
+      // 15 and 17 characters: off-by-one either side must not pass.
+      'SPEC.md:d6f6074447d2926',
+      'SPEC.md:d6f6074447d292641',
+      // A bare hash is not a qualified value at all. This is the asymmetry the
+      // issue is about, asserted on the function that implements it: `--to`
+      // accepts the bare form, `--reanchor` refuses it.
+      HASH,
+      '',
+    ]) {
+      assert.equal(qualifiedHash(value), null, `"${value}" must not read as a <file>:<hash> qualifier`);
+    }
+  });
+
+  it('accepts a --to qualified to the same file, and records what the bare hash records', async () => {
+    // The regression itself, through the real CLI. Before the fix this exited 1
+    // with `replacement-absent` naming a paragraph that was in the file.
+    //
+    // The assertion is an *equivalence*, not just exit 0: a qualified `--to` is
+    // only correct if it produces byte-for-byte the record the bare hash
+    // produces. A fix that merely stopped refusing — by skipping the check, or by
+    // accepting anything — would pass a weaker version of this test.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const rewordedSource = withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM);
+      const oldHash = proseUnitHash(paragraphContaining(source, STATSFM_PROSE));
+      const newHash = proseUnitHash(paragraphContaining(rewordedSource, REWORDED_STATSFM));
+      assert.notEqual(oldHash, newHash, 'the fixture reword does not change the hash, so there is no reanchor to record');
+
+      const runOne = async (to: string): Promise<{ run: Run; manifest: { reanchored?: Reanchored[] } }> => {
+        const copy = join(dir, `manifest-${to.replace(/[^a-z0-9]/gi, '_')}.json`);
+        const document = join(dir, `ARCHITECTURE-${to.replace(/[^a-z0-9]/gi, '_')}.md`);
+        await writeFile(copy, repoBefore);
+        await writeFile(document, rewordedSource);
+        const run = await reanchor(dir, copy, document, `ARCHITECTURE.md:${oldHash}`, to);
+        return { run, manifest: JSON.parse(await readFile(copy, 'utf8')) as { reanchored?: Reanchored[] } };
+      };
+
+      const bare = await runOne(newHash);
+      const qualified = await runOne(`ARCHITECTURE.md:${newHash}`);
+
+      assert.equal(qualified.run.status, 0, `a --to qualified to the --reanchor file must be accepted:\n${qualified.run.stderr}`);
+      assert.doesNotMatch(
+        qualified.run.stderr,
+        /replacement-absent/,
+        'the qualified form is still being read as prose to search for — this is the #1552 defect',
+      );
+
+      const bareRecord = (bare.manifest.reanchored ?? []).find((entry) => entry.hash === oldHash);
+      const qualifiedRecord = (qualified.manifest.reanchored ?? []).find((entry) => entry.hash === oldHash);
+      assert.ok(qualifiedRecord, `the qualified reanchor wrote no record:\n${JSON.stringify(qualified.manifest.reanchored, null, 2)}`);
+      assert.equal(
+        JSON.stringify(qualifiedRecord),
+        JSON.stringify(bareRecord),
+        'a --to qualified to the same file must record exactly what the bare hash records',
+      );
+      assert.equal(qualifiedRecord.to, newHash);
+      assert.equal(await readFile(MANIFEST, 'utf8'), repoBefore, 'this test wrote to the checked-in manifest');
+    });
+  });
+
+  it('refuses a --to qualified to a different file, by name, and writes nothing', async () => {
+    // Option 1 of the issue made the mismatched file a named caller error rather
+    // than a silent reinterpretation as prose. Named means: the message says
+    // which of the two keys disagrees and offers the bare form, so the reader has
+    // something to do. A run that searched README for a SPEC.md key reported the
+    // replacement as absent from SPEC.md, which is true and useless.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const reworded = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const oldHash = proseUnitHash(paragraphContaining(source, STATSFM_PROSE));
+      await writeFile(copy, repoBefore);
+      await writeFile(reworded, withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM));
+
+      // The hash is real and it IS in ARCHITECTURE.md — only the file half of
+      // the key is wrong. A fixture with a nonsense hash would be refused for the
+      // replacement's absence instead, and this test would pass against a fix
+      // that never learned about the file half.
+      const newHash = proseUnitHash(
+        paragraphContaining(withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM), REWORDED_STATSFM),
+      );
+      const run = await reanchor(dir, copy, reworded, `ARCHITECTURE.md:${oldHash}`, `README.md:${newHash}`);
+
+      assert.notEqual(run.status, 0, 'a reanchor onto a paragraph in another document was accepted');
+      assert.match(run.stderr, /replacement-elsewhere/, `the refusal has to name the file mismatch:\n${run.stderr}`);
+      assert.match(run.stderr, /README\.md/, 'the refusal has to name the file the --to actually pointed at');
+      assert.match(
+        run.stderr,
+        new RegExp(`--to "${newHash}"`),
+        'the refusal has to offer the bare form, or the reader is left holding the same broken command',
+      );
+      assert.equal(await readFile(copy, 'utf8'), repoBefore, 'the copy changed on disk even though the command refused');
+      assert.equal(await readFile(MANIFEST, 'utf8'), repoBefore, 'this test wrote to the checked-in manifest');
+    });
+  });
+
+  it('states the --to/--reanchor asymmetry in the replacement-absent refusal', async () => {
+    // The half of the trap that is about the message rather than the behaviour.
+    // Before the fix, `--reanchor` demanded a qualifier, the caller supplied one,
+    // and the refusal then said "pass the paragraph's hash instead of its text" —
+    // naming the exact shape the argument one line earlier had rejected, with
+    // nothing marking that it meant the *other* shape. A reader who followed that
+    // advice literally and dropped the qualifier would have been right, which is
+    // the only reason it was survivable; the fix has to say so rather than leave
+    // it to be inferred.
+    const repoBefore = await readFile(MANIFEST, 'utf8');
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'manifest.json');
+      const reworded = join(dir, 'ARCHITECTURE.md');
+      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
+      const oldHash = proseUnitHash(paragraphContaining(source, STATSFM_PROSE));
+      await writeFile(copy, repoBefore);
+      await writeFile(reworded, withRewordedParagraph(source, STATSFM_PROSE, REWORDED_STATSFM));
+
+      const run = await reanchor(
+        dir, copy, reworded, `ARCHITECTURE.md:${oldHash}`,
+        'A replacement paragraph that was never written into this file at all.',
+      );
+      assert.notEqual(run.status, 0);
+      assert.match(run.stderr, /replacement-absent/);
+      // The recovery line names both accepted forms, so the advice cannot be
+      // followed into the shape `--reanchor` refuses.
+      assert.match(run.stderr, /--to "ARCHITECTURE\.md:<hash>"/, `the refusal does not say the qualified form is accepted:\n${run.stderr}`);
+      assert.match(run.stderr, /--reanchor, which\s+requires the qualifier/, 'the refusal does not mark the asymmetry it is surrounded by');
+      // And the recovery line that names no file is fixed: it used to be a
+      // single-quoted string, so it printed `${request.file}` literally — the one
+      // line telling the reader how to recover the bytes named no file.
+      assert.match(run.stderr, /git show <ref>:ARCHITECTURE\.md/, 'the git show line interpolates no file');
+      assert.doesNotMatch(run.stderr, /\$\{request\.file\}/, 'an un-interpolated template leaked into a message');
+      assert.equal(await readFile(MANIFEST, 'utf8'), repoBefore, 'this test wrote to the checked-in manifest');
+    });
   });
 });

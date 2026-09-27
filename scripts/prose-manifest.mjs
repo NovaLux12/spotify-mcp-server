@@ -382,9 +382,44 @@ export function proseDrift(manifest, documents) {
  */
 const HASH_SHAPE = /^[0-9a-f]{16}$/;
 
-/** The unit a `--to` value names, or null when the file does not contain it. */
-function resolveReplacement(value, units) {
-  const candidate = HASH_SHAPE.test(value) ? value : proseUnitHash(value);
+/**
+ * The `<file>:<hash>` a `--to` value may be qualified with, or null when it is
+ * not one (#1552).
+ *
+ * Only the tail is shape-tested. The whole value cannot be, because a value that
+ * is not a key is the replacement prose and prose is arbitrary text — the test
+ * has to be one a paragraph cannot pass by accident, and the only part of a
+ * `<file>:<hash>` that is not free-form is the hash. A paragraph of prose that
+ * genuinely ended in `<something>:<16 hex>` would be read as a key, and the cost
+ * of that reading is a refusal that names itself rather than a record written
+ * from a misread value: this function only ever *interprets* a value whose
+ * `<file>` half already matches the `--reanchor` target, and a mismatched one is
+ * refused by name in `resolveReanchors`. Nothing reaches the manifest.
+ *
+ * `lastIndexOf` rather than `indexOf` because a repository path can contain a
+ * colon and the hash is always the last segment; splitting on the first colon
+ * would read `docs/a:b.md:0123456789abcdef` as the file `docs/a`.
+ */
+export function qualifiedHash(value) {
+  const at = value.lastIndexOf(':');
+  if (at < 1) return null;
+  const hash = value.slice(at + 1);
+  if (!HASH_SHAPE.test(hash)) return null;
+  return { file: value.slice(0, at), hash };
+}
+
+/**
+ * The unit a `--to` value names, or null when the file does not contain it.
+ *
+ * `file` is the `--reanchor` target, and it is what makes the two `--to` shapes
+ * -- bare hash and `<file>:<hash>` -- one shape rather than two: the qualifier
+ * is stripped only when it agrees with the paragraph being reanchored, so a
+ * qualified value cannot silently redirect the search to another document.
+ */
+function resolveReplacement(value, file, units) {
+  const qualified = qualifiedHash(value);
+  const target = qualified !== null && qualified.file === file ? qualified.hash : value;
+  const candidate = HASH_SHAPE.test(target) ? target : proseUnitHash(target);
   return units.find((unit) => unit.hash === candidate) ?? null;
 }
 
@@ -430,7 +465,32 @@ export function resolveReanchors(manifest, documents, requests) {
     }
 
     const units = describeDocument(source);
-    const replacement = resolveReplacement(request.to, units);
+
+    // A `--to` that is a well-formed key for a *different* document (#1552).
+    // Checked before the replacement lookup because the lookup would otherwise
+    // answer "not in this file" — true, and the wrong question. The caller has
+    // done the natural thing: `--reanchor` demands `<file>:<hash>` and refuses a
+    // bare hash as ambiguous, so qualifying `--to` the same way is the obvious
+    // next move, and it used to be read as a search for that literal 30-character
+    // string in a document that does not contain it.
+    const qualified = qualifiedHash(request.to);
+    if (qualified !== null && qualified.file !== request.file) {
+      refusals.push({
+        kind: 'replacement-elsewhere',
+        key,
+        message: `${key} is being reanchored within ${request.file}, but --to names a paragraph in `
+          + `${qualified.file}: "${request.to}".\n`
+          + 'A reanchor replaces a paragraph with another paragraph in the *same* document, and the file half of a\n'
+          + '`--to` key is checked against the file half of the `--reanchor` key rather than searched for. Two files\n'
+          + 'means one of the two keys is a typo.\n'
+          + 'If the replacement really is in ' + request.file + ', drop the qualifier and pass the bare hash:\n'
+          + `  --to "${qualified.hash}"\n`
+          + '`npm run count:tools -- --prose-report` prints the pinned keys as "<file>:<hash>" for the same reason.',
+      });
+      continue;
+    }
+
+    const replacement = resolveReplacement(request.to, request.file, units);
     if (!replacement) {
       // The anti-vacuity refusal, and the one the whole operation turns on.
       refusals.push({
@@ -441,9 +501,15 @@ export function resolveReanchors(manifest, documents, requests) {
           + 'is the operation: it is what stops a reanchor being a quiet way to drop a pin, and it is why restoring\n'
           + 'prose is not something a flag does. If you meant to delete the paragraph, that is\n'
           + '`npm run count:tools -- --prose-sync --retire "<reason>"` — a different record, with no successor.\n'
-          + 'If you meant to restore it, the bytes are in the ref you dropped: `git show <ref>:${request.file}`.\n'
+          // The `<ref>` line used to be a single-quoted string, so it printed the
+          // interpolation itself — the one line in this message that tells the
+          // reader how to recover the bytes was the one line naming no file.
+          + `If you meant to restore it, the bytes are in the ref you dropped: \`git show <ref>:${request.file}\`.\n`
           + 'If you have already written the replacement and it is still reported absent, pass the paragraph\'s\n'
-          + 'hash instead of its text — `npm run count:tools -- --prose-report` lists what it found.',
+          + `hash instead of its text — either the bare "${(qualified ?? { hash: '<hash>' }).hash}" or the same key `
+          + `qualified to this file, --to "${request.file}:<hash>". Note the difference from --reanchor, which\n`
+          + 'requires the qualifier and refuses a bare hash as ambiguous. `npm run count:tools -- --prose-report`\n'
+          + 'lists what it found, in exactly that form.',
       });
       continue;
     }
