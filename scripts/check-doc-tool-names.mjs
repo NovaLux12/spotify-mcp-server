@@ -161,6 +161,12 @@ const parameterAllowlist = new Set([
   // is gated off the top-tracks path. A structuredContent key and its enum
   // members, naming the tool's own result, not a tool and not a parameter.
   'resolved_via', 'top_tracks',
+  // #900: the five tools that probe one artist's newest release report the
+  // probe fan-out split three ways — probes asked for, probes the read cache
+  // answered, probes that reached the API — so SPEC.md can name what the
+  // shared canonical request cost. structuredContent keys on those tools, not
+  // tools and not parameters.
+  'artist_probes', 'artist_probe_cache_hits', 'artist_probe_requests',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

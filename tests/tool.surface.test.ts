@@ -233,6 +233,13 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'watchlist_size',
   // A key of a free-form object argument, not an enum member of one.
   'last_refreshed',
+  // #900: the five tools that share one canonical artist-release probe report
+  // what that fan-out cost, and artistwatch_new_additions names the cache-hit
+  // key in its description so a caller knows a repeat scan is free. Keys on
+  // those tools' own results, read off the descriptions that produce them.
+  'artist_probe_cache_hits',
+  'artist_probe_requests',
+  'artist_probes',
 ]);
 
 describe('tool surface: annotations', () => {

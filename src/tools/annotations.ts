@@ -1061,7 +1061,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('undo', 'library', lazyModule('./undo.js', 'registerUndoTools'), [2, 1663], { scopeKey: 'library' }),
   manifestEntry('receipts', 'receipts', localModule('src/tools/annotations.ts', 'registerVerifyReceiptTool', registerVerifyReceiptTool), [1, 626], { alwaysActive: true, readOnlySafe: true }),
   manifestEntry('episodemgmt', 'episodemgmt', lazyModule('./episodemgmt.js', 'registerEpisodeMgmtTools'), [1, 1053], { scopeKey: 'library' }),
-  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2043], { readOnlySafe: true, scopeKey: 'following' }),
+  // #900: 2,043 -> 2,235 bytes, description text only. The tool count, its
+  // input schema and its output are unchanged. `whats_new`'s quota sentence
+  // said "N followed artists = N+1 API requests ... each lookup is an API
+  // request", which became conditionally false the moment the album lookup
+  // became the shared canonical probe: a repeat scan inside the cache window
+  // spends a probe and no request. The sentence now says that. Left at 2,043
+  // the module's 10% ceiling would have been 2,248, and the reworded
+  // description at 2,235 would have cleared it by 13 bytes; re-baselined to
+  // the measured 2,235 the ceiling is 2,459 and it clears by 224.
+  //
+  // Re-measured on the post-rebase tree, not carried over from the pre-rebase
+  // branch: the number is read off the live registry, not computed from the
+  // description. It happens to land on the same 2,235 the branch measured
+  // before the rebase, but that is a coincidence of this description, not a
+  // reason to have skipped the measurement.
+  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2235], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', lazyModule('./searchdive.js', 'registerSearchDeepTool'), [1, 1683], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
@@ -1112,7 +1127,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // walk that issues up to N x (1 + fetchAllCap/100) requests, so the agents
   // paying for that are the ones this sentence is for.
   manifestEntry('exhaust2extra', 'exhaust2extra', lazyModule('./exhaust2_extra.js', 'registerExhaust2ExtraTools'), [3, 4024], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 21825], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // #900: 21,825 -> 22,277 bytes, description text only. Same 24 tools, same
+  // input schemas. Four of the descriptions quoted a per-artist cost
+  // ("1 small albums call per followed artist", "1 small albums call per top
+  // artist", "N small API calls") that is no longer true on a warm read cache,
+  // and each now names the shared canonical probe and what it costs when the
+  // cache already holds it. At the measured value the 10% ceiling (24,505)
+  // leaves 2,228 bytes.
+  //
+  // RE-MEASURED, and this is the number the rebase nearly got wrong. The
+  // pre-rebase branch carried 22,339, measured before main moved; the value on
+  // the post-rebase tree is 22,277, 62 bytes lower, because main had since
+  // reworded text in this module. Carrying the old figure forward would have
+  // been a 62-byte lie in a hand-maintained baseline that the startup gate
+  // treats as ground truth — within the 24,008 ceiling either way, so no gate
+  // would have caught it. Read off the live registry after the rebase.
+  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 22277], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19919], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
