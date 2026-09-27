@@ -29,6 +29,12 @@
  * Spotify-client twin, byte-identical apart from the client type it is given,
  * is flagged. That pair is what stops the exclusion from being a guess.
  */
+// Must precede every other import: this redirects HOME for the whole process,
+// so anything resolved at module-load time sees the sandbox, not the real one.
+// `tests/hermetic-home.test.ts` fails any test file that omits it — including
+// the one this PR adds, which is how the guard is meant to work.
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
