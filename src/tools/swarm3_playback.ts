@@ -1,6 +1,6 @@
 /** swarm3 playback slice — 500-tool swarm v1.26.0 (issue #442). Owned by playback builder. */
 /**
- * 24 playback/queue/device tools. House conventions honoured here:
+ * 20 playback/queue/device tools. House conventions honoured here:
  *   • shaping.ts helpers only (resolveMaxResults / truncateItems / describeDryRun).
  *   • Read tools accept response_format and emit structuredContent alongside text.
  *   • Mutating tools carry dry_run (default TRUE) and return a deterministic PLAN
@@ -693,75 +693,19 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 10. get_queue_snapshot — full queue + runtime
-  // -------------------------------------------------------------------------
-  server.tool(
-    'get_queue_snapshot',
-    'Return the full upcoming queue with per-track runtime and the total queue runtime. Read-only.',
-    {
-      max_results: MaxResults,
-      response_format: ResponseFormat,
-    },
-    async (args: { max_results?: number; response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const q = await fetchQueue(client);
-      const entries = queueEntries(q);
-      const cap = resolveMaxResults(args.max_results);
-      const cut = truncateItems(entries, cap);
-      const totalMs = entries.reduce((n, e) => n + e.duration_ms, 0);
-      const lines = cut.items.map((e) => `${e.position}. "${e.name}" — ${e.subtitle} (${formatMs(e.duration_ms)})`);
-      const prose = [
-        `Queue: currently "${itemTitle(q.currently_playing)}" — ${itemSubtitle(q.currently_playing)}; ${entries.length} upcoming (${formatLong(totalMs)}):`,
-        ...(lines.length ? lines : ['  (queue is empty)']),
-        ...(cut.footer ? [`(${cut.footer})`] : []),
-      ].join('\n');
-      return emit(rf, prose, {
-        currently_playing: q.currently_playing ? { uri: q.currently_playing.uri, name: itemTitle(q.currently_playing) } : null,
-        items: cut.items,
-        total: entries.length,
-        total_runtime_ms: totalMs,
-        pagination: { total: entries.length, returned: cut.returned, truncated: cut.truncated },
-      });
-    },
-  );
+  // ---------------------------------------------------------------------------
+  // #847 removed: get_queue_snapshot (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['runtime']` — the queue contents and their total runtime, from the same single read. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
-  // -------------------------------------------------------------------------
-  // 11. queue_runtime_report
-  // -------------------------------------------------------------------------
-  server.tool(
-    'queue_runtime_report',
-    'Compute runtime statistics for the upcoming queue: total, average, longest and shortest items plus time remaining on the current track. Read-only.',
-    { response_format: ResponseFormat },
-    async (args: { response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const [state, q] = await Promise.all([fetchPlaybackState(client), fetchQueue(client)]);
-      const entries = queueEntries(q);
-      const durations = entries.map((e) => e.duration_ms);
-      const totalMs = durations.reduce((n, d) => n + d, 0);
-      const avgMs = entries.length ? Math.round(totalMs / entries.length) : 0;
-      const longest = entries.reduce<QueueEntry | null>((best, e) => (!best || e.duration_ms > best.duration_ms ? e : best), null);
-      const shortest = entries.reduce<QueueEntry | null>((best, e) => (!best || e.duration_ms < best.duration_ms ? e : best), null);
-      const currentRemaining = state?.item ? Math.max(0, (state.item.duration_ms ?? 0) - (state.progress_ms ?? 0)) : 0;
-      const payload = {
-        upcoming_count: entries.length,
-        total_runtime_ms: totalMs,
-        average_runtime_ms: avgMs,
-        longest: longest ? { uri: longest.uri, name: longest.name, duration_ms: longest.duration_ms } : null,
-        shortest: shortest ? { uri: shortest.uri, name: shortest.name, duration_ms: shortest.duration_ms } : null,
-        current_track_remaining_ms: currentRemaining,
-        estimated_total_wait_ms: totalMs + currentRemaining,
-      };
-      const prose = [
-        `Queue runtime report:`,
-        `  Upcoming items: ${payload.upcoming_count} · total ${formatLong(totalMs)} · avg ${formatMs(avgMs)}`,
-        `  Longest:  ${longest ? `"${longest.name}" (${formatMs(longest.duration_ms)})` : '—'}`,
-        `  Shortest: ${shortest ? `"${shortest.name}" (${formatMs(shortest.duration_ms)})` : '—'}`,
-        `  Current track remaining: ${formatMs(currentRemaining)} · est. total wait ${formatLong(payload.estimated_total_wait_ms)}`,
-      ].join('\n');
-      return emit(rf, prose, payload);
-    },
-  );
+  // ---------------------------------------------------------------------------
+  // #847 removed: queue_runtime_report (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['runtime']` — every field, nested under `runtime`. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 12. split_queue_plan — plan queue → playlist chunks (mutator, dry_run)
@@ -854,43 +798,12 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 13. queue_duplicate_check
-  // -------------------------------------------------------------------------
-  server.tool(
-    'queue_duplicate_check',
-    'Check the upcoming queue for duplicate tracks/episodes and report each duplicate group with its positions and wasted runtime. Read-only.',
-    { response_format: ResponseFormat },
-    async (args: { response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const q = await fetchQueue(client);
-      const entries = queueEntries(q);
-      const byUri = new Map<string, QueueEntry[]>();
-      for (const e of entries) {
-        const list = byUri.get(e.uri) ?? [];
-        list.push(e);
-        byUri.set(e.uri, list);
-      }
-      const groups = [...byUri.entries()]
-        .filter(([, list]) => list.length > 1)
-        .map(([uri, list]) => ({
-          uri,
-          name: list[0].name,
-          occurrences: list.length,
-          positions: list.map((e) => e.position),
-          wasted_runtime_ms: list.slice(1).reduce((n, e) => n + e.duration_ms, 0),
-        }))
-        .sort((a, b) => a.positions[0] - b.positions[0]);
-      const wasted = groups.reduce((n, g) => n + g.wasted_runtime_ms, 0);
-      const prose = [
-        groups.length
-          ? `${groups.length} duplicate group(s) — ${groups.reduce((n, g) => n + g.occurrences - 1, 0)} redundant entries, ${formatMs(wasted)} wasted:`
-          : 'No duplicates in the upcoming queue.',
-        ...groups.map((g) => `  - "${g.name}" ×${g.occurrences} at positions ${g.positions.join(', ')} (${formatMs(g.wasted_runtime_ms)} wasted)`),
-      ].join('\n');
-      return emit(rf, prose, { duplicate_groups: groups, total_redundant: groups.reduce((n, g) => n + g.occurrences - 1, 0), wasted_runtime_ms: wasted });
-    },
-  );
+  // ---------------------------------------------------------------------------
+  // #847 removed: queue_duplicate_check (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['duplicates']` — every field, nested under `duplicates`. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 14. queue_prune_plan — plan-only dedupe/skip plan
@@ -1104,37 +1017,12 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 16. predict_next_tracks — upcoming N with runtime
-  // -------------------------------------------------------------------------
-  server.tool(
-    'predict_next_tracks',
-    'Predict the next N tracks that will play from the queue, each with its own runtime and the cumulative time until it plays. Read-only.',
-    {
-      count: z.number().int().min(1).max(50).optional().default(5).describe('How many upcoming items to predict. Default 5'),
-      response_format: ResponseFormat,
-    },
-    async (args: { count?: number; response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const [state, q] = await Promise.all([fetchPlaybackState(client), fetchQueue(client)]);
-      const entries = queueEntries(q).slice(0, Math.max(1, args.count ?? 5));
-      const currentRemaining = state?.item ? Math.max(0, (state.item.duration_ms ?? 0) - (state.progress_ms ?? 0)) : 0;
-      let cumulative = currentRemaining;
-      const withEta = entries.map((e) => {
-        const plays_at_ms = cumulative;
-        cumulative += e.duration_ms;
-        return { ...e, plays_at_ms };
-      });
-      const lines = withEta.map((e) =>
-        `+${formatMs(e.plays_at_ms)} → "${e.name}" — ${e.subtitle} (${formatMs(e.duration_ms)})`,
-      );
-      const prose = [
-        `Next ${withEta.length} item(s) from the queue:`,
-        ...(lines.length ? lines : ['  (queue is empty — predictions unavailable)']),
-      ].join('\n');
-      return emit(rf, prose, { items: withEta, current_track_remaining_ms: currentRemaining });
-    },
-  );
+  // ---------------------------------------------------------------------------
+  // #847 removed: predict_next_tracks (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `runtime.timeline` from `get_queue` with `include: ['runtime']` — the same rows and the same cumulative `plays_at_ms`; `peek_next` with `count` is the item list. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 17. shuffle_state_report

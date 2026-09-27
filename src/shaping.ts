@@ -634,6 +634,74 @@ export function retiredToolAliasMessage(name: string, canonical: string): string
   return `${name} was removed in ${RETIRED_TOOL_ALIASES_REMOVED_IN}; use ${canonical} instead.`;
 }
 
+/** The release that stopped registering the six queue-read tool names (#847). */
+export const RETIRED_QUEUE_TOOLS_REMOVED_IN = 'v3.0';
+
+export interface RetiredQueueTool {
+  /** The surviving tool that answers the same question. */
+  canonical: string;
+  /**
+   * The exact call to make instead, arguments included — what goes in the
+   * refusal's `fix`, which is the one field a migrating caller reads.
+   */
+  call: string;
+}
+
+/**
+ * The six queue-read names withdrawn into two entry points (#847).
+ *
+ * They are NOT in {@link LEGACY_TOOL_ALIASES}, and the difference is about
+ * arguments, not about policy. The eight stats.fm aliases registered with the
+ * same zod shape and the same handler as their canonical name, so
+ * `resolveLegacyToolAlias` alone was a faithful rewrite of the call. None of
+ * these six is argument-compatible: `queue_runtime_report` sends no arguments
+ * at all and its answer is the runtime analysis, while the canonical
+ * `get_queue` with no arguments answers with the raw queue. A name-only
+ * rewrite would have returned a *different, entirely plausible* answer under a
+ * name that used to be right — the same defect class as #803 and #830, where a
+ * value that could not be obtained was filled in with something that looked
+ * true. And `SPOTIFY_MCP_LEGACY_ALIASES=1` must not make them work either,
+ * because that flag means "same call, new name", not "same name, different
+ * question".
+ *
+ * So these refuse, at the CallTool boundary and before any Spotify request,
+ * with the exact replacement call in `fix`. That is the migration a caller
+ * needs; a silent rewrite is not an upgrade, it is a wrong answer with a
+ * familiar name attached.
+ */
+export const RETIRED_QUEUE_TOOLS: Readonly<Record<string, RetiredQueueTool>> = Object.freeze({
+  describe_queue: { canonical: 'get_queue', call: "get_queue with view: 'enriched'" },
+  get_queue_snapshot: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_runtime_report: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_duplicate_check: { canonical: 'get_queue', call: "get_queue with include: ['duplicates']" },
+  queue_profile: { canonical: 'get_queue', call: "get_queue with include: ['profile']" },
+  predict_next_tracks: { canonical: 'peek_next', call: 'peek_next with count (and get_queue with include: [\'runtime\'] for the per-item ETA)' },
+});
+
+/** Every retired queue-read name, for the surface test and the census assertions. */
+export const RETIRED_QUEUE_TOOL_NAMES: readonly string[] = Object.freeze(
+  Object.keys(RETIRED_QUEUE_TOOLS).sort(),
+);
+
+/**
+ * The replacement for a retired queue-read name, or `undefined` when `name`
+ * was never one.
+ *
+ * `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias} uses it:
+ * this is a frozen object literal that still carries `Object.prototype`, and
+ * the name arrives from the wire, so a bare index would answer
+ * `RETIRED_QUEUE_TOOLS['constructor']` with a function.
+ */
+export function resolveRetiredQueueTool(name: string): RetiredQueueTool | undefined {
+  if (!Object.hasOwn(RETIRED_QUEUE_TOOLS, name)) return undefined;
+  return RETIRED_QUEUE_TOOLS[name];
+}
+
+/** The one-line migration note for a retired queue-read name. */
+export function retiredQueueToolMessage(name: string, tool: RetiredQueueTool): string {
+  return `${name} was removed in ${RETIRED_QUEUE_TOOLS_REMOVED_IN}; use ${tool.canonical} instead.`;
+}
+
 interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];

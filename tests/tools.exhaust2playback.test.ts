@@ -194,14 +194,16 @@ test('computeRampPlan: even steps, last step lands on target', () => {
 
 // ---------------------------------------------------------------- registration
 
-test('all 23 exhaust2 playback tools are registered with quota notes', () => {
+// #847 retired queue_profile into `get_queue` include=['profile'] (22 tools
+// now); its contract is pinned in tests/queue.tools.test.ts.
+test('all 22 exhaust2 playback tools are registered with quota notes', () => {
   const { tools } = makeHarness(registerExhaust2PlaybackTools);
   const expected = [
     'sleep_timer', 'mute', 'unmute', 'switch_device', 'surprise_me',
     'skip_n', 'pause_everywhere', 'volume_ramp', 'playback_timer_status',
     'episode_bookmark', 'episode_resume', 'queue_next_episode', 'queue_replace_via_playlist',
     'session_stats', 'most_replayed', 'last_heard',
-    'weekday_heatmap', 'queue_profile',
+    'weekday_heatmap',
     'checkpoint_playback', 'continue_last',
     'room_level', 'volume_report', 'daily_pick',
   ];
@@ -852,23 +854,6 @@ test('daily_pick is deterministic per date and seeded from the highlight pool', 
   const c = await h.invoke('daily_pick', { date: '2026-01-01', pool_size: 1 });
   assert.equal((c.structuredContent as { pick: { uri: string } }).pick.uri, 'spotify:track:a'); // top of pool
   assert.match(text(c), /Banger of the day \(2026-01-01, deterministic\)/);
-});
-
-// ---------------------------------------------------------------- queue_profile
-
-test('queue_profile reports mix, uniques and longest artist block', async () => {
-  const queue = {
-    currently_playing: { uri: 'spotify:track:t1', name: 'T1', type: 'track', artists: [{ name: 'A' }], album: { name: 'X' } },
-    queue: [
-      { uri: 'spotify:track:t2', name: 'T2', type: 'track', artists: [{ name: 'A' }], album: { name: 'Y' } },
-      { uri: 'spotify:episode:e1', name: 'Pod', type: 'episode', show: { name: 'Show' } },
-    ],
-  };
-  const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/queue' ? queue : undefined) });
-  const out = await h.invoke('queue_profile', {});
-  assert.match(text(out), /mix: 2 track\(s\) \/ 1 episode\(s\)/);
-  assert.match(text(out), /unique artists: 1 \| unique albums: 2 \| unique shows: 1/);
-  assert.match(text(out), /longest block by one artist: A ×2/);
 });
 
 // ---------------------------------------------------------------- checkpoints

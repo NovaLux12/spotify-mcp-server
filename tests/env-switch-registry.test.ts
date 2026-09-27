@@ -571,7 +571,7 @@ describe('env switches at the registry (#661)', () => {
       const diff = surfaceDiff(expected, new Set(surface.tools));
       assert.equal(diff.unexpected.length, 0, reportDiff('playback toolset', diff));
       assert.equal(diff.missing.length, 0, reportDiff('playback toolset', diff));
-      for (const name of ['play', 'pause', 'queue_playlist', 'describe_queue', 'save_playback_state']) {
+      for (const name of ['play', 'pause', 'queue_playlist', 'peek_next', 'save_playback_state']) {
         assert.ok(surface.tools.includes(name), `playback tool "${name}" should be served by the playback toolset`);
       }
       for (const name of ['search', 'get_album_tracks', 'get_playlist', 'add_to_playlist', 'get_saved_tracks', 'statsfm_top_artists']) {
@@ -598,7 +598,7 @@ describe('env switches at the registry (#661)', () => {
       for (const name of ['spotify_doctor', 'find_tool', 'inspect_tool', 'toolset_report', 'verify_receipt']) {
         assert.ok(surface.tools.includes(name), `"${name}" is always active and must survive a playbackintel-only toolset`);
       }
-      assert.ok(surface.tools.includes('describe_queue'), 'playbackintel is the selected set, so its tools register');
+      assert.ok(surface.tools.includes('peek_next'), 'playbackintel is the selected set, so its tools register');
       assert.equal(surface.tools.includes('play'), false, 'the playback set is not enabled here');
       assert.equal(surface.tools.includes('get_playlist'), false, 'the playlists set is not enabled here');
     });
@@ -646,7 +646,7 @@ describe('env switches at the registry (#661)', () => {
       // `queueops` is a separate registration key, so the discriminating
       // neighbour survives — this is what separates a key-level disable from
       // "turn playback off" and from a broken filter that hides everything.
-      for (const name of ['queue_playlist', 'describe_queue', 'play_on']) {
+      for (const name of ['queue_playlist', 'peek_next', 'play_on']) {
         assert.ok(surface.tools.includes(name), `"${name}" is not in the playback key and must survive disabling it`);
       }
       assert.ok(surface.tools.includes('search'), 'disabling one key must not disturb the rest of the surface');

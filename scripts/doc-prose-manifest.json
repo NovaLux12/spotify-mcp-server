@@ -2029,12 +2029,36 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "f893bbcb5997f4c8",
-        "label": "getqueue Get the current playback queue."
+        "hash": "64174ad41209825a",
+        "label": "getqueue Read the playback queue. This and peeknext are …"
       },
       {
-        "hash": "fd7e8cfa2ec64fa8",
+        "hash": "089c51ca39b529c4",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "5f92ff11ed9c5f03",
+        "label": "Quota: exactly one GET /me/player/queue per call, whatev…"
+      },
+      {
+        "hash": "93342f1083c07fd2",
         "label": "Returns: currently playing item, plus the up-next list (…"
+      },
+      {
+        "hash": "93919fcf18191b1e",
+        "label": "runtime.currenttrackremainingms needs a second endpoint.…"
+      },
+      {
+        "hash": "63445fa3d53d8b36",
+        "label": "peeknext Short lookahead at the queue: the next N items …"
+      },
+      {
+        "hash": "5cb52c2779a8f8e2",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "3c2e2b5b300cef1a",
+        "label": "Quota: 1 read. The per-item ETA the retired predictnextt…"
       },
       {
         "hash": "b74cd36a3aecdf2c",
@@ -3631,6 +3655,22 @@
       {
         "hash": "58b6a5c1df2a3e34",
         "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
+      },
+      {
+        "hash": "4e3c8b62c78e2722",
+        "label": "5.16 Queue-read migration (#847)"
+      },
+      {
+        "hash": "99735d4ceb7d6401",
+        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
+      },
+      {
+        "hash": "506b2b63abfcd761",
+        "label": "| Retired name | Call that replaces it | What moved | |-…"
+      },
+      {
+        "hash": "0d718e4d575069af",
+        "label": "These six are deliberately NOT reachable through SPOTIFY…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -5568,10 +5608,24 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "f893bbcb5997f4c8",
+      "label": "getqueue Get the current playback queue.",
+      "date": "2026-09-27",
+      "reason": "Reworded by #847: both paragraphs belong to the get_queue SPEC entry the collapse rewrote — the heading now names the two surviving queue-read entry points and the six registrations they replaced, and the Returns line now names the analyses that moved behind include: rather than a flat up-next list."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "fd63592042568bb1",
       "label": "The {+qs} twin is the catch-all for query strings this s…",
       "date": "2026-09-27",
       "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fd7e8cfa2ec64fa8",
+      "label": "Returns: currently playing item, plus the up-next list (…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #847: both paragraphs belong to the get_queue SPEC entry the collapse rewrote — the heading now names the two surviving queue-read entry points and the six registrations they replaced, and the Returns line now names the analyses that moved behind include: rather than a flat up-next list."
     },
     {
       "file": "SPEC.md",
@@ -5582,8 +5636,8 @@
     }
   ],
   "provenance": {
-    "head": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
-    "upstream": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
+    "head": "079ba9eb52fc29a1a5eda211e68aeb7f95acc1b9",
+    "upstream": "079ba9eb52fc29a1a5eda211e68aeb7f95acc1b9",
     "behind": false
   }
 }
