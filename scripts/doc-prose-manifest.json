@@ -2709,7 +2709,7 @@
         "label": "The refusal is enforced at atomicReplace, the single wri…"
       },
       {
-        "hash": "6109fb809e4c3689",
+        "hash": "6c220d50e20e871f",
         "label": "The affected tools are playlistfliporder, playlistresequ…"
       },
       {
@@ -2757,12 +2757,60 @@
         "label": "The same predicate also runs per tool ahead of the dryru…"
       },
       {
-        "hash": "5a1a0046c8f24dc4",
-        "label": "playlistbalance is deliberately excluded: it creates new…"
+        "hash": "923bc87bec589c1b",
+        "label": "playlistbalance is the one tool in the slice this refusa…"
       },
       {
         "hash": "c40be6394d1762cd",
         "label": "Migration note (breaking): a swarm4 rewrite of a playlis…"
+      },
+      {
+        "hash": "8bb87089507ba9ca",
+        "label": "Bounded-read disclosure on playlistbalance (#1388)"
+      },
+      {
+        "hash": "d2248ae373fbf3d3",
+        "label": "playlistbalance reads the source with the same bounded w…"
+      },
+      {
+        "hash": "33bd963c3c984ca9",
+        "label": "That is the #6 shape — a correctly named payload field t…"
+      },
+      {
+        "hash": "9e34b35795229fc1",
+        "label": "Refusing would be the consistent choice, and it is wrong…"
+      },
+      {
+        "hash": "73d8d506bcac6536",
+        "label": "Disclosing while leaving items: n alone is what the tool…"
+      },
+      {
+        "hash": "25b0bf62db99ef07",
+        "label": "So it discloses, and the disclosure is the caller's to a…"
+      },
+      {
+        "hash": "20554d496e1b6580",
+        "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…"
+      },
+      {
+        "hash": "a82895555e5c8faa",
+        "label": "The coverage fields ride on the ok: false too-few-items …"
+      },
+      {
+        "hash": "ec05aa390dd627c1",
+        "label": "ok stays true on a truncated split, and that is not a he…"
+      },
+      {
+        "hash": "3f113276c8fe7818",
+        "label": "The tool description changed with it, and that is the pa…"
+      },
+      {
+        "hash": "991317132a97dccb",
+        "label": "A playlist at or below the cap is unchanged: truncated: …"
+      },
+      {
+        "hash": "c2550abc00703fd9",
+        "label": "Not a migration: no call that succeeded before fails now…"
       },
       {
         "hash": "6bf9ff5de25ccd8c",
@@ -4819,6 +4867,20 @@
       "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "5a1a0046c8f24dc4",
+      "label": "playlistbalance is deliberately excluded: it creates new…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "6109fb809e4c3689",
+      "label": "The affected tools are playlistfliporder, playlistresequ…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
     },
     {
       "file": "SPEC.md",

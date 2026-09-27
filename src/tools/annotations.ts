@@ -1603,11 +1603,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // restore_playlist_from_snapshot and apply_snapshot_changes now say that
   // their result records the snapshot source, the file-declared date and the
   // use — and that neither tool gates — so an agent can tell a recorded
-  // purpose from an approved one. 23,449 -> 23,731B (+282) and
-  // 21,432 -> 21,559B (+127) are the two descriptions, measured off the live
-  // registry over stdio on the merged tree, not estimated.
+  // purpose from an approved one.
   manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23731], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21559], { scopeKey: 'playlists' }),
+  // Two description changes, measured together on the merged tree: #708's
+  // provenance wording and #1388's disclosure wording. Neither side's number
+  // survives the merge — each was measured on a tree that lacked the other's
+  // text — so both are re-measured below rather than picked.
+  //
+  // #1388, and the +192B is entirely one description: `playlist_balance`
+  // claimed "interleave (round-robin deal, so every part samples the whole
+  // span)" and then split a walk bounded at `SPOTIFY_MCP_FETCH_ALL_CAP`, so
+  // the span it sampled was the READ's span and not the playlist's — and the
+  // description said otherwise to every host before the call. It now names
+  // the ceiling and points at the payload fields that say whether the split
+  // was whole. The tool's answer is unchanged for any playlist at or below
+  // the cap, so this is description text paying for a claim that was false.
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21751], { scopeKey: 'playlists' }),
 
 
 ] as const;

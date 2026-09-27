@@ -123,6 +123,17 @@ interface PlaylistWalk {
   items: PlaylistItemObject[];
   /** The walk stopped short of the end of the playlist. */
   truncated: boolean;
+  /**
+   * The CAP is what truncated the walk, rather than the walk ending on a short
+   * page while Spotify's own `total` still counted rows past it (#718/#864).
+   *
+   * #1388: the ten rewrites only ever REFUSE, and a refusal names the cap as
+   * the remedy, so the distinction is invisible to them. `playlist_balance`
+   * discloses instead, and a disclosure that says "truncated at the cap" when
+   * the cap never bound the walk sends the caller to raise a ceiling that
+   * would not have helped.
+   */
+  truncatedByCap: boolean;
   /** The ceiling that produced the truncation, so a refusal can name it. */
   cap: number;
   /** Spotify's own `items.total` when the walk saw a page carrying one. */
@@ -142,13 +153,18 @@ async function fetchAllItems(client: SpotifyClient, ref: string): Promise<Playli
     { limit: '100' },
     { maxItems: cap + 1 },
   );
+  const overflowedCap = walk.items.length > cap;
   return {
     items: walk.items.slice(0, cap),
     // The walk's own verdict OR the clip applied above. `walk.truncated` alone
     // cannot see the cap+1 case: the client stops once `all.length` reaches
     // `maxItems`, and with maxItems === cap+1 a playlist of exactly cap+1 rows
     // is not itself an overflow, so only the clip proves it (#718/#864).
-    truncated: walk.truncated || walk.items.length > cap,
+    truncated: walk.truncated || overflowedCap,
+    // The clip is itself a cap overflow — the walk holds more rows than the cap
+    // admits — so on that path the cap is the cause even where the walk's own
+    // attribution had not fired.
+    truncatedByCap: walk.truncatedByCap || overflowedCap,
     cap,
     reportedTotal: walk.reportedTotal,
   };
@@ -172,6 +188,14 @@ interface LoadedPlaylist {
    * rather than saying "some rows were missed".
    */
   truncated: boolean;
+  /**
+   * Whether the CAP is the reason, as opposed to a walk that ended on a short
+   * page while the server's `total` still counted more. `playlist_balance`
+   * discloses the verdict rather than refusing it, and a disclosure that
+   * attributes a short read to a ceiling that never bound it points the caller
+   * at the wrong knob (#1388).
+   */
+  truncatedByCap: boolean;
   cap: number;
   /**
    * Spotify's own item count, read from the metadata this already fetched — so
@@ -201,6 +225,7 @@ async function loadPlaylistFull(client: SpotifyClient, ref: string): Promise<Loa
     name: meta.name ?? null,
     items: walk.items,
     truncated: walk.truncated,
+    truncatedByCap: walk.truncatedByCap,
     cap: walk.cap,
     ...(typeof reported === 'number' ? { total: reported } : {}),
   };
@@ -379,9 +404,19 @@ function toRows(items: readonly PlaylistItemObject[]): OpRow[] {
  * atomic replace, so unavailable items (empty uri) would silently vanish.
  * The predicate itself is shared with swarm3_playlistops.ts and playlists.ts
  * (#860) — this is only the LoadedPlaylist-shaped wrapper around it.
+ *
+ * #1388: the verdict is passed through so the quoted count is marked as a
+ * lower bound when the walk was short. For the ten committing tools this is
+ * unreachable — `assertPlaylistReadWhole` refuses a truncated read first, in
+ * every one of them — but `playlist_balance` discloses truncation instead of
+ * refusing it, so this is the one place the unavailable-row refusal can meet a
+ * short read. `contains 1 unavailable item(s)` off a walk that stopped at the
+ * cap is a count of the rows that were read presented as a count of the
+ * playlist, which is the fault #1362 was filed on. `playlists.ts` already
+ * threads `truncated` through for the same reason.
  */
 function assertRewritable(p: LoadedPlaylist): void {
-  assertPlaylistRewritable(p.name ?? p.id, unavailableRowPositions(p.items));
+  assertPlaylistRewritable(p.name ?? p.id, unavailableRowPositions(p.items), { truncated: p.truncated });
 }
 
 /**
@@ -421,6 +456,49 @@ function assertPlaylistReadWhole(p: LoadedPlaylist): void {
     cap: p.cap,
     total: p.total,
   });
+}
+
+/**
+ * #1388 — the counterpart to {@link assertPlaylistReadWhole} for the ONE tool
+ * in this slice that has nothing to protect: `playlist_balance` reads a
+ * playlist, splits what it read, and writes the parts to NEW playlists. The
+ * source is never touched, so there is no atomic full replace for a short read
+ * to be mistaken for, and nothing the caller had before the call is gone after
+ * it.
+ *
+ * That is the whole reason this tool discloses where its ten siblings refuse.
+ * The refusal in `rewritable.ts` is argued on irreversibility — "there is no
+ * partial-damage outcome to warn about, only rows the user still had" — and
+ * none of that transfers to a copy. Refusing here would also mean that a
+ * caller who cannot raise `SPOTIFY_MCP_FETCH_ALL_CAP` (a hosted server, a
+ * fixed env) can never split a playlist larger than the cap at all, which is a
+ * functional hole bought with no safety.
+ *
+ * What DOES transfer is the requirement that the answer not overstate its
+ * scope, because the split is computed from the rows that were read: a
+ * round-robin deal of the first 500 of 600 rows deals the first 500 rows, and
+ * "every part samples the whole span" is then a claim about a span the caller
+ * never had. So this returns the disclosure and the tool puts it in front of
+ * the answer, never behind it, in both the dry run and the commit.
+ *
+ * Returns '' on a whole read, so callers can prepend it unconditionally and
+ * pay nothing when the read was complete.
+ */
+function describeSplitCoverage(p: LoadedPlaylist, rowsRead: number): string {
+  if (!p.truncated) return '';
+  // `truncated_by_cap` is not decoration: a walk that ended on a short page
+  // while Spotify's `total` still counted more was never capped, and telling
+  // the caller to raise the cap would send them to a knob that changes nothing.
+  const via = p.truncatedByCap
+    ? `the item walk stopped at the fetch-all cap of ${p.cap} row(s)`
+    : 'the item walk ended before the last row Spotify reported, so the cap never bound it';
+  // An unread `items.total` is never rounded down to the rows that were read:
+  // that substitution is the exact claim this disclosure exists to stop (#718).
+  const size = typeof p.total === 'number'
+    ? `read ${rowsRead} of ${p.total} row(s), so at least ${Math.max(0, p.total - rowsRead)} of them are NOT in these parts`
+    : `read ${rowsRead} row(s), and the playlist's own size was not readable, so the size of the unread region is unknown`;
+  return `PARTIAL SPLIT — ${via}: ${size}. The source playlist is unchanged and still holds every row; `
+    + `raise SPOTIFY_MCP_FETCH_ALL_CAP above this playlist's row count and re-run to cover the rest.`;
 }
 
 /** "Name — Artist" style display label for a row. */
@@ -1749,7 +1827,9 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_balance',
     'Split a playlist into N balanced new playlists: sequential chunks (part 1 = first third, …) '
       + 'or interleave (round-robin deal, so every part samples the whole span). Creates N new '
-      + 'playlists; the source is left untouched. Quota: 2 GETs + N creates + chunked adds.',
+      + 'playlists; the source is left untouched. The span is what the read returned: a playlist '
+      + 'larger than the fetch-all cap (SPOTIFY_MCP_FETCH_ALL_CAP) is only partly covered, and the '
+      + 'response says so via truncated/items_read/items_total. Quota: 2 GETs + N creates + chunked adds.',
     {
       playlist_id: z.string().describe('Playlist to split, as ID or spotify:playlist: URI'),
       parts: z.number().int().min(2).max(10).describe('How many playlists to create (2–10)'),
@@ -1772,11 +1852,30 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       assertRewritable(p);
       const rows = toRows(p.items);
       const n = rows.length;
+      // #1388: the coverage of what is about to be split, computed BEFORE the
+      // early return so the branch that refuses a split cannot state the
+      // playlist's size as a number it never read. `items` is gone rather than
+      // redefined: a caller that saw `items: 500` here had no way to know it
+      // was the cap, and renaming the field to `items_read` while leaving
+      // `items` in place would have kept two ways to read the same wrong claim.
+      const coverage = describeSplitCoverage(p, n);
+      const scope = {
+        items_read: n,
+        items_total: typeof p.total === 'number' ? p.total : null,
+        truncated: p.truncated,
+        // Named only when they mean something: a whole read was not capped, so
+        // a `fetch_all_cap` on it would read as though the cap bound the walk.
+        ...(p.truncated ? { truncated_by_cap: p.truncatedByCap, fetch_all_cap: p.cap } : {}),
+      };
       if (n < args.parts) {
-        return shape(rf, `"${p.name ?? p.id}" has ${n} item(s) — fewer than the ${args.parts} parts requested.`, {
-          ok: false,
-          items: n,
-        });
+        const size = p.truncated
+          ? `only ${n} of ${typeof p.total === 'number' ? p.total : 'an unknown number of'} item(s) could be read`
+          : `has ${n} item(s)`;
+        return shape(
+          rf,
+          `${coverage ? `${coverage}\n` : ''}"${p.name ?? p.id}" ${size} — fewer than the ${args.parts} parts requested.`,
+          { ok: false, ...scope },
+        );
       }
       const prefix = args.name_prefix ?? `${p.name ?? 'Playlist'} — Part`;
       const buckets: OpRow[][] = Array.from({ length: args.parts }, () => []);
@@ -1795,8 +1894,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const bucketBudgets = buckets.map((b) => budgetedArray(b.map((r) => r.uri), max));
       const names = buckets.map((_, i) => `${prefix} ${i + 1}`);
+      // The disclosure leads, in the preview as well as the commit: a dry run
+      // that says "would affect 500 items" for a 600-row playlist is the same
+      // false count as a commit, one step earlier, and the caller commits on
+      // the plan. It sits above `describeDryRun`'s own header rather than
+      // inside its change list, so it is not elided as one long change line.
       const prose = [
-        `Split "${p.name ?? p.id}" (${n} items) into ${args.parts} ${args.strategy} playlists:`,
         ...buckets.map(
           (b, i) => `  "${names[i]}": ${b.length} item(s), runtime ${msToClock(b.reduce((s, r) => s + (r.durationMs ?? 0), 0))}`,
         ),
@@ -1808,6 +1911,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         playlist_name: p.name,
         parts: args.parts,
         strategy: args.strategy,
+        ...scope,
         names,
         buckets: bucketBudgets.map((b) => b.value),
         bucket_totals: bucketBudgets.map((b) => b.total),
@@ -1817,7 +1921,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('balance split', p.name ?? p.id, prose.slice(1)), payload);
+        const plan = describeDryRun('balance split', p.name ?? p.id, prose);
+        return shape(rf, coverage ? `${coverage}\n${plan}` : plan, payload);
       }
       const created: string[] = [];
       let requests = 0;
@@ -1827,12 +1932,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         const add = buckets[i].length > 0 ? await addUrisChunked(client, id, buckets[i].map((r) => r.uri)) : { requests: 0 };
         requests += 1 + add.requests;
       }
-      return shape(
-        rf,
-        `Split "${p.name ?? p.id}" into ${args.parts} new playlists:\n`
-          + buckets.map((b, i) => `  • "${names[i]}" (${created[i]}): ${b.length} item(s)`).join('\n'),
-        { ...payload, dry_run: false, playlist_ids: created, requests },
-      );
+      const summary = [
+        ...(coverage ? [coverage] : []),
+        `Split "${p.name ?? p.id}" into ${args.parts} new playlists${p.truncated ? ' (a partial split — see above)' : ''}:`,
+        ...buckets.map((b, i) => `  • "${names[i]}" (${created[i]}): ${b.length} item(s)`),
+      ].join('\n');
+      return shape(rf, summary, { ...payload, dry_run: false, playlist_ids: created, requests });
     },
   );
 }
