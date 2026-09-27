@@ -33,9 +33,9 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_top_genres` | A user's genre ranking for a supported `range`. |
 | `statsfm_recent_streams` | Recent individual streams, with optional Unix-ms `after`/`before` bounds. |
 | `statsfm_now_playing` | The user's current stream, or `null` when idle. |
-| `statsfm_track_stats` | Stream totals for one track, counted over one page of the user's newest streams (`limit`) — not their whole history. |
-| `statsfm_artist_stats` | Stream totals for one artist, counted over one page of the user's newest streams (`limit`) — not their whole history. |
-| `statsfm_album_stats` | Stream totals for one album, counted over one page of the user's newest streams (`limit`) — not their whole history. |
+| `statsfm_track_stats` | stats.fm's own lifetime stream total for one track, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
+| `statsfm_artist_stats` | stats.fm's own lifetime stream total for one artist, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
+| `statsfm_album_stats` | stats.fm's own lifetime stream total for one album, plus a sample of the individual plays (`limit` sizes the sample, never the total). |
 | `statsfm_search` | Search the stats.fm track, artist, album, playlist, or user catalog. |
 | `statsfm_recaps` | Year-in-review totals and catalog breadth for one calendar year. |
 | `statsfm_streams_stats` | Aggregate listening totals and catalog cardinality, optionally bounded by Unix-ms `after`/`before`. |
@@ -50,9 +50,9 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_charts_artists` | A user's all-time artist chart with movement indicators. |
 | `statsfm_charts_albums` | A user's all-time album chart with movement indicators. |
 | `statsfm_charts_users` | One page of a user's friends — the `limit` you pass, not their whole friend list — ranked by stream count. A friend whose total cannot be read is listed as unreadable with the reason, never as zero. |
-| `statsfm_track_date_stats` | Stream totals for one track within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
-| `statsfm_artist_date_stats` | Stream totals for one artist within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
-| `statsfm_album_date_stats` | Stream totals for one album within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
+| `statsfm_track_date_stats` | stats.fm's own stream total for one track within the `after`/`before` window, plus a sample of that window's plays. |
+| `statsfm_artist_date_stats` | stats.fm's own stream total for one artist within the `after`/`before` window, plus a sample of that window's plays. |
+| `statsfm_album_date_stats` | stats.fm's own stream total for one album within the `after`/`before` window, plus a sample of that window's plays. |
 | `statsfm_friends` | A user's stats.fm friends. |
 | `statsfm_friend_count` | A user's stats.fm friend count. |
 | `statsfm_records_artists` | Artists holding a user's listening records and milestones. |
@@ -102,7 +102,8 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 ## Limits
 
 - Top-list tools page with `limit` / `offset`; use the tool schema's maximum rather than assuming a Spotify page size. Check the row count you actually got back rather than assuming it equals the `limit` you asked for.
-- The per-entity `*_stats` and `*_date_stats` tools each read **one page** of `/users/{id}/streams` — stats.fm's stream list carries no total, no cursor and no `offset`, so a page is a slice, never a lifetime total. The tools disclose this rather than letting a slice read as a lifetime figure: when the page filled, `structuredContent` carries a `capped` flag plus the page size and the number of streams actually read, and the prose says the read did not cover all of them. A total without that flag is complete for the page it read, not necessarily for the profile.
+- The per-entity `*_stats` and `*_date_stats` tools report a **measured** total, not a page. stats.fm computes each entity's real totals itself and serves them at `/users/{id}/streams/{tracks|artists|albums}/{entityId}/stats`, so `count` and `totalMs` are the entity's own figures for the whole window rather than a slice of the profile's mixed history. Verified live 2026-09-27. Two things follow. First, the entity is in the **path** here, not a query parameter — `/users/{id}/streams/{id}` (the shape that reads as obvious) 404s, and the `track`/`artist`/`album` query parameter on `/users/{id}/streams` is silently dropped, which is what made this look unanswerable for a while. Second, `limit` no longer moves the figure: it sizes the accompanying play sample, which is read separately from the entity-scoped route and is newest-first with `offset` ignored upstream. The sample is reported as `sample_limit` / `sample_returned` / `sample_truncated` / `sample_oldest` / `sample_newest`, so its span is never mistaken for the entity's whole history, and a sample that cannot be read leaves the total standing with the reason in `sample_unreadable_reason`. An aggregate that arrives without a usable `count` fails the call rather than reading as `0`.
+- A `0` from these tools is a real answer, not a missing one: stats.fm computed that the user has no plays of that entity in the window. That is the opposite of the older page-based behaviour, where an unreadable figure had to be kept out of the result entirely.
 - `statsfm_recent_streams` is recency-ordered and most useful with small limits. It is a window onto recent plays, not a full export.
 - `max_results` truncation and `structuredContent` pagination behave like the server's other list tools.
 - Taste composites may require a public profile and enough imported streams; they return a useful empty result when the upstream has no data.

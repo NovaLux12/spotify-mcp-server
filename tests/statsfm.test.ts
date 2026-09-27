@@ -436,229 +436,272 @@ test('statsfm_now_playing names the current track', async () => {
   assert.match(h.text(out), /Now playing: "Ya Sonra"/);
 });
 
-test('statsfm_track_stats aggregates streams', async () => {
-  const h = makeHarness((path, params) => {
-    assert.equal(path, '/users/u/streams');
-    assert.equal(params?.track, '1');
-    return streamsFixture();
-  });
-  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 1 });
-  assert.match(h.text(out), /2 streams/);
-  const sc = out.structuredContent as Record<string, unknown>;
-  assert.equal(sc.count, 2);
-  assert.equal(sc.totalMs, 500000);
-});
-
-test('statsfm_artist_stats filters by artist', async () => {
-  const h = makeHarness((path, params) => {
-    assert.equal(path, '/users/u/streams');
-    assert.equal(params?.artist, '310770');
-    return streamsFixture();
-  });
-  const out = await h.find('statsfm_artist_stats').handler({ user_id: 'u', artist_id: 310770 });
-  assert.match(h.text(out), /2 streams/);
-});
-
-test('statsfm_album_stats filters by album', async () => {
-  const h = makeHarness((path, params) => {
-    assert.equal(params?.album, '9');
-    return streamsFixture();
-  });
-  const out = await h.find('statsfm_album_stats').handler({ user_id: 'u', album_id: 9 });
-  assert.match(h.text(out), /2 streams/);
-});
-
-// ------------------------------------------- page-bounded stream stats (#810)
+// ------------------------------------------- per-entity totals (#1006)
 
 /**
- * A profile's stream history, newest first, as stats.fm returns it: at most
- * `limit` entries per call, `before`/`after` bounds honoured inclusively, and
- * both `offset` and the entity filter silently dropped (verified against the
- * live API 2026-09-25). Nothing here is derived from the caller's arguments
- * except the paging the endpoint really honours, so every page mixes plays of
- * the requested entity with plays of anything else — one page of N is N
- * streams of the profile, not N plays of the entity.
+ * The entity ids the per-entity tests read.
  */
 const ENTITY = { track: 5816601, album: 796569, artist: 310770 };
 
-function streamHistory(count: number, matchesEvery = 3) {
+/**
+ * A per-entity aggregate, in the envelope stats.fm actually uses for it.
+ *
+ * Verified live 2026-09-27: `/users/{id}/streams/tracks/{id}/stats` and the
+ * artist route answer `{ items: {...} }`, while the album route answers
+ * `{ item: {...} }`. `durationMs` and `count` are the entity's real totals.
+ */
+function aggregateStats(
+  count: number,
+  envelope: 'items' | 'item' = 'items',
+  cardinality: J | null = { tracks: 1, artists: 1, albums: 1 },
+) {
+  const stats: J = {
+    durationMs: count * 200_000,
+    count,
+    playedMs: { count, min: 1, max: 200_000, avg: count > 0 ? 200_000 : null, sum: count * 200_000 },
+  };
+  if (cardinality !== null) stats.cardinality = cardinality;
+  return envelope === 'items' ? { items: stats } : { item: stats };
+}
+
+/** The entity's own plays, newest first, as the entity-scoped route serves them. */
+function entityPlays(count: number) {
   const newest = Date.UTC(2026, 0, 2, 12, 0, 0);
-  return Array.from({ length: count }, (_, i) => {
-    const mine = i % matchesEvery === 0;
-    return {
-      id: `h${i}`,
-      endTime: new Date(newest - i * 60_000).toISOString(),
-      playedMs: 200_000,
-      trackId: mine ? ENTITY.track : 900_000 + i,
-      trackName: mine ? 'Ya Sonra' : 'Something Else',
-      albumId: mine ? ENTITY.album : 800_000 + i,
-      artistIds: [mine ? ENTITY.artist : 700_000 + i],
-    };
-  });
+  return Array.from({ length: count }, (_, i) => ({
+    id: `e${i}`,
+    endTime: new Date(newest - i * 60_000).toISOString(),
+    playedMs: 200_000,
+    trackId: ENTITY.track,
+    trackName: 'Ya Sonra',
+    albumId: ENTITY.album,
+    artistIds: [ENTITY.artist],
+  }));
 }
 
-/** How many of the first `pageSize` history rows are plays of the entity. */
-function matchingIn(history: ReturnType<typeof streamHistory>, pageSize: number, matchesEvery = 3): number {
-  return history.slice(0, pageSize).filter((_, i) => i % matchesEvery === 0).length;
-}
-
-function streamsPageResponder(history: ReturnType<typeof streamHistory>) {
+/**
+ * Answers the two routes a per-entity read makes: the aggregate, then the play
+ * list. `failSample: 'http'` stages a play list that cannot be read at all.
+ */
+function perEntityResponder(count: number, opts: { plays?: number; failSample?: 'http' } = {}) {
   return (path: string, params?: Record<string, string>) => {
-    assert.equal(path, '/users/u/streams');
+    if (path.endsWith('/stats')) {
+      return aggregateStats(count, path.includes('/albums/') ? 'item' : 'items');
+    }
+    if (opts.failSample === 'http') throw new StatsfmApiError(429, 'stats.fm HTTP 429', 3);
     const limit = Number(params?.limit);
-    assert.ok(Number.isInteger(limit) && limit > 0, `limit must reach the wire: ${JSON.stringify(params)}`);
-    const after = params?.after === undefined ? -Infinity : Number(params.after);
-    const before = params?.before === undefined ? Infinity : Number(params.before);
-    return {
-      items: history
-        .filter((s) => Date.parse(s.endTime) >= after && Date.parse(s.endTime) <= before)
-        .slice(0, limit),
-    };
+    return { items: entityPlays(opts.plays ?? count).slice(0, limit) };
   };
 }
 
-/** The count a reader of the prose would take away. */
-function proseCount(text: string): number {
-  const lead = /^[^:\n]+: (\d+) streams,/m.exec(text);
-  assert.ok(lead, `prose must lead with the stream count it reports: ${text}`);
-  return Number(lead[1]);
-}
+test('the per-entity total is read from stats.fm\'s own aggregate, not a page (#1006)', async () => {
+  const h = makeHarness(perEntityResponder(162));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
+  const sc = out.structuredContent as Record<string, unknown>;
 
-test('a full page is disclosed as partial, and is not a total of the entity (#810)', async () => {
-  const history = streamHistory(300);
-  const h = makeHarness(streamsPageResponder(history));
+  assert.equal(h.calls[0].path, `/users/u/streams/tracks/${ENTITY.track}/stats`);
+  assert.equal(sc.count, 162, 'the count is stats.fm\'s aggregate, read whole');
+  assert.equal(sc.totalMs, 162 * 200_000);
+  assert.equal(sc.source, 'stats.fm per-entity aggregate');
+  // The route that silently drops the entity filter cannot answer a per-entity
+  // question, so reaching for it would reinstate the page-as-total defect.
+  assert.ok(
+    !h.calls.some((c) => c.path === '/users/u/streams'),
+    'no read may fall back to the unfiltered profile page',
+  );
+});
+
+test('all six per-entity tools read their own nested route and its own envelope (#1006)', async () => {
+  const cases = [
+    ['statsfm_track_stats', { track_id: ENTITY.track }, 'tracks', ENTITY.track],
+    ['statsfm_artist_stats', { artist_id: ENTITY.artist }, 'artists', ENTITY.artist],
+    ['statsfm_album_stats', { album_id: ENTITY.album }, 'albums', ENTITY.album],
+    ['statsfm_track_date_stats', { track_id: ENTITY.track, after: 0, before: 4102444800000 }, 'tracks', ENTITY.track],
+    ['statsfm_artist_date_stats', { artist_id: ENTITY.artist, after: 0, before: 4102444800000 }, 'artists', ENTITY.artist],
+    ['statsfm_album_date_stats', { album_id: ENTITY.album, after: 0, before: 4102444800000 }, 'albums', ENTITY.album],
+  ] as const;
+  for (const [name, args, segment, id] of cases) {
+    const h = makeHarness(perEntityResponder(7));
+    const out = await h.find(name).handler({ user_id: 'u', ...args });
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.equal(h.calls[0].path, `/users/u/streams/${segment}/${id}/stats`, `${name} must read its own nested route`);
+    assert.equal(sc.count, 7, `${name} must report the aggregate's count, not a page of it`);
+    assert.match(h.text(out), new RegExp(`^\\S+ ${id}: 7 streams,`), `${name} prose must lead with the measured count`);
+  }
+});
+
+test('the album aggregate is unwrapped from `item`, not `items` (#1006)', async () => {
+  // Reading every kind as `items` leaves the album envelope with no count at
+  // all, so the album total would be lost or refused.
+  const h = makeHarness((path) =>
+    path.endsWith('/stats') ? (path.includes('/albums/') ? aggregateStats(174, 'item') : aggregateStats(1)) : { items: [] },
+  );
+  const out = await h.find('statsfm_album_stats').handler({ user_id: 'u', album_id: ENTITY.album });
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.count, 174, 'the album total must come out of the item envelope');
+  assert.equal(sc.totalMs, 174 * 200_000);
+});
+
+test('an aggregate with no usable count fails the read instead of reporting zero (#803, #804)', async () => {
+  const unreadable = [
+    { durationMs: 5 },
+    { count: null, durationMs: 5 },
+    { count: '162', durationMs: 5 },
+    { count: -1, durationMs: 5 },
+    { count: 1.5, durationMs: 5 },
+    { count: Number.NaN, durationMs: 5 },
+    { count: 162 },
+    { count: 162, durationMs: 'lots' },
+    { count: 162, durationMs: -5 },
+  ];
+  for (const stats of unreadable) {
+    const h = makeHarness((path) => (path.endsWith('/stats') ? { items: stats } : { items: [] }));
+    await assert.rejects(
+      () => h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track }),
+      /invalid response/,
+      `count ${JSON.stringify((stats as J).count)} / durationMs ${JSON.stringify((stats as J).durationMs)} must not read as a total`,
+    );
+  }
+});
+
+test('a measured zero is reported as zero, because stats.fm computed it (#1006)', async () => {
+  const h = makeHarness((path) => (path.endsWith('/stats') ? aggregateStats(0) : { items: [] }));
+  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 1 });
+  const txt = h.text(out);
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(sc.count, 0, 'a server-computed zero is a real answer, not a failed read');
+  assert.match(txt, /^track 1: 0 streams, 0m total/m);
+  assert.match(txt, /Lifetime total/);
+  assert.doesNotMatch(txt, /avg/, 'a mean over zero plays is undefined, and 0m would read as a measurement');
+  assert.equal(
+    sc.avgMs,
+    null,
+    'the payload must not report avgMs: 0 for an entity with no plays. A mean over zero plays does ' +
+      'not exist; 0 is a number that reads as a measurement of a play that never happened. The prose ' +
+      'half already omits the mean here, so 0 would make the payload contradict its own text (#804).',
+  );
+});
+
+test('a windowless read says lifetime; a windowed read names its window (#1006)', async () => {
+  const plain = makeHarness(perEntityResponder(162));
+  const a = await plain.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
+  const aSc = a.structuredContent as Record<string, unknown>;
+  assert.equal(aSc.lifetime, true);
+  assert.equal(aSc.scope, 'lifetime');
+  assert.match(plain.text(a), /Lifetime total for this track, computed by stats\.fm/);
+
+  const windowed = makeHarness(perEntityResponder(23));
+  const b = await windowed.find('statsfm_track_date_stats').handler({
+    user_id: 'u',
+    track_id: ENTITY.track,
+    after: 1767225600000,
+    before: 1769904000000,
+  });
+  const bSc = b.structuredContent as Record<string, unknown>;
+  assert.equal(bSc.lifetime, false, 'a windowed read must not claim to be a lifetime total');
+  assert.equal(bSc.scope, 'after 2026-01-01T00:00:00.000Z → before 2026-02-01T00:00:00.000Z');
+  assert.match(windowed.text(b), /Total for the after .* → before .* window, computed by stats\.fm for this track/);
+  assert.doesNotMatch(windowed.text(b), /Lifetime/, 'windowed prose must not describe the read as lifetime');
+  // The window has to reach both reads, or the play list sits beside a total
+  // for a different period.
+  assert.equal(plain.calls[0].params?.after, undefined, 'a windowless read must not send a window');
+  for (const call of windowed.calls) {
+    assert.equal(call.params?.after, '1767225600000');
+    assert.equal(call.params?.before, '1769904000000');
+  }
+});
+
+test('a play list that cannot be read leaves the measured total standing and names the reason (#803)', async () => {
+  const h = makeHarness(perEntityResponder(162, { failSample: 'http' }));
   const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
   const txt = h.text(out);
   const sc = out.structuredContent as Record<string, unknown>;
-
-  // Wire: one page of 50, and no reliance on `offset` (upstream ignores it).
-  assert.equal(h.calls.length, 1);
-  assert.equal(h.calls[0].params?.limit, '50');
-  assert.equal(h.calls[0].params?.offset, undefined);
-
-  // The page held 50 streams, but only some are plays of the track: the
-  // reported figure is the part actually read, and it is flagged partial.
-  const expected = matchingIn(history, 50);
-  assert.equal(sc.streams_read, 50);
-  assert.equal(sc.page_size, 50);
-  assert.equal(sc.capped, true);
-  assert.equal(sc.count, expected);
-  assert.notEqual(sc.count, 50, 'a page of 50 streams is not 50 plays of the track');
-  assert.equal(sc.totalMs, expected * 200_000, 'only the matching streams are totalled');
-  assert.match(txt, new RegExp(`${expected} of the 50 streams`));
-  assert.match(txt, /not a lifetime total/);
-  assert.match(txt, /page span:/);
-  assert.equal(proseCount(txt), sc.count, 'prose and structuredContent must agree on the count');
+  assert.equal(sc.count, 162, 'the total was read, so a lost sample must not lose it');
+  assert.equal(sc.sample_unreadable_reason, 'rate limited (429, retry after 3s)');
+  assert.equal(sc.sample_returned, 0);
+  assert.deepEqual(sc.streams, []);
+  assert.equal(sc.sample_oldest, null);
+  assert.match(txt, /could not be read \(rate limited \(429, retry after 3s\)\)/);
+  assert.match(txt, /the total above is unaffected/);
 });
 
-test('a history shorter than the page reports its true count with no capped flag (#810)', async () => {
-  const h = makeHarness(streamsPageResponder(streamHistory(7, 1)));
-  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track });
-  const txt = h.text(out);
-  const sc = out.structuredContent as Record<string, unknown>;
-
-  assert.equal(h.calls[0].params?.limit, '50');
-  assert.equal(sc.count, 7, 'the whole exposed history fits, so the count is the real one');
-  assert.equal('capped' in sc, false, 'a short page is not a truncated read');
-  assert.equal(sc.page_size, 50);
-  assert.equal(sc.streams_read, 7);
-  assert.doesNotMatch(txt, /Partial:/);
-  assert.equal(proseCount(txt), sc.count, 'prose and structuredContent must agree on the count');
+test('a failed aggregate read is never papered over by counting the play sample (#803)', async () => {
+  const h = makeHarness((path) => {
+    if (path.endsWith('/stats')) throw new StatsfmApiError(404, 'stats.fm HTTP 404');
+    return { items: entityPlays(50) };
+  });
+  await assert.rejects(
+    () => h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track }),
+    /stats\.fm HTTP 404/,
+  );
+  assert.equal(h.calls.length, 1, 'a total that could not be read must not be replaced by one that could be counted');
 });
 
-test('a complete read that holds no play of the entity says so, not "0 lifetime plays" (#810)', async () => {
-  const h = makeHarness(streamsPageResponder(streamHistory(6, 3)));
-  const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: 4242424 });
-  const txt = h.text(out);
-  const sc = out.structuredContent as Record<string, unknown>;
-  assert.equal(sc.count, 0);
-  assert.equal('capped' in sc, false);
-  assert.match(txt, /none of the \d+ streams in .* is this track/);
-  assert.equal(proseCount(txt), 0);
+test('a malformed play list fails the tool rather than being filed as an upstream failure', async () => {
+  // A 200-status StatsfmApiError is this module's own envelope assertion, so
+  // swallowing it as "the sample is unreadable" would hide a code fault.
+  const h = makeHarness((path) => (path.endsWith('/stats') ? aggregateStats(162) : { nope: true }));
+  await assert.rejects(
+    () => h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track }),
+    /invalid response/,
+  );
 });
 
-test('the reported page size follows the limit that actually went out on the wire (#810)', async () => {
-  const history = streamHistory(300);
+test('the play sample is disclosed as a sample, and its limit reaches the wire (#1006)', async () => {
   for (const limit of [25, 50, 100]) {
-    const h = makeHarness(streamsPageResponder(history));
+    const h = makeHarness(perEntityResponder(162));
     const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track, limit });
     const txt = h.text(out);
     const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(h.calls[0].params?.limit, String(limit));
-    assert.equal(sc.page_size, limit, `page_size must mirror the requested page (limit=${limit})`);
-    assert.equal(sc.streams_read, limit, `limit=${limit} reads exactly one page of that size`);
-    assert.equal(sc.count, matchingIn(history, limit), `limit=${limit} counts only the entity's plays on that page`);
-    assert.equal(sc.capped, true, `a full page of ${limit} leaves older history unread`);
-    assert.match(txt, new RegExp(`${sc.count} of the ${limit} streams`));
-    assert.equal(proseCount(txt), sc.count);
+    assert.equal(sc.count, 162, `limit=${limit} sizes a sample, so it must not move the total`);
+    assert.equal(h.calls[1].params?.limit, String(limit), 'the sample limit must reach the wire');
+    assert.equal(sc.sample_returned, limit);
+    assert.equal(sc.sample_truncated, true);
+    assert.match(txt, new RegExp(`Sampled the ${limit} most recent of 162 plays`));
+    assert.match(txt, /sampled span/, 'the span must be named as the sample\'s, not the history\'s');
   }
 });
 
-test('a page that exactly fills the limit is still not read as the whole history (#810)', async () => {
-  // The endpoint exposes no total, so a full page is indistinguishable from a
-  // truncated one: it must be reported as partial rather than as a total.
-  const h = makeHarness(streamsPageResponder(streamHistory(50, 1)));
+test('a play sample smaller than the limit is the whole set, not a cut (#1006)', async () => {
+  const h = makeHarness(perEntityResponder(4));
   const out = await h.find('statsfm_track_stats').handler({ user_id: 'u', track_id: ENTITY.track, limit: 50 });
+  const txt = h.text(out);
   const sc = out.structuredContent as Record<string, unknown>;
-  assert.equal(sc.count, 50);
-  assert.equal(sc.capped, true);
-  assert.match(h.text(out), /not a lifetime total/);
+  assert.equal(sc.sample_returned, 4);
+  assert.equal(sc.sample_truncated, false);
+  assert.match(txt, /All 4 plays \(sampled span /);
+  assert.doesNotMatch(txt, /most recent of/);
 });
 
-test('all six per-entity stats tools disclose a truncated page (#810)', async () => {
-  const cases = [
-    ['statsfm_track_stats', { track_id: ENTITY.track }, 'track'],
-    ['statsfm_artist_stats', { artist_id: ENTITY.artist }, 'artist'],
-    ['statsfm_album_stats', { album_id: ENTITY.album }, 'album'],
-    ['statsfm_track_date_stats', { track_id: ENTITY.track, after: 0, before: 4102444800000 }, 'track'],
-    ['statsfm_artist_date_stats', { artist_id: ENTITY.artist, after: 0, before: 4102444800000 }, 'artist'],
-    ['statsfm_album_date_stats', { album_id: ENTITY.album, after: 0, before: 4102444800000 }, 'album'],
-  ] as const;
-  const history = streamHistory(300);
-  for (const [name, args, filter] of cases) {
-    const h = makeHarness(streamsPageResponder(history));
-    const out = await h.find(name).handler({ user_id: 'u', ...args });
-    const txt = h.text(out);
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.capped, true, `${name} must flag a full page as truncated`);
-    assert.equal(sc.count, matchingIn(history, sc.page_size as number), `${name} counts only this ${filter}'s plays on the page`);
-    assert.equal(proseCount(txt), sc.count, `${name} prose must agree with its payload`);
-    // Deliberately NOT asserting which page was read. The six tools do not share
-    // a read shape: the plain ones take the profile's newest page, the
-    // *_date_stats ones pass an after/before window. A qualifier naming "the
-    // profile's newest page" is false for the second group, so this asserts the
-    // claim that holds for both, and pins the false one out.
-    assert.match(txt, new RegExp(`are this ${filter}\\.`), `${name} must say how many of the read are this ${filter}`);
-    assert.match(txt, /streams in (the .* window|this profile's newest streams)/, `${name} prose must name what the read actually selected`);
-    assert.doesNotMatch(txt, /newest page/, `${name} must not describe a windowed read as the newest page`);
-    assert.match(txt, /was capped at/, `${name} prose must say the read was capped`);
-    assert.match(txt, /the read did not cover all of them/, `${name} prose must not read as a total for the scope`);
-    if (name.endsWith('_date_stats')) {
-      const params = h.calls[0].params ?? {};
-      assert.equal(params.after, String(args.after), `${name} must forward the window start`);
-      assert.equal(params.before, String(args.before), `${name} must forward the window end`);
-    }
-  }
+test('the aggregate cardinality is carried through, and an absent one reads as null', async () => {
+  const withCard = makeHarness((path) =>
+    path.endsWith('/stats')
+      ? { items: { durationMs: 9 * 200_000, count: 9, cardinality: { tracks: 66, artists: 14, albums: 31 } } }
+      : { items: [] },
+  );
+  const a = await withCard.find('statsfm_artist_stats').handler({ user_id: 'u', artist_id: ENTITY.artist });
+  assert.deepEqual((a.structuredContent as Record<string, unknown>).cardinality, { tracks: 66, artists: 14, albums: 31 });
+
+  const without = makeHarness((path) => (path.endsWith('/stats') ? aggregateStats(9, 'items', null) : { items: [] }));
+  const b = await without.find('statsfm_artist_stats').handler({ user_id: 'u', artist_id: ENTITY.artist });
+  assert.equal((b.structuredContent as Record<string, unknown>).cardinality, null, 'an absent cardinality is null, not {}');
 });
 
-test('json responses carry the same page disclosure as the prose (#810)', async () => {
-  const history = streamHistory(300);
-  const h = makeHarness(streamsPageResponder(history));
+test('json responses carry the same measured total as the prose (#1006)', async () => {
+  const h = makeHarness(perEntityResponder(162));
   const out = await h.find('statsfm_track_stats').handler({
     user_id: 'u',
     track_id: ENTITY.track,
     response_format: 'json',
   });
-  const sc = out.structuredContent as Record<string, unknown>;
-  assert.equal(sc.capped, true);
-  assert.equal(sc.page_size, 50);
-  assert.equal(sc.count, matchingIn(history, 50));
-  assert.equal((sc.streams as unknown[]).length, sc.count, 'the json body carries only the entity\'s streams');
   const parsed = JSON.parse(h.text(out)) as Record<string, unknown>;
-  assert.equal(parsed.count, sc.count);
-  assert.equal(parsed.capped, sc.capped);
-  assert.equal(parsed.page_size, sc.page_size);
+  const sc = out.structuredContent as Record<string, unknown>;
+  assert.equal(parsed.count, 162);
+  assert.equal(parsed.totalMs, sc.totalMs);
+  assert.equal(parsed.scope, sc.scope);
+  assert.equal(parsed.lifetime, sc.lifetime);
+  assert.equal((parsed.streams as unknown[]).length, sc.sample_returned, 'json carries the sample, not a page');
 });
+
 
 // ---------------------------------------------------------------- search/recaps/stats
 
@@ -861,23 +904,35 @@ test('statsfm_charts_users claims nothing unreadable when the friend list is emp
 
 // ---------------------------------------------------------------- date stats + social + records
 
-test('statsfm_track_date_stats passes the window through', async () => {
-  const h = makeHarness((_path, params) => {
-    assert.equal(params?.track, '1');
-    assert.equal(params?.after, '1704067200000');
-    assert.equal(params?.before, '1706745600000');
-    return streamsFixture();
+test('a date-windowed read passes the window to the aggregate, not as an entity filter (#1006)', async () => {
+  const h = makeHarness((path) => {
+    assert.equal(path, `/users/u/streams/tracks/${ENTITY.track}/stats`);
+    return aggregateStats(23);
   });
-  const out = await h.find('statsfm_track_date_stats').handler({ user_id: 'u', track_id: 1, after: 1704067200000, before: 1706745600000 });
-  assert.match(h.text(out), /2 streams/);
+  const out = await h.find('statsfm_track_date_stats').handler({
+    user_id: 'u',
+    track_id: ENTITY.track,
+    after: 1704067200000,
+    before: 1706745600000,
+  });
+  assert.equal(h.calls[0].params?.after, '1704067200000');
+  assert.equal(h.calls[0].params?.before, '1706745600000');
+  // The entity is in the path now, so it must not also travel as a query
+  // parameter — that parameter was the one stats.fm silently dropped.
+  assert.equal(h.calls[0].params?.track, undefined);
+  assert.match(h.text(out), /23 streams/);
 });
 
-test('statsfm_artist_date_stats and album_date_stats aggregate', async () => {
-  const h = makeHarness(() => streamsFixture());
-  const a = await h.find('statsfm_artist_date_stats').handler({ user_id: 'u', artist_id: 310770 });
-  assert.match(h.text(a), /2 streams/);
-  const b = await h.find('statsfm_album_date_stats').handler({ user_id: 'u', album_id: 9 });
-  assert.match(h.text(b), /2 streams/);
+test('the windowed artist and album tools report their own aggregates (#1006)', async () => {
+  const a = makeHarness((path) => (path.endsWith('/stats') ? aggregateStats(31) : { items: [] }));
+  const artistOut = await a.find('statsfm_artist_date_stats').handler({ user_id: 'u', artist_id: ENTITY.artist });
+  assert.equal(a.calls[0].path, `/users/u/streams/artists/${ENTITY.artist}/stats`);
+  assert.equal((artistOut.structuredContent as Record<string, unknown>).count, 31);
+
+  const b = makeHarness((path) => (path.endsWith('/stats') ? aggregateStats(12, 'item') : { items: [] }));
+  const albumOut = await b.find('statsfm_album_date_stats').handler({ user_id: 'u', album_id: ENTITY.album });
+  assert.equal(b.calls[0].path, `/users/u/streams/albums/${ENTITY.album}/stats`);
+  assert.equal((albumOut.structuredContent as Record<string, unknown>).count, 12);
 });
 
 test('statsfm_friends marks Plus members', async () => {
