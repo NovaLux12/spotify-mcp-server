@@ -30,9 +30,10 @@
  * anyone asked "which accounts do I have", and a wrong or revoked token in the
  * set would make the whole listing fail rather than report the accounts that
  * do work. The registry is instead a local index — the account, its label, and
- * the token file it authenticates with — populated by `spotify-mcp auth
- * --profile <name>` and by `switch_account`, both of which are already
- * authenticated at the moment they write.
+ * the token file it authenticates with — populated by `switch_account`, the
+ * only thing in this tree that writes it. `spotify-mcp auth --profile <name>`
+ * creates a token file but never registers the account, so a profile is not in
+ * the registry until something switches to it (#1465).
  *
  * ## The isolation property, stated as the rule this file enforces
  *
@@ -390,10 +391,13 @@ export interface RegisterResult {
  *
  * `identity` is whatever the caller managed to read from `/me`. It is passed
  * IN rather than fetched here so that registration never performs I/O of its
- * own: the two writers of this file (`auth --profile` and `switch_account`)
- * are both already holding an authenticated response, and a module that
- * quietly issued its own request would be a third way for the session to
- * reach the network.
+ * own: its one caller — `switch_account`, the only writer of this file — is
+ * already holding an authenticated response, and a module that quietly issued
+ * its own request would be a second way for the session to reach the network.
+ *
+ * `spotify-mcp auth --profile` is NOT a second writer. It creates the token
+ * file a profile is named by, and never reaches this function; a profile is
+ * not in the registry until something switches to it (#1465).
  *
  * When `/me` did not carry `account_id`, the entry is keyed by the user's `id`
  * and flagged — a real, stable key, honestly labelled, rather than a refusal
@@ -408,10 +412,17 @@ export function registerAccount(input: {
 }, existing: readonly AccountEntry[]): RegisterResult {
   const accountId = input.identity?.account_id ?? input.identity?.id;
   if (!accountId) {
+    // The remediation names the ONE thing that writes this file. It used to
+    // name `spotify-mcp auth --profile`, which creates a token file and never
+    // reaches this function: following that advice exits 0, writes a plausible
+    // token, and leaves the registry empty, so no state ever satisfies it
+    // (#1465). A message a reader cannot act on is worse than no remediation.
     throw new Error(
       `Cannot register profile "${input.profile}": /me returned neither account_id nor id, `
-      + 'so the account has no stable key. Re-run "spotify-mcp auth --profile '
-      + `${input.profile}" once Spotify serves account_id on this registration.`,
+      + 'so the account has no stable key. The profile is authenticated and the session is '
+      + 'acting as it — only its registry entry is missing, and switch_account is the only '
+      + 'thing that writes one — so re-run switch_account for this profile once /me serves '
+      + 'either field.',
     );
   }
   const created = !existing.some((entry) => entry.accountId === accountId);
