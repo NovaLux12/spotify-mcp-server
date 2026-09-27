@@ -66,7 +66,7 @@ interface PlaylistSnapshot {
 }
 
 /** Snapshot dir; SPOTIFY_MCP_SNAPSHOT_DIR overrides the whole directory. */
-function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
+export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
   return env.SPOTIFY_MCP_SNAPSHOT_DIR ?? join(homedir(), '.spotify-mcp', 'playlist-snapshots');
 }
 

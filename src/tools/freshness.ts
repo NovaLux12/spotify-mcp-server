@@ -144,9 +144,9 @@ const SinceArg = z
     }
   });
 
-function watermarkFilePath(): string {
+export function watermarkFilePath(env: NodeJS.ProcessEnv = process.env): string {
   return (
-    process.env.SPOTIFY_MCP_FRESHNESS_STATE ??
+    env.SPOTIFY_MCP_FRESHNESS_STATE ??
     join(homedir(), '.spotify-mcp', 'freshness.json')
   );
 }

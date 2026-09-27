@@ -212,6 +212,9 @@ Usage:
   spotify-mcp auth [--profile <name>]  Run the OAuth PKCE flow and save tokens
                         [--scopes <list>]
   spotify-mcp doctor                   Check config, token state, and live API access (#62)
+  spotify-mcp logout [--dry-run]       Erase local stores; print how to revoke the
+                        [--keep-backups]   Spotify token by hand (#704)
+                        [--profile <name>]
   spotify-mcp --help                   Show this message
   spotify-mcp --version                Print the version
 
@@ -219,6 +222,10 @@ Usage:
   ~/.spotify-mcp/tokens.<name>.json. auth --scopes <list> overrides
   SPOTIFY_SCOPES for that run; both reject an empty value rather than
   silently falling back to the default token file and the full 17-scope grant.
+
+  logout erases every local store it can find and names each path it removed.
+  Spotify publishes no token-revocation API, so the token must still be revoked
+  at https://www.spotify.com/account/apps/ — logout prints that address.
 
 Environment:
 ${renderEnvHelp()}
@@ -242,6 +249,18 @@ if (command === '--help' || command === '-h') {
     console.error('Doctor error:', err instanceof Error ? err.message : err);
     process.exit(1);
   });
+} else if (command === 'logout') {
+  // Imported lazily: logout pulls in the store resolvers, and the server must
+  // not pay for them (or trigger their module evaluation) on the normal path.
+  import('./logout.js')
+    .then(({ runLogout }) => runLogout(process.argv.slice(3)))
+    .then((code: number) => {
+      process.exitCode = code;
+    })
+    .catch((err: unknown) => {
+      console.error('Logout failed:', err instanceof Error ? err.message : err);
+      process.exit(1);
+    });
 } else {
   startMcpServer().catch((err: unknown) => {
     console.error('Server error:', err instanceof Error ? err.message : err);
