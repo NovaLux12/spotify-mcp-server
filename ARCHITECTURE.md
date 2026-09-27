@@ -106,7 +106,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (144,920 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **556 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (145,012 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **556 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
