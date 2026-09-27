@@ -1115,6 +1115,16 @@ Every tool that commits playlist items issues a mutation receipt per written chu
 
 A response carrying no `total` leaves the row-count check unset rather than guessed at, and the walk is never padded into a pass. When a check that is not about uris fails, the reason is reported in the receipt's `unmet` (e.g. `row count 5 ≠ expected 2`), kept out of `missing`, which is documented as uris the walk did not find and is consumed as data by `undo_mutation`.
 
+**An empty result set is not evidence of success** (#1252). Every check above compares a re-read against what the write claimed, and an unreadable read produces the same shape as a genuinely empty one — a `204`, an empty body, a non-JSON payload and a walk that stopped mid-list all leave the comparison with nothing to say. That is a value which could not be read being coerced into a plausible one, so each check now requires the read it depends on:
+
+| Check | Requires | Without it |
+|---|---|---|
+| Bare-uri removal — absence | the walk saw the **whole** playlist | `UNVERIFIED`, `unmet` naming the unread read, `missing` empty, `after` unset |
+| `library` removal — absence | every `/me/library/contains` chunk answered | `UNVERIFIED`, `unmet` naming how many uris went unread, `missing` holding only what the chunks that answered observed, `after` unset |
+| `library` save — presence | every chunk answered | `UNVERIFIED`, `unmet`, and `missing` empty — an unread chunk is not a set of missing uris |
+
+`missing` is left empty on an unread read because it is a *uri list* consumed as data by `undo_mutation` and `writeVerdict`; a chunk that did not answer observed neither presence nor absence, and filing either there would be a guess. `after` is left unset rather than counted, so a read that never happened cannot become a `0` or a full count. A chunk whose flag array is short or non-array is treated as unreadable for the same reason — the indexes it does not cover were never answered. Because `unmet` is set, the receipt's prose prints the reason and no `all uris confirmed` line, which is a claim only a `VERIFIED` verdict earns.
+
 **Tools carrying the contract:** `apply_snapshot_changes`, `balance_playlist_pairs`, `collab_mix_from_followed`, `dedupe_playlist_apply`, `extract_playlist_range`, `filter_playlist_by_artist`, `filter_playlist_by_duration`, `filter_playlist_by_era`, `interleave_playlists_plan`, `library_to_playlist`, `merge_playlists_plan`, `move_tracks_between_playlists`, `playlist_add_by_search`, `playlist_clone_live`, `playlist_difference_plan`, `playlist_expression_algebra`, `playlist_exclude_artists`, `playlist_fill_from_search`, `playlist_intersect`, `playlist_keep_only`, `playlist_move_to_top`, `playlist_slice`, `playlist_strip_episodes`, `playlist_trim_to_duration`, `queue_replace_via_playlist`, `remove_playlist_range`, `replay_session`, `restore_library_snapshot`, `restore_playlist_from_snapshot`, `reverse_playlist_plan`, `rotate_playlist_plan`, `save_queue_as_playlist`, `saved_tracks_roulette`, `sort_playlist_apply`, `split_playlist`, `split_playlist_by_count`, `split_playlist_by_duration`, `split_queue_plan`.
 
 `dry_run` results are unchanged: no request is sent, nothing is verified, and these fields describe the write as it would land rather than as it landed.

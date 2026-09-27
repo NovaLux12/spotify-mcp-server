@@ -724,6 +724,229 @@ describe('position verification needs a real baseline (#626)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1252 — an empty result set is not evidence of success
+//
+// The receipt re-reads the affected set and compares it to what the write
+// claimed. Every sibling path used to treat an EMPTY result set as "every
+// claimed row is gone" — true when the rows are genuinely gone, and a fiction
+// when the read returned nothing at all. `client.get` answers `null` for a
+// 204, an empty body and a non-JSON payload, and a truncated walk leaves the
+// same shape, so a failed read and an empty one were the same value.
+//
+// This is the class AGENTS.md §6 records twice (#803 recorded `0 streams` for
+// a lookup that failed, #804 a `name: string` arriving as `undefined`): a
+// value that could not be read coerced into a plausible one. Here the value is
+// a count and the coercion is to zero.
+//
+// Every test below is PAIRED: one case drives the unreadable read and asserts
+// the withheld claim, and its sibling drives the genuinely-empty read that must
+// still verify. A test that only asserted UNVERIFIED would pass against a
+// branch that refused to verify anything; the sibling is what proves the guard
+// discriminates "unread" from "empty" rather than just failing.
+// ---------------------------------------------------------------------------
+
+describe('an unread verification read is not an empty one (#1252)', () => {
+  // A 3-row playlist; a bare-uri removal of track:a. The re-read should see 2.
+  const removalUris = ['spotify:track:a'];
+
+  it('playlist_items: a non-targeted in-window removal withholds VERIFIED when the read failed', async () => {
+    // `client.get` answers null for a 204 / empty / non-JSON body. The walk
+    // breaks on the first page, so no row is ever observed.
+    const client = stubClient(() => null);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: removalUris,
+      expectPresent: false,
+    });
+
+    assert.equal(
+      receipt.verified,
+      false,
+      'a read that returned nothing must not certify that the row is gone',
+    );
+    assert.match(
+      receipt.unmet ?? '',
+      /could not run/,
+      'the receipt must name the unread read, not just fail silently',
+    );
+    // Nothing was observed still-present, so the uri list stays empty — a
+    // guessed uri here is consumed as data by writeVerdict and undo.
+    assert.deepEqual(receipt.missing, [], 'an unread read observes no missing uris');
+    // The count is left unset rather than coerced to zero, which is the
+    // #803 shape this issue is about.
+    assert.equal(receipt.after, undefined, 'an unread count must not become 0');
+  });
+
+  it('playlist_items: the same removal still verifies when the playlist really is empty', async () => {
+    // The anti-vacuity sibling: an EMPTY but successful read. A real empty
+    // page IS evidence of absence, so this must stay VERIFIED.
+    const client = stubClient(() => pagedItems([], 0));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: removalUris,
+      expectPresent: false,
+    });
+
+    assert.equal(
+      receipt.verified,
+      true,
+      'an empty playlist read is evidence, not a failed read',
+    );
+    assert.equal(receipt.unmet, undefined, 'a passing check records no unmet reason');
+    assert.equal(receipt.after, 0, 'a real empty playlist reports 0 rows');
+  });
+
+  it('playlist_items: a walk that stopped mid-list also withholds the claim', async () => {
+    // Page 0 is full and promises more; page 1 fails. The claimed uri may sit
+    // past the page that failed, so its absence was never observed. The
+    // `total` is small enough that window-exceeded never fires, so this is the
+    // truncated-walk variant the guard also has to cover.
+    const client = stubClient((_path, arg) =>
+      arg?.offset === '0'
+        ? pagedItems(Array.from({ length: 100 }, () => track('spotify:track:z')), 150, 'next')
+        : null,
+    );
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: removalUris,
+      expectPresent: false,
+    });
+
+    assert.equal(receipt.verified, false, 'a truncated walk observed no absence');
+    assert.match(receipt.unmet ?? '', /could not run/);
+  });
+
+  it('playlist_items: a full-length final page still verifies — the guard is not "truncated"', async () => {
+    // Exactly one page, and that page is FULL. The walk ended because there
+    // was no next page, so it did see the whole playlist. Treating a full last
+    // page as unreadable would withhold every claim on a 100-row playlist.
+    const client = stubClient(() => pagedItems(Array.from({ length: 100 }, (_, i) => track(`spotify:track:z${i}`)), 100, null));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: removalUris,
+      expectPresent: false,
+    });
+
+    assert.equal(receipt.verified, true, 'a complete walk over a full page is a real read');
+    assert.equal(receipt.unmet, undefined);
+  });
+
+  it('library removal: withholds VERIFIED when the present-list read failed', async () => {
+    const client = stubClient(() => null);
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: ['spotify:album:e1', 'spotify:album:e2'],
+      expectPresent: false,
+    });
+
+    assert.equal(
+      receipt.verified,
+      false,
+      'an unread present-list must not read as "every uri confirmed absent"',
+    );
+    assert.match(receipt.unmet ?? '', /could not run/);
+    assert.deepEqual(receipt.missing, [], 'no uri was observed still-present');
+    assert.equal(receipt.after, undefined, 'an unread count must not become a full one');
+  });
+
+  it('library removal: the same call still verifies when every flag really is false', async () => {
+    // The anti-vacuity sibling: the read succeeded and answered "all absent".
+    const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => false));
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: ['spotify:album:e1', 'spotify:album:e2'],
+      expectPresent: false,
+    });
+
+    assert.equal(receipt.verified, true, 'a successful all-false read is evidence of absence');
+    assert.equal(receipt.unmet, undefined);
+    assert.equal(receipt.after, 2);
+  });
+
+  it('library save: a failed read does not become "every uri is missing"', async () => {
+    // The save direction is the same read and the same coercion to zero, just
+    // signed the other way. `missing` is consumed as data, so filing the whole
+    // set there is the #803 shape again.
+    const client = stubClient(() => null);
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: ['spotify:album:e1', 'spotify:album:e2'],
+    });
+
+    assert.equal(receipt.verified, false);
+    assert.match(receipt.unmet ?? '', /could not run/);
+    assert.deepEqual(
+      receipt.missing,
+      [],
+      'an unread read must not fabricate a missing-uri list',
+    );
+    assert.equal(receipt.after, undefined, 'an unread count must not become 0');
+  });
+
+  it('library: only the chunks that answered decide the claim', async () => {
+    // 120 uris → chunks of 50/50/20. The last chunk's read fails; the first
+    // two answered. The readable chunk's real observation is kept, the
+    // unreadable one withholds the claim, and nothing is invented either way.
+    const uris = Array.from({ length: 120 }, (_, i) => `spotify:track:c${i}`);
+    const client = stubClient((_path, arg) => {
+      const list = (arg?.uris ?? '').split(',');
+      const isLast = list[0] === 'spotify:track:c100';
+      if (isLast) return null;
+      // e7 is still saved; everything else in these chunks is not.
+      return list.map((u) => u === 'spotify:track:c7');
+    });
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris,
+      expectPresent: false,
+    });
+
+    assert.equal(receipt.verified, false, 'one unread chunk withholds the claim');
+    assert.match(receipt.unmet ?? '', /20 of 120/);
+    assert.deepEqual(
+      receipt.missing,
+      ['spotify:track:c7'],
+      'the chunk that answered still reports its one survivor',
+    );
+  });
+
+  it('library: a short flag array is unreadable, not "all absent"', async () => {
+    // 3 uris asked, 2 flags answered. The third index is `undefined`, which
+    // the old `flags?.[j]` read as falsy and therefore as absent.
+    const client = stubClient(() => [true, true]);
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: ['spotify:album:e1', 'spotify:album:e2', 'spotify:album:e3'],
+    });
+
+    assert.equal(receipt.verified, false);
+    assert.match(receipt.unmet ?? '', /could not run/);
+    assert.deepEqual(receipt.missing, [], 'an unflagged index is not a missing uri');
+  });
+
+  it('does not print a confirmation line the verdict does not support', async () => {
+    // The prose half: an UNVERIFIED receipt with an empty `missing` used to
+    // still print "all uris confirmed absent" directly under the UNVERIFIED
+    // header, stating the opposite of what the receipt had just said.
+    const client = stubClient(() => null);
+    const receipt = await issueReceipt(client, {
+      kind: 'library',
+      uris: ['spotify:album:e1'],
+      expectPresent: false,
+    });
+    const prose = formatReceipt(receipt, { expectPresent: false });
+
+    assert.match(prose, /UNVERIFIED/);
+    assert.match(prose, /unmet: /);
+    assert.doesNotMatch(prose, /all uris confirmed/, 'an unverified receipt must not confirm');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #586 — verify_receipt must not invert a removal receipt's vocabulary
 // ---------------------------------------------------------------------------
 
