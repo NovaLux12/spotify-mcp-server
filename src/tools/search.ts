@@ -222,8 +222,13 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
 
       const episodes = sectionItems(all, 'episodes');
       if (episodes) {
+        // #1508: the `/search` `episodes` section is a PagingSimplifiedEpisodeObject,
+        // so its rows have no `show` member — `e.show.name` was a read of a field
+        // the API does not send, and on a real response it threw a TypeError rather
+        // than printing a name. The show is not recoverable from the row, so it is
+        // not printed; release_date is what the row does carry.
         emit('EPISODES', { items: episodes.items, total: episodes.total }, (e) =>
-          `"${e.name}" — ${e.show.name} (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`,
+          `"${e.name}" (${formatDuration(e.duration_ms)}, ${e.release_date}) | URI: ${e.uri}`,
         );
       }
 

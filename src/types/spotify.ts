@@ -182,7 +182,25 @@ export interface SpotifyShowSimple {
   total_episodes: number;
 }
 
-// Simplified episode for show's episode list and search
+// Simplified episode for show's episode list and search.
+//
+// NO `show` member, and that is the wire talking, not an omission (#1508).
+// In the published OpenAPI schema `SimplifiedEpisodeObject` is
+// `allOf: [EpisodeBase, { type: object }]` — the second member declares no
+// properties — and `EpisodeBase` has no `show`. Only `EpisodeObject` (what
+// `GET /episodes/{id}` returns) adds `show`, and it adds it as REQUIRED.
+// This interface used to declare `show: SpotifyShowSimple` anyway, and because
+// the invented field was required it type-checked against the optional chain
+// every reader used, so `e.show?.id` and `e.show?.name` were permanently
+// `undefined` on this shape and every row rendered a fabricated `''` /
+// `'(unknown show)'`. A required field the API does not send is the §6
+// "a correctly named payload field can still lie about its value" failure:
+// the compiler is silenced exactly where a rename would have been caught.
+//
+// The show a simplified episode belongs to is not recoverable from the row.
+// It comes from the request the caller already made (`/shows/{id}/episodes`
+// was called with an id) or from the saved-show shelf the walk already holds.
+// Represent it honestly as absent where neither is available; never default it.
 export interface SpotifyEpisodeSimple {
   id: string;
   name: string;
@@ -191,7 +209,6 @@ export interface SpotifyEpisodeSimple {
   release_date: string;
   explicit: boolean;
   description: string;
-  show: SpotifyShowSimple;
   resume_point?: {
     fully_played: boolean;
     resume_position_ms: number;
