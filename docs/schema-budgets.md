@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 594,894B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 64,947B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 17,106B | 2.8% of the enforced limit |
+| Measured `tools/list` payload | 595,978B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 64,967B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 16,022B | 2.6% of the enforced limit |
 
-Headroom is **17,106B** of the 612,000B enforced limit — 2.8% — so the aggregate budget is **tight**.
+Headroom is **16,022B** of the 612,000B enforced limit — 2.6% — so the aggregate budget is **tight**.
 
 The limit above is enforced at startup against whichever surface the process
 registered, so the figure that matters is the one for the surface you run.
@@ -135,11 +135,11 @@ With `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` set, that is:
 
 | Opted-in surface (`tools/list`) | Value | Where it comes from |
 |---|---:|---|
-| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 604,882B | 567 tools — the same measurement, registered with the opt-in on |
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 605,966B | 567 tools — the same measurement, registered with the opt-in on |
 | Added by the opt-in | 9,988B | +11 tools over the default surface, measured rather than summed (see below) |
-| Headroom with the opt-in | 7,118B | 1.2% of the enforced limit — **tight** |
+| Headroom with the opt-in | 6,034B | 1.0% of the enforced limit — **effectively exhausted** |
 
-The default surface reports 2.40× as much room — 17,106B against the opt-in's 7,118B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
+The default surface reports 2.66× as much room — 16,022B against the opt-in's 6,034B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
 
 The byte figure is measured, not derived from the manifest. The per-module `gatedSurface` byte deltas sum to **8,683B** against a measured **9,988B**, a 1,305B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and `_meta` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares 11 and the measurement finds 11 — so it is cross-checked rather than measured twice.
 
@@ -179,7 +179,7 @@ than maintained.
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 27,222 | 31 | 27,222 | 32 | 29,945 |
-| library | 13 | 12,814 | 13 | 12,814 | 14 | 14,096 |
+| library | 13 | 13,018 | 13 | 13,018 | 14 | 14,320 |
 | playback | 15 | 14,441 | 15 | 14,441 | 16 | 15,886 |
 | following | 3 | 2,502 | 3 | 2,502 | 4 | 2,753 |
 | users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
@@ -213,7 +213,7 @@ than maintained.
 | restore | 1 | 2,072 | 1 | 2,072 | 2 | 2,280 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 626 | 1 | 626 | 2 | 689 |
-| episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
+| episodemgmt | 1 | 1,139 | 1 | 1,139 | 2 | 1,253 |
 | freshness | 1 | 2,672 | 1 | 2,672 | 2 | 2,940 |
 | searchdive | 1 | 1,683 | 1 | 1,683 | 2 | 1,852 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
@@ -228,16 +228,16 @@ than maintained.
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
 | import | 1 | 1,322 | 1 | 1,322 | 2 | 1,455 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
-| exhaustmisc | 10 | 7,876 | 10 | 7,876 | 11 | 8,664 |
+| exhaustmisc | 10 | 8,291 | 10 | 8,291 | 11 | 9,121 |
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 18 | 14,279 | 18 | 14,279 | 19 | 15,707 |
 | exhaust2playlists | 18 | 24,403 | 18 | 24,403 | 19 | 26,844 |
-| exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
+| exhaust2misc | 27 | 24,434 | 27 | 24,434 | 28 | 26,878 |
 | exhaust2extra | 3 | 4,092 | 3 | 4,092 | 4 | 4,502 |
 | swarm3discovery | 24 | 22,483 | 24 | 22,483 | 25 | 24,732 |
 | swarm3bdiscovery | 24 | 20,147 | 24 | 20,147 | 25 | 22,162 |
-| swarm3shows | 24 | 22,103 | 24 | 22,103 | 25 | 24,314 |
+| swarm3shows | 24 | 22,344 | 24 | 22,344 | 25 | 24,579 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 15 | 12,030 | 15 | 12,030 | 25 | 20,847 |
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |

@@ -367,7 +367,9 @@ describe('unified library tools (save_to_library / remove_from_library / check_i
       path === '/me/library/contains' ? uris.map(() => false) : undefined,
     );
 
-    const out = await h.invoke('remove_from_library', { uris });
+    // #1550: `dry_run` now DEFAULTS TO TRUE, so an omitted flag previews. This
+    // test is about the wire format of the committing call, so it says so.
+    const out = await h.invoke('remove_from_library', { uris, dry_run: false });
 
     assert.deepEqual(
       wireCalls(h.client.calls).filter((c) => c.method === 'DELETE'),
@@ -658,7 +660,7 @@ describe('dry_run previews destructive operations without any mutating call (#57
     const h = harness((path) =>
       path === '/me/library/contains' ? [false] : undefined,
     );
-    await h.invoke('remove_from_library', { uris: ['spotify:playlist:p1'] });
+    await h.invoke('remove_from_library', { uris: ['spotify:playlist:p1'], dry_run: false });
     assert.equal(
       h.client.calls.filter((c) => c.method === 'DELETE').length,
       1,
@@ -691,7 +693,7 @@ describe('confirmation-friendly batch summaries on mutations (#58)', () => {
 
   it('remove_from_library echoes the removed count and URIs', async () => {
     const h = harness();
-    const out = await h.invoke('remove_from_library', { uris: ['spotify:audiobook:a1'] });
+    const out = await h.invoke('remove_from_library', { uris: ['spotify:audiobook:a1'], dry_run: false });
     assert.match(out.content[0].text, /Removed 1 item\(s\) from library\./);
     assert.match(out.content[0].text, /1 item affected: spotify:audiobook:a1/);
   });
@@ -837,7 +839,7 @@ describe('library registration after the per-type endpoint removal (#638)', () =
       'an added receipt inverts with DELETE /me/library, URI-encoded',
     );
 
-    const removed = await h.invoke('remove_from_library', { uris });
+    const removed = await h.invoke('remove_from_library', { uris, dry_run: false });
     const beforeReAdd = h.client.calls.length;
     const undoneRemove = await h.invoke('undo_mutation', { receipt_id: receiptOf(removed), dry_run: false });
     assert.equal(undoneRemove.structuredContent?.ok, true, undoneRemove.content[0]?.text);

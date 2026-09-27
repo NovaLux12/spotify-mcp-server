@@ -116,6 +116,18 @@ function harness(
       });
     },
   } as unknown as McpServer;
+  // #1550: `dead_library_finder` gates a 10+ candidate removal on elicitation.
+  // The gate resolves the host by probing the INNER `server.server` (#684), so
+  // the harness carries one that accepts — these tests are about the cap and
+  // the record of what was deleted, and the gate's own behaviour is pinned in
+  // tests/exhaust2_misc.test.ts. Without it every committing call here would
+  // fail closed and the assertions about the DELETE would be unreachable.
+  (fakeServer as unknown as { server: unknown }).server = {
+    getClientCapabilities: () => ({ elicitation: { form: {} } }),
+    async elicitInput() {
+      return { action: 'accept', content: { confirm: true } };
+    },
+  };
   const client = new StubFromResponder(responder as LegacyResponder, {
     writes: {
       POST: responder as LegacyResponder,

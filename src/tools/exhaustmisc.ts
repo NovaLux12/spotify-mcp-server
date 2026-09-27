@@ -16,6 +16,8 @@ import {
   ResponseFormat,
   MaxResults,
   DryRun,
+  DryRunDefault,
+  isDryRun,
   PAGED_WALK_LIST_REASON,
   playlistListFields,
   resolvePlaylistInput,
@@ -36,6 +38,12 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { CHUNK_CAPS, capFor, chunk } from '../chunk.js';
+import {
+  confirmViaElicitation,
+  describeConfirmation,
+  requiredConfirmationRefusal,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { resolvePlaylistId, walkTruncationNotice } from './playlists.js';
@@ -313,16 +321,20 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 4. unsave_orphan_tracks — delete saved tracks not in any playlist
   server.tool(
     'unsave_orphan_tracks',
-    'Find saved tracks that appear in no playlist (orphans) and optionally unsave them. Quota: walks library + all playlists (capped). Destructive when dry_run=false.',
+    'Find saved tracks that appear in no playlist (orphans) and optionally unsave them. Quota: walks library + all playlists (capped). PREVIEWS BY DEFAULT — pass dry_run=false to commit. Removing 10+ orphans additionally requires elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).',
     {
-      dry_run: DryRun,
+      // #1550: opt-in `DryRun` advertised no default; the handler read
+      // `?? true` regardless, so the schema understated the safety. max_remove
+      // reaches 5000, which is the largest single removal anywhere in this
+      // server — the gate below matters more here than anywhere else.
+      dry_run: DryRunDefault,
       max_remove: z.number().int().min(1).max(5000).optional().describe('Max orphans to remove (default 50)'),
       scan_cap: z.number().int().min(1).max(5000).optional().describe('Max saved tracks to scan (default fetchAllCap)'),
       response_format: ResponseFormat,
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue | undefined;
-      const dryRun = args.dry_run ?? true;
+      const dryRun = isDryRun(args);
       const maxRemove = args.max_remove ?? 50;
       const scanCap = args.scan_cap ?? getConfig().fetchAllCap;
       type SavedTrack = { track: { uri: string; id: string; name: string } };
@@ -364,6 +376,21 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       if (orphanUris.length === 0) {
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No orphan tracks to remove.', structured);
+      }
+      // #1550: the missing gate, at the shared removal threshold. `max_remove`
+      // defaults to 50 and is capped at 5000, so this is the one path in the
+      // server that can unsave thousands in a single call.
+      if (orphanUris.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from library', 'orphan saved tracks', [
+            `Remove ${orphanUris.length} saved track(s) that appear in no playlist:`,
+            ...orphanUris.slice(0, 10),
+            ...(orphanUris.length > 10 ? [`(…and ${orphanUris.length - 10} more)`] : []),
+          ]),
+          confirmLabel: 'Remove orphans',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       // #638: `DELETE /me/tracks` was removed by Spotify's February 2026
       // changes; `DELETE /me/library` is the documented replacement and takes
@@ -682,10 +709,15 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
   // 10. remove_from_library_by_playlist — remove library tracks that are in a playlist
   server.tool(
     'remove_from_library_by_playlist',
-    'Remove from Liked Songs any tracks that also appear in a given playlist. Quota: 2 GETs + DELETE (chunked).',
+    'Remove from Liked Songs any tracks that also appear in a given playlist. Quota: 2 GETs + DELETE (chunked). PREVIEWS BY DEFAULT — pass dry_run=false to commit. Removing 10+ saved tracks additionally requires elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).',
     {
       playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID whose tracks will be removed from library'), 'playlist'),
-      dry_run: DryRun,
+      // #1550: the opt-in `DryRun` declared no default, so the published
+      // `tools/list` entry could not tell a host what an omitted flag means.
+      // The handler already read `args.dry_run ?? true`, so this is the schema
+      // half of the same defect `remove_from_library` shipped. This tool is
+      // worse in scale: a playlist of 800 saved tracks unsaves 800 of them.
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -721,6 +753,21 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       if (toRemove.length === 0) {
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No tracks from that playlist are in your library — nothing to remove.', structured);
+      }
+      // #1550: the same missing gate `remove_from_library` had. This path can
+      // delete every saved copy of a whole playlist, so it is the larger
+      // blast radius of the two; threshold and fail-closed guard are shared.
+      if (toRemove.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from library', `playlist ${args.playlist_id}`, [
+            `Remove ${toRemove.length} saved track(s) that appear in playlist ${args.playlist_id}:`,
+            ...toRemove.slice(0, 10).map((id) => `spotify:track:${id}`),
+            ...(toRemove.length > 10 ? [`(…and ${toRemove.length - 10} more)`] : []),
+          ]),
+          confirmLabel: 'Remove from library',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       // #638: `DELETE /me/tracks` was removed; see unsave_orphan_tracks.
       for (const part of chunk(toRemove.map((id) => `spotify:track:${id}`), 'library_writes')) {

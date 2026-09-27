@@ -11,7 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { formatReceipt, issueReceipt, type Receipt } from '../receipts.js';
-import { DryRun, describeDryRun, ResponseFormat } from '../shaping.js';
+import { DryRunDefault, describeDryRun, isDryRun, ResponseFormat } from '../shaping.js';
 import { textResult, emit, type ToolResult } from '../result.js';
 
 /**
@@ -150,9 +150,14 @@ function emitWithReceipt(
 
 export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClient): void {
   server.tool('archive_played_episodes',
-    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/episodes; archives over 50 episodes require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation); dry_run supported. Returns a removal receipt (resolvable via verify_receipt, revertible via undo_mutation).',
+    'Remove fully-played episodes from your episode library in bulk (checks resume_point.fully_played). Batch DELETE /me/library; archives over 50 episodes require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation). PREVIEWS BY DEFAULT — pass dry_run=false to commit. Returns a removal receipt (resolvable via verify_receipt, revertible via undo_mutation).',
     {
-      dry_run: DryRun,
+      // #1550: the opt-in `DryRun` declared no default, so a caller that
+      // omitted it committed the bulk delete — the same defect
+      // `remove_from_library` shipped, on a path that can delete 500 episodes
+      // (`limit` max). The threshold below is deliberately 50 and is NOT
+      // changed here; that is a separate, documented decision.
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
       limit: z.number().int().min(1).max(500).optional().describe('Max episodes to scan (default 100).'),
       // Accepted so a 1.31.0 caller does not get a hard unknown_param error, but
@@ -193,7 +198,7 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
           played_among_scanned: played.length,
           ...deprecation,
         };
-        if (args.dry_run) {
+        if (isDryRun(args)) {
           const preview = played.slice(0, 5).map((r) => r.episode.name);
           return textResult(
             `PARTIAL SCAN — ${scan.reason}.\n${describeDryRun('archive_played_episodes', `${scan.scanned} saved episode(s) read (partial scan)`, played.length === 0
@@ -219,7 +224,7 @@ export function registerEpisodeMgmtTools(server: McpServer, client: SpotifyClien
       if (played.length === 0) return textResult(`No fully-played episodes in library (scanned ${scan.scanned}).`, { ok: true, scan_complete: true, scanned: scan.scanned, played: 0, ...deprecation });
       const ids = played.map((r) => r.episode.id);
       const uris = played.map((r) => r.episode.uri);
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         const preview = played.slice(0, 5).map((r) => r.episode.name);
         // Every exit carries the note, this one included: a dry run is the first
         // call a legacy caller makes, and a preview that says nothing is how an
