@@ -181,15 +181,9 @@ if you lower the limit to force one.
 | exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
 | exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
-<<<<<<< HEAD
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
-| swarm3discovery | 24 | 21,825 | 24 | 21,825 | 25 | 24,008 |
+| swarm3discovery | 24 | 22,277 | 24 | 22,277 | 25 | 24,505 |
 | swarm3bdiscovery | 24 | 19,919 | 24 | 19,919 | 25 | 21,911 |
-=======
-| exhaust2extra | 3 | 4,039 | 3 | 4,039 | 4 | 4,443 |
-| swarm3discovery | 24 | 22,339 | 24 | 22,339 | 25 | 24,573 |
-| swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
->>>>>>> b393a2d (perf(#900): route artist release probes through one cacheable canonical helper)
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
