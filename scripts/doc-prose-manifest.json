@@ -355,6 +355,10 @@
         "label": "Changing or deleting prose needs --prose-sync. That comm…"
       },
       {
+        "hash": "71c8832aa6743c3b",
+        "label": "A retirement reason is a claim about a tree, and --prose…"
+      },
+      {
         "hash": "46f9c03312575710",
         "label": "The pin is hand-maintained on purpose. It is not in a ge…"
       },
@@ -4960,6 +4964,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "118767fe31aa6582",
+      "label": "A retirement reason is a claim about a tree, and --prose…",
+      "date": "2026-09-27",
+      "reason": "Reworded in #1440 to document the contradiction evidence the behind-refusal carries; same rule, stated in full."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "2baa4ae7670cf60a",
       "label": "Hand-written prose from both sides survives, because you…",
       "date": "2026-09-27",
@@ -5175,5 +5186,10 @@
       "date": "2026-09-27",
       "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
     }
-  ]
+  ],
+  "provenance": {
+    "head": "428941feb736ccd87b11fc6adb064be3e4cc488e",
+    "upstream": "69ae86dc9f7eb16392a15f72967bf611cff6eaa3",
+    "behind": false
+  }
 }

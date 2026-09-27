@@ -43,6 +43,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { describeDocument, proseDrift, proseUnitHash, splitProseUnits } from '../scripts/prose-manifest.mjs';
+import { writeProvenanceFile } from './helpers/prose-tree.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = join(ROOT, 'scripts', 'doc-prose-manifest.json');
@@ -349,6 +350,12 @@ describe('hand-written prose integrity (#1384)', () => {
         '--prose-sync',
         '--prose-manifest', copy,
         '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        // #1440: `--prose-sync` now refuses to write from a tree it cannot
+        // vouch for. This test is about the *drop* refusal, so it states the
+        // tree it is syncing against rather than inheriting whatever git says
+        // about the machine the suite happens to run on — otherwise a
+        // contributor with a document open would see a different message.
+        '--prose-provenance', await writeProvenanceFile(dir),
       ]);
       assert.notEqual(run.status, 0, '--prose-sync rewrote the pin over a deleted paragraph');
       assert.match(run.stderr, /Refusing to rewrite the prose manifest/);
@@ -391,6 +398,9 @@ describe('hand-written prose integrity (#1384)', () => {
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--prose-manifest', copy,
         '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        // #1440: same reasoning as above — this test asserts the *retirement*
+        // is recorded, so it names a tree a retirement is allowed to come from.
+        '--prose-provenance', await writeProvenanceFile(dir),
       ]);
       assert.equal(run.status, 0, `an acknowledged deletion must be accepted:\n${run.stderr}`);
 
