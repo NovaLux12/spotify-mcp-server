@@ -145,7 +145,14 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     label: '`/browse/categories*` (list, `{id}`, `{id}/playlists`)',
     pattern: /^\/browse\/categories(?:\/|$)/,
     example: '/browse/categories/party/playlists',
-    tools: ['browse_category_deepdive'],
+    // #1278: the census cross-checks this column PER TOOL, so this list is the
+    // real set rather than the set of files that happen to contain a call.
+    // `get_category` and `browse_category_deepdive` reach the family through a
+    // local `categoryPath` variable rather than a `client.get` literal, and
+    // `category_resolver` is the one caller in `exhaust2_catalog.ts`; all three
+    // were invisible to the previous per-FILE scan, which was satisfied by any
+    // one of them.
+    tools: ['get_category', 'browse_category_deepdive', 'category_resolver'],
     fallback: 'explained',
     reason: 'removal',
   },
@@ -174,7 +181,25 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     label: '`/artists/{id}/top-tracks`',
     pattern: /^\/artists\/[^/]+\/top-tracks$/,
     example: '/artists/artist-id/top-tracks',
-    tools: ['get_artist_top_tracks', 'queue_playlist'],
+    // #1278: cross-checked per tool, so this is every shipped tool that issues
+    // the read, not every file that contains one. The `playlistbatch` trio all
+    // reach it through the module-level `resolveSourceUris` helper, and
+    // `queue_playlist` through `resolveUris` — the previous per-FILE scan read
+    // all three as satisfied by whichever call happened to be in the file.
+    // `get_artist_top_tracks` is the one caller the scan cannot see: it hands
+    // its path to `getWithMarketFallback` in `src/markets.ts`, outside the
+    // scanned tree. That is declared in `GATED_SCAN_EXCEPTIONS` in
+    // `scripts/surface-census.mjs`, which is also what fails if the wrapper
+    // ever moves into the tree and the tolerance goes stale.
+    tools: [
+      'get_artist_top_tracks',
+      'queue_playlist',
+      'artist_collab_network',
+      'artist_completeness_score',
+      'batch_add_to_playlist',
+      'copy_playlist',
+      'move_items_between_playlists',
+    ],
     fallback: 'explained',
     reason: 'removal',
   },
@@ -187,8 +212,10 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     // it reads `GET /me/playlists` — the authenticated user's own playlists —
     // which Spotify never removed, so listing it here claimed a call site that
     // does not exist and would have sent a future reader looking for a
-    // migration that was never needed. The census cross-checks this column
-    // per FILE, so it could not catch the substitution on its own.
+    // migration that was never needed. Since #1278 the census cross-checks
+    // this column per TOOL, in both directions, so that substitution cannot
+    // come back silently: a tool here with no call behind it fails, and so does
+    // a call behind a tool this family does not name.
     tools: ['get_user_profile', 'get_user_playlists_by_id', 'get_playlist_followers'],
     fallback: 'explained',
     reason: 'removal',
@@ -231,7 +258,21 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     // load-bearing (see isGatedPath tests).
     pattern: /^\/(?:tracks|albums|artists|episodes|shows|audiobooks|chapters)$/,
     example: '/tracks',
-    tools: ['get_several_tracks', 'get_several_albums', 'get_several_artists'],
+    // #1278: every one of the seven `get_several_*` tools reads this family
+    // through the shared `fetchSeveral` helper, and `catalog_batch_lookup`
+    // reaches the same helper for every URI type it partitions — so all eight
+    // callers belong here. The previous column named three, and the per-FILE
+    // scan could not notice: they all sit in one file with one call site.
+    tools: [
+      'get_several_tracks',
+      'get_several_albums',
+      'get_several_artists',
+      'get_several_episodes',
+      'get_several_shows',
+      'get_several_audiobooks',
+      'get_several_chapters',
+      'catalog_batch_lookup',
+    ],
     fallback: 'replaced',
     reason: 'removal',
   },
