@@ -913,6 +913,22 @@ describe('cache: cross-process persistence (#893)', () => {
   let prevDataDir: string | undefined;
   let prevTokenFile: string | undefined;
 
+  /**
+   * Every client this block constructs, so `afterEach` can quiesce it (#1339).
+   *
+   * A read arms a 250 ms debounced save that nothing here waits out. Left
+   * alone, the timer fires during or after the teardown's `rm`, and
+   * `savePersistedCache`'s `mkdir(recursive)` re-creates the tree underneath a
+   * delete that has already walked it — the final `rmdir` then fails
+   * `ENOTEMPTY` and takes the whole gate with it.
+   */
+  let clients: SpotifyClient[] = [];
+  const newClient = (): SpotifyClient => {
+    const c = new SpotifyClient();
+    clients.push(c);
+    return c;
+  };
+
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-persist-'));
     prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
@@ -935,6 +951,15 @@ describe('cache: cross-process persistence (#893)', () => {
     else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
     if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
     else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    // Quiesce what this block made, BEFORE the directory goes (#1339). The
+    // flush writes the pending save now and clears the debounce timer, so
+    // nothing can land once `rm` starts walking. Ordering is the whole fix;
+    // `force: true` suppresses ENOENT but not ENOTEMPTY, so the race was not
+    // something the teardown could absorb. `flush` swallows write failures
+    // into the controller's counters rather than rejecting, so a client whose
+    // save fails cannot turn the teardown into a second failure.
+    for (const c of clients) await c.flushCachePersist();
+    clients = [];
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -945,7 +970,7 @@ describe('cache: cross-process persistence (#893)', () => {
       return new Response(JSON.stringify({ items: [{ id: 'tr1' }] }), { status: 200 });
     }) as typeof fetch;
 
-    const first = new SpotifyClient();
+    const first = newClient();
     await first.get('/tracks/tr1', {});
     assert.equal(first.getRateLimitStatus().cachePersist, true, 'persistence is reported as on, not implied');
 
@@ -955,7 +980,7 @@ describe('cache: cross-process persistence (#893)', () => {
       { file: path.join(dir, 'cache.json') },
     );
 
-    const second = new SpotifyClient();
+    const second = newClient();
     await second.get('/tracks/tr1', {});
     const before = calls;
     const served = await second.get('/tracks/tr1', {});
@@ -1058,6 +1083,105 @@ describe('cache: cross-process persistence (#893)', () => {
       written.entries.map((e) => e.key),
       [small('a').key, small('b').key, small('c').key],
       'the oversize entry is absent and the rest are present, in order',
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #1339: the teardown ordering, and the control that keeps it honest
+  //
+  // ENOTEMPTY is only the symptom. The mechanism is that a pending debounced
+  // save will re-create a directory that was deleted out from under it,
+  // because `savePersistedCache` does `mkdir(dirname(file), { recursive: true })`
+  // before writing — so a late save does not merely write into a directory that
+  // may still exist, it GUARANTEES one exists afterwards.
+  //
+  // Asserting "rm did not throw" would be a test that cannot fail: the throw
+  // needs a 250 ms timer to land inside a microsecond-wide window, which is
+  // exactly why CI failed twice and a developer box never does. Asserting that
+  // the directory STAYS gone takes the timing out of it entirely. Either
+  // nothing writes after the delete and it stays gone, or a write recreates it
+  // and that is visible on every single run.
+  // -------------------------------------------------------------------------
+
+  /** 8x the debounce, so a timer firing late on a loaded box still lands. */
+  const RESURRECTION_BUDGET_MS = 2_000;
+
+  async function waitFor(cond: () => boolean, budgetMs: number): Promise<boolean> {
+    const deadline = Date.now() + budgetMs;
+    for (;;) {
+      if (cond()) return true;
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+  }
+
+  it('CONTROL: an unflushed debounced save re-creates the directory that was removed (#1339)', async () => {
+    // The positive control for the guard below. Without it the guard could pass
+    // for the wrong reason — a client that never persisted, a fixture that
+    // stopped arming anything, an env var that stopped taking — and none of
+    // those are the property #1339 is about. This asserts the mechanism is
+    // real, in this process, today, before anything leans on it.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
+    const c = newClient();
+    await c.get('/tracks/tr1', {});
+    assert.ok(
+      existsSync(path.join(dir, 'cache.json.pending')),
+      'the read armed the debounce and its marker, so there really is a save in flight to lose track of',
+    );
+
+    await rm(dir, { recursive: true, force: true });
+    assert.equal(existsSync(dir), false, 'precondition: the directory is gone before the timer fires');
+
+    // Wait on the FILE, not on the directory.
+    //
+    // `savePersistedCache` does `mkdir(dirname(file), { recursive: true })` and
+    // only then `writeFile(tmp)` + `rename(tmp, file)`, so the directory is
+    // observable for a window before the file lands. Polling the directory and
+    // then asserting on the file reads that intermediate state and fails on a
+    // COIN FLIP: measured on this box at up to 16ms between the mkdir and the
+    // rename, against a 10ms poll interval, so whether the poll lands inside
+    // the window depends on nothing but how the write interleaves. That is the
+    // same class of test as the ENOTEMPTY itself — a real failure decided by
+    // timing — and it is what CI caught on Node 22.
+    //
+    // The file is also the stronger claim. It is the last step of the write,
+    // it arrives by an atomic `rename` so it has no partial state, and its
+    // presence in `dir` implies the directory too — which is exactly what
+    // ENOTEMPTY is about. One assertion, no intermediate state to fall into.
+    const writeLanded = await waitFor(() => existsSync(path.join(dir, 'cache.json')), RESURRECTION_BUDGET_MS);
+    assert.equal(
+      writeLanded,
+      true,
+      `an unflushed save must re-create the directory and complete its write into it within ${RESURRECTION_BUDGET_MS}ms — ` +
+        "that write landing is what makes rm's final rmdir fail ENOTEMPTY. If this fails then the mechanism behind " +
+        '#1339 is gone, and the guard below is proving nothing.',
+    );
+  });
+
+  it('a client flushed before teardown cannot resurrect its removed cache directory (#1339)', async () => {
+    // The guard. The same sequence as the control, with the flush the teardown
+    // now performs. The write lands while the directory is still meant to
+    // exist, the timer is cleared instead of left to fire, and so `rm` removes
+    // the last of it and nothing arrives afterwards.
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
+    const c = newClient();
+    await c.get('/tracks/tr1', {});
+
+    await c.flushCachePersist();
+    assert.ok(
+      existsSync(path.join(dir, 'cache.json')),
+      'the flush landed the save while the directory still existed, which is the ordering the fix is about',
+    );
+    await rm(dir, { recursive: true, force: true });
+
+    await new Promise((r) => setTimeout(r, RESURRECTION_BUDGET_MS));
+    assert.equal(
+      existsSync(dir),
+      false,
+      `the directory must stay gone ${RESURRECTION_BUDGET_MS}ms after removal. A debounced save that fires after ` +
+        "teardown re-creates it, and rm's final rmdir then fails ENOTEMPTY — which force:true does not suppress.",
     );
   });
 });
@@ -1257,6 +1381,20 @@ describe('cache: a hard-killed save is reported, not silently dropped (#1279)', 
   let prevDataDir: string | undefined;
   let prevTokenFile: string | undefined;
 
+  /**
+   * The clients this block constructs in ITS OWN process (#1339).
+   *
+   * The child processes below are deliberately left alone: their unflushed
+   * pending save is the thing under test, and this array is not inherited by a
+   * spawned process, so flushing here cannot touch it.
+   */
+  let clients: SpotifyClient[] = [];
+  const newClient = (): SpotifyClient => {
+    const c = new SpotifyClient();
+    clients.push(c);
+    return c;
+  };
+
   beforeEach(async () => {
     dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-persist-kill-'));
     prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
@@ -1279,6 +1417,14 @@ describe('cache: a hard-killed save is reported, not silently dropped (#1279)', 
     else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
     if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
     else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    // Quiesce the in-process clients before the directory goes (#1339), for
+    // the reason the #893 block does: a read arms a 250 ms debounced save, and
+    // a save that fires against a directory being deleted re-creates it and
+    // fails `rm`'s final `rmdir` with ENOTEMPTY. The SIGKILL test below is
+    // unaffected — its pending save belongs to a child process that is already
+    // gone, and nothing here can reach it.
+    for (const c of clients) await c.flushCachePersist();
+    clients = [];
     await rm(dir, { recursive: true, force: true });
   });
 
@@ -1365,7 +1511,7 @@ describe('cache: a hard-killed save is reported, not silently dropped (#1279)', 
     globalThis.fetch = (async () =>
       new Response(JSON.stringify({ id: 'tr1' }), { status: 200 })) as typeof fetch;
 
-    const first = new SpotifyClient();
+    const first = newClient();
     // The load that consumes the marker is kicked off in the constructor and
     // is not awaited by it, so drive the queue before reading the status.
     await first.get('/tracks/tr1', {});
@@ -1376,7 +1522,7 @@ describe('cache: a hard-killed save is reported, not silently dropped (#1279)', 
       'the process after a hard kill must report the entries it never wrote; a silent 0 is the exact failure #1279 describes',
     );
 
-    const second = new SpotifyClient();
+    const second = newClient();
     await second.get('/tracks/tr1', {});
     assert.equal(
       second.getRateLimitStatus().cachePersistLost,
