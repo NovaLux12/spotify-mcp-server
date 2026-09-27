@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import { Rfc6570UriTemplate } from './uritemplate.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type {
   PlaybackState,
@@ -343,7 +344,9 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     server.resource(
       `${name}-query`,
       new ResourceTemplate(
-        `${uri}${params && params.length > 0 ? `{?format,${params.map(([p]) => p).join(',')}}` : '{?format}'}`,
+        new Rfc6570UriTemplate(
+          `${uri}${params && params.length > 0 ? `{?format,${params.map(([p]) => p).join(',')}}` : '{?format}'}`,
+        ),
         { list: undefined },
       ),
       {
@@ -352,22 +355,29 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       },
       renderWithApiErrors,
     );
-    // The `{+qs}` catch-all is what actually ROUTES a parameterised read, not
-    // the `{?…}` template above it. The MCP SDK's UriTemplate compiles
-    // `{?a,b,c}` to `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$` — every named
-    // parameter present, in declaration order — which is stricter than RFC
-    // 6570, where a form-style expression expands with whatever is present.
-    // So `…?time_range=short_term&limit=5` matches NEITHER `…{?format,
-    // time_range,limit,offset}` NOR the bare URI, and without this catch-all
-    // the resource is unreachable. `{+qs}` compiles to `(.+)` and matches.
+    // #1401: both entries above are now real routers, not one plus a decoy.
+    // The `{?…}` entry is compiled by `Rfc6570UriTemplate`, so it matches the
+    // URIs RFC 6570 says the template expands to — declared parameters in
+    // declaration order, any subset of them, undeclared pairs allowed between.
+    // It used to be the SDK's stricter `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$`,
+    // which needed every parameter present and adjacent, so
+    // `…?time_range=short_term&limit=5` matched nothing and the advertised
+    // entry could never route.
     //
-    // The `{?…}` template is still registered: it is what `resources/templates/
-    // list` advertises, and its description is where the parameter set is
-    // documented for a host reading the listing.
+    // The `{+qs}` entry is the catch-all for query strings this server does not
+    // model — a typo, an undeclared parameter, a parameter sent in an order the
+    // template does not expand to. It is also what keeps a *path* difference
+    // from resolving: its matcher requires a real `?`, so
+    // `spotify://me/saved/tracksX` is a different resource and is rejected,
+    // where the SDK's bare `(.+)` matched it and served saved tracks.
+    //
+    // The `{?…}` template is still what `resources/templates/list` advertises,
+    // and its description is where the parameter set is documented for a host
+    // reading the listing.
     if (params && params.length > 0) {
       server.resource(
         `${name}-qs`,
-        new ResourceTemplate(`${uri}{+qs}`, { list: undefined }),
+        new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{+qs}`), { list: undefined }),
         {
           description: `Catch-all query variant of '${uri}'${jsonNote}${suffix}`,
           mimeType: 'text/plain',
@@ -897,8 +907,8 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     const paramNote = ` Parameters: ?offset (${OFFSET_DOC}), ?limit (${LIMIT_DOC}).`;
     const jsonNote = ' (?format=json returns raw JSON)';
     server.resource('saved-tracks', uri, { description: `Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: `Query-string variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: `Catch-all query variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-query', new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{?format,offset,limit}`), { list: undefined }), { description: `Query-string variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-qs', new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{+qs}`), { list: undefined }), { description: `Catch-all query variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
   })();
 
   // spotify://me/followed/artists — cursor walk via /me/following
@@ -1078,7 +1088,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // operator would require every named parameter to be present and ordered.
   server.resource(
     'playlist-tracks-query',
-    new ResourceTemplate('spotify://playlist/{id}/tracks{+qs}', { list: undefined }),
+    new ResourceTemplate(new Rfc6570UriTemplate('spotify://playlist/{id}/tracks{+qs}'), { list: undefined }),
     { description: 'Query-string variant of playlist-tracks (?format=json, ?offset, ?limit)', mimeType: 'text/plain' },
     async (uri: URL) => renderPlaylistTracks(uri.href),
   );
