@@ -144,7 +144,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 1007 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 257 |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | 279 |
-| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1174 |
+| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1240 |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 458 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 80 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 1759 |

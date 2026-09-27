@@ -1974,6 +1974,42 @@ It renders `id`, `name`, `type`, `is_active` and `volume_percent` through `devic
 
 The endpoint takes no query parameters (the OpenAPI schema declares none), so this resource has no `{?…}` template beyond the standard `?format=json` twin. `get_devices`'s tool description names the resource, so an agent that has the tool list can discover the cheaper read.
 
+### 6.4 `spotify://me/genre-heatmap` coverage contract (#604)
+
+The heatmap counts genres over a **live sample of your top artists**
+(`GET /me/top/artists`, `time_range: medium_term`, up to 50). It is not a
+followed-artist census. The resource description used to promise a
+`followed_artists` sidecar that no code path reads, so the claim was removed
+rather than implemented, and the payload now states what was actually read.
+
+`?format=json` returns the counts together with the coverage that produced them:
+
+| Field | Meaning |
+|---|---|
+| `source` | Always `top_artists_sample`. Names the read that ran. |
+| `time_range` | Always `medium_term` — the endpoint's documented default. |
+| `artists_counted` | Artist rows the walk returned. |
+| `artists_with_genres` | Rows that carried a readable `genres` array. |
+| `artists_unreadable` | Rows excluded because their `genres` could not be read. |
+| `unreadable_artists` | Present only when `artists_unreadable > 0`; one `{id, name, reason}` per excluded row. |
+| `truncated` | Rows are missing from the sample. |
+| `truncated_by_cap` | The 50-artist cap is what ended the walk, rather than a reported total outrunning it. |
+| `total` | The API's own count, or `null` when it sent none. |
+| `genres` | The counts, over readable rows only. |
+
+**An unreadable row is never a zero.** `ArtistObject` declares no `required`
+fields and marks `genres` deprecated, so a row can arrive without it. Such a row
+is excluded from `genres`, listed in `unreadable_artists` with the reason, and
+counted in `artists_unreadable`; the prose says the counts are a lower bound. A
+row that genuinely carries `genres: []` is a *read* of an unclassified artist
+and is **not** reported as unreadable — the two are different facts and the
+output distinguishes them. Rows are labelled by `id` when `name` is also absent,
+since the id is the one field that cannot itself be missing.
+
+`truncated` distinguishes a cap that bound from a walk that came up short of a
+reported total without the cap applying, matching the walk disclosure the
+capped library resources use (#718/#864).
+
 
 ---
 
