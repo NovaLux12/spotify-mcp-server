@@ -893,6 +893,73 @@ export function withPlaylistInputNote(text: string, resolved: PlaylistInputResol
 // Truncation math (#53)
 // ---------------------------------------------------------------------------
 
+/**
+ * The names a bounded-read disclosure uses, repo-wide (#1423).
+ *
+ * A tool that reads a collection under a cap and must say so discloses it
+ * with THIS pair and nothing else:
+ *
+ * - `rows_read` — rows the bounded walk actually returned. The cap is a cap on
+ *   rows (pagination is per-row), so this counts rows, not requests and not
+ *   entities of some other type.
+ * - `reported_total` — the collection's OWN reported size, or `null` when the
+ *   server's count was not readable. Never the read size echoed back, and
+ *   never rounded down to `rows_read` when the total is unknown.
+ *
+ * with `truncated` beside them, `truncated_by_cap` when the cap is the reason
+ * rather than a walk that ended on a short page, and whichever cap was in
+ * force (`scan_cap` / `fetch_all_cap` / `item_walk_cap`).
+ *
+ * Full members: `merge_playlists`, `remove_unavailable_playlist_items`,
+ * `playlist_balance`. `take_playlist_snapshot` reports the same
+ * `reported_total` but names its read side `track_count` and its verdict
+ * `cap_reached` rather than `truncated`, because it writes a snapshot file
+ * rather than answering a question about a live read.
+ *
+ * ## Why this is a constant and not a convention in prose
+ *
+ * The read counter was spelled `rows_read` on two tools and `items_read` on
+ * two others, and `items_read` meant two unrelated things. A caller cannot
+ * check for a partial read generically when the key carrying the disclosure has
+ * to be guessed, and that is the same §6 shape as a value that lies: the count
+ * is real, the field that would have carried it is simply absent under the name
+ * the caller looked for.
+ *
+ * ## The one exception, and why it is not renamed
+ *
+ * `listening_streaks` reports `items_read` for LISTENING-HISTORY ENTRIES, not
+ * collection rows. That is a different quantity on a different collection —
+ * it is a cap on a cursor walk of `/me/player/recently-played`, with no
+ * reported total to sit beside — and it SHIPPED, in v2.1.0 and every release
+ * since. The repo's deprecation path (`resolvePlaylistInput` /
+ * `withPlaylistInputMetadata` / `withPlaylistInputNote`) is shaped around tool
+ * INPUTS; there is no output-field equivalent, so renaming a released output
+ * field would be a silent break with no migration behind it. It keeps its name
+ * and is listed in `RELEASED_DISCLOSURE_EXCEPTIONS` so the gate below can
+ * hold the exception open deliberately instead of by oversight.
+ */
+export const ROWS_READ_FIELD = 'rows_read';
+export const REPORTED_TOTAL_FIELD = 'reported_total';
+
+/**
+ * Tools permitted to disclose a bounded read under a name other than
+ * {@link ROWS_READ_FIELD}, each with the reason it is exempt.
+ *
+ * A new entry is a claim that the name is *correct* for that tool, not that
+ * the tool was missed. Both current entries are counted in a different unit
+ * from a collection walk.
+ *
+ * These two constants are what `tests/truncation-disclosure.test.ts` asserts
+ * emitted payloads against. The tools write their keys as plain literals
+ * rather than computed ones, because a payload a reader cannot grep is the
+ * problem this whole change exists to remove; the constant is the single
+ * source of truth the gate checks those literals against.
+ */
+export const RELEASED_DISCLOSURE_EXCEPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  // Listening-history entries, not collection rows. Shipped in v2.1.0.
+  listening_streaks: 'counts /me/player/recently-played history entries, has no reported total, and is a released field name',
+});
+
 export interface TruncationCapabilities {
   maxResults?: boolean;
   maxItems?: boolean;

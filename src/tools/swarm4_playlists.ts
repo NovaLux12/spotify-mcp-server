@@ -1894,7 +1894,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'or interleave (round-robin deal, so every part samples the whole span). Creates N new '
       + 'playlists; the source is left untouched. The span is what the read returned: a playlist '
       + 'larger than the fetch-all cap (SPOTIFY_MCP_FETCH_ALL_CAP) is only partly covered, and the '
-      + 'response says so via truncated/items_read/items_total. Quota: 2 GETs + N creates + chunked adds.',
+      + 'response says so via truncated/rows_read/reported_total. Quota: 2 GETs + N creates + chunked adds.',
     {
       playlist_id: z.string().describe('Playlist to split, as ID or spotify:playlist: URI'),
       parts: z.number().int().min(2).max(10).describe('How many playlists to create (2–10)'),
@@ -1921,12 +1921,26 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       // early return so the branch that refuses a split cannot state the
       // playlist's size as a number it never read. `items` is gone rather than
       // redefined: a caller that saw `items: 500` here had no way to know it
-      // was the cap, and renaming the field to `items_read` while leaving
-      // `items` in place would have kept two ways to read the same wrong claim.
+      // was the cap, and adding a second count beside `items` would have kept
+      // two ways to read the same wrong claim.
+      //
+      // #1423: the two fields are named for the convention, not for this tool.
+      // `rows_read` / `reported_total` is the repo-wide pair for "rows a
+      // bounded walk returned" beside "the collection's own reported size" —
+      // merge_playlists and remove_unavailable_playlist_items use it, and
+      // take_playlist_snapshot uses the same `reported_total`. This tool
+      // shipped `items_read` / `items_total`, which put a fourth spelling on
+      // the wire and made `items_read` mean two unrelated things (here,
+      // playlist item rows; on listening_streaks, listening-history entries).
+      // `items_total` was worse than a duplicate name: it is a RELEASED key on
+      // fifteen sibling tools, where `budgetedArray` emits it to say what a
+      // per-call `max_results` display cap withheld — a different mechanism
+      // entirely. Both names here were unreleased, so the rename costs no
+      // caller anything and separates the two mechanisms.
       const coverage = describeSplitCoverage(p, n);
       const scope = {
-        items_read: n,
-        items_total: typeof p.total === 'number' ? p.total : null,
+        rows_read: n,
+        reported_total: typeof p.total === 'number' ? p.total : null,
         truncated: p.truncated,
         // Named only when they mean something: a whole read was not capped, so
         // a `fetch_all_cap` on it would read as though the cap bound the walk.

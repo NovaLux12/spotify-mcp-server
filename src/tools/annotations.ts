@@ -1642,7 +1642,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the ceiling and points at the payload fields that say whether the split
   // was whole. The tool's answer is unchanged for any playlist at or below
   // the cap, so this is description text paying for a claim that was false.
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 23226], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 23228], { scopeKey: 'playlists' }),
 
 
 ] as const;
