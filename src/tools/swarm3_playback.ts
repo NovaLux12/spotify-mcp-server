@@ -1360,13 +1360,22 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         shuffle_state: state?.shuffle_state ?? null,
         repeat_state: state?.repeat_state ?? null,
       };
+      // Two spellings of the same device parameter, because the two call sites
+      // sit in different positions in the query string. `?device_id=` opens a
+      // query that has nothing before it (`/me/player/play`), and `&device_id=`
+      // appends to one that already carries `?state=` (`/me/player/shuffle`).
+      // Using the leading-`?` form after `?state=` produced
+      // `/me/player/shuffle?state=false?device_id=X` — two `?`, so Spotify read
+      // `device_id` as part of the `state` value and the state was never
+      // restored on the target device (#668).
       const qs = `?device_id=${encodeURIComponent(target.id)}`;
+      const qsAmp = `&device_id=${encodeURIComponent(target.id)}`;
       const steps = [
         `PUT /me/player ${JSON.stringify({ device_ids: [target.id], play: args.play ?? true })}`,
         ...(captured.track_uri ? [`PUT /me/player/play${qs} context-less resume of ${captured.track_uri}`] : []),
         `PUT /me/player/seek?position_ms=${captured.position_ms}&device_id=${encodeURIComponent(target.id)}`,
-        ...(captured.shuffle_state !== null ? [`PUT /me/player/shuffle?state=${captured.shuffle_state}${qs}`] : []),
-        ...(captured.repeat_state ? [`PUT /me/player/repeat?state=${captured.repeat_state}${qs}`] : []),
+        ...(captured.shuffle_state !== null ? [`PUT /me/player/shuffle?state=${captured.shuffle_state}${qsAmp}`] : []),
+        ...(captured.repeat_state ? [`PUT /me/player/repeat?state=${captured.repeat_state}${qsAmp}`] : []),
       ];
       if (isDry(args)) {
         const prose = describeDryRun('transfer playback with state', `"${target.name}" [${target.type}]`, steps);
@@ -1393,10 +1402,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         }
       }
       if (captured.shuffle_state !== null) {
-        await client.put(`/me/player/shuffle?state=${captured.shuffle_state}${qs}`).catch(() => { failed.push('shuffle'); });
+        await client.put(`/me/player/shuffle?state=${captured.shuffle_state}${qsAmp}`).catch(() => { failed.push('shuffle'); });
       }
       if (captured.repeat_state) {
-        await client.put(`/me/player/repeat?state=${captured.repeat_state}${qs}`).catch(() => { failed.push('repeat'); });
+        await client.put(`/me/player/repeat?state=${captured.repeat_state}${qsAmp}`).catch(() => { failed.push('repeat'); });
       }
       const prose = `Transferred playback to "${target.name}" with state restored${failed.length ? ` (failed steps: ${failed.join(', ')})` : ''}.`;
       return shape(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
