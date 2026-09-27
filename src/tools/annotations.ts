@@ -1375,6 +1375,49 @@ function readOnlyToolServer(server: McpServer): McpServer {
   });
 }
 
+/**
+ * Which manifest module already owns a tool name, or undefined.
+ *
+ * Ownership is only recorded for modules that registered through
+ * `registerManifestModule`, which is every module: the manifest is the single
+ * list and `src/index.ts` iterates nothing else.
+ */
+function owningModuleKey(metadata: ServerModuleMetadata, toolName: string): string | undefined {
+  for (const [key, names] of metadata.tools) {
+    if (names.includes(toolName)) return key;
+  }
+  return undefined;
+}
+
+/**
+ * The MCP SDK aborts a duplicate registration with `Tool <name> is already
+ * registered`, which names the collision and nothing about who caused it. In a
+ * 66-module manifest the stack points at the second registration, so the report
+ * leaves the reader to work out which of the other 65 modules owns the name —
+ * and startup dies before any test can add that context. #662 wants both
+ * modules named, so recover the name from the SDK's own message and annotate.
+ *
+ * Falls through to the original error when the message does not match: an
+ * unrecognised failure must keep its own diagnostics rather than be rewritten
+ * as a collision that did not happen.
+ */
+function annotateDuplicateRegistration(
+  error: unknown,
+  metadata: ServerModuleMetadata,
+  module: RegistrarManifestEntry,
+): unknown {
+  const message = error instanceof Error ? error.message : String(error);
+  const collision = /^Tool (\S+) is already registered$/.exec(message)?.[1];
+  if (!collision) return error;
+  const owner = owningModuleKey(metadata, collision);
+  if (!owner || owner === module.key) return error;
+  return new Error(
+    `${message} — "${collision}" is registered by the "${owner}" module and re-registered by ` +
+    `"${module.key}" (${module.file}). A name may belong to exactly one module; rename or remove one.`,
+    { cause: error },
+  );
+}
+
 /** Register one manifest module and retain its exact tool-name ownership. */
 export function registerManifestModule(
   server: McpServer,
@@ -1397,7 +1440,11 @@ export function registerManifestModule(
     );
   }
   const before = new Set(registeredToolNames(server));
-  module.registrar(status === 'scope_filtered' ? readOnlyToolServer(server) : server, client);
+  try {
+    module.registrar(status === 'scope_filtered' ? readOnlyToolServer(server) : server, client);
+  } catch (error) {
+    throw annotateDuplicateRegistration(error, metadata, module);
+  }
   metadata.tools.set(module.key, registeredToolNames(server).filter((name) => !before.has(name)));
   metadata.budgetRows = undefined;
 }

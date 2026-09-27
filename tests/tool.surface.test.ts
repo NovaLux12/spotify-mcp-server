@@ -471,7 +471,13 @@ describe('tool surface: annotations', () => {
 describe('tool surface: budget', () => {
   it('default surface stays inside the tool-count and byte ceilings', async () => {
     const tools = await listTools({});
-    const bytes = JSON.stringify(tools).length;
+    // `Buffer.byteLength(..., 'utf8')`, not `JSON.stringify(tools).length`:
+    // the startup gate in src/index.ts budgets UTF-8 bytes via
+    // `collectAggregateSurfaceMeasurement`, and `.length` counts UTF-16 code
+    // units. On this surface that undercounts by ~1.5KB, which is more than
+    // the headroom the ceiling has left, so the code-unit measure let a change
+    // pass here that would abort the server (#662).
+    const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
     assert.ok(
       tools.length <= DEFAULT_MAX_TOOLS,
       `default surface grew to ${tools.length} tools (ceiling ${DEFAULT_MAX_TOOLS}) — trim or raise the ceiling deliberately`,
@@ -522,7 +528,7 @@ describe('tool surface: budget', () => {
   it('the core preset is small and still covers the daily loop', async () => {
     const tools = await listTools({ SPOTIFY_MCP_TOOLSETS: 'core' });
     const names = new Set(tools.map((t) => t.name));
-    const bytes = JSON.stringify(tools).length;
+    const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
 
     for (const required of ['search', 'play', 'batch_add_to_playlist', 'export_all_playlists', 'statsfm_recent_streams', 'get_playlist_items', 'save_to_library']) {
       assert.ok(names.has(required), `core preset must include ${required}`);
