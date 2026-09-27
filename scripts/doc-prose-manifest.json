@@ -1063,7 +1063,7 @@
         "label": "All via env vars — no config file. Only SPOTIFYCLIENTID …"
       },
       {
-        "hash": "68e827271600b9b2",
+        "hash": "2e3d06a072a38658",
         "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…"
       },
       {
@@ -4329,6 +4329,640 @@
         "label": "| Phase | Scope | |---|---| | Phase 1 | Auth flow + Spot…"
       }
     ],
+    "docs/configuration.md": [
+      {
+        "hash": "7e98e4d88c678f8d",
+        "label": "Configuration reference"
+      },
+      {
+        "hash": "15ef260f165fc661",
+        "label": "The variables below are read at the documented call site…"
+      },
+      {
+        "hash": "30ac03ff33731529",
+        "label": "Summary"
+      },
+      {
+        "hash": "b7b1883c226db2e1",
+        "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
+      },
+      {
+        "hash": "98618570d40cf0ab",
+        "label": "Details"
+      },
+      {
+        "hash": "af67d4807ab8681f",
+        "label": "Auth and OAuth"
+      },
+      {
+        "hash": "7eb38020f1417aaa",
+        "label": "SPOTIFYCLIENTID is required for auth and normal server o…"
+      },
+      {
+        "hash": "35f8edf387f27189",
+        "label": "SPOTIFYREDIRECTURI must match a redirect URI configured …"
+      },
+      {
+        "hash": "4e14c93a9df44ede",
+        "label": "The callback wait is bounded, and its two failures read …"
+      },
+      {
+        "hash": "3afa58f016b47f00",
+        "label": "SPOTIFYAUTHTIMEOUTMS (default 300000) bounds how long th…"
+      },
+      {
+        "hash": "d404b00e1d40b72c",
+        "label": "The two ways the wait can fail produce different message…"
+      },
+      {
+        "hash": "9c05bc2659723d44",
+        "label": "| What you see | What happened | What to do | |---|---|-…"
+      },
+      {
+        "hash": "827b81d783a24efa",
+        "label": "SPOTIFYMCPTOKENFILE and SPOTIFYMCPPROFILE select the per…"
+      },
+      {
+        "hash": "0ad0f7e4dc521910",
+        "label": "Reading a token-refresh failure"
+      },
+      {
+        "hash": "8dca0435e8a3e03f",
+        "label": "A refresh that fails is classified by what the response …"
+      },
+      {
+        "hash": "1c4544605f29bdde",
+        "label": "| What you see | What happened | What to do | |---|---|-…"
+      },
+      {
+        "hash": "533f5ba5990b7d45",
+        "label": "A named code this server has no fix for is quoted verbat…"
+      },
+      {
+        "hash": "181fa57ce5ec6c86",
+        "label": "Disconnecting: spotify-mcp logout"
+      },
+      {
+        "hash": "04391d2ff39f07be",
+        "label": "There are two separate things to undo when you stop usin…"
+      },
+      {
+        "hash": "4eee2add0cc61882",
+        "label": "Local stores. spotify-mcp logout erases the token file a…"
+      },
+      {
+        "hash": "bda6d9fe9104d905",
+        "label": "Stores are moved, not deleted: to the freedesktop trash …"
+      },
+      {
+        "hash": "5688da288563adbc",
+        "label": "The Spotify grant itself. Spotify publishes no token-rev…"
+      },
+      {
+        "hash": "a6533231a71bf9d4",
+        "label": "What logout refuses to erase, and reports instead:"
+      },
+      {
+        "hash": "ec2fb2468c94ff54",
+        "label": "a store whose real path resolves outside the directory i…"
+      },
+      {
+        "hash": "59d2e19587f6fc45",
+        "label": "a symlinked store — the link is not this server's to fol…"
+      },
+      {
+        "hash": "f054c0e844922291",
+        "label": "a filesystem root, the home directory, or an ancestor of…"
+      },
+      {
+        "hash": "ad9884fdc7d1a66e",
+        "label": "the data directory itself, when SPOTIFYMCPDATADIR is set…"
+      },
+      {
+        "hash": "c2beab8ce50214a0",
+        "label": "a store that is the wrong kind on disk — most often a di…"
+      },
+      {
+        "hash": "3a1922b154980b8d",
+        "label": "A refusal or a failure is a non-zero exit. Reporting suc…"
+      },
+      {
+        "hash": "33cf7c507a0e702f",
+        "label": "| Flag | Effect | |---|---| | --dry-run | List what woul…"
+      },
+      {
+        "hash": "4e00236bd9e4f7df",
+        "label": "logout is a CLI command and deliberately not a tool: a d…"
+      },
+      {
+        "hash": "aa72506d016ceb35",
+        "label": "Before erasing, logout asks for confirmation on a termin…"
+      },
+      {
+        "hash": "f2ebfa141de466bf",
+        "label": "Local files: reads and writes are confined"
+      },
+      {
+        "hash": "546e404bd6606c08",
+        "label": "Every tool that writes a local file resolves its destina…"
+      },
+      {
+        "hash": "d1bcc6f5e6bd47a5",
+        "label": "Reads are confined the same way, in reverse. importplayl…"
+      },
+      {
+        "hash": "00f1e14acc038710",
+        "label": "Containment is decided on the real path — every componen…"
+      },
+      {
+        "hash": "fe8bb18df0d971e3",
+        "label": "SPOTIFYHEADLESS=1 affects only the auth command. The aut…"
+      },
+      {
+        "hash": "9f4fa695b8cbe9fe",
+        "label": "Scope profiles"
+      },
+      {
+        "hash": "dfc63de394ff4388",
+        "label": "auth asks for a profile of scopes, not a hand-written li…"
+      },
+      {
+        "hash": "f9bf36259d327ced",
+        "label": "| Profile | What it requests | What it unlocks | | --- |…"
+      },
+      {
+        "hash": "f5fc576a238feee4",
+        "label": "Before #700 an unconfigured auth run requested all 17, s…"
+      },
+      {
+        "hash": "cb1ffae175667955",
+        "label": "auth prints the requested scopes grouped with a one-line…"
+      },
+      {
+        "hash": "bd997452fa037078",
+        "label": "Two things a profile does not promise. It decides what t…"
+      },
+      {
+        "hash": "9328fcaa14875c65",
+        "label": "Existing tokens are unaffected — grants are stored per t…"
+      },
+      {
+        "hash": "a8e159011cf5c38c",
+        "label": "SPOTIFYSCOPES accepts spaces or commas and rejects unkno…"
+      },
+      {
+        "hash": "f61e0f91742ec2fe",
+        "label": "Runtime limits and requests"
+      },
+      {
+        "hash": "2542c5e7ab175db8",
+        "label": "SPOTIFYREQUESTTIMEOUTMS applies an abort timer to every …"
+      },
+      {
+        "hash": "a14376041a21272f",
+        "label": "SPOTIFYMCPFANOUTCONCURRENCY bounds how many of a scan's …"
+      },
+      {
+        "hash": "b60160bd77e16d32",
+        "label": "It is a fallback, not the authority, and the authority i…"
+      },
+      {
+        "hash": "6877b053fe94a227",
+        "label": "| SPOTIFYMCPMAXCONCURRENCY | SPOTIFYMCPFANOUTCONCURRENCY…"
+      },
+      {
+        "hash": "771649731f148c01",
+        "label": "So setting this variable has no effect on the radar tool…"
+      },
+      {
+        "hash": "cf701114da2bf7b8",
+        "label": "Streamable HTTP transport (opt-in)"
+      },
+      {
+        "hash": "253656c7ee4e6ce9",
+        "label": "SPOTIFYMCPTRANSPORT=http serves the same MCP server over…"
+      },
+      {
+        "hash": "2719036ec22a5e07",
+        "label": "SPOTIFYMCPTRANSPORT=http \\ SPOTIFYMCPHTTPTOKEN=\"$(openss…"
+      },
+      {
+        "hash": "af745a33027d71c7",
+        "label": "The startup line carries the port, because with SPOTIFYM…"
+      },
+      {
+        "hash": "a4c79d22576ea154",
+        "label": "The authentication scheme, and why it is this one"
+      },
+      {
+        "hash": "9f8f09b43f224d39",
+        "label": "A pre-provisioned static bearer token, compared in const…"
+      },
+      {
+        "hash": "c1753e77ea55db24",
+        "label": "The alternative would be a resource-server OAuth design,…"
+      },
+      {
+        "hash": "d95e566d38314605",
+        "label": "The token guards the endpoint; it does not replace the S…"
+      },
+      {
+        "hash": "aeccd15ef9ee1958",
+        "label": "Threat model"
+      },
+      {
+        "hash": "ae68222163f1c8c1",
+        "label": "Single user. Every session of one process acts on the sa…"
+      },
+      {
+        "hash": "c38756e2c6c4444d",
+        "label": "Per-session isolation. The MCP SDK's Server holds one tr…"
+      },
+      {
+        "hash": "711cc613952ca4fa",
+        "label": "No cross-session token sharing. No session can name anot…"
+      },
+      {
+        "hash": "6a0cdf4ec0fbb7fe",
+        "label": "Loopback unless deliberately opened twice. SPOTIFYMCPHTT…"
+      },
+      {
+        "hash": "ce6db1bef7438828",
+        "label": "Bounded input. Bodies are capped on the stream, requests…"
+      },
+      {
+        "hash": "83af6bdd341ed6d8",
+        "label": "Multi-user and SaaS hosting is a non-goal — see [docs/no…"
+      },
+      {
+        "hash": "e044c47a94deb33a",
+        "label": "What is refused, and how it fails"
+      },
+      {
+        "hash": "9a2ecea9c3039eb1",
+        "label": "Every one of these is a startup error with a non-zero ex…"
+      },
+      {
+        "hash": "e2ddacd3cd358c79",
+        "label": "| Situation | What happens | | --- | --- | | SPOTIFYMCPT…"
+      },
+      {
+        "hash": "23255396d6ba42fe",
+        "label": "The 401 and the 429 body are deliberately identical for …"
+      },
+      {
+        "hash": "ae6e8fa1ec7cf812",
+        "label": "Exposing it beyond this machine"
+      },
+      {
+        "hash": "72bd7c4a6c094973",
+        "label": "If you set SPOTIFYMCPHTTPALLOWNONLOOPBACK, you have take…"
+      },
+      {
+        "hash": "a772657780640d12",
+        "label": "Mutation history"
+      },
+      {
+        "hash": "ccf038eb7ceccd9f",
+        "label": "Set SPOTIFYMCPHISTORY=1 to append one JSONL record per a…"
+      },
+      {
+        "hash": "fb74eed0bce6a661",
+        "label": "Rotation. The ledger is bounded rather than cumulative. …"
+      },
+      {
+        "hash": "9909cf78517d9fc2",
+        "label": "A value that is unset, empty, non-numeric, zero, or nega…"
+      },
+      {
+        "hash": "e9347f90799e12f5",
+        "label": "Each record's who field names the tool that issued the m…"
+      },
+      {
+        "hash": "36fd6a1b5421f292",
+        "label": "Row cap. A byte bound is not a retention policy: it stop…"
+      },
+      {
+        "hash": "e80b3f4d97fc2448",
+        "label": "Retention. SPOTIFYMCPHISTORYRETENTIONDAYS (default 90) i…"
+      },
+      {
+        "hash": "4a69df3cd6b20d8a",
+        "label": "Pruning runs on every append and once at server startup,…"
+      },
+      {
+        "hash": "48d8038f30001182",
+        "label": "The rewrite is atomic: a uniquely-named temp file in the…"
+      },
+      {
+        "hash": "4b84138ea45c709d",
+        "label": "Erasing it. spotify-mcp logout removes the ledger and it…"
+      },
+      {
+        "hash": "1c580fc4ce10a140",
+        "label": "Taste feedback store"
+      },
+      {
+        "hash": "d11b7c0b451a4abe",
+        "label": "statsfmrecordfeedback stores verdicts locally and never …"
+      },
+      {
+        "hash": "3d8e95467d1c6086",
+        "label": "The cap is three bounds, because no one of them is suffi…"
+      },
+      {
+        "hash": "bf6011f0d12bbd88",
+        "label": "One record. subject is capped at 200 characters and note…"
+      },
+      {
+        "hash": "3626e628fcc3a9ea",
+        "label": "A record count — SPOTIFYMCPTASTEFEEDBACKMAXENTRIES, defa…"
+      },
+      {
+        "hash": "1d4b1058b161074d",
+        "label": "A byte size — SPOTIFYMCPTASTEFEEDBACKMAXBYTES, default 1…"
+      },
+      {
+        "hash": "dee075d13331de4a",
+        "label": "Eviction is oldest-first until all three hold, and the l…"
+      },
+      {
+        "hash": "2cd8666972e14020",
+        "label": "Retention is a ring buffer, not a TTL. A verdict's value…"
+      },
+      {
+        "hash": "c34bc917746a81fc",
+        "label": "A corrupt or truncated store is preserved, not reset. Lo…"
+      },
+      {
+        "hash": "d0f310e297e19818",
+        "label": "The write is atomic. The store is a single JSON document…"
+      },
+      {
+        "hash": "f90c82854c86a08d",
+        "label": "spotifydoctor reports both stores: the history row carri…"
+      },
+      {
+        "hash": "fb2ff5daffc9a401",
+        "label": "stats.fm identity"
+      },
+      {
+        "hash": "0e090e92e047d574",
+        "label": "stats.fm has no OAuth and no token, so \"identity\" here i…"
+      },
+      {
+        "hash": "c324c93bd5113b4a",
+        "label": "The precedence is: explicit per-call argument > STATSFMU…"
+      },
+      {
+        "hash": "cea03d216660c702",
+        "label": "A value that is unset, empty, or only whitespace counts …"
+      },
+      {
+        "hash": "52a12c3f8eacd172",
+        "label": "spotifydoctor's config row reports whether the variable …"
+      },
+      {
+        "hash": "328eccfae86b9e55",
+        "label": "Mutation receipts"
+      },
+      {
+        "hash": "9d265001651b66d2",
+        "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…"
+      },
+      {
+        "hash": "e82dfd929b4c2ff6",
+        "label": "Backup snapshot retention"
+      },
+      {
+        "hash": "141ee69c9f9df58a",
+        "label": "SPOTIFYMCPBACKUPDIR holds one dated library compilation …"
+      },
+      {
+        "hash": "a4aac75a961e2092",
+        "label": "Set it to 0 to disable pruning entirely — nothing is eve…"
+      },
+      {
+        "hash": "cb0b9006c2e2581f",
+        "label": "An unusable value never becomes an unbounded window. Emp…"
+      },
+      {
+        "hash": "0e011f6278293caf",
+        "label": "To remove one snapshot ahead of its window, use the dele…"
+      },
+      {
+        "hash": "bac6dcbdc7967565",
+        "label": "SPOTIFYMCPTOOLSETS accepts a comma-separated subset of t…"
+      },
+      {
+        "hash": "ff934efa201fb527",
+        "label": "The default is core, not everything (#889). A server sta…"
+      },
+      {
+        "hash": "90e2aec40ccfce5d",
+        "label": "The stats.fm families are opt-in (#607). statsfm, taste …"
+      },
+      {
+        "hash": "2f0771808e8bd8a4",
+        "label": "SPOTIFYMCPENABLETOOLS and SPOTIFYMCPDISABLETOOLS take re…"
+      },
+      {
+        "hash": "027841554e7a9b36",
+        "label": "disable wins over enable, and both are layered on top of…"
+      },
+      {
+        "hash": "492b428398a44696",
+        "label": "An unknown-only toolset spec fails startup with the vali…"
+      },
+      {
+        "hash": "bcc0e5295b9e62de",
+        "label": "Read-only and confirmation safety"
+      },
+      {
+        "hash": "d596e91ce7d23a71",
+        "label": "SPOTIFYMCPREADONLY=1 (also true, yes or on; case-insensi…"
+      },
+      {
+        "hash": "248c7138b0fd6b5c",
+        "label": "For confirmation-gated destructive operations, a missing…"
+      },
+      {
+        "hash": "7503b80954a305d8",
+        "label": "Derived listening analytics"
+      },
+      {
+        "hash": "13ca8c4c1cc3199a",
+        "label": "SPOTIFYMCPEXPERIMENTALANALYTICS=1 (also true, yes or on;…"
+      },
+      {
+        "hash": "c05949d482e3c9fa",
+        "label": "Unset is the non-analytics path, and that is the default…"
+      },
+      {
+        "hash": "c0bb21dafc8d641c",
+        "label": "The withheld set is listeningreport, listeningheatmap, d…"
+      },
+      {
+        "hash": "e62940c682f7c509",
+        "label": "An unrecognised value — enabled, 2, y — leaves the analy…"
+      },
+      {
+        "hash": "e7b9cdb9910f130a",
+        "label": "This gate is independent of SPOTIFYMCPREADONLY in both d…"
+      },
+      {
+        "hash": "0f97b01f04c6f76d",
+        "label": "Freshness and local sidecars"
+      },
+      {
+        "hash": "aa1a26ec3c04bdc6",
+        "label": "SPOTIFYMCPFRESHNESSSTATE is the whatsnew watermark. SPOT…"
+      },
+      {
+        "hash": "80179fdfde25be34",
+        "label": "The watermark is per kind, and an explicit since never m…"
+      },
+      {
+        "hash": "75287e7df68ec2fd",
+        "label": "whatsnew is registered as a read, so its writes to this …"
+      },
+      {
+        "hash": "07a86130ea6b6f6a",
+        "label": "The file holds one checkpoint per kind:"
+      },
+      {
+        "hash": "727c5fee5dc6db4f",
+        "label": "{ \"lastcheck\": \"2026-09-27\", \"kinds\": { \"albums\": \"2026-…"
+      },
+      {
+        "hash": "c5870408ba97afe5",
+        "label": "A kind is recorded in kinds only after that kind's own s…"
+      },
+      {
+        "hash": "d927345c656e8c20",
+        "label": "An explicit since date never writes this file at all. An…"
+      },
+      {
+        "hash": "ac4c0c15089f7969",
+        "label": "Reading since: \"last-check\" uses the oldest mark among t…"
+      },
+      {
+        "hash": "6c566134ef8a1970",
+        "label": "Migrating a pre-2.2 flat watermark"
+      },
+      {
+        "hash": "1ad8ac270f7e5aa4",
+        "label": "Files written before the per-kind change hold a single {…"
+      },
+      {
+        "hash": "14c9cb004cfa84c7",
+        "label": "What it deliberately does not do is copy the flat mark i…"
+      },
+      {
+        "hash": "a60c2640381c5713",
+        "label": "The first write that advances a kind replaces the flat f…"
+      },
+      {
+        "hash": "b6db1c68d429261b",
+        "label": "An older build reading the new shape finds no top-level …"
+      },
+      {
+        "hash": "3cee3444b867af6b",
+        "label": "SPOTIFYMCPSCENESFILE stores named device/volume/shuffle/…"
+      },
+      {
+        "hash": "a9d39f9d15731d84",
+        "label": "A sidecar that exists but cannot be read is never reset.…"
+      },
+      {
+        "hash": "ba476774cb7634f6",
+        "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist, porta…"
+      },
+      {
+        "hash": "0b063ab9919388e9",
+        "label": "Every local store's path and its default are listed in o…"
+      },
+      {
+        "hash": "e407a8c6b303aab4",
+        "label": "Two stores are named per account rather than per environ…"
+      },
+      {
+        "hash": "9e4472659de4fa75",
+        "label": "When a pending save is lost"
+      },
+      {
+        "hash": "1877c58fd0f00c65",
+        "label": "With SPOTIFYMCPCACHEPERSIST=1 a burst of reads is coales…"
+      },
+      {
+        "hash": "6f835a24940d0425",
+        "label": "The pending save IS written when the process ends by:"
+      },
+      {
+        "hash": "25d65a00780d0479",
+        "label": "| Termination | Mechanism | Verified by | |---|---|---| …"
+      },
+      {
+        "hash": "698203b7d026bcd2",
+        "label": "The exit path cannot await, so the shutdown write is the…"
+      },
+      {
+        "hash": "bcdc61067e223322",
+        "label": "The pending save is NOT written — and nothing in this se…"
+      },
+      {
+        "hash": "c1a6aeb446fb3fb6",
+        "label": "Because the loss cannot be prevented, it is made visible…"
+      },
+      {
+        "hash": "e36123d537483fee",
+        "label": "spotifydoctor shows cachepersistlost=<n> and downgrades …"
+      },
+      {
+        "hash": "696163fd36f92438",
+        "label": "getRateLimitStatus() reports cachePersistLost."
+      },
+      {
+        "hash": "858d5d6263b46336",
+        "label": "Two limits on that report, so it is not read as more tha…"
+      },
+      {
+        "hash": "5393ef9c7c937b8c",
+        "label": "It is a report, not a repair. The marker holds a count, …"
+      },
+      {
+        "hash": "3e51a41af6ff4000",
+        "label": "It is reported once, and only for a dead owner. A marker…"
+      },
+      {
+        "hash": "d6b6146bbe096096",
+        "label": "cachePersistFailed stays 0 across a hard kill, because t…"
+      },
+      {
+        "hash": "9ef400d9e84c54c3",
+        "label": "Registration-gated endpoints"
+      },
+      {
+        "hash": "a8d66844eec137cf",
+        "label": "Some Spotify Web API endpoints are denied at the app-reg…"
+      },
+      {
+        "hash": "0965c5592ecd9722",
+        "label": "| Response | Endpoints | |---|---| | 403 Forbidden | /br…"
+      },
+      {
+        "hash": "1c6b49548f1d9d2b",
+        "label": "Tools wrapping these endpoints stay registered and retur…"
+      },
+      {
+        "hash": "33e1f460407aca9f",
+        "label": "Not used"
+      },
+      {
+        "hash": "88305d52c5807ed1",
+        "label": "SPOTIFYCLIENTSECRET is deliberately not supported: the P…"
+      }
+    ],
     "docs/cookbook.md": [
       {
         "hash": "a21a80aa7cdb3b3f",
@@ -5692,6 +6326,13 @@
     },
     {
       "file": "README.md",
+      "hash": "68e827271600b9b2",
+      "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
+      "date": "2026-09-27",
+      "reason": "README's configuration table is pinned as one content-hashed unit, so rewording the SPOTIFY_MCP_TOOLSETS example cell from 'all' to 'unset' retires the old hash. Present on this branch, one word different on purpose: the column is an Example, and the prose beside it already said the default is core, so the old cell contradicted the paragraph it sat in."
+    },
+    {
+      "file": "README.md",
       "hash": "79e3a5cef3c000e9",
       "label": "### 🤖 Paste this to your agent Copy the block below int…",
       "date": "2026-09-27",
@@ -5986,9 +6627,9 @@
     }
   ],
   "provenance": {
-    "head": "1bc10da5617c93eefcc65aed02f05ce7b7755cc0",
-    "base": "21724f118ae14c4a0edcc9b68a4ae523d1113578",
-    "upstream": "21724f118ae14c4a0edcc9b68a4ae523d1113578",
+    "head": "1e0f642af0355ea7aca608ef5a1e3ea29600fc17",
+    "base": "f2790fdf35210f1ee383250c737944e15c22c101",
+    "upstream": "f2790fdf35210f1ee383250c737944e15c22c101",
     "behind": false
   }
 }
