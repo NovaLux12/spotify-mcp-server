@@ -114,9 +114,13 @@ const parameterAllowlist = new Set([
   // two nullability clauses that keep a failed read from becoming a number.
   // A call's own output describing itself, not request parameters, the same
   // category as `matched_artists` above and the `DoctorSurface` rows.
+  // `queue_length` is the one entry that is a RETIRED tool's field: §5.15 names
+  // it to say it does not come across, and a migration note cannot promise or
+  // deny a field by writing it in a code span the gate refuses to read.
   'context_label', 'current_track_remaining_error',
   'current_track_remaining_ms', 'duration_ms', 'estimated_total_wait_ms',
-  'is_episode', 'plays_at_ms', 'total_remaining_ms', 'total_runtime_ms',
+  'is_episode', 'plays_at_ms', 'queue_length', 'total_remaining_ms',
+  'total_runtime_ms',
   // #602: the account registry's own vocabulary. `account_id` and
   // `display_name` are the two keys the acting-account echo adds to EVERY
   // tool result; the rest are `list_accounts` / `switch_account`
