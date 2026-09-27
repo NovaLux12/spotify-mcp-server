@@ -15,9 +15,13 @@
 import { test } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+// Ahead of every src import on purpose (#1274): every store default in this
+// server resolves through homedir(), so the redirect has to land before any
+// module that could read one. ES module imports are hoisted and evaluated in
+// source order, so the position in this block is the whole point rather than a
+// style preference.
+import { HERMETIC_ROOT } from './helpers/hermetic.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
@@ -106,88 +110,96 @@ function harness(register: Registrar, responder: Responder) {
 }
 
 // ---------------------------------------------------------------------------
-// Fixtures — three shapes of "count", only one of which Spotify actually said.
+// Fixtures — four shapes of "count", of which only two are a number Spotify
+// stated. The other two are the case the fix is about, and they are different
+// from each other on the wire: no `items` key at all, and `items: null`.
 // ---------------------------------------------------------------------------
 
-function playlistRow(
-  id: string,
-  name: string,
-  count: { stated: number } | { missing: true } | { nulled: true } | { legacy: number },
-): Record<string, unknown> {
-  const base: Record<string, unknown> = {
+const OWNER = { id: 'owner-1', display_name: 'Someone' };
+
+function row(id: string, name: string, page: Record<string, unknown>): Record<string, unknown> {
+  return {
     id,
     name,
     uri: `spotify:playlist:${id}`,
     description: null,
-    owner: { id: 'owner-1', display_name: 'Someone' },
+    owner: OWNER,
+    ...page,
   };
-  if ('stated' in count) base.items = { total: count.stated };
-  if ('missing' in count) return base;
-  if ('nulled' in count) base.items = null;
-  // Pre-Feb-2026 spelling. `playlistItemTotal` reads it only as a fallback.
-  base.tracks = { total: count.legacy };
-  return base;
 }
 
 const ROWS = [
-  playlistRow('empty', 'Empty', { stated: 0 }),
-  playlistRow('counted', 'Counted', { stated: 42 }),
-  playlistRow('uncounted', 'Uncounted', { missing: true }),
-  playlistRow('nullpage', 'Null Page', { nulled: true }),
-  playlistRow('legacy', 'Legacy Page', { legacy: 7 }),
+  // Spotify stated a real zero. This is a claim, and it is true.
+  row('empty', 'Empty', { items: { total: 0 } }),
+  row('counted', 'Counted', { items: { total: 42 } }),
+  // Pre-Feb-2026 spelling only; `playlistItemTotal` reads it as a fallback, so
+  // this row used to render as a second false 0.
+  row('legacy', 'Legacy Page', { tracks: { total: 7 } }),
+  // No page at all.
+  row('uncounted', 'Uncounted', {}),
+  // Page key present, value null.
+  row('nullpage', 'Null Page', { items: null }),
 ];
 
 const PAGE = { total: ROWS.length, limit: 20, offset: 0, next: null, items: ROWS };
 
-/** The prose phrase for a count, as an unknown count must render. */
-const UNKNOWN_COUNT = /unknown (?:track|item) count/i;
+/** The two rows whose count Spotify never stated, and the phrase each must now carry. */
+const UNSTATED = ['Uncounted', 'Null Page'];
+const UNKNOWN_COUNT = 'unknown track count';
+const phraseFor = (name: string) => `"${name}" by Someone \\(${UNKNOWN_COUNT}\\)`;
 
 // ---------------------------------------------------------------------------
 
+/**
+ * The one rule, asserted against whichever tool's prose is handed in. A stated
+ * zero must still read as `0 tracks` — the fix is not "never print 0", it is
+ * "print 0 only when Spotify said 0" — and a row whose page never arrived must
+ * read as unknown rather than as the empty playlist it was reported to be.
+ */
+function assertPlaylistRowProse(text: string, tool: string): void {
+  const where = (msg: string) => `${tool}: ${msg}`;
+  assert.match(text, /"Empty" by Someone \(0 tracks\)/, where('a stated zero stopped reading as 0'));
+  assert.match(text, /"Counted" by Someone \(42 tracks\)/, where('a stated count changed shape'));
+  // The pre-Feb-2026 `tracks` spelling is still a statement about the length,
+  // and used to be a second false 0 because only `items` was read.
+  assert.match(text, /"Legacy Page" by Someone \(7 tracks\)/, where('the legacy page is no longer read'));
+  for (const name of UNSTATED) {
+    assert.match(
+      text,
+      new RegExp(phraseFor(name)),
+      where(`${name} rendered a count Spotify never stated`),
+    );
+  }
+}
+
+/** The same distinction in the machine payload: absent is not 0. */
+function assertRowsKeepTheTwoApart(rows: Array<Record<string, unknown>>, tool: string): void {
+  const where = (msg: string) => `${tool}: ${msg}`;
+  const page = (name: string) => rows.find((r) => r.name === name)?.items;
+  assert.deepEqual(page('Empty'), { total: 0 }, where('a stated zero is no longer 0'));
+  assert.equal(page('Uncounted'), undefined, where('an absent page became something else'));
+  assert.equal(page('Null Page'), null, where('a null page became something else'));
+}
+
 test('#1556 get_user_playlists never prints 0 for a count Spotify did not state', async (t) => {
+  const make = () =>
+    harness(registerPlaylistTools, (path) => (path === '/me/playlists' ? PAGE : null));
+
   await t.test('concise prose says unknown, and states a real zero as 0', async () => {
-    const { call } = harness(registerPlaylistTools, (path) => (path === '/me/playlists' ? PAGE : null));
-    const out = await call('get_user_playlists');
-
-    assert.match(out.content[0].text, /"Empty" by Someone \(0 tracks\)/);
-    assert.match(out.content[0].text, /"Counted" by Someone \(42 tracks\)/);
-    // The pre-Feb-2026 spelling is still a statement about the length.
-    assert.match(out.content[0].text, /"Legacy Page" by Someone \(7 tracks\)/);
-
-    for (const name of ['Uncounted', 'Null Page']) {
-      assert.match(
-        out.content[0].text,
-        new RegExp(`"${name}" by Someone \\(${UNKNOWN_COUNT.source}\\)`),
-        `${name} rendered a count Spotify never stated`,
-      );
-    }
-    // Not one fabricated zero anywhere on the page.
-    assert.doesNotMatch(out.content[0].text, /\(0 tracks\)[^)]*(Uncounted|Null Page)/);
-    assert.doesNotMatch(out.content[0].text, /Uncounted" by Someone \(0/);
-    assert.doesNotMatch(out.content[0].text, /Null Page" by Someone \(0/);
+    const out = await make().call('get_user_playlists');
+    assertPlaylistRowProse(out.content[0].text, 'get_user_playlists');
   });
 
   await t.test('structuredContent keeps the two cases apart', async () => {
-    const { call } = harness(registerPlaylistTools, (path) => (path === '/me/playlists' ? PAGE : null));
-    const out = await call('get_user_playlists');
+    const out = await make().call('get_user_playlists');
     const rows = (out.structuredContent?.items ?? []) as Array<Record<string, unknown>>;
-
-    // A stated zero is present and is 0.
-    const empty = rows.find((r) => r.name === 'Empty');
-    assert.deepEqual((empty?.items as { total: number }).total, 0);
-    // An unstated count is absent, not 0 — the payload must not invent it.
-    const uncounted = rows.find((r) => r.name === 'Uncounted');
-    assert.equal(uncounted?.items, undefined);
-    const nullPage = rows.find((r) => r.name === 'Null Page');
-    assert.equal(nullPage?.items, null);
+    assertRowsKeepTheTwoApart(rows, 'get_user_playlists');
   });
 
   await t.test('json mode is the raw payload and never gains a 0', async () => {
-    const { call } = harness(registerPlaylistTools, (path) => (path === '/me/playlists' ? PAGE : null));
-    const out = await call('get_user_playlists', { response_format: 'json' });
+    const out = await make().call('get_user_playlists', { response_format: 'json' });
     const payload = JSON.parse(out.content[0].text) as { items: Array<Record<string, unknown>> };
-    const uncounted = payload.items.find((r) => r.name === 'Uncounted');
-    assert.equal(uncounted?.items, undefined);
+    assertRowsKeepTheTwoApart(payload.items, 'get_user_playlists (json)');
   });
 });
 
@@ -195,57 +207,45 @@ test('#1556 get_user_playlists_by_id never prints 0 for a count Spotify did not 
   const { call } = harness(registerUsersTools, (path) =>
     path === '/users/someone/playlists' ? PAGE : null,
   );
+  const invoke = () => call('get_user_playlists_by_id', { user_id: 'someone' });
 
   await t.test('prose says unknown and keeps a stated zero at 0', async () => {
-    const out = await call('get_user_playlists_by_id', { user_id: 'someone' });
-    assert.match(out.content[0].text, /"Empty" by Someone \(0 tracks\)/);
-    assert.match(out.content[0].text, /"Counted" by Someone \(42 tracks\)/);
-    assert.match(out.content[0].text, new RegExp(`"Uncounted" by Someone \\(${UNKNOWN_COUNT.source}\\)`));
-    assert.match(out.content[0].text, new RegExp(`"Null Page" by Someone \\(${UNKNOWN_COUNT.source}\\)`));
-    assert.doesNotMatch(out.content[0].text, /Uncounted" by Someone \(0/);
-    assert.doesNotMatch(out.content[0].text, /Null Page" by Someone \(0/);
+    const out = await invoke();
+    assertPlaylistRowProse(out.content[0].text, 'get_user_playlists_by_id');
   });
 
   await t.test('structuredContent keeps the two cases apart', async () => {
-    const out = await call('get_user_playlists_by_id', { user_id: 'someone' });
+    const out = await invoke();
     const rows = (out.structuredContent?.items ?? []) as Array<Record<string, unknown>>;
-    assert.equal((rows.find((r) => r.name === 'Empty')?.items as { total: number }).total, 0);
-    assert.equal(rows.find((r) => r.name === 'Uncounted')?.items, undefined);
-    assert.equal(rows.find((r) => r.name === 'Null Page')?.items, null);
+    assertRowsKeepTheTwoApart(rows, 'get_user_playlists_by_id');
   });
 });
 
 test('#1556 search PLAYLISTS section never prints 0 for a count Spotify did not state', async (t) => {
   const searchResult = { playlists: { items: ROWS, total: ROWS.length, limit: 10, offset: 0, next: null } };
-  const historyFile = join(await mkdtemp(join(tmpdir(), 'pl-count-')), 'search-history.json');
-  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = historyFile;
+  // `search` records executed queries to a local sidecar (#766). The opt-in flag
+  // is off, so nothing is written; naming a path under the hermetic home keeps
+  // that true even if a future run turns it on.
+  process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE = join(HERMETIC_ROOT, 'search-history.json');
   delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
-  t.after(async () => {
+  t.after(() => {
     delete process.env.SPOTIFY_MCP_SEARCH_HISTORY_FILE;
     delete process.env.SPOTIFY_MCP_SEARCH_HISTORY;
-    await rm(join(historyFile, '..'), { recursive: true, force: true });
   });
 
   const { call } = harness(registerSearchTools, (path) => (path === '/search' ? searchResult : null));
+  const invoke = () => call('search', { query: 'road trip', types: ['playlist'] });
 
   await t.test('prose says unknown and keeps a stated zero at 0', async () => {
-    const out = await call('search', { query: 'road trip', types: ['playlist'] });
-    assert.match(out.content[0].text, /"Empty" by Someone \(0 tracks\)/);
-    assert.match(out.content[0].text, /"Counted" by Someone \(42 tracks\)/);
-    assert.match(out.content[0].text, new RegExp(`"Uncounted" by Someone \\(${UNKNOWN_COUNT.source}\\)`));
-    assert.match(out.content[0].text, new RegExp(`"Null Page" by Someone \\(${UNKNOWN_COUNT.source}\\)`));
-    assert.doesNotMatch(out.content[0].text, /Uncounted" by Someone \(0/);
-    assert.doesNotMatch(out.content[0].text, /Null Page" by Someone \(0/);
+    const out = await invoke();
+    assertPlaylistRowProse(out.content[0].text, 'search PLAYLISTS');
   });
 
   await t.test('structuredContent keeps the two cases apart', async () => {
-    const out = await call('search', { query: 'road trip', types: ['playlist'] });
+    const out = await invoke();
     const sections = out.structuredContent?.sections as
       | Record<string, { items: Array<Record<string, unknown>> }>
       | undefined;
-    const rows = sections?.playlists?.items ?? [];
-    assert.equal((rows.find((r) => r.name === 'Empty')?.items as { total: number }).total, 0);
-    assert.equal(rows.find((r) => r.name === 'Uncounted')?.items, undefined);
-    assert.equal(rows.find((r) => r.name === 'Null Page')?.items, null);
+    assertRowsKeepTheTwoApart(sections?.playlists?.items ?? [], 'search PLAYLISTS');
   });
 });
