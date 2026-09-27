@@ -107,8 +107,63 @@ if (step === 'slow') {
   console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
   process.exit(0);
 }
+if (step === 'mutation-detected') {
+  // #1346. The exact shape the loop swallowed: the gauntlet reached the end of
+  // the batch, so it printed the banner and wrote a report it published
+  // perfectly well — and then exited 1, because its own mutation proof said
+  // MUTATIONS_DETECTED. The old guard asked for the banner to be ABSENT before
+  // it would call a non-zero exit a failure, so this reported success.
+  write('complete-batch');
+  console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
+  console.log('mutations detected: 1 (account-state diff: 4 field(s) read before and after, 0 unreadable)');
+  console.log('  MUTATED playlist_count: 12 -> 13 (observed by get_user_playlists; single unguarded mutating call in this run)');
+  console.log('mutation proof: MUTATIONS_DETECTED');
+  process.exit(1);
+}
+if (step === 'unverified') {
+  // The other status the gauntlet refuses to exit 0 on. Same swallowed shape.
+  write('complete-batch');
+  console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
+  console.log('mutations detected: 0 (account-state diff: 4 field(s) read before and after, 0 unreadable)');
+  console.log('  UNVERIFIED create_playlist: response carried no structuredContent.dry_run === true; a prose "[dry run]" is not confirmation');
+  console.log('mutation proof: UNVERIFIED');
+  process.exit(1);
+}
+if (step === 'fails-only') {
+  // The other half of what exit 1 means: 'counts.FAIL || proofBlocksExit(proof)'
+  // in live-gauntlet.mjs, so a tool that FAILED — a quota wall, a gated
+  // endpoint — also exits 1. It published a report and --resume retries those
+  // tools on a later batch, so this is a normal, resumable batch. Calling every
+  // non-zero exit a failure would break this case, which is why the guard reads
+  // the proof line rather than the exit code alone.
+  write('complete-batch');
+  console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
+  console.log('1 PASS failed / 1 failed / 2 skipped');
+  console.log('mutation proof: INCOMPLETE');
+  process.exit(1);
+}
+if (step === 'no-proof') {
+  // Banner printed, report written and published, non-zero exit — and no proof
+  // line at all, because the process died between the two. The banner says
+  // "reached the end of a batch", which is progress, not a verdict; a verdict
+  // that was never recorded is not a pass, and must not read as one.
+  write('complete-batch');
+  console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
+  process.exit(1);
+}
+if (step === 'complete-mutated') {
+  // The completion path of the same defect. The real gauntlet prints
+  // SWEEP_COMPLETE and then exits 'proofBlocksExit(completeProof) ? 1 : 0', so
+  // a sweep whose cumulative proof is MUTATIONS_DETECTED announces completion
+  // and exits 1. The loop read the marker alone and printed "SWEEP DONE".
+  console.log('SWEEP_COMPLETE: every registered tool is recorded in the report (no FAILs to retry)');
+  console.log('mutations detected: 1 (account-state diff: 4 field(s) read before and after, 0 unreadable)');
+  console.log('mutation proof: MUTATIONS_DETECTED');
+  process.exit(1);
+}
 write('complete-batch');
 console.log('batch run finished after 3 calls (0 resumed, 3 recorded this run)');
+console.log('mutation proof: INCOMPLETE');
 process.exit(0);
 `;
 
@@ -430,7 +485,7 @@ describe('sweep-loop.sh guard (#656)', () => {
     const result = box.run({ MAX_BATCHES: '30' });
 
     assert.equal(result.status, 5, result.output);
-    assert.match(result.output, /failed 3 batches running without recording a batch \(last exit=1\)/);
+    assert.match(result.output, /failed 3 batches running \(last exit=1, last failure: no report\)/);
     assert.equal(result.invocations.length, 3, 'a dead gauntlet is not retried 30 times');
     assert.equal(markerOf(box.report), 'previous-batch', 'a batch that never wrote a report must leave the published one alone');
   });
@@ -551,7 +606,7 @@ describe('sweep-loop.sh guard (#656)', () => {
       const box = sandbox(['crash']);
       const result = box.run({ MAX_BATCHES: max });
       assert.equal(result.status, 5, `MAX_BATCHES=${max} must not report a crash as resumable:\n${result.output}`);
-      assert.match(result.output, /MAX_BATCHES \(\d+\) reached with \d+ batch\(es\) running that failed to record one/, result.output);
+      assert.match(result.output, /MAX_BATCHES \(\d+\) reached with \d+ batch\(es\) running that failed \(last failure: no report\)/, result.output);
       assert.doesNotMatch(result.output, /run again later to continue/, 'the resumable message must not be printed for a failing run');
     }
 
@@ -596,9 +651,127 @@ describe('sweep-loop.sh guard (#656)', () => {
     );
     assert.match(
       threshold.output,
-      /failed 3 batches running without recording a batch \(last exit=1\); the report is left at its last complete batch/,
+      /failed 3 batches running \(last exit=1, last failure: no report\); the report is left at its last complete batch/,
       threshold.output,
     );
+  });
+
+  // #1346. The regression is anchored on the case that currently slips
+  // through — a batch that COMPLETED, banner and all — because a test that
+  // merely says "a mutation fails the loop" is worth little if it would also
+  // pass with the grep condition removed in the other direction.
+  it('fails a completed batch whose mutation proof blocks, banner present or not', () => {
+    // The old guard was `code != 0 && ! grep -q 'batch run finished'`, and the
+    // banner is printed before the report is written — so on a completed batch
+    // it is always present and the guard could never fire. MAX_BATCHES 1 puts
+    // the threshold out of reach, so this is decided entirely by whether the
+    // blocking proof fails the batch on its own.
+    const mutated = sandbox(['mutation-detected']);
+
+    const result = mutated.run({ MAX_BATCHES: '1' });
+
+    assert.equal(result.status, 5, `a detected mutation must not read as a resumable stop:\n${result.output}`);
+    assert.match(
+      result.output,
+      /recorded mutation proof MUTATIONS_DETECTED — it completed the batch \(present\) and still could not show the account was left alone/,
+      result.output,
+    );
+    assert.doesNotMatch(
+      result.output,
+      /run again later to continue/,
+      `the resumable message must not be printed for a batch that detected a mutation:\n${result.output}`,
+    );
+    // The report is the evidence and is published, not discarded: the failure
+    // is that the account was mutated, not that the loop lost the artifact.
+    assert.equal(markerOf(mutated.report), 'complete-batch', result.output);
+  });
+
+  it('fails a completed batch whose proof is UNVERIFIED, and names that status', () => {
+    const unverified = sandbox(['unverified']);
+
+    const result = unverified.run({ MAX_BATCHES: '1' });
+
+    assert.equal(result.status, 5, result.output);
+    assert.match(result.output, /recorded mutation proof UNVERIFIED — it completed the batch \(present\)/, result.output);
+  });
+
+  it('fails a completed batch that detected a mutation even when it is the last batch of the run', () => {
+    // Same verdict at MAX_BATCHES: a blocking proof must not be reported as
+    // the run's resumable stop.
+    const mutated = sandbox(['mutation-detected', 'mutation-detected']);
+
+    const result = mutated.run({ MAX_BATCHES: '2' });
+
+    assert.equal(result.status, 5, result.output);
+    assert.match(result.output, /reached with 2 batch\(es\) running that failed \(last failure: mutation proof MUTATIONS_DETECTED\)/, result.output);
+    assert.equal(result.invocations.length, 2, result.output);
+  });
+
+  it('does not read SWEEP_COMPLETE as a clean finish when the gauntlet exited non-zero', () => {
+    // The completion path of the same defect: the real gauntlet prints
+    // SWEEP_COMPLETE and then exits 'proofBlocksExit(completeProof) ? 1 : 0', so
+    // a sweep whose cumulative proof blocks announces completion and exits 1.
+    // The loop read the marker alone, so the one batch that carries the whole
+    // run's verdict was the one that could not fail.
+    const box = sandbox(['complete-mutated']);
+    seedReport(box, 'previous-batch');
+
+    const result = box.run({ MAX_BATCHES: '1' });
+
+    assert.equal(result.status, 5, `a completed-but-mutating sweep is not a clean sweep:\n${result.output}`);
+    assert.doesNotMatch(result.output, /SWEEP DONE/, result.output);
+    assert.match(
+      result.output,
+      /reported SWEEP_COMPLETE but exited 1 — every tool is recorded and its mutation proof \(MUTATIONS_DETECTED\) does not allow a claim/,
+      result.output,
+    );
+    // The completion fast path writes no report, so the last complete one stands.
+    assert.equal(markerOf(box.report), 'previous-batch', result.output);
+  });
+
+  it('still reports a completed sweep as done when the gauntlet exits 0', () => {
+    // The other direction: the fix must not turn a genuinely clean finish into
+    // a failure. A blocking proof is the discriminator, not the exit code.
+    const box = sandbox(['complete']);
+
+    const result = box.run({ MAX_BATCHES: '1' });
+
+    assert.equal(result.status, 0, result.output);
+    assert.match(result.output, /SWEEP DONE after 1 batches/, result.output);
+  });
+
+  it('keeps a completed batch whose only non-zero cause is a recorded tool FAIL resumable', () => {
+    // `counts.FAIL || proofBlocksExit(proof)` — exit 1 also means a tool FAILED
+    // (a quota wall, a gated endpoint). That batch published its report and
+    // --resume retries those tools later, which is precisely what exit 3 means.
+    // Treating every non-zero exit as a failed batch would make one bad tool
+    // count toward the three-batch threshold and stop a healthy sweep.
+    const box = sandbox(['fails-only', 'fails-only', 'fails-only', 'fails-only']);
+
+    const result = box.run({ MAX_BATCHES: '4' });
+
+    assert.equal(result.status, 3, `recorded FAILs are resumable, not a failure:\n${result.output}`);
+    assert.match(result.output, /MAX_BATCHES \(4\) reached — run again later to continue/, result.output);
+    assert.equal(result.invocations.length, 4, 'a recorded FAIL must not trip the three-batch threshold');
+  });
+
+  it('does not read a printed banner as a verdict when the proof line is missing', () => {
+    // The banner is printed before the report is written and the proof line is
+    // rendered after it, so a process killed in between leaves a log that looks
+    // like a finished batch. "Reached the end of a batch" is progress; whether
+    // the account was left alone is a separate claim, and an unrecorded one is
+    // not a pass.
+    const box = sandbox(['no-proof']);
+
+    const result = box.run({ MAX_BATCHES: '1' });
+
+    assert.equal(result.status, 5, `a batch with no recorded verdict is not a resumable pause:\n${result.output}`);
+    assert.match(
+      result.output,
+      /printed its end-of-batch banner \(present\) but no "mutation proof:" line/,
+      result.output,
+    );
+    assert.doesNotMatch(result.output, /run again later to continue/, result.output);
   });
 
   it('counts a batch that lost its report once, so the threshold really is three batches', () => {
@@ -607,7 +780,7 @@ describe('sweep-loop.sh guard (#656)', () => {
     const result = box.run({ MAX_BATCHES: '4' });
 
     assert.equal(result.status, 5, result.output);
-    assert.match(result.output, /failed 3 batches running without recording a batch \(last exit=1\)/, result.output);
+    assert.match(result.output, /failed 3 batches running \(last exit=1, last failure: no report\)/, result.output);
     assert.equal(
       result.invocations.length,
       3,
