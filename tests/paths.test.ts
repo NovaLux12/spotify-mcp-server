@@ -323,6 +323,45 @@ describe('#657 paths: writeOutputFile', () => {
     assert.equal(stats.mode & 0o777, 0o600, `an export is user-only, got ${(stats.mode & 0o777).toString(8)}`);
   });
 
+  it('tightens a PRE-EXISTING 0644 target to 0600 before writing (#1560)', async () => {
+    // The mode argument to open() is not the enforcement: it applies only when
+    // the call CREATES the file. O_TRUNC says an existing file is expected, and
+    // on an existing path the kernel ignores the mode — a 0644 target stayed
+    // 0644 while the export wrote private content into it. Creating the file
+    // through writeOutputFile (as the test above does) is the one case where
+    // the argument applies, so it cannot fail here.
+    const out = await resolveOutputPath({
+      root,
+      target: 'pre-existing.json',
+      tool: TOOL,
+      kind: 'file',
+      overwrite: true,
+    });
+    await writeFile(out.file, 'stale', 'utf8');
+    // Explicit, because the umask decides what writeFile leaves behind (0664
+    // under umask 002, 0600 under 077) — the fixture must start WIDE.
+    await chmod(out.file, 0o644);
+    // Assert the fixture before exercising the function under test, so a
+    // fixture that silently starts tight shows up as a failure to set up
+    // rather than as a mysterious pass.
+    const before = await lstat(out.file);
+    assert.equal(
+      before.mode & 0o777,
+      0o644,
+      `fixture must start at 0644, got ${(before.mode & 0o777).toString(8)} — the umask made it tighter, so this test proves nothing`,
+    );
+
+    await writeOutputFile(out.file, '{"private":true}');
+
+    const after = await lstat(out.file);
+    assert.equal(
+      after.mode & 0o777,
+      0o600,
+      `an export into a pre-existing file is still user-only, got ${(after.mode & 0o777).toString(8)}`,
+    );
+    assert.equal(await readFile(out.file, 'utf8'), '{"private":true}', 'tightening must not cost the write');
+  });
+
   it('refuses to write THROUGH a symlink, failing with ELOOP', async () => {
     // The TOCTOU gap: a link swapped in after resolveOutputPath's check must
     // not receive the export. O_NOFOLLOW is what closes it.
