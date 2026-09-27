@@ -41,7 +41,9 @@ import {
   PlaylistListFields,
   playlistListFields,
   ResponseFormat,
+  capRowSections,
   describeDryRun,
+  readNumber,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -50,7 +52,7 @@ import {
   withPlaylistInputMetadata,
   withPlaylistInputNote,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type {
   PlaylistItemObject,
   SpotifyAlbumSimple,
@@ -58,7 +60,7 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
-import { emit } from '../result.js';
+import { emit, type EmitOptions } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
 ;
@@ -67,7 +69,54 @@ type TextContent = { type: 'text'; text: string };
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
 
-/** #51/#52 shaping: json mode stringifies the payload; payload rides as structuredContent. */
+/**
+ * #51/#52 shaping: the payload rides as `structuredContent` in every mode.
+ *
+ * #895: in `json` mode this module prints a bounded summary of the payload
+ * rather than the payload — the host already has the whole object as
+ * `structuredContent`, so mirroring it charged the host twice, and these
+ * payloads carry capped section sets.
+ *
+ * This is the shared `emit`'s `jsonSummary` option rather than a module-local
+ * `shape`: a local wrapper re-implements the prose/json dispatch, which is the
+ * drift #582 exists to prevent, and `shape` is one of the names the
+ * consolidation gate counts copies of.
+ */
+const SUMMARISE_JSON: EmitOptions = { jsonSummary: summarizeSections };
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction — counts only.
+ */
+function summarizeSections(payload: Record<string, unknown>): string {
+  const sections = payload.sections as Record<string, SectionCap> | undefined;
+  if (!sections) return 'Full payload in structuredContent.';
+  const parts = Object.entries(sections).map(([key, section]) =>
+    section.unreadable
+      ? `${key} (unreadable)`
+      : `${key}: ${section.returned}/${section.total}`);
+  return `Full payload in structuredContent:\nSections: ${parts.join(', ')}.`;
+}
+
+/**
+ * One-line text for a json-mode call whose payload is a move plan (#895).
+ *
+ * Bounded by construction: counts and the metric name, never a move. The
+ * capped path already discloses withheld moves in the payload, so the summary
+ * restates the count rather than re-deriving it.
+ */
+function summarizeMoves(payload: Record<string, unknown>): string {
+  const total = readNumber(payload, 'moves_total');
+  const returned = readNumber(payload, 'moves_returned');
+  const by = typeof payload.balance_by === 'string' ? payload.balance_by : 'count';
+  const withheld = readNumber(payload, 'moves_withheld') ?? 0;
+  const plan =
+    total == null || returned == null
+      ? 'plan'
+      : `${returned}/${total} move(s) by ${by}${withheld > 0 ? `, ${withheld} withheld` : ''}`;
+  return `Full payload in structuredContent: ${plan}.`;
+}
+
 /** Field aliases used throughout this slice (same fragments, local names). */
 const ResponseFormatArgName = ResponseFormat;
 const MaxResultsArgName = MaxResults;
@@ -953,19 +1002,22 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         .filter(([, rows]) => rows.length === loaded.length)
         .sort((a, b) => a[1][0].position - b[1][0].position)
         .map(([uri, rows]) => ({ uri, name: rows[0].name, in_playlists: rows.map((r) => r.position + 1) }));
-      const view = truncateItems(common, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: the payload shipped `common` whole beside a prose block capped to
+      // `max_results`. One cap, both channels.
+      const payload = capRowSections({
         ok: true,
         playlists: loaded.map((p, i) => ({ id: p.id, name: nameOf[i], tracks: rowsPer[i].length })),
         intersection_count: common.length,
         common_tracks: common,
-      };
+      }, ['common_tracks'], cap);
+      const view = truncateItems(payload.common_tracks as typeof common, cap);
       return emit(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
         ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
         ...(common.length > 0 ? ['', 'Common:', ...view.items.map((c, i) => `  ${i + 1}. ${c.name} (${c.uri}) — present in ${c.in_playlists.length}/${loaded.length} sources`)] : []),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input), SUMMARISE_JSON);
     },
   );
 
@@ -992,20 +1044,22 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const occurrences = new Map<string, number>();
       for (const seq of seqs) for (const uri of new Set(seq)) occurrences.set(uri, (occurrences.get(uri) ?? 0) + 1);
       const uniquePer = seqs.map((seq) => [...new Set(seq)].filter((u) => occurrences.get(u) === 1).length);
-      const view = truncateItems(union, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: the payload shipped the whole union beside a capped prose block.
+      const payload = capRowSections({
         ok: true,
         playlists: loaded.map((p, i) => ({ id: p.id, name: nameOf[i], tracks: seqs[i].length, unique: uniquePer[i] })),
         union_count: union.length,
         union_uris: union,
-      };
+      }, ['union_uris'], cap);
+      const view = truncateItems(payload.union_uris as string[], cap);
       return emit(rf, withPlaylistInputNote([
         `Union preview of ${loaded.length} playlists: ${union.length} distinct track(s) (read-only).`,
         ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
         '',
         ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input), SUMMARISE_JSON);
     },
   );
 
@@ -1169,8 +1223,10 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         .sort((a, b) => a[1][0] - b[1][0])
         .map(([uri, positions]) => ({ uri, positions }));
       const excess = groups.reduce((n, g) => n + g.positions.length - 1, 0);
-      const view = truncateItems(groups, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: both plans shipped whole beside a capped prose block. They are
+      // the same rows as `groups`, capped once, independently of each other.
+      const payload = capRowSections({
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
@@ -1178,12 +1234,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         excess_copies: excess,
         keep_first_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(1) })),
         keep_last_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(0, -1) })),
-      };
+      }, ['keep_first_plan', 'keep_last_plan'], cap);
+      const view = truncateItems(groups, cap);
       return emit(rf, [
         `"${p.name ?? p.id}" duplicates: ${groups.length} group(s), ${excess} excess cop(ies).`,
         ...view.items.map((g, i) => `  ${i + 1}. ${g.uri} at positions ${g.positions.map((p) => p + 1).join(', ')}`),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1694,21 +1751,25 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const distinct = contributors.size;
       const verdict = distinct <= 1 ? 'SOLO' : distinct <= 3 ? 'LIGHT COLLAB' : 'HEAVY COLLAB';
-      const batchView = truncateItems(batches, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: `batchView` was computed for the prose and then ignored — the
+      // payload carried every batch, so one long journal scaled the response
+      // with the playlist while the sentence beside it promised a cap.
+      const payload = capRowSections({
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
         batches,
         contributors: Object.fromEntries([...contributors.entries()].sort((a, b) => b[1] - a[1])),
         verdict,
-      };
+      }, ['batches'], cap);
+      const batchView = truncateItems(payload.batches as typeof batches, cap);
       return emit(rf, [
         `Edit journal for "${p.name ?? p.id}" — ${batches.length} add-batch(es), ${rows.length} item(s). Verdict: ${verdict}.`,
         ...batchView.items.map((b, i) => `  ${i + 1}. ${b.date}: +${b.added} (positions ${b.first_position}+) by ${b.by.join(', ')}`),
         batchView.footer ? `  (${batchView.footer})` : '',
         `  Contributors: ${[...contributors.entries()].sort((a, b) => b[1] - a[1]).map(([who, n]) => `${who} (${n})`).join(', ')}`,
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1898,7 +1959,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
           moveView.footer ? `(${moveView.footer})` : '',
-        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves: movesPayload, ...moveDisclosure }, input));
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves: movesPayload, ...moveDisclosure }, input), { jsonSummary: summarizeMoves });
       }
       // BACKUP-FIRST per donating playlist, then delete positions DESCENDING so each
       // chunk's positions stay valid, then append to receivers.
@@ -1986,6 +2047,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           backup_files: backupFiles,
           receipts: receiptRecords(allReceipts),
         }, input),
+        { jsonSummary: summarizeMoves },
       );
     },
   );

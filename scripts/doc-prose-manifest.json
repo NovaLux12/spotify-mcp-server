@@ -1877,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "d31c370da5da0cbe",
+        "hash": "6a3623334baae931",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1889,8 +1889,12 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "46c5ce02d1cbde05",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
+      },
+      {
+        "hash": "d6f6074447d29264",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -2025,36 +2029,12 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "64174ad41209825a",
-        "label": "getqueue Read the playback queue. This and peeknext are …"
+        "hash": "f893bbcb5997f4c8",
+        "label": "getqueue Get the current playback queue."
       },
       {
-        "hash": "089c51ca39b529c4",
-        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
-      },
-      {
-        "hash": "5f92ff11ed9c5f03",
-        "label": "Quota: exactly one GET /me/player/queue per call, whatev…"
-      },
-      {
-        "hash": "93342f1083c07fd2",
+        "hash": "fd7e8cfa2ec64fa8",
         "label": "Returns: currently playing item, plus the up-next list (…"
-      },
-      {
-        "hash": "93919fcf18191b1e",
-        "label": "runtime.currenttrackremainingms needs a second endpoint.…"
-      },
-      {
-        "hash": "63445fa3d53d8b36",
-        "label": "peeknext Short lookahead at the queue: the next N items …"
-      },
-      {
-        "hash": "5cb52c2779a8f8e2",
-        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
-      },
-      {
-        "hash": "3c2e2b5b300cef1a",
-        "label": "Quota: 1 read. The per-item ETA the retired predictnextt…"
       },
       {
         "hash": "b74cd36a3aecdf2c",
@@ -3293,7 +3273,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "1be10212b9eb890c",
+        "hash": "44d504557c677700",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -3613,20 +3593,44 @@
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
       },
       {
-        "hash": "971ef07e9042ca4a",
-        "label": "5.15 Queue-read migration (#847)"
+        "hash": "01c495efa531b454",
+        "label": "5.15 Mood expansion (expandmoodtoqueries, #598)"
       },
       {
-        "hash": "99735d4ceb7d6401",
-        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
+        "hash": "4d56cdccd07154a9",
+        "label": "One tool in the moodexpand module. It is alwaysActive (r…"
       },
       {
-        "hash": "506b2b63abfcd761",
-        "label": "| Retired name | Call that replaces it | What moved | |-…"
+        "hash": "f014981c3c143b6a",
+        "label": "Inputs: mood (string, required, ≥1 char — free text, e.g…"
       },
       {
-        "hash": "0d718e4d575069af",
-        "label": "These six are deliberately NOT reachable through SPOTIFY…"
+        "hash": "febc8be672c9ea3c",
+        "label": "Two paths, one output shape. The tool returns { mood, so…"
+      },
+      {
+        "hash": "1acdd257c113ca3d",
+        "label": "| source | When | model / attempts | |---|---|---| | \"sa…"
+      },
+      {
+        "hash": "4f1eba0856af7a2c",
+        "label": "Why the gate is this server's own. In SDK 1.30 Server.cr…"
+      },
+      {
+        "hash": "6931562532ce61fe",
+        "label": "The model contract. One createMessage per attempt, maxTo…"
+      },
+      {
+        "hash": "eada901b8aea5acd",
+        "label": "Failures are structured, and never a guess. An unreadabl…"
+      },
+      {
+        "hash": "c9c35701a78635ce",
+        "label": "The static map is a fallback, not a stand-in. MOODEXPANS…"
+      },
+      {
+        "hash": "58b6a5c1df2a3e34",
+        "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -3645,8 +3649,8 @@
         "label": "A fixed resource that reads a paged endpoint accepts its…"
       },
       {
-        "hash": "ee57237e3d75af26",
-        "label": "Each parameterised resource registers three entries, not…"
+        "hash": "88447ec01ecbe698",
+        "label": "Each parameterised resource registers two entries, not o…"
       },
       {
         "hash": "0c44ce16df872864",
@@ -3665,12 +3669,12 @@
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "32f6226ccd12e7a5",
+        "hash": "571f5e33b7546f6a",
         "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "fd63592042568bb1",
-        "label": "The {+qs} twin is the catch-all for query strings this s…"
+        "hash": "ec9547275c52004a",
+        "label": "A catch-all twin was the wrong way to absorb a query str…"
       },
       {
         "hash": "dba777829aa263b2",
@@ -3697,7 +3701,7 @@
         "label": "limit is bounded to 1–50 and offset to ≥0 before forward…"
       },
       {
-        "hash": "f4ada5ba1d8690a5",
+        "hash": "8338d74b1e7ef4f2",
         "label": "Normalising silently is a reason to publish the bound, s…"
       },
       {
@@ -3713,8 +3717,8 @@
         "label": "| Template | Endpoint | Parameters | |---|---|---| | spo…"
       },
       {
-        "hash": "7a1d95f8d80f8908",
-        "label": "The chapters pair registers before the bare audiobook pa…"
+        "hash": "e95b22038ccb22af",
+        "label": "These two shapes no longer compete, so their order carri…"
       },
       {
         "hash": "d7ba81d3e4062a7f",
@@ -3741,7 +3745,7 @@
         "label": "It renders id, name, type, isactive and volumepercent th…"
       },
       {
-        "hash": "f0bf0983efcc2748",
+        "hash": "87e02589ab499f7e",
         "label": "The endpoint takes no query parameters (the OpenAPI sche…"
       },
       {
@@ -5375,17 +5379,17 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "15958b39063cb1d3",
-      "label": "| Retired name | Call that replaces it | What moved | |-…",
-      "date": "2026-09-27",
-      "reason": "#847 corrected the describe_queue row of the migration table after its behaviour probe showed three of that tool's fields with no counterpart in get_queue: queue_length, insertion and workaround. The row had said only 'context_label and total_remaining_ms', which reads as 'everything else moved' and is not what the probe found. The three are named so the omission is on the page."
-    },
-    {
-      "file": "SPEC.md",
       "hash": "19fcf320a679a642",
       "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
       "date": "2026-09-27",
       "reason": "reworded by #889/#607/#908: the curated-default surface, the stats.fm opt-in and the retired taste_* aliases changed these paragraphs; the prose is present in its new form"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "1be10212b9eb890c",
+      "label": "Returns: display name, user ID, URI, profile image URL, …",
+      "date": "2026-09-27",
+      "reason": "reworded by #1468: get_user_profile's Returns said a 403 'names the grandfathering requirement', which was the prescription #1468 removes; the replacement records the older-registration question as unverified and adds that no endpoint replaced /users/{id}"
     },
     {
       "file": "SPEC.md",
@@ -5403,10 +5407,24 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "32f6226ccd12e7a5",
+      "label": "Before #1401 the server routed around this by depending …",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "455ba684a6f018a0",
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
       "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "46c5ce02d1cbde05",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
     },
     {
       "file": "SPEC.md",
@@ -5421,6 +5439,13 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "7a1d95f8d80f8908",
+      "label": "The chapters pair registers before the bare audiobook pa…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5473,6 +5498,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "d31c370da5da0cbe",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5508,6 +5540,27 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "ee57237e3d75af26",
+      "label": "Each parameterised resource registers three entries, not…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f0bf0983efcc2748",
+      "label": "The endpoint takes no query parameters (the OpenAPI sche…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f4ada5ba1d8690a5",
+      "label": "Normalising silently is a reason to publish the bound, s…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "f6c48865c9488f32",
       "label": "The {?…} template is still registered and still earns it…",
       "date": "2026-09-27",
@@ -5515,17 +5568,10 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "f893bbcb5997f4c8",
-      "label": "getqueue Get the current playback queue.",
+      "hash": "fd63592042568bb1",
+      "label": "The {+qs} twin is the catch-all for query strings this s…",
       "date": "2026-09-27",
-      "reason": "#847 rewrote the get_queue section of SPEC.md. The two pinned paragraphs read 'Get the current playback queue.' and 'Returns: currently playing item, plus the up-next list (...)', which described a tool that did one thing; get_queue now also carries the view/enriched context label and the runtime, duplicate and profile analyses, so both sentences are replaced by the view/include contract in the same section. These pins were lost by the merge from origin/main, which still carries the pre-#847 manifest; the retirement itself was recorded by the #847 prose sync."
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "fd7e8cfa2ec64fa8",
-      "label": "Returns: currently playing item, plus the up-next list (…",
-      "date": "2026-09-27",
-      "reason": "#847 rewrote the get_queue section of SPEC.md. The two pinned paragraphs read 'Get the current playback queue.' and 'Returns: currently playing item, plus the up-next list (...)', which described a tool that did one thing; get_queue now also carries the view/enriched context label and the runtime, duplicate and profile analyses, so both sentences are replaced by the view/include contract in the same section. These pins were lost by the merge from origin/main, which still carries the pre-#847 manifest; the retirement itself was recorded by the #847 prose sync."
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5536,8 +5582,8 @@
     }
   ],
   "provenance": {
-    "head": "70ba245bbe0a35562e6372be82be83e49543abb0",
-    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
+    "head": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
+    "upstream": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
     "behind": false
   }
 }

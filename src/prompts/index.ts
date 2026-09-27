@@ -52,6 +52,28 @@ function standardFooter(resourceHints: boolean): string {
   return `If any read returns empty (0 tracks/artists/playlists), report it explicitly and suggest a fallback instead of presenting an empty list. ${rateLimit} — never fail the whole task for one missing step. Validate user-supplied strings (dates as YYYY-MM-DD, playlist names by resolving via get_user_playlists) and ask for clarification rather than guessing.`;
 }
 
+/**
+ * The shared first step for the four mood-curation prompts (#598).
+ *
+ * `moodExpression` is the literal `mood=` value the caller passes — the
+ * prompt's own argument where it has one, and a phrase the host model writes
+ * for itself in `dj`, which takes no mood argument. Keeping the clause in one
+ * place is the point: four prompts each naming the tool in their own words is
+ * how they drift, and the third one to be reworded is the one an agent ends up
+ * trusting least.
+ *
+ * The clause states both outcomes rather than promising one. The tool takes
+ * the sampling path on a host that advertises that capability and the static
+ * map otherwise, and `structuredContent.source` says which — so a prompt that
+ * described only the good path would be describing a host this server cannot
+ * promise. The `isError` sentence matters for the same reason: the tool
+ * refuses to invent a substitute when the model reply is unreadable, and a
+ * prompt that then quietly invented one would undo that.
+ */
+function moodExpansionClause(moodExpression: string): string {
+  return `Begin with expand_mood_to_queries(mood=${moodExpression}) and build your searches from the genres and keywords it returns, honouring its exclude list. It uses the host model when the host advertises the sampling capability and a built-in map otherwise; structuredContent.source says which, and source=static_map with matched=false means it has no row for that mood. If it returns isError, do not substitute a guess — say so and pick your own search terms.`;
+}
+
 export interface PromptRegistrationOptions {
   /**
    * Whether the `resources` MCP surface is registered in this session (#715).
@@ -89,6 +111,7 @@ export function registerPrompts(server: McpServer, options: PromptRegistrationOp
           type: 'text',
           text: [
             'Act as a DJ. Use get_top_artists and get_recently_played to understand my music taste and what I have been listening to lately.',
+            moodExpansionClause('"the vibe you are playing to"'),
             'Then use search with combined genre/mood/artist queries (types=["track"], limit 10 per call, 2–3 broad queries rather than one per track) to find 5–10 tracks that fit the vibe.',
             'Queue them with batch_add_to_queue in one call (or preview first with batch_add_to_queue(dry_run=true) / add_to_queue(dry_run=true)).',
             'If get_top_artists or search returns empty, fall back to recently-played seed artists and report what was missing.',
@@ -115,7 +138,7 @@ export function registerPrompts(server: McpServer, options: PromptRegistrationOp
         role: 'user',
         content: {
           type: 'text',
-          text: `Create a playlist for this mood: "${args.mood}". Use up to 6 search_deep calls with combined keywords, artists, and genres (types=["track"], pages 2 — two 10-result pages per call) to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found. IMPORTANT: preview the plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. If search_deep returns 0 results, report it and suggest a broader mood. ${footer}`,
+          text: `Create a playlist for this mood: "${args.mood}". ${moodExpansionClause(`"${args.mood}"`)} Use up to 6 search_deep calls with combined keywords, artists, and genres (types=["track"], pages 2 — two 10-result pages per call) to find 15–20 tracks that fit the vibe. Then use create_playlist to make a new playlist with a fitting name and description, and add_to_playlist to fill it with the tracks you found. IMPORTANT: preview the plan with create_playlist(dry_run=true) and add_to_playlist(dry_run=true) before committing. If search_deep returns 0 results, report it and suggest a broader mood. ${footer}`,
         },
       }],
     }),
@@ -174,7 +197,7 @@ export function registerPrompts(server: McpServer, options: PromptRegistrationOp
         role: 'user',
         content: {
           type: 'text',
-          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites, then use search_deep (types=["track"], pages 2 — two 10-result pages per call, 2–3 broad combined genre/mood/artist queries rather than one search per target track) to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. If combined searches yield <${args.size} candidates after exclusions, issue one more broadened search or paginate the most promising query (offset=20) and report if you could only find N < ${args.size} fresh picks and why. Flag region-unavailable/null items. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them. ${footer}`,
+          text: `Generate a personalised discovery list of ${args.size} songs for me. Use get_top_tracks (short_term) and get_recently_played to learn my recent favourites. ${moodExpansionClause('"the energy and mood range around those favourites"')} Then use search_deep (types=["track"], pages 2 — two 10-result pages per call, 2–3 broad combined genre/mood/artist queries rather than one search per target track) to find ${args.size} lesser-known tracks in the same artistic space — dig beyond each favourite artist's biggest hits (deep cuts, B-sides, similar smaller artists). IMPORTANT: explicitly exclude every track that appears in my top tracks or recently played, and skip each artist's most-streamed signature songs so the picks feel fresh. If combined searches yield <${args.size} candidates after exclusions, issue one more broadened search or paginate the most promising query (offset=20) and report if you could only find N < ${args.size} fresh picks and why. Flag region-unavailable/null items. Focus on variety — mix up energy levels and moods while staying within my taste. Present the list with track names, artists, and URIs so I can play them. ${footer}`,
         },
       }],
     });
@@ -361,7 +384,7 @@ export function registerPrompts(server: McpServer, options: PromptRegistrationOp
     };
   });
   server.prompt('crate_digging', 'Crate dig deep cuts for your top artists.', { depth: z.coerce.number().int().positive().max(5).optional().describe('Deep cuts per artist (default 3)') }, async (rawArgs) => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for up to 5 artists from get_top_artists (short_term) — if fewer than 5, dig only the ones available and note the shortfall — find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts per artist. Use get_artist_top_tracks to identify hits to skip in one call per artist, then use 1–2 broad search_deep queries (types=["track"], pages 2 — two 10-result pages per call) covering multiple artists/genres rather than one per deep cut, plus get_artist_albums and get_album_tracks (limit 50, paginate if needed) to surface deep cuts. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing. If per-artist searches return 0 deep cuts, report it and suggest broadening. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s for an artist, skip just that artist's hit-skip step and rely on get_artist_albums + get_album_tracks ordering for the same signal; do not abort the whole dig. ${footer}` } }],
+    messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for up to 5 artists from get_top_artists (short_term) — if fewer than 5, dig only the ones available and note the shortfall — find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts per artist. Use get_artist_top_tracks to identify hits to skip in one call per artist, ${moodExpansionClause('"the sound you are digging for"')} then use 1–2 broad search_deep queries (types=["track"], pages 2 — two 10-result pages per call) covering multiple artists/genres rather than one per deep cut, plus get_artist_albums and get_album_tracks (limit 50, paginate if needed) to surface deep cuts. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing. If per-artist searches return 0 deep cuts, report it and suggest broadening. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s for an artist, skip just that artist's hit-skip step and rely on get_artist_albums + get_album_tracks ordering for the same signal; do not abort the whole dig. ${footer}` } }],
   }));
 
   // triage_liked_songs — walk the saved-tracks backlog into bucket

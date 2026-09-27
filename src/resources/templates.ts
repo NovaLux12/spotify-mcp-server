@@ -1,11 +1,25 @@
 /**
  * RFC-6570 resource templates over single-get catalog endpoints (#111,
- * pattern 2). Mirrors the house style of src/resources/index.ts: every
- * template is registered twice — a bare pattern (matches exact-shape URIs)
- * and a `{+qs}` twin that absorbs any query string, because form-style
- * operators like `{?market}` only match when the parameter is present.
- * One renderer per resource; `wantsJson` picks prose vs raw JSON
- * (`?format=json`, #59).
+ * pattern 2).
+ *
+ * **One template per URI shape (#685).** Each entity used to be registered
+ * twice — a bare pattern plus a `{+qs}` catch-all twin — and the bare pattern
+ * could not match a URI carrying a query string while the twin could not be
+ * told apart from it, so this file advertised 20 entries for 10 URI shapes
+ * and every one of the bare entries was shadowed by its own twin for the bare
+ * URI. One template per shape now carries the whole parameter set in a
+ * trailing form-style expression, which RFC 6570 §3.2.8 expands to the empty
+ * string when nothing is defined, so the same entry serves
+ * `spotify://artist/x1`, `spotify://artist/x1?format=json` and
+ * `spotify://artist/x1?market=GB`.
+ *
+ * One renderer per resource, registered once; `wantsJson` picks prose vs raw
+ * JSON (`?format=json`, #59), and every renderer parses its own query string
+ * from the raw href rather than from the match variables.
+ *
+ * Registration order is no longer a correctness property and nothing in this
+ * file depends on it — see `src/resources/register.ts` for why, and
+ * `tests/resources-template-dedup.test.ts` for the test that holds it.
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -58,6 +72,9 @@ function wantsJson(url: URL): boolean {
 const ARTIST_ALBUMS_PAGE_LIMIT = 10;
 const ARTIST_ALBUMS_MAX_PAGES = 5;
 
+/** The `?market` contract, stated once and attached to every template taking it. */
+const MARKET_PARAM_NOTE = 'Parameters: ?market (ISO 3166-1 alpha-2), ?format=json.';
+
 export function registerTemplateResources(server: McpServer, client: SpotifyClient): void {
   /**
    * Argument completions (#111): for templates whose {id} space is cheaply
@@ -85,58 +102,56 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
   };
 
   /**
-   * Register `render` at `pattern` and at its `{+qs}` query-absorbing twin.
+   * Register ONE template for `pattern` (#685), carrying every query parameter
+   * the renderer reads in a trailing form-style expression.
    *
-   * `paramNote` (#603) is appended to BOTH descriptions. The acceptance
-   * criterion is that each new resource declares its parameter set in the
-   * description, and the `{+qs}` twin is a distinct entry in
-   * `resources/templates/list` — a host reading the twin's description is
-   * reading the only description attached to that entry, so a parameter set
-   * that lives only on the bare entry does not reach them.
+   * The expression is compiled by `Rfc6570UriTemplate`, so the entry matches
+   * exactly the concrete URIs RFC 6570 says the template expands to: the
+   * declared parameters in declaration order, any subset of them, undeclared
+   * pairs allowed between, and the empty string — hence the bare URI — when
+   * nothing is defined. That is what lets a single entry replace the bare
+   * pattern and its `{+qs}` twin without closing a door: a typo, an undeclared
+   * parameter, or a declared one sent in an order the template does not expand
+   * to still routes, and a *path* difference (`spotify://artist/x1/albums`
+   * against `spotify://artist/{id}`, or `spotify://me/saved/tracksX` against
+   * `spotify://me/saved/tracks`) still matches nothing.
+   *
+   * `paramNote` (#603) is the parameter set as prose. There is now exactly one
+   * entry in `resources/templates/list` per entity, so this description is the
+   * only one a host reads for it.
    */
-  const registerTemplatePair = (
+  const registerTemplate = (
     name: string,
     pattern: string,
     description: string,
     render: (rawUrl: string) => Promise<ResourceContents>,
-    completeId?: () => Promise<string[]>,
-    paramNote?: string,
+    options: {
+      /** Query parameters the renderer reads, beyond `?format`. */
+      query?: readonly string[];
+      /** `{id}` argument completion, for ids cheap to enumerate (#111). */
+      completeId?: () => Promise<string[]>;
+      paramNote?: string;
+    } = {},
   ): void => {
-    const templateOpts = completeId
+    const query = ['format', ...(options.query ?? [])];
+    const templateOpts: ConstructorParameters<typeof ResourceTemplate>[1] = options.completeId
       ? {
-          list: undefined as undefined,
-          complete: {
-            id: async (): Promise<string[]> => completeId(),
-          },
+          list: undefined,
+          complete: { id: async (): Promise<string[]> => (options.completeId as () => Promise<string[]>)() },
         }
-      : ({ list: undefined } as const);
-    const suffix = paramNote ? ` ${paramNote}` : '';
-    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description: `${description}${suffix}`, mimeType: 'text/plain' }, async (uri: URL) =>
-      render(uri.href),
-    );
+      : { list: undefined };
+    const suffix = options.paramNote ? ` ${options.paramNote}` : '';
     server.resource(
-      `${name}-query`,
-      new ResourceTemplate(new Rfc6570UriTemplate(`${pattern}{+qs}`), { list: undefined }),
-      {
-        description: `Query-string variant of ${pattern}${suffix}`,
-        mimeType: 'text/plain',
-      },
+      name,
+      new ResourceTemplate(new Rfc6570UriTemplate(`${pattern}{?${query.join(',')}}`), templateOpts),
+      { description: `${description}${suffix}`, mimeType: 'text/plain' },
       async (uri: URL) => render(uri.href),
     );
   };
 
-  // Registration ORDER still matters here — the SDK matches read requests
-  // against templates in insertion order — but it is no longer load-bearing for
-  // correctness. `spotify://artist/{id}{+qs}` used to compile to a bare `(.+)`,
-  // so it would swallow `spotify://artist/{id}/albums` and the more specific
-  // pattern only won because the nested pair was registered first. #1401
-  // anchors the `{+qs}` matcher to a real query string, so the nested entry
-  // wins on its own; registering it first is kept as defence in depth, not
-  // because the order repairs the match.
-
   // spotify://artist/{id}/albums — GET /artists/{id}/albums?limit=10, walked
   // client-side up to ARTIST_ALBUMS_MAX_PAGES pages (Feb-2026 page cap).
-  registerTemplatePair(
+  registerTemplate(
     'artist-albums',
     'spotify://artist/{id}/albums',
     "An artist's albums (first 5×10 via the Feb-2026 page cap; '?format=json' returns the aggregated payload)",
@@ -182,11 +197,12 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       }
       return text(uri, body);
     },
+    { paramNote: 'Parameters: ?format=json.' },
   );
 
   // spotify://artist/{id} — GET /artists/{id}. Feb-2026 artist payloads carry
   // no genres; prose sticks to name/ID/URI.
-  registerTemplatePair(
+  registerTemplate(
     'artist',
     'spotify://artist/{id}',
     "An artist's profile ('?format=json' returns the raw API object)",
@@ -201,10 +217,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       if (wantsJson(url)) return json(uri, artist);
       return text(uri, `Artist: ${artist.name}\nID: ${artist.id}\nURI: ${artist.uri}`);
     },
+    { paramNote: 'Parameters: ?format=json.' },
   );
 
   // spotify://album/{id} — GET /albums/{id}
-  registerTemplatePair(
+  registerTemplate(
     'album',
     'spotify://album/{id}',
     "An album's details including its track listing ('?format=json' returns the raw API object)",
@@ -233,10 +250,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       }
       return text(uri, lines.join('\n'));
     },
+    { paramNote: 'Parameters: ?format=json.' },
   );
 
   // spotify://show/{id} — GET /shows/{id}; optional ?market passthrough.
-  registerTemplatePair(
+  registerTemplate(
     'show',
     'spotify://show/{id}',
     "A podcast show's details ('?market=US' narrows availability; '?format=json' returns the raw API object)",
@@ -259,11 +277,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       ].filter((line) => line !== '');
       return text(uri, lines.join('\n'));
     },
-    () => savedIdSuggestions('/me/shows', (r) => r.show?.id, 10),
+    { query: ['market'], completeId: () => savedIdSuggestions('/me/shows', (r) => r.show?.id, 10), paramNote: MARKET_PARAM_NOTE },
   );
 
   // spotify://track/{id} — GET /tracks/{id} (?market passthrough)
-  registerTemplatePair(
+  registerTemplate(
     'track',
     'spotify://track/{id}',
     "A track's details ('?market=US' passthrough; '?format=json' returns raw API object)",
@@ -281,10 +299,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       const artists = ((track.artists as Array<{ name: string }>) ?? []).map((a) => a.name).join(', ');
       return text(uri, `Track: "${name}" by ${artists}\nID: ${id}\nURI: ${(track.uri as string) ?? `spotify:track:${id}`}`);
     },
+    { query: ['market'], paramNote: MARKET_PARAM_NOTE },
   );
 
   // spotify://playlist/{id} — GET /playlists/{id} + health sample
-  registerTemplatePair(
+  registerTemplate(
     'playlist',
     'spotify://playlist/{id}',
     "A playlist's metadata + health badge ('?format=json' returns raw API object)",
@@ -305,10 +324,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
         : 'unknown';
       return text(uri, `Playlist: "${name}" by ${owner}\nID: ${id}\nURI: ${(pl.uri as string) ?? `spotify:playlist:${id}`}\nTracks: ${total}`);
     },
+    { paramNote: 'Parameters: ?format=json.' },
   );
 
   // spotify://episode/{id} — GET /episodes/{id}; optional ?market passthrough.
-  registerTemplatePair(
+  registerTemplate(
     'episode',
     'spotify://episode/{id}',
     "A podcast episode's details ('?market=US' narrows availability; '?format=json' returns the raw API object)",
@@ -338,7 +358,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       lines.push(`ID: ${episode.id}\nURI: ${episode.uri}`);
       return text(uri, lines.join('\n'));
     },
-    () => savedIdSuggestions('/me/episodes', (r) => r.episode?.id, 10),
+    { query: ['market'], completeId: () => savedIdSuggestions('/me/episodes', (r) => r.episode?.id, 10), paramNote: MARKET_PARAM_NOTE },
   );
 
   // ---------------------------------------------------------------- audiobooks
@@ -346,11 +366,9 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
   // had nothing, so an audiobook-first host could not get one page of a book
   // without spending a tool call. These three close that gap.
   //
-  // Registration order is kept for the same reason artist-albums is registered
-  // before artist, but is no longer load-bearing: since #1401 the bare
-  // audiobook pair's `{+qs}` twin requires a real query string, so
-  // `spotify://audiobook/<id>{+qs}` no longer swallows
-  // `spotify://audiobook/<id>/chapters`. The nested pair still goes first.
+  // `spotify://audiobook/{id}` and `spotify://audiobook/{id}/chapters` are two
+  // distinct shapes of the same entity and are registered as two disjoint
+  // templates, so neither can shadow the other whatever order they go in.
 
   // Bounded page size for the chapters list. GET /audiobooks/{id}/chapters
   // takes limit/offset (verified against the Feb-2026 OpenAPI schema: limit
@@ -359,7 +377,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
   const CHAPTER_PAGE_MAX = 50;
 
   // spotify://audiobook/{id}/chapters — GET /audiobooks/{id}/chapters
-  registerTemplatePair(
+  registerTemplate(
     'audiobook-chapters',
     'spotify://audiobook/{id}/chapters',
     `One page of an audiobook's chapters ('?format=json' returns the raw paged object).${AUDIOBOOK_MARKET_NOTE}`,
@@ -398,12 +416,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
         : '';
       return text(uri, `${header}\n${lines.join('\n')}${footer}`);
     },
-    undefined,
-    'Parameters: ?market (ISO 3166-1 alpha-2), ?limit (1–50, default 20), ?offset (default 0), ?format=json.',
+    { query: ['market', 'limit', 'offset'], paramNote: 'Parameters: ?market (ISO 3166-1 alpha-2), ?limit (1–50, default 20), ?offset (default 0), ?format=json.' },
   );
 
   // spotify://audiobook/{id} — GET /audiobooks/{id}; optional ?market.
-  registerTemplatePair(
+  registerTemplate(
     'audiobook',
     'spotify://audiobook/{id}',
     "An audiobook's details including its embedded chapter preview ('?format=json' returns the raw API object)",
@@ -424,12 +441,11 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       // the two surfaces share one renderer rather than re-reading the fields.
       return text(uri, audiobookDetailLines(audiobook).join('\n'));
     },
-    () => savedIdSuggestions('/me/audiobooks', (r) => r.audiobook?.id, 10),
-    'Parameters: ?market (ISO 3166-1 alpha-2), ?format=json.',
+    { query: ['market'], completeId: () => savedIdSuggestions('/me/audiobooks', (r) => r.audiobook?.id, 10), paramNote: MARKET_PARAM_NOTE },
   );
 
   // spotify://chapter/{id} — GET /chapters/{id}; optional ?market.
-  registerTemplatePair(
+  registerTemplate(
     'chapter',
     'spotify://chapter/{id}',
     "An audiobook chapter's details ('?format=json' returns the raw API object)",
@@ -448,10 +464,13 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       if (wantsJson(url)) return json(uri, chapter);
       return text(uri, chapterDetailLines(chapter).join('\n'));
     },
-    // Chapter IDs are not enumerable from the library listing — /me/audiobooks
-    // yields audiobook ids — so this template has no suggester. An audiobook's
-    // chapter ids are reachable through spotify://audiobook/{id}/chapters.
-    undefined,
-    'Parameters: ?market (ISO 3166-1 alpha-2), ?format=json.',
+    {
+      query: ['market'],
+      // Chapter IDs are not enumerable from the library listing —
+      // /me/audiobooks yields audiobook ids — so this template has no
+      // suggester. An audiobook's chapter ids are reachable through
+      // spotify://audiobook/{id}/chapters.
+      paramNote: MARKET_PARAM_NOTE,
+    },
   );
 }

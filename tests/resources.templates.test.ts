@@ -1,7 +1,7 @@
 /**
  * Tests for src/resources/templates.ts (#111 pattern 2):
  *
- *  - template registration inventory (5 base patterns + {+qs} twins)
+ *  - template registration inventory (10 URI shapes, one template each, #685)
  *  - URI parsing: valid ids route to the right API path; malformed URIs error
  *  - prose vs ?format=json rendering per template through real SDK routing
  *  - artist-albums pagination respects the Feb-2026 cap (limit=10/page,
@@ -120,33 +120,27 @@ async function connect(client: SpotifyClient): Promise<Client> {
 
 // ------------------------------------------------------- registration list
 
-test('registers 11 catalog templates plus their {+qs} query twins', async () => {
+test('registers 10 catalog templates, one per entity shape and none of them a {+qs} twin (#685)', async () => {
   const { client } = makeClientStub();
   const mcp = await connect(client);
   const templates = await mcp.listResourceTemplates();
   const uris = templates.resourceTemplates.map((t) => t.uriTemplate).sort();
 
+  // #685: the `{?…}` expression is the query-absorbing form, so one template
+  // per shape absorbs `?format=json` and any declared parameter without a
+  // second registration shadowing the first.
   assert.deepEqual(uris, [
-    'spotify://album/{id}',
-    'spotify://album/{id}{+qs}',
-    'spotify://artist/{id}',
-    'spotify://artist/{id}/albums',
-    'spotify://artist/{id}/albums{+qs}',
-    'spotify://artist/{id}{+qs}',
-    'spotify://audiobook/{id}',
-    'spotify://audiobook/{id}/chapters',
-    'spotify://audiobook/{id}/chapters{+qs}',
-    'spotify://audiobook/{id}{+qs}',
-    'spotify://chapter/{id}',
-    'spotify://chapter/{id}{+qs}',
-    'spotify://episode/{id}',
-    'spotify://episode/{id}{+qs}',
-    'spotify://playlist/{id}',
-    'spotify://playlist/{id}{+qs}',
-    'spotify://show/{id}',
-    'spotify://show/{id}{+qs}',
-    'spotify://track/{id}',
-    'spotify://track/{id}{+qs}',
+    'spotify://album/{id}{?format}',
+    'spotify://artist/{id}/albums{?format}',
+    'spotify://artist/{id}{?format}',
+    'spotify://audiobook/{id}/chapters{?format,market,limit,offset}',
+    'spotify://audiobook/{id}{?format,market}',
+
+    'spotify://chapter/{id}{?format,market}',
+    'spotify://episode/{id}{?format,market}',
+    'spotify://playlist/{id}{?format}',
+    'spotify://show/{id}{?format,market}',
+    'spotify://track/{id}{?format,market}',
   ]);
   assert.ok(templates.resourceTemplates.every((template) => template.mimeType === 'text/plain'));
 });

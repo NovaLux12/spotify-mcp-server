@@ -233,8 +233,24 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
-    // #847 retired six queue readers from this toolset, so 106 became 100.
-    assert.equal(playback.toolCount, 100, 'the playback surface itself must not change');
+    // Two deltas land on this number, from opposite directions, and the
+    // comment has to carry both or the next reader attributes it to the wrong
+    // one.
+    //
+    // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
+    // registers under every toolset — the `prompts` set is in the default
+    // install and the four mood prompts name this tool, and a prompt naming a
+    // tool the surface trimmed is what `prompt-resource-hints` fails on. The
+    // cost of that choice is visible right here: an `alwaysActive` module
+    // lands in EVERY trimmed surface, not only the default one. Stated rather
+    // than absorbed, because the next person to add a helper will hit the same
+    // number and should know they will.
+    //
+    // 107 -> 101 (#847): six queue readers collapsed into `get_queue` and
+    // `peek_next`. The retired names still forward for one release, so the
+    // tools a caller can name did not shrink by six — the registrations did,
+    // and this is the count of registrations.
+    assert.equal(playback.toolCount, 101, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -285,8 +301,12 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    // #847 retired six queue readers, so 570 became 564.
-    assert.equal(full.toolCount, 564, 'the full (TOOLSETS=all) surface must be unchanged');
+    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
+    // tool. Same choice, and the same trade, as the `playback` figure above.
+    //
+    // 571 -> 565 (#847): the six queue readers, same trade again — a
+    // registration count, and the forwarding aliases do not add a line here.
+    assert.equal(full.toolCount, 565, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

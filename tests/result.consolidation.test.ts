@@ -526,3 +526,59 @@ describe('#582 playback.ts keeps the two behaviours it always had', () => {
     assert.equal(namedProse.structuredContent, undefined);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #895 — `jsonSummary`, the option that replaced two module-local `emit`s.
+//
+// #895 removed the doubled payload by giving the json arm a bounded summary.
+// Written as a module-local `emit`/`shape`, it reintroduced the exact drift
+// #582 removed, and `tests/result.consolidation.test.ts` failed on the copy
+// rather than on anything behavioural. It lives here instead: the summary is a
+// per-call-site decision, so it is an option on the one shared `emit`.
+//
+// The assertion that matters is the last one in each block. `jsonSummary` must
+// move the TEXT and nothing else — a summariser that also dropped the echo
+// would save the doubling and lose the payload, which is the failure mode a
+// "did the summary print?" test would sail straight past.
+// ---------------------------------------------------------------------------
+
+describe('#895 jsonSummary replaces the json body and nothing else', () => {
+  const SUMMARISE = { jsonSummary: () => 'Full payload in structuredContent.' };
+
+  it('json mode prints the summary, and the payload still rides as structuredContent', () => {
+    const payload = { moves_total: 860, moves: [{ uri: 'spotify:track:a' }] };
+    const result = emit('json', '860 moves planned.', payload, SUMMARISE);
+
+    assert.equal(result.content[0].text, 'Full payload in structuredContent.');
+    // The whole payload is still there — that is the half a naive fix loses.
+    assert.deepStrictEqual(result.structuredContent, payload);
+    assert.equal((result.structuredContent as { moves: unknown[] }).moves.length, 1);
+  });
+
+  it('the summary receives the payload, so it can describe what it holds', () => {
+    const seen: Array<Record<string, unknown>> = [];
+    const payload = { sections: { rows: { returned: 2, total: 900 } } };
+    const result = emit('json', 'x', payload, {
+      jsonSummary: (p) => {
+        seen.push(p);
+        return 'summarised';
+      },
+    });
+    assert.equal(result.content[0].text, 'summarised');
+    assert.deepStrictEqual(seen, [payload], 'the summariser is handed the payload itself');
+  });
+
+  it('prose mode ignores the option entirely', () => {
+    const payload = { action: 'pause' };
+    const result = emit('concise', 'Paused playback.', payload, SUMMARISE);
+    assert.equal(result.content[0].text, 'Paused playback.');
+    assert.deepStrictEqual(result.structuredContent, payload);
+  });
+
+  it('without the option the json body is still the mirrored payload', () => {
+    // The default is what ~180 json branches depend on (SPEC.md §5 promises
+    // the raw payload as JSON text), so the opt-in must not have moved it.
+    const payload = { action: 'play' };
+    assert.equal(emit('json', 'x', payload).content[0].text, jsonText(payload));
+  });
+});
