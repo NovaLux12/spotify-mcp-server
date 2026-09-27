@@ -51,6 +51,7 @@ import {
   withPlaylistInputNote,
 } from '../shaping.js';
 import { expandAlbumToTracks } from './playlistbatch.js';
+import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal, REMOVE_ELICIT_THRESHOLD } from './confirm.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import type {
   PlaylistItemObject,
@@ -1340,6 +1341,21 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
           include_featured: args.include_featured,
           removals: positions.length,
         });
+      }
+      // #1568: a purge that can empty a playlist asked nothing at any size,
+      // while `remove_from_playlist` gates at 10. `positions.length` is the
+      // exact number of occurrences the DELETEs below remove, counted before
+      // the first write (#803).
+      if (positions.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('exclude artists', p.id, [
+            `Remove ${positions.length} occurrence(s) of ${candidates.length} track(s) by ${excluded.size} artist(s):`,
+            ...candidates.slice(0, 10).map((c) => `  - ${c.uri} (positions ${c.positions.join(', ')})`),
+            ...(positions.length > 10 ? [`(…and ${positions.length - 10} more occurrence(s))`] : []),
+          ]),
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       let requests = 0;
       const writeCap = capFor('playlist_writes');

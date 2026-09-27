@@ -1606,6 +1606,30 @@ Three properties are worth stating, because each is a decision rather than a con
 
 `SPOTIFY_MCP_CONFIRM=never` (value exactly `never`) remains the only bypass, and the threshold is unchanged from `confirm.ts` — no new constant was introduced for this call site.
 
+#### Bulk playlist-item removal gates (#1568)
+
+Four tools delete from `/playlists/{id}/items` in a chunked loop and are now gated. Each already previews by default — `dry_run` still publishes `default: true` on all four, and an omitted flag still returns a plan and issues no write — so this closes a **gate** gap, not a default gap, and the defaults are unchanged.
+
+| Tool | Max removed in one call | Gate |
+|---|---|---|
+| `remove_playlist_range` | a whole `[start, end)` range | `REMOVE_ELICIT_THRESHOLD` (10) |
+| `playlist_exclude_artists` | every excluded position | `REMOVE_ELICIT_THRESHOLD` (10) |
+| `move_tracks_between_playlists` | `max_results`, schema max 2000 | `MOVE_ELICIT_THRESHOLD` (50) |
+| `balance_playlist_pairs` | `max_results` per playlist, max 2000 | `MOVE_ELICIT_THRESHOLD` (50) |
+
+**Why two thresholds and not one.** The first two are removals and take the removal bar, the same one `remove_from_playlist` and `remove_duplicate_playlist_items` already answer to. The second two are the playlist **move** family by name and by operation — each track is deleted from a source and appended to a destination — so they reuse `MOVE_ELICIT_THRESHOLD` from `src/tools/playlistbatch.ts`, which now exports it. No new constant was introduced for either module; a second number for the same family would be free to drift from the first.
+
+**The prompt names the number the write acts on.** This is the part that is a decision rather than a consequence, and it is #803 in a new place: a prompt that names a different count from the one about to be committed is a lie in the one sentence a human is being asked to approve. So each gate counts the rows the DELETEs will actually send, computed before the first write:
+
+- `remove_playlist_range` — `doomed.length`, the exact size of the resolved `[from, to)` range, which is knowable before the first DELETE because the range is a positional slice of an already-loaded playlist.
+- `playlist_exclude_artists` — `positions.length`, the flattened occurrence list, not `candidates.length` (the distinct-uri count) it reports beside it.
+- `move_tracks_between_playlists` — `moving.length`.
+- `balance_playlist_pairs` — summed over `outboundBySrc`, the map the write loop deletes from, rather than `moves.length`. The two are equal for any plan this tool can produce, and the sum is the one that cannot disagree with the loop.
+
+**A refusal is zero deletes, and it leaves nothing behind.** The gate runs *before* the backup-first write, so a decline or an unpromptable host produces no `DELETE` and no backup file. The refusal is the standard `ok: false` / `cancelled: true` result described above, with `reason` distinguishing `elicitation_failed` from `confirmation_unavailable`; `SPOTIFY_MCP_CONFIRM=never` remains the only bypass, and only at that exact value.
+
+**What is deliberately unchanged.** `restore_playlist_from_snapshot` and `apply_snapshot_changes` remain ungated: that is a recorded decision, stated in a `NO_GATE` constant in `src/tools/swarm3_snapshots.ts` and repeated in both tool descriptions, not an absence nobody noticed. This section covers only the four that had no such record. `dead_library_finder` (#1544) is the closest precedent for the shape of the fix and is unchanged.
+
 #### Purpose and provenance on stored-data writes (#708)
 
 Six tools write Spotify state from data this Server stored locally. Each publishes two top-level `structuredContent` keys on **every** result — planned, executed, cancelled or nothing-to-add — plus the same facts in the confirmation prompt and in the prose:

@@ -16,7 +16,10 @@ import { isGatedError } from '../gating.js';
 import type { PlaylistItemObject, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 import { textResult, jsonText } from '../result.js';
 export const BATCH_ADD_ELICIT_THRESHOLD = 100;
-const MOVE_ELICIT_THRESHOLD = 50;
+// #1568: the playlist MOVE family spans two modules. Exported so the swarm3
+// move tools (`move_tracks_between_playlists`, `balance_playlist_pairs`) gate
+// on this same number instead of a second constant that would drift from it.
+export const MOVE_ELICIT_THRESHOLD = 50;
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 const BATCH_WALK_FIELDS = {
   limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
