@@ -83,6 +83,61 @@ const MARKER_SCAN_SKIP = new Set(['node_modules', 'dist', 'coverage', 'outbox', 
  */
 const MARKER_LINE = /^[ \t]*(?:\/\/[ \t]*|<!--[ \t]*)(BEGIN|END):generated ([a-z0-9][a-z0-9-]*)[ \t]*(?:-->)?[ \t]*$/gm;
 
+/**
+ * Character classes for the gated-endpoint scan's lexer (`lexSource`), plus
+ * the two dispatch sets keyed off registration shape.
+ *
+ * Module scope for the same TDZ reason as the sets above: `--gated-calls`
+ * reaches the scan at import time, and a `const` left beside its only consumer
+ * throws a `ReferenceError` that reads as a crash rather than a gate.
+ */
+const TS_IDENT_START = /[A-Za-z_$]/;
+const TS_IDENT_PART = /[A-Za-z0-9_$]/;
+const TS_WHITESPACE = /\s/;
+const TS_DIGIT = /[0-9]/;
+
+const OPEN_TO_CLOSE = { '(': ')', '[': ']', '{': '}' };
+
+const REGISTRATION_METHODS = new Set(['tool', 'registerTool']);
+
+const CLIENT_READ_METHODS = new Set(['get', 'getAllPages']);
+const FUNCTION_NAME_PRECEDER = new Set(['function', '=', '{', ',', ';', 'async', 'static', 'public', 'private', 'protected', 'get', 'set', '*']);
+
+const TS_REGEX_AFTER_KEYWORD = new Set([
+  'return', 'typeof', 'instanceof', 'in', 'of', 'new', 'delete', 'void',
+  'throw', 'case', 'do', 'else', 'yield', 'await',
+]);
+
+/**
+ * Call shapes the gated-endpoint scan cannot follow, each one named (#1278).
+ *
+ * Before #1278 the per-FILE verdict made this tolerance implicit: a family was
+ * satisfied by one gated call in any of its files, so a call site no tool could
+ * be held to inherited the status of an unrelated tool in the same file, and a
+ * call in no tool at all was indistinguishable from a call in every tool. The
+ * per-tool gate has no such fallback, so every shape the scan cannot attribute
+ * has to be written down here — with the tool it serves and why — or the gate
+ * reports it as unattributed and fails.
+ *
+ * That is the trade the issue names: a smaller, honest allow-list instead of a
+ * larger, silent one. An entry is itself gated, so it cannot rot unnoticed —
+ * `checkGatedEndpointTruth` fails an entry whose tool is no longer declared by
+ * the family, is not registered by the file the entry names, or has become
+ * visible to the scan (at which point the entry is stale and must be deleted).
+ *
+ * Module scope for the same TDZ reason as the sets above.
+ */
+const GATED_SCAN_EXCEPTIONS = [
+  {
+    family: 'artist-top-tracks',
+    file: 'catalog.ts',
+    tool: 'get_artist_top_tracks',
+    reason: 'the path is passed as an ARGUMENT to `getWithMarketFallback` (src/markets.ts), '
+      + 'not to `client.get`, and that wrapper is outside the scanned tree — so this tool has no '
+      + 'gated `client.get` call site for the scan to attribute at all.',
+  },
+];
+
 if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
   const child = spawnSync(process.execPath, ['--import', 'tsx/esm', fileURLToPath(import.meta.url), ...args], {
     cwd: ROOT,
@@ -197,6 +252,32 @@ if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
   throw new Error('--census-file requires a JSON file');
 }
 const { GATED_FAMILIES, GATED_PATH_PATTERNS, isGatedPath } = await import('../src/gating.ts');
+/**
+ * Extra directories whose `.ts` files join the gated-endpoint scan (#1278).
+ *
+ * This is the wiring proof for the per-tool attribution. Driving the real
+ * `--check` over a scratch tree lets a test plant a tool that calls a gated
+ * endpoint without declaring the family — or a file that provably cannot
+ * violate anything — and observe the verdict the production gate would give.
+ * A test that only asserted "`--check` passed" would pass just as happily
+ * against a scan that attributes nothing (AGENTS.md §6).
+ *
+ * Files here contribute call sites only. The registration-coverage identity
+ * below deliberately reads the real `src/tools` tree, so a planted fixture can
+ * never make the production coverage count look complete.
+ */
+const gatedScanExtraIndex = args.indexOf('--gated-scan-extra');
+if (gatedScanExtraIndex >= 0 && !args[gatedScanExtraIndex + 1]) {
+  throw new Error('--gated-scan-extra requires a directory');
+}
+const gatedScanExtraRoots = gatedScanExtraIndex >= 0
+  ? [resolve(args[gatedScanExtraIndex + 1])]
+  : [];
+const gatedCallsIndex = args.indexOf('--gated-calls');
+if (gatedCallsIndex >= 0) {
+  console.log(JSON.stringify({ hits: gatedCallSites() }, null, 2));
+  process.exit(0);
+}
 const census = censusFileIndex >= 0
   ? JSON.parse(readFileSync(resolve(args[censusFileIndex + 1]), 'utf8'))
   : await readProductionRegistry();
@@ -823,10 +904,22 @@ function gatedEndpointTable() {
 
 /**
  * Static scan for gated `client.get` / `client.getAllPages` call sites under
- * `src/tools/`.
+ * `src/tools/`, and for the TOOL each one belongs to (#605, #1278).
  *
- * This exists so the `tools` column above cannot rot into a claim. It is a
- * lexical scan, not a call-graph walk, with two deliberate limits:
+ * This exists so the `tools` column above cannot rot into a claim, and — since
+ * #1278 — so it cannot rot into a *wrong* claim either. A family is served by
+ * exactly the tools that issue a request against it, and a file that registers
+ * a dozen tools is not the same thing as a family those twelve tools serve: the
+ * previous shape recorded the FILE a call was found in, so one genuine call
+ * satisfied the whole column and every other tool in that file inherited a
+ * status it was never checked for. That is how `get_user_playlists` came to
+ * sit in the `user-profile` family: it reads `GET /me/playlists`, never
+ * `/users/{id}`, and nothing objected because a different tool in the same file
+ * made the real `/users/{id}` call.
+ *
+ * So a call site is attributed to a tool, and a family is only satisfied by
+ * its own tools. Three limits are deliberate, and all three fail CLOSED —
+ * an unattributable call is reported, never silently absorbed:
  *
  *   - It only reads files that construct against `SpotifyClient`.
  *     `src/tools/statsfm.ts` issues `/users/{id}`-shaped paths against the
@@ -834,87 +927,486 @@ function gatedEndpointTable() {
  *     `installGatedPathContract` -- which must not be counted here.
  *   - `src/tools/catalog.ts` reaches the batch family through the computed
  *     path `/${kind}`, which a string-literal scan cannot read. The
- *     `SEVERAL_KINDS` expansion below covers that one case explicitly, and
- *     `checkGatedEndpointTruth` fails if a family has a hand-declared tool but
- *     no scan hit, so a new computed-path call site cannot pass unnoticed.
+ *     `SEVERAL_KINDS` expansion below covers that one case explicitly.
+ *   - A call reached through a wrapper the scan cannot follow — today exactly
+ *     `getWithMarketFallback` in `src/markets.ts`, which is outside the
+ *     scanned tree — is named in `GATED_SCAN_EXCEPTIONS` with the reason,
+ *     rather than being the default the whole column silently falls back to.
  */
 
 /**
- * Extract the first string-literal argument of every `client.get` /
- * `client.getAllPages` call in `source`, as `{ path, index }`.
+ * A minimal TypeScript lexer, and only the parts the gated scan needs.
  *
- * A regex cannot do this: the calls carry TypeScript generics that themselves
- * nest (`client.get<{ categories: Paged<CategoryItem> }>('/browse/categories')`),
- * so `<\s*[^>]*>` stops at the inner `>`. This walks the text instead --
- * skipping a balanced `<...>` when one follows the method name, then reading
- * the first quoted or backticked literal argument.
+ * A regular expression cannot answer the two questions this scan now asks:
+ * where a `server.tool(...)` registration ENDS (so a `client.get` in a
+ * module-level helper declared *after* it is not mistaken for part of it), and
+ * which function a call site sits in (so the helper's callers can be followed
+ * one level up to their registrations). It also cannot skip a comment, which is
+ * how the previous `client.get`-reading regex could in principle match prose.
+ *
+ * Comments, string literals, template literals (with `${...}` nesting) and
+ * regular-expression literals are consumed as single tokens, so none of them
+ * can contribute a stray bracket. This is a lexer, not a parser: it makes no
+ * attempt to type-check, and anything it cannot resolve surfaces as an
+ * unattributed call site rather than as a pass.
  */
-function clientGetPaths(source) {
-  const out = [];
-  const re = /client\.(get|getAllPages)\b/g;
-  let m;
-  while ((m = re.exec(source)) !== null) {
-    let i = re.lastIndex;
-    // Skip a balanced generic argument list.
-    if (source[i] === '<') {
-      let depth = 0;
-      for (; i < source.length; i++) {
-        if (source[i] === '<') depth++;
-        else if (source[i] === '>') {
-          depth--;
-          if (depth === 0) { i++; break; }
-        }
-      }
-    }
-    // Skip whitespace to the call's open paren.
-    while (i < source.length && /\s/.test(source[i])) i++;
-    if (source[i] !== '(') continue;
-    i++;
-    while (i < source.length && /[\s]/.test(source[i])) i++;
-    const quote = source[i];
-    if (quote !== "'" && quote !== '"' && quote !== '`') continue;
-    const end = source.indexOf(quote, i + 1);
-    if (end === -1) continue;
-    out.push({ path: source.slice(i + 1, end), index: m.index });
-  }
-  return out;
+/** Keywords after which a `/` opens a regex literal rather than dividing. */
+
+/** Unescape the handful of single-character escapes a path literal can carry. */
+function unescapeBasicLiteral(raw) {
+  return raw.replace(/\\(.)/g, (_, ch) => ({ n: '\n', t: '\t', r: '\r' })[ch] ?? ch);
 }
 
-function gatedCallSites() {
-  // `server.tool(` is followed by the tool name on the same line or the next.
-  const toolRe = /server\.tool\(\s*(?:\n\s*)?'([a-z0-9_]+)'/g;
-  const hits = [];
-  const record = (family, file, line, tool, path) => {
-    if (family) hits.push({ family: family.id, file, line, tool, path });
+function lexSource(source) {
+  const tokens = [];
+  const length = source.length;
+  let index = 0;
+  let previous = null;
+  const emit = (kind, start, end, extra) => {
+    const token = { kind, start, end, text: source.slice(start, end), ...extra };
+    tokens.push(token);
+    previous = token;
+    return token;
   };
-  for (const file of readdirSync(join(ROOT, 'src', 'tools')).sort()) {
-    if (!file.endsWith('.ts')) continue;
-    const source = readFileSync(join(ROOT, 'src', 'tools', file), 'utf8');
-    if (!source.includes('SpotifyClient')) continue;
-    const lineAt = (index) => source.slice(0, index).split('\n').length;
-    const toolSpans = [...source.matchAll(toolRe)].map((t) => ({ name: t[1], at: t.index }));
-    const toolAt = (index) => {
-      let name = null;
-      for (const t of toolSpans) { if (t.at <= index) name = t.name; else break; }
-      return name;
-    };
-    for (const { path: raw, index } of clientGetPaths(source)) {
-      const path = raw.split('?')[0];
-      // A template literal's `${...}` is a path segment the classifier treats
-      // as opaque, so collapse interpolations before classifying.
-      const probe = path.replace(/\$\{[^}]*\}/g, 'x');
-      const line = lineAt(index);
-      record(GATED_FAMILIES.find((f) => f.pattern.test(probe)), file, line, toolAt(index), path);
-      // `fetchSeveral` reads the batch family as `/${kind}`; expand the seven
-      // members of the `SeveralKind` union so the family is actually seen.
-      if (probe === '/x') {
-        for (const kind of SEVERAL_KINDS) {
-          record(
-            GATED_FAMILIES.find((f) => f.pattern.test(`/${kind}`)),
-            file, line, toolAt(index), `/${kind} (via \`/\${kind}\` in fetchSeveral)`,
-          );
-        }
+  const regexCanStart = () => {
+    if (previous === null) return true;
+    if (previous.kind === 'punct') return ![')', ']', '}'].includes(previous.text);
+    if (previous.kind === 'ident') return TS_REGEX_AFTER_KEYWORD.has(previous.text);
+    return false;
+  };
+  while (index < length) {
+    const char = source[index];
+    if (TS_WHITESPACE.test(char)) { index += 1; continue; }
+    const start = index;
+    if (char === '/' && source[index + 1] === '/') { while (index < length && source[index] !== '\n') index += 1; continue; }
+    if (char === '/' && source[index + 1] === '*') {
+      index += 2;
+      while (index < length && !(source[index] === '*' && source[index + 1] === '/')) index += 1;
+      index = Math.min(length, index + 2);
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      index += 1;
+      while (index < length) {
+        if (source[index] === '\\') { index += 2; continue; }
+        if (source[index] === char) { index += 1; break; }
+        index += 1;
       }
+      emit('string', start, index, { value: unescapeBasicLiteral(source.slice(start + 1, index - 1)) });
+      continue;
+    }
+    if (char === '`') {
+      // The literal chunks between `${...}` substitutions. A substitution is an
+      // opaque path segment to the classifier, so the probe rejoins them with
+      // the same `x` the previous regex-based scan used.
+      const chunks = [];
+      let chunkStart = index + 1;
+      index += 1;
+      while (index < length) {
+        const inner = source[index];
+        if (inner === '\\') { index += 2; continue; }
+        if (inner === '`') { chunks.push(source.slice(chunkStart, index)); index += 1; break; }
+        if (inner === '$' && source[index + 1] === '{') {
+          chunks.push(source.slice(chunkStart, index));
+          index += 2;
+          let depth = 1;
+          while (index < length) {
+            if (source[index] === '{') depth += 1;
+            else if (source[index] === '}') { depth -= 1; if (depth === 0) { index += 1; break; } }
+            index += 1;
+          }
+          chunkStart = index;
+          continue;
+        }
+        index += 1;
+      }
+      emit('template', start, index, { chunks });
+      continue;
+    }
+    if (char === '/' && regexCanStart()) {
+      index += 1;
+      let inCharacterClass = false;
+      while (index < length) {
+        const inner = source[index];
+        if (inner === '\\') { index += 2; continue; }
+        if (inner === '\n') break;
+        if (inner === '[') inCharacterClass = true;
+        else if (inner === ']') inCharacterClass = false;
+        else if (inner === '/' && !inCharacterClass) { index += 1; break; }
+        index += 1;
+      }
+      while (index < length && /[a-z]/.test(source[index])) index += 1;
+      emit('regex', start, index);
+      continue;
+    }
+    if (TS_IDENT_START.test(char)) {
+      index += 1;
+      while (index < length && TS_IDENT_PART.test(source[index])) index += 1;
+      emit('ident', start, index);
+      continue;
+    }
+    if (TS_DIGIT.test(char)) {
+      while (index < length && /[0-9a-zA-Z_.]/.test(source[index])) index += 1;
+      emit('number', start, index);
+      continue;
+    }
+    index += 1;
+    emit('punct', start, index);
+  }
+  return tokens;
+}
+
+/**
+ * The token index just past the delimiter opened at `open`, or -1 when the
+ * source is unbalanced. Every bracket is a token, so counting is enough.
+ */
+function matchingDelimiter(tokens, open) {
+  const close = OPEN_TO_CLOSE[tokens[open].text];
+  let depth = 0;
+  for (let index = open; index < tokens.length; index += 1) {
+    if (tokens[index].kind !== 'punct') continue;
+    if (tokens[index].text === tokens[open].text) depth += 1;
+    else if (tokens[index].text === close) { depth -= 1; if (depth === 0) return index; }
+  }
+  return -1;
+}
+
+/**
+ * The token index of the `(` that opens the argument list of a call whose
+ * method name sits at `nameIndex`, or -1 when there is not one there.
+ *
+ * The type arguments are the whole reason this is not `tokens[nameIndex + 1]`:
+ * every read in this repository is spelled `client.get<SomeType>('/path')`,
+ * and the type itself can nest (`client.get<{ categories: Paged<CategoryItem> }>`),
+ * so the `(` is not the next token and a `<...>` skip has to be balanced too.
+ * Bracketed groups inside the type arguments are skipped whole, which is what
+ * keeps a `<...>` carrying a function type from being counted as its close.
+ *
+ * Bailing out returns -1 rather than guessing, so a shape this cannot read is
+ * an absent call site — which the gate reports — not a misattributed one.
+ */
+function callArgumentList(tokens, nameIndex) {
+  let index = nameIndex + 1;
+  if (tokens[index]?.text === '<') {
+    let depth = 0;
+    let budget = 128;
+    while (index < tokens.length && budget > 0) {
+      const token = tokens[index];
+      if (token.kind === 'punct') {
+        if (['(', '[', '{'].includes(token.text)) {
+          const close = matchingDelimiter(tokens, index);
+          if (close === -1) return -1;
+          index = close + 1;
+          continue;
+        }
+        if (token.text === ';') return -1;
+        if (token.text === '<') depth += 1;
+        else if (token.text === '>') { depth -= 1; if (depth === 0) { index += 1; break; } }
+      }
+      index += 1;
+      budget -= 1;
+    }
+  }
+  return tokens[index]?.text === '(' ? index : -1;
+}
+
+/**
+ * Every `server.tool('name', ...)` / `server.registerTool('name', ...)` call,
+ * with the token span that covers the whole registration.
+ *
+ * `name` is null when the first argument is not a string literal — a loop
+ * factory (`server.tool(cfg.name, ...)`) or a lookup (`server.tool(meta.tool,
+ * ...)`). Those registrations are counted by the coverage check below, which
+ * is what keeps a scan that has silently stopped naming tools from reading as
+ * a clean run.
+ */
+function registrationSpans(tokens) {
+  const spans = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].text !== 'server') continue;
+    if (tokens[index + 1]?.text !== '.') continue;
+    if (!REGISTRATION_METHODS.has(tokens[index + 2]?.text)) continue;
+    if (tokens[index + 3]?.text !== '(') continue;
+    const close = matchingDelimiter(tokens, index + 3);
+    if (close === -1) continue;
+    const first = tokens[index + 4];
+    spans.push({
+      name: first && first.kind === 'string' ? first.value : null,
+      from: index,
+      to: close,
+    });
+  }
+  return spans;
+}
+
+/**
+ * Every named function body in the file, as `{ name, from, to }` token spans.
+ *
+ * Only bodies are recorded, and only where the signature is followed by a
+ * brace-delimited block — which is why an arrow returning an expression
+ * contributes nothing: the scan follows a helper into the tools that CALL it,
+ * and the call sites it needs to follow are all inside blocks.
+ */
+function functionSpans(tokens) {
+  const spans = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].kind !== 'ident') continue;
+    if (tokens[index - 1]?.text === '.') continue;
+    if (!FUNCTION_NAME_PRECEDER.has(tokens[index - 1]?.text)) continue;
+    // `const name = async (…) => {` and `function name<T>(…) {` both put a
+    // qualifier between the name and its parameter list.
+    let cursor = index + 1;
+    if (tokens[cursor]?.text === 'async') cursor += 1;
+    if (tokens[cursor]?.text === '<') {
+      const generic = angleGroupEnd(tokens, cursor);
+      if (generic === -1) continue;
+      cursor = generic + 1;
+    }
+    if (tokens[cursor]?.text !== '(') continue;
+    const close = matchingDelimiter(tokens, cursor);
+    if (close === -1) continue;
+    const body = blockBodyStart(tokens, close + 1);
+    if (body === -1) continue;
+    const bodyEnd = matchingDelimiter(tokens, body);
+    if (bodyEnd === -1) continue;
+    spans.push({ name: tokens[index].text, from: body, to: bodyEnd });
+  }
+  return spans;
+}
+
+/** The token index just past the `>` closing the type arguments at `open`. */
+function angleGroupEnd(tokens, open) {
+  let depth = 0;
+  for (let index = open; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (token.kind !== 'punct') continue;
+    if (['(', '[', '{'].includes(token.text)) {
+      const close = matchingDelimiter(tokens, index);
+      if (close === -1) return -1;
+      index = close;
+      continue;
+    }
+    if (token.text === '<') depth += 1;
+    else if (token.text === '>') { depth -= 1; if (depth === 0) return index; }
+  }
+  return -1;
+}
+
+/**
+ * The token index of the `{` that opens a function body whose parameter list
+ * ended at `after`, or -1 when the function has no block body.
+ *
+ * Between the two sit a return-type annotation (`: Promise<ResolvedUris>`) and,
+ * for an arrow, the `=>`. Bracketed groups in between are skipped whole so an
+ * object literal in a return-type position cannot be mistaken for the body.
+ */
+function blockBodyStart(tokens, after) {
+  let index = after;
+  for (let budget = 64; index < tokens.length && budget > 0; index += 1, budget -= 1) {
+    const token = tokens[index];
+    if (token.kind !== 'punct') continue;
+    if (token.text === ';') return -1;
+    if (['(', '['].includes(token.text)) {
+      const close = matchingDelimiter(tokens, index);
+      if (close === -1) return -1;
+      index = close;
+      continue;
+    }
+    if (token.text === '<') {
+      // A generic return type (`: Promise<{ items: T[] }>`) carries a `{` that
+      // belongs to the TYPE, not to the body. Skipping the whole angle group is
+      // what keeps `fetchSeveral<T>(…): Promise<{…}> {` from starting its body
+      // inside its own signature.
+      const generic = angleGroupEnd(tokens, index);
+      if (generic === -1) return -1;
+      index = generic;
+      continue;
+    }
+    if (token.text === '{') return index;
+  }
+  return -1;
+}
+
+/**
+ * `const NAME = <path literal>` bindings, so a call that reads its path through
+ * a local variable (`const categoryPath = '/browse/categories/…'`) is still a
+ * path this scan can classify. Unresolvable variables contribute no call site
+ * rather than a guessed one.
+ */
+function constPathBindings(tokens) {
+  const bindings = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].kind !== 'ident') continue;
+    if (tokens[index - 1]?.text === '.') continue;
+    let cursor = index + 1;
+    // Allow a type annotation between the name and the `=`.
+    let limit = 0;
+    while (cursor < tokens.length && tokens[cursor].text !== '=' && limit < 12) {
+      if ([';', ',', '('].includes(tokens[cursor].text)) break;
+      cursor += 1;
+      limit += 1;
+    }
+    if (tokens[cursor]?.text !== '=') continue;
+    const value = tokens[cursor + 1];
+    if (value?.kind === 'string') bindings.push({ name: tokens[index].text, at: cursor + 1, path: value.value });
+    else if (value?.kind === 'template') bindings.push({ name: tokens[index].text, at: cursor + 1, path: value.chunks.join('x') });
+  }
+  return bindings;
+}
+
+
+/**
+ * Every `client.get(...)` / `client.getAllPages(...)` call whose first argument
+ * is a path this scan can read — a string literal, a template literal, or an
+ * identifier bound to one.
+ */
+function clientReadCallSites(tokens, bindings) {
+  const sites = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].text !== 'client') continue;
+    if (tokens[index + 1]?.text !== '.') continue;
+    if (!CLIENT_READ_METHODS.has(tokens[index + 2]?.text)) continue;
+    const open = callArgumentList(tokens, index + 2);
+    if (open === -1) continue;
+    const first = tokens[open + 1];
+    if (first === undefined) continue;
+    if (first.kind === 'string') { sites.push({ at: index, path: first.value }); continue; }
+    if (first.kind === 'template') { sites.push({ at: index, path: first.chunks.join('x') }); continue; }
+    if (first.kind !== 'ident') continue;
+    // The nearest preceding binding of that name, which is how the same-file
+    // `const` scoping resolves in practice. No binding, no call site.
+    let resolved = null;
+    for (const binding of bindings) {
+      if (binding.name !== first.text) continue;
+      if (binding.at >= index) continue;
+      if (!resolved || binding.at > resolved.at) resolved = binding;
+    }
+    if (resolved) sites.push({ at: index, path: resolved.path, viaVariable: first.text });
+  }
+  return sites;
+}
+
+/**
+ * The tool names a call site can be attributed to, in the file `source`.
+ *
+ * Three tiers, in order of confidence:
+ *
+ *   1. The call is lexically inside a `server.tool(...)` registration — the
+ *      overwhelming majority, and unambiguous.
+ *   2. The call sits in a module-level helper, and that helper is CALLED from
+ *      inside at least one registration in this file. One level of
+ *      indirection, which is as far as a lexer can honestly go: a helper
+ *      reached only through another helper reports no tool and is reported as
+ *      unattributed rather than guessed at.
+ *   3. Nothing reaches it. The caller records `tools: []` and the gate says so.
+ */
+function attributeCallSite(tokens, registrations, functions, callAt) {
+  const containing = registrations.filter((span) => span.from <= callAt && callAt <= span.to && span.name !== null);
+  if (containing.length > 0) return [...new Set(containing.map((span) => span.name))];
+  const bodies = functions.filter((span) => span.from <= callAt && callAt <= span.to);
+  if (bodies.length === 0) return [];
+  const helper = bodies.reduce((innermost, span) => (span.from > innermost.from ? span : innermost));
+  const reached = new Set();
+  for (let index = 0; index < tokens.length; index += 1) {
+    if (tokens[index].text !== helper.name) continue;
+    if (tokens[index - 1]?.text === 'function' || tokens[index - 1]?.text === '.') continue;
+    // `fetchSeveral<T>(…)` is a call just as much as `resolveUris(…)` is, so
+    // the argument list is located the same way a read's is.
+    const open = callArgumentList(tokens, index);
+    if (open === -1 || open <= index) continue;
+    for (const span of registrations) {
+      if (span.name === null) continue;
+      if (span.from <= index && index <= span.to) reached.add(span.name);
+    }
+  }
+  return [...reached];
+}
+
+/**
+ * Scan one source file: the gated call sites it contains and the tools each
+ * one is attributed to.
+ */
+function gatedScanFile(file, source) {
+  const tokens = lexSource(source);
+  const registrations = registrationSpans(tokens);
+  const functions = functionSpans(tokens);
+  const bindings = constPathBindings(tokens);
+  const lineStarts = [0];
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] === '\n') lineStarts.push(index + 1);
+  }
+  const lineAt = (offset) => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const mid = (low + high + 1) >> 1;
+      if (lineStarts[mid] <= offset) low = mid;
+      else high = mid - 1;
+    }
+    return low + 1;
+  };
+  const hits = [];
+  for (const call of clientReadCallSites(tokens, bindings)) {
+    const path = call.path.split('?')[0];
+    const record = (family) => {
+      if (!family) return;
+      hits.push({
+        family: family.id,
+        file,
+        line: lineAt(tokens[call.at].start),
+        tools: attributeCallSite(tokens, registrations, functions, call.at),
+        path: call.viaVariable ? `${path} (via \`${call.viaVariable}\`)` : path,
+      });
+    };
+    record(GATED_FAMILIES.find((family) => family.pattern.test(path)));
+    // `fetchSeveral` reads the batch family as the computed path `/${kind}`,
+    // which no literal scan can read. Expand the seven members of the
+    // `SeveralKind` union so the family is actually seen, and name the shape
+    // the hit came from so a reader is not left guessing which literal it was.
+    if (path === '/x') {
+      for (const kind of SEVERAL_KINDS) {
+        const family = GATED_FAMILIES.find((entry) => entry.pattern.test(`/${kind}`));
+        if (!family) continue;
+        hits.push({
+          family: family.id,
+          file,
+          line: lineAt(tokens[call.at].start),
+          tools: attributeCallSite(tokens, registrations, functions, call.at),
+          path: `/${kind} (via the computed \`/\${kind}\` in fetchSeveral)`,
+        });
+      }
+    }
+  }
+  return {
+    hits,
+    registrations,
+    lineAt,
+  };
+}
+
+/** The directories the gated scan reads, real tree first. */
+function gatedScanRoots() {
+  return [join(ROOT, 'src', 'tools'), ...gatedScanExtraRoots];
+}
+
+/**
+ * Every gated call site under `src/tools/`, each carrying the tools it is
+ * attributed to. `tools: []` means the scan could not reach a registration —
+ * see `GATED_SCAN_EXCEPTIONS`.
+ */
+function gatedCallSites() {
+  const hits = [];
+  for (const root of gatedScanRoots()) {
+    for (const file of readdirSync(root).filter((name) => name.endsWith('.ts')).sort()) {
+      const source = readFileSync(join(root, file), 'utf8');
+      // `statsfm.ts` targets api.stats.fm. It names `StatsfmClient` and never
+      // `SpotifyClient`, which is the whole of the host test: a file that does
+      // not construct against the Spotify client cannot be calling a Spotify
+      // endpoint, whatever path shapes its literals have. Applied to every
+      // scanned root, not just the real one, so a planted fixture is held to
+      // the same rule as the tree it joins.
+      if (!source.includes('SpotifyClient')) continue;
+      hits.push(...gatedScanFile(file, source).hits);
     }
   }
   return hits;
@@ -1137,6 +1629,75 @@ function checkDocReachability() {
   return errors;
 }
 
+/**
+ * What the gated scan actually read, and whether it could name anything
+ * (#1278) — the anti-vacuity half of the per-tool gate.
+ *
+ * Per-tool attribution is only meaningful if the scan can still SEE the
+ * registrations and still reach every call. Three things can stop it, and all
+ * three look like success from inside the family rules above, because a family
+ * whose tools are all unattributed is shaped exactly like a family with no
+ * calls: a lexer that stopped matching `server.tool(`, a module that registers
+ * through a local alias (`statsfm_taste.ts` calls `s.tool(...)` off a cast of
+ * `server`), or a file whose gated call no registration reaches. So the counts
+ * are reported here rather than left implicit, and three properties are
+ * asserted against the registry the census itself produced by running the real
+ * registrars — never against a number typed into a test.
+ *
+ *   1. No phantom names. Every tool name the scan reads off a
+ *      `server.tool('...')` must be a name the finalized registry serves; a
+ *      match in a comment or a string fails here.
+ *   2. Reach. Every gated call site resolves to at least one registered tool, or
+ *      the family carries an explicit `GATED_SCAN_EXCEPTIONS` entry for the
+ *      file it sits in. A scan that attributes nothing is a scan that reports
+ *      success over an empty set.
+ *   3. Not empty. A run that reads no registrations and no call sites is a scan
+ *      that has stopped working, and says so instead of passing.
+ *
+ * Reads `src/tools` directly and ignores `--gated-scan-extra`, so a planted
+ * fixture can never make the production counts look complete.
+ */
+function checkGatedScanCoverage(hits) {
+  const errors = [];
+  const toolsDir = join(ROOT, 'src', 'tools');
+  const registered = new Set(census.toolNames);
+  const files = readdirSync(toolsDir).filter((name) => name.endsWith('.ts')).sort();
+  let registrations = 0;
+  const phantoms = [];
+  for (const file of files) {
+    const source = readFileSync(join(toolsDir, file), 'utf8');
+    for (const span of registrationSpans(lexSource(source))) {
+      registrations += 1;
+      if (span.name !== null && !registered.has(span.name)) phantoms.push(`${file}: ${span.name}`);
+    }
+  }
+  for (const phantom of phantoms) {
+    errors.push(`gated scan coverage: read tool name ${phantom}, which is not in the finalized production registry — the scan is matching something that is not a registration`);
+  }
+  const exceptionsFor = (familyId, file) => GATED_SCAN_EXCEPTIONS.some(
+    (entry) => entry.family === familyId && entry.file === file,
+  );
+  for (const hit of hits) {
+    if (hit.tools.length > 0) {
+      for (const tool of hit.tools) {
+        if (!registered.has(tool)) {
+          errors.push(`gated scan coverage: attributed the gated call at ${hit.file}:${hit.line} to ${tool}, which is not in the finalized production registry`);
+        }
+      }
+      continue;
+    }
+    if (exceptionsFor(hit.family, hit.file)) continue;
+    errors.push(`gated scan coverage: the gated call at ${hit.file}:${hit.line} (${hit.path}) reaches no registered tool`);
+  }
+  if (registrations === 0) {
+    errors.push(`gated scan coverage: read 0 server.tool()/server.registerTool() registrations from ${files.length} file(s) under src/tools; the scan is not reading registrations at all`);
+  }
+  if (hits.length === 0) {
+    errors.push(`gated scan coverage: found 0 gated call sites under src/tools; the scan is reading no call sites at all`);
+  }
+  return errors;
+}
+
 function checkGatedEndpointTruth() {
   const readme = readFileSync(join(ROOT, 'README.md'), 'utf8');
   const spec = readFileSync(join(ROOT, 'SPEC.md'), 'utf8');
@@ -1174,29 +1735,85 @@ function checkGatedEndpointTruth() {
     }
   }
 
-  // #605: the hand-maintained `tools` column must match the real call sites.
-  // A family that gained a wrapper without naming the tool here, or lost its
-  // last wrapper while still claiming one, fails the census.
+  // #605, #1278: the hand-maintained `tools` column must match the real call
+  // sites, and it is checked PER TOOL in both directions.
+  //
+  // The previous shape recorded the FILE a call was found in, so the verdict
+  // was `live.size === 0` — one gated call anywhere in one of the family's
+  // files satisfied the whole column. That both missed a tool that calls a
+  // gated endpoint without declaring it, and let an unrelated tool in the same
+  // file inherit a disclosure it had no business carrying: `get_user_playlists`
+  // sat in `user-profile` because a DIFFERENT tool in the same file made the
+  // real `/users/{id}` call. A column of tools is checked as a set of tools.
   const registered = new Set(census.toolNames);
-  const scanned = new Map();
+  const attributed = new Map();
+  const orphans = new Map();
   for (const hit of gatedCallSites()) {
-    if (!scanned.has(hit.family)) scanned.set(hit.family, new Set());
-    scanned.get(hit.family).add(hit.file);
-  }
-  for (const family of GATED_FAMILIES) {
-    const live = scanned.get(family.id) ?? new Set();
-    if (family.tools.length === 0 && live.size > 0) {
-      errors.push(`GATED_FAMILIES[${family.id}]: declares no shipped tools, but gated call sites exist in ${[...live].join(', ')}`);
+    const bucket = hit.tools.length === 0 ? orphans : attributed;
+    if (!bucket.has(hit.family)) bucket.set(hit.family, new Map());
+    const byTool = bucket.get(hit.family);
+    const key = hit.tools.length === 0 ? hit.file : hit.tools;
+    for (const name of Array.isArray(key) ? key : [key]) {
+      if (!byTool.has(name)) byTool.set(name, []);
+      byTool.get(name).push(hit);
     }
-    if (family.tools.length > 0 && live.size === 0) {
+  }
+  const exceptionsFor = (familyId) => GATED_SCAN_EXCEPTIONS.filter((entry) => entry.family === familyId);
+  for (const family of GATED_FAMILIES) {
+    const live = attributed.get(family.id) ?? new Map();
+    const unattributed = orphans.get(family.id) ?? new Map();
+    const exceptions = exceptionsFor(family.id);
+    const declared = new Set(family.tools);
+    if (family.tools.length === 0 && live.size + unattributed.size > 0) {
+      errors.push(`GATED_FAMILIES[${family.id}]: declares no shipped tools, but gated call sites exist in ${[...live.keys(), ...unattributed.keys()].join(', ')}`);
+    }
+    if (family.tools.length > 0 && live.size + unattributed.size === 0) {
       errors.push(`GATED_FAMILIES[${family.id}]: claims tools [${family.tools.join(', ')}] but no gated client.get call site was found in src/tools/`);
     }
     for (const tool of family.tools) {
       if (!registered.has(tool)) {
         errors.push(`GATED_FAMILIES[${family.id}]: names tool ${tool}, which is not in the finalized production registry`);
       }
+      // The direction the per-FILE shape could not express: a declared tool
+      // that no gated call site is attributed to.
+      if (!live.has(tool) && !exceptions.some((entry) => entry.tool === tool)) {
+        errors.push(`GATED_FAMILIES[${family.id}]: declares tool ${tool}, but no gated client.get call site is attributed to it (attributed: ${live.size === 0 ? 'none' : [...live.keys()].join(', ')}); if the scan cannot see its call, add a GATED_SCAN_EXCEPTIONS entry saying so`);
+      }
+    }
+    // The other direction: a tool that DOES call the family and does not say
+    // so. This is the one that catches the `get_user_playlists` substitution.
+    for (const tool of live.keys()) {
+      if (!declared.has(tool)) {
+        const where = live.get(tool).map((hit) => `${hit.file}:${hit.line}`).join(', ');
+        errors.push(`GATED_FAMILIES[${family.id}]: gated call at ${where} is attributed to tool ${tool}, which the family does not declare`);
+      }
+    }
+    // A call no registration reaches is reported, never absorbed: the
+    // tolerance is the named list, not the default.
+    for (const [file, hits] of unattributed) {
+      if (exceptions.some((entry) => entry.file === file)) continue;
+      const where = hits.map((hit) => `${file}:${hit.line}`).join(', ');
+      errors.push(`GATED_FAMILIES[${family.id}]: gated call at ${where} is not attributed to any registered tool and ${file} has no GATED_SCAN_EXCEPTIONS entry; add one naming the tools it serves, or make the call reachable from a registration`);
     }
   }
+  // The exception list is a gate, not a comment: every entry is checked, and
+  // an entry the scan can now see is stale rather than harmless.
+  for (const entry of GATED_SCAN_EXCEPTIONS) {
+    const family = GATED_FAMILIES.find((candidate) => candidate.id === entry.family);
+    const label = `GATED_SCAN_EXCEPTIONS[${entry.family}/${entry.tool}]`;
+    if (!family) { errors.push(`${label}: no such GATED_FAMILIES id`); continue; }
+    if (!family.tools.includes(entry.tool)) errors.push(`${label}: the ${entry.family} family does not declare ${entry.tool}, so nothing is being tolerated`);
+    if (!registered.has(entry.tool)) errors.push(`${label}: ${entry.tool} is not in the finalized production registry`);
+    if (typeof entry.reason !== 'string' || entry.reason.trim().length === 0) errors.push(`${label}: an exception must say why the scan cannot follow this call`);
+    const owners = moduleNames.get(`src/tools/${entry.file}`) ?? [];
+    if (!owners.includes(entry.tool)) {
+      errors.push(`${label}: names file src/tools/${entry.file}, which does not register ${entry.tool} (it registers ${owners.length === 0 ? 'nothing' : owners.join(', ')})`);
+    }
+    if (attributed.get(entry.family)?.has(entry.tool)) {
+      errors.push(`${label}: ${entry.tool} is now attributed to a gated call site, so this exception is stale — delete it`);
+    }
+  }
+  errors.push(...checkGatedScanCoverage(gatedCallSites()));
 
   // #605: the README table is generated, so the substantive claim to check is
   // that the framing around it no longer asserts the absolutes that made the

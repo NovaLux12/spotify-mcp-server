@@ -238,14 +238,14 @@ So a 403 here is a property of the registration, not of the tool. No tool is hid
 <!-- BEGIN:generated gated-endpoints -->
 | Endpoint family | Shipped tools that call it | On a current registration |
 |---|---|---|
-| `browse-categories` — `/browse/categories*` (list, `{id}`, `{id}/playlists`) | `browse_category_deepdive` | 403 explained |
+| `browse-categories` — `/browse/categories*` (list, `{id}`, `{id}/playlists`) | `get_category`, `browse_category_deepdive`, `category_resolver` | 403 explained |
 | `browse-new-releases` — `/browse/new-releases` | *(none — no shipped tool reads this path)* | Replaced; no call site |
 | `markets` — `/markets` | `get_available_markets`, `market_validate` | 403 explained |
-| `artist-top-tracks` — `/artists/{id}/top-tracks` | `get_artist_top_tracks`, `queue_playlist` | 403 explained |
+| `artist-top-tracks` — `/artists/{id}/top-tracks` | `get_artist_top_tracks`, `queue_playlist`, `artist_collab_network`, `artist_completeness_score`, `batch_add_to_playlist`, `copy_playlist`, `move_items_between_playlists` | 403 explained |
 | `user-profile` — `/users/{id}` and `/users/{id}/playlists` | `get_user_profile`, `get_user_playlists_by_id`, `get_playlist_followers` | 403 explained |
 | `me-type-contains` — the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following) | *(none — migrated to `GET /me/library/contains`)* | Replaced; no call site |
 | `playlist-followers-contains` — `/playlists/{id}/followers/contains` | *(none — migrated to `GET /me/library/contains`)* | Replaced; no call site |
-| `batch-several` — the multi-id `?ids=` batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters`) | `get_several_tracks`, `get_several_albums`, `get_several_artists` | Replaced with per-id reads |
+| `batch-several` — the multi-id `?ids=` batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters`) | `get_several_tracks`, `get_several_albums`, `get_several_artists`, `get_several_episodes`, `get_several_shows`, `get_several_audiobooks`, `get_several_chapters`, `catalog_batch_lookup` | Replaced with per-id reads |
 
 All 8 families above are operations Spotify's February 2026 changelog marks `[REMOVED]`.
 <!-- END:generated gated-endpoints -->
