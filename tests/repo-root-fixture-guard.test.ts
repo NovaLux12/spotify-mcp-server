@@ -38,7 +38,7 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { collectRepoRootFixtureErrors } from '../scripts/check-no-repo-root-fixtures.mjs';
+import { collectRepoRootFixtureErrors, widenedMkdirMeasurements } from '../scripts/check-no-repo-root-fixtures.mjs';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const GUARD = join(ROOT, 'scripts', 'check-no-repo-root-fixtures.mjs');
@@ -141,14 +141,98 @@ describe('#1383 — no test creates a fixture inside the repository', () => {
 
   it('covers mkdtemp only, and says so rather than pretending otherwise', () => {
     // A `mkdir` on a subdirectory of an existing tmpdir fixture is the common
-    // case in this tree, and gating it produced 52 findings on a clean tree.
-    // The scope is stated in the guard's docstring; this pins the statement, so
-    // a future change that widens or narrows the pattern has to move the
-    // documented boundary with it rather than leaving the two to disagree.
+    // case in this tree, and gating it reports dozens of findings on a tree
+    // that is clean. The scope is stated in the guard's docstring; this pins
+    // the statement, so a future change that widens or narrows the pattern has
+    // to move the documented boundary with it rather than leaving the two to
+    // disagree.
     const source = "const dir = await mkdtemp(join(tmpdir(), 'ok-'));\nawait mkdir(join(dir, 'docs'), { recursive: true });";
     assert.deepEqual(errorsIn(source), [], 'the mkdtemp is clean, so the mkdir must not be reported as its own hit');
     const guardSource = readFileSync(GUARD, 'utf8');
     assert.match(guardSource, /Scope: `mkdtemp`, not `mkdir`/, 'the guard no longer documents its mkdir exclusion');
+  });
+
+  it('states the residual risk, and does not name a backstop that does not hold', () => {
+    // #1421. The boundary above is only safe to leave in place if the reader
+    // can see what it costs. The text used to claim two backstops for an
+    // uncovered repo-rooted `mkdir`; both were checked and neither survives:
+    //
+    //  - The census marker scan skips entries whose name starts with `.`, so
+    //    the #1383 leak was invisible to it. That is a property of the NAME.
+    //    A `mkdir(join(ROOT, 'scratch'))` is not a dot-entry and the scan walks
+    //    into it, so the dot-skip is not a mitigation for the uncovered case.
+    //  - `git status --porcelain` does not report an EMPTY untracked directory,
+    //    because git does not track empty directories. A `mkdir` killed before
+    //    its first write leaves nothing to report.
+    //
+    // So the honest statement is that the static gate covers `mkdtemp` and a
+    // repo-rooted `mkdir` is caught by review, not by this file. Asserting the
+    // claims are *absent* is what fails if someone re-adds a reassurance: the
+    // guard has to keep saying what is actually true.
+    const guardSource = readFileSync(GUARD, 'utf8');
+    assert.match(
+      guardSource,
+      /residual risk/i,
+      'the guard no longer states what the mkdtemp-only boundary leaves uncovered',
+    );
+    assert.doesNotMatch(
+      guardSource,
+      /dot-skip[^.]*is what keeps such a directory|marker scan's dot-skip \(#1238\) is what keeps/,
+      'the guard again claims the census dot-skip protects an uncovered mkdir — it only skips ' +
+        'dot-NAMED entries, so a repo-rooted `scratch/` is walked like any other directory',
+    );
+    assert.doesNotMatch(
+      guardSource,
+      /`git status --porcelain` is what reports it/,
+      'the guard again claims `git status --porcelain` reports the leak — it does not report an ' +
+        'EMPTY untracked directory, and a mkdir killed before its first write leaves no entry',
+    );
+  });
+
+  it('measures the widening cost on the real tree instead of quoting a number', () => {
+    // The docstring's justification for the boundary was a hand-typed count
+    // ("52 findings"), which was true at #1417 and wrong within a release — the
+    // tree moved and the number did not. A boundary defended by a figure nobody
+    // re-derives decays the same way. So the figure is measured here, against
+    // the real `tests/` tree, by the guard's own collector with the call
+    // pattern widened to `mkdir`.
+    //
+    // Two things are being checked. The first is non-vacuity: a widened scan
+    // that matched nothing would "prove" the boundary is free, so the count
+    // itself is the evidence — but a count is only evidence if every entry in
+    // it is a real call, which is what the cross-check below establishes. A
+    // measurement that reported the right *number* of findings pointing at the
+    // wrong lines would satisfy a bare length assertion.
+    const widened = widenedMkdirMeasurements(GUARDED);
+
+    // Every reported `file:line` must really be a `mkdir` call in that file.
+    // This is the check that would catch a miscounted line offset, and it reads
+    // the tree independently of the collector rather than re-deriving the
+    // collector's own answer.
+    const misreported = widened.filter((hit) => {
+      const [file, line] = hit.split(':');
+      const source = GUARDED.get(file)?.code;
+      if (source === undefined) return true;
+      return !/(?<![\w$.])mkdir(?:Sync)?\s*\(/.test(source.split('\n')[Number(line) - 1] ?? '');
+    });
+    assert.deepEqual(
+      misreported,
+      [],
+      `the widened measurement points at lines that are not mkdir calls: ${misreported.join(' | ')}`,
+    );
+
+    // The boundary is only worth its cost while widening is genuinely
+    // unaffordable. A floor rather than an equality: the count moves every time
+    // a test is added, and pinning it exactly would make this the same rotting
+    // number in a different place. If this ever falls to a handful, widening
+    // has become re-arguable and the documented boundary should move with it.
+    assert.ok(
+      widened.length >= 20,
+      `widening to mkdir now costs only ${widened.length} findings on a clean tree (was 50-odd). ` +
+        'The false-positive argument for the mkdtemp-only boundary is wearing thin — re-derive it ' +
+        'and, if it no longer holds, move the documented boundary instead of the number. ' +
+        `Findings:\n  ${widened.slice(0, 10).join('\n  ')}`,
+    );
   });
 
   it('rejects a name imported from a module that does not derive it from tmpdir', () => {
