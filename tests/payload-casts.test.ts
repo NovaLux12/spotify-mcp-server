@@ -98,12 +98,15 @@ function measured(): Map<string, CastCounts> {
  */
 const BASELINE: Record<string, { specificShape?: number; anyAnnotation?: number; anyAngle?: number; reason: string }> = {
   'src/tools/annotations.ts': {
-    specificShape: 9,
+    specificShape: 7,
     reason:
-      'Every one is `server as unknown as { _registeredTools?: ... }` or the same on the low-level server. ' +
-      'These reach the SDK\'s private registry, not a Spotify payload: the field is internal to this process and its ' +
-      'shape is declared inline on the spot that reads it. Moving them means a typed accessor on the McpServer ' +
-      'wrapper (an interface-augmentation or a small registry module), which is a separate change from this one.',
+      'Five reach a private field on the SDK server or its low-level server — the tool registry, the prompt registry, ' +
+      'the request-handler map — and one more reads `__spotifyModuleSchemaBudgets`, a field this module sets itself. ' +
+      'The last is the error boundary returning `ServerResult`. None of them is a Spotify payload: they are internal to ' +
+      'this process. Four of the five `_registeredTools` reads now go through `registeredToolEntries` / ' +
+      '`schemaRegistryEntries`, which is the change this row\'s earlier wording predicted was separate; the fifth reads ' +
+      'an intersection of both entry shapes for the annotation pass and still declares its own. Two functions rather than ' +
+      'one generic on purpose — `readRegistry<T>()` would name its result type once and return whatever was asked for.',
   },
   'src/gating.ts': {
     specificShape: 5,
@@ -213,8 +216,13 @@ describe('payload-cast ratchet (#1202)', () => {
     assert.deepEqual(
       over,
       [],
-      `A payload cast was added above its ratchet ceiling. Fix the read — widen src/types/spotify.ts, or narrow it ` +
-        `through readString / readNumber / asRecord — rather than raising the ceiling:\n${over.join('\n')}`,
+      `A payload cast was added above its ratchet ceiling, and raising the ceiling is not the fix. Which remedy applies ` +
+        `depends on what the cast reaches, and the two are not interchangeable. A cast onto a SPOTIFY payload — the ` +
+        `kind that reaches the wire — is fixed by widening src/types/spotify.ts, or by narrowing the read through ` +
+        `readString / readNumber / asRecord, so the value is marked rather than defaulted. A cast onto a private field ` +
+        `of the SDK server or its low-level server reaches nothing on the wire; it is fixed by routing every reader of ` +
+        `that field through one named accessor, so the shape is declared once instead of at each site. Check which one ` +
+        `you are looking at before picking a remedy:\n${over.join('\n')}`,
     );
   });
 

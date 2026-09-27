@@ -855,12 +855,28 @@ interface RegistryEntry {
 }
 
 /**
+ * The SDK's private tool registry, read once for the whole module.
+ *
+ * Every reader here reached the same field through its own
+ * `server as unknown as { _registeredTools?: … }`, which repeats a claim about
+ * the SDK's internals at each site and re-types it at each site — so a change to
+ * the registry's shape had to be reconciled in five places, and the copy at each
+ * one was free to disagree. This is deliberately two functions rather than one
+ * generic: a `readRegistry<T>()` would name its result type once and hand back
+ * whatever the caller asked for, which is the unverified assertion behind a
+ * friendlier name (AGENTS.md §6).
+ */
+function registeredToolEntries(server: McpServer): Record<string, RegistryEntry> | undefined {
+  return (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+}
+
+/**
  * Attach annotations to every registered tool, using the SDK's `update()` when
  * available (it also notifies hosts) and assigning directly otherwise. Returns
  * counts so startup can log a silent no-op instead of shipping unannotated tools.
  */
 export function applyToolAnnotations(server: McpServer): { total: number; annotated: number } {
-  const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+  const registry = registeredToolEntries(server);
   if (!registry || typeof registry !== 'object') return { total: 0, annotated: 0 };
   let annotated = 0;
   for (const [name, entry] of Object.entries(registry)) {
@@ -936,7 +952,7 @@ export function applyToolOutputSchemas(
   server: McpServer,
   familyFor: (file: string) => OutputSchemaFamily | undefined = outputSchemaFamilyForModule,
 ): { total: number; declared: number } {
-  const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+  const registry = registeredToolEntries(server);
   if (!registry || typeof registry !== 'object') return { total: 0, declared: 0 };
   let declared = 0;
   const unclassified: string[] = [];
@@ -1946,6 +1962,15 @@ interface SchemaRegistryEntry {
   enabled?: boolean;
 }
 
+/**
+ * The same private registry, read for the budget paths. `SchemaRegistryEntry` is
+ * a narrower view of the same value — the fields a schema budget measures — so
+ * this is a second named shape rather than a second inline cast.
+ */
+function schemaRegistryEntries(server: McpServer): Record<string, SchemaRegistryEntry> {
+  return (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry> })._registeredTools ?? {};
+}
+
 interface ServerModuleMetadata {
   statuses: Map<string, ModuleRegistrationStatus>;
   tools: Map<string, string[]>;
@@ -1965,7 +1990,7 @@ function serverMetadata(server: McpServer): ServerModuleMetadata {
 }
 
 function registeredToolNames(server: McpServer): string[] {
-  const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry> })._registeredTools ?? {};
+  const registry = schemaRegistryEntries(server);
   return Object.keys(registry);
 }
 
@@ -2213,7 +2238,7 @@ export function serializedSchemaBytes(
 export function collectModuleSchemaBudgets(server: McpServer): ModuleSchemaBudget[] {
   const metadata = serverMetadata(server);
   if (metadata.budgetRows) return [...metadata.budgetRows];
-  const registry = (server as unknown as { _registeredTools?: Record<string, SchemaRegistryEntry> })._registeredTools ?? {};
+  const registry = schemaRegistryEntries(server);
   const rows = REGISTRAR_MANIFEST.map((module): ModuleSchemaBudget => {
     const status = metadata.statuses.get(module.key) ?? 'active';
     const names = metadata.tools.get(module.key) ?? [];
@@ -2296,7 +2321,7 @@ interface ErrorFields {
 }
 
 function getToolRegistry(server: McpServer): Record<string, RegistryEntry> {
-  const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+  const registry = registeredToolEntries(server);
   if (!registry || typeof registry !== 'object') {
     throw new Error('Spotify MCP tool registry is unavailable; refusing to start without its error boundary');
   }
