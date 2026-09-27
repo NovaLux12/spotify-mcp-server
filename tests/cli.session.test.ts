@@ -40,10 +40,12 @@ process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 import { after, before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { openCliSession, type CliIo, type CliSession } from '../src/cli/session.js';
+import { getTokenFile } from '../src/auth.js';
+import { dispatchCliSubcommand } from '../src/cli/dispatch.js';
 import { StubSpotifyClient } from './helpers/stub-client.js';
 import { runCall } from '../src/cli/call.js';
 import { runTools, collectToolsReport } from '../src/cli/tools.js';
@@ -124,6 +126,71 @@ async function run(
   const io2 = captureIo(false);
   return { code: await fn(argv, { ...session, io: io2 }, deps), io: io2 };
 }
+
+describe('#606 --profile: the session loads the account it was told to', () => {
+  it('hands the client the resolved token file, not a flag it ignored', async () => {
+    // The property that makes `--profile` real. `SpotifyClient` defaults its
+    // `tokenFile` to an argv-aware `getTokenFilePath()`, so a flag left in argv
+    // would *happen* to work and this test would still pass — which is exactly
+    // why the assertion reads the client's own field back instead of checking
+    // that nothing threw. A session built with no `tokenFile` is the control:
+    // it must resolve through the same precedence the server uses, not through
+    // something the CLI invented.
+    // `storeDir()` resolves against the (hermetic) home the import above set,
+    // so the expectation is derived from `homedir()` rather than from this
+    // file's own `scratch` — a test that hard-coded either would be asserting
+    // about the wrong directory the moment either moved.
+    const scoped = await openCliSession({ io: captureIo(), tokenFile: getTokenFile('work') });
+    try {
+      assert.equal(
+        scoped.spotifyClient.tokenFile,
+        join(homedir(), '.spotify-mcp', 'tokens.work.json'),
+        '--profile must decide the file the client loads, not merely be accepted',
+      );
+      // And the precedence `getTokenFile` documents is the one in force: an
+      // explicit SPOTIFY_MCP_TOKEN_FILE outranks the profile name, because that
+      // is the rule `spotify-mcp auth` and the server both obey. A session that
+      // quietly used `tokens.work.json` anyway would send one account's token
+      // on a request the operator meant for another.
+      const pinned = join(scratch, 'pinned.json');
+      const overridden = await openCliSession({
+        io: captureIo(),
+        tokenFile: getTokenFile('work', { SPOTIFY_MCP_TOKEN_FILE: pinned }),
+      });
+      try {
+        assert.equal(overridden.spotifyClient.tokenFile, pinned);
+      } finally {
+        await overridden.close();
+      }
+    } finally {
+      await scoped.close();
+    }
+  });
+});
+
+describe('#606 --profile: the dispatcher hands the session the file it named', () => {
+  it('resolves the profile into the session options', async () => {
+    // The handoff itself. Everything else about `--profile` is proved in the
+    // test above (the client gets the file) and in `cli.args.test.ts` (the flag
+    // is lifted, stripped and validated) — this is the join between them, and it
+    // is the one line whose removal would leave every other test green.
+    //
+    // The session is closed before `dispatchCliSubcommand` returns, so a test
+    // that only read the exit code could not tell a wired flag from a dropped
+    // one: `tools` lists a surface either way. What is captured is the options
+    // the dispatcher actually asked for, with a real session built behind them
+    // so the subcommand really runs.
+    let asked: string | undefined;
+    const result = await dispatchCliSubcommand('tools', ['--profile', 'work', '--filter', 'get_now_playing'], {
+      openSession: async (options) => {
+        asked = options?.tokenFile;
+        return openCliSession({ ...options, spotifyClient: stub, io: captureIo() });
+      },
+    });
+    assert.equal(result.code, 0, 'the subcommand still ran');
+    assert.equal(asked, join(homedir(), '.spotify-mcp', 'tokens.work.json'));
+  });
+});
 
 describe('#606 tools', () => {
   it('reports exactly what tools/list returns — same names, same count', async () => {

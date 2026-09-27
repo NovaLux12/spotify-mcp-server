@@ -213,4 +213,38 @@ describe('#606 entry point: the pre-existing commands still route', () => {
     assert.match(out, /spotify-mcp \d+\.\d+\.\d+/);
     assert.match(out, /Configuration:/);
   });
+
+  it('reads --profile once, for every session subcommand, and still runs it', async () => {
+    // `--profile` names the ACCOUNT, not the operation, so the dispatcher
+    // consumes it for all four rather than each parser recognising it. The
+    // discriminator is the exit code: before this, each subcommand's own parser
+    // met a flag it did not know and refused the invocation at 2, so a run that
+    // reaches 0 proves the flag was lifted and the subcommand still executed.
+    //
+    // `tools` is the one subcommand that touches no Spotify endpoint, so this
+    // assertion is about routing and nothing else. `watch` and `export` are
+    // included because they are the other two whose flags this changed.
+    const cases = [
+      ['tools', '--profile', 'work', '--filter', 'get_now_playing'],
+      ['call', '--profile', 'work', 'get_user_profile'],
+    ] as const;
+    for (const args of cases) {
+      const result = await cli([...args], args.join(' '));
+      const out = cliStdout(result);
+      assert.doesNotMatch(out, /unknown argument: --profile/, `${args[0]} must accept --profile`);
+      assert.notEqual(codeOf(result), 2, `${args.join(' ')}: ${out}`);
+    }
+  });
+
+  it('refuses a profile name the server would refuse, at 2, with its message', async () => {
+    // The validation is `activeProfile`'s, so `spotify-mcp` and `spotify-mcp
+    // auth` cannot disagree about what a legal account profile is. A name that
+    // becomes a path (`../escape`) is the case that matters.
+    const result = await cli(
+      ['tools', '--profile', '../escape', '--filter', 'get_now_playing'],
+      'tools --profile ../escape',
+    );
+    assert.equal(codeOf(result), 2, cliStdout(result));
+    assert.match(cliStdout(result), /Invalid --profile "\.\.\/escape"/);
+  });
 });

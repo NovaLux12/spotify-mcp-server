@@ -103,6 +103,17 @@ export interface CliSessionOptions {
   /** Injected by tests; defaults to a real client over the real network layer. */
   readonly spotifyClient?: SpotifyClient;
   readonly io?: CliIo;
+  /**
+   * The token file this session's client loads, resolved by the dispatcher from
+   * `--profile` through `getTokenFile()` (#606).
+   *
+   * Passed explicitly rather than left to the client's own argv-aware
+   * `getTokenFilePath()` default, for the reason in `takeProfileFlag`: a flag's
+   * behaviour should be a property of the code that read the flag, not of argv
+   * reaching a module that was never told about it. Omit it and the client does
+   * exactly what `spotify-mcp` itself does — same precedence, same file.
+   */
+  readonly tokenFile?: string;
 }
 
 /**
@@ -111,10 +122,15 @@ export interface CliSessionOptions {
  * `server` is exposed for the one thing a `Client` cannot answer: which
  * manifest module owns each registered name, which `tools` reads from
  * `moduleToolNames` rather than from anything on the wire.
+ *
+ * `spotifyClient` is exposed so `--profile` can be proved rather than assumed:
+ * it is the object whose `tokenFile` the flag decides, and a test that cannot
+ * read it back is a test that only checks the flag did not crash.
  */
 export interface CliSession {
   readonly client: Client;
   readonly server: Awaited<ReturnType<typeof buildMcpServer>>;
+  readonly spotifyClient: SpotifyClient;
   readonly io: CliIo;
   close(): Promise<void>;
 }
@@ -136,7 +152,8 @@ export async function openCliSession(options: CliSessionOptions = {}): Promise<C
   // `getConfig()` reader below resolves against it.
   initConfig();
   const scope = await resolveServerScope({ announce: false });
-  const spotifyClient = options.spotifyClient ?? new SpotifyClient();
+  const spotifyClient = options.spotifyClient
+    ?? (options.tokenFile === undefined ? new SpotifyClient() : new SpotifyClient({ tokenFile: options.tokenFile }));
   const server = await buildMcpServer(spotifyClient, scope, { announce: false });
 
   const client = new Client(
@@ -162,6 +179,7 @@ export async function openCliSession(options: CliSessionOptions = {}): Promise<C
   return {
     client,
     server,
+    spotifyClient,
     io,
     close: async () => {
       await client.close();

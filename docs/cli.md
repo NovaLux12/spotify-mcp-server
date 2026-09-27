@@ -31,11 +31,34 @@ Every subcommand returns one of three, and the distinction is load-bearing:
 |------|---------|
 | `0` | The work ran and succeeded. |
 | `1` | The work ran and **failed** — a refusal, a 403, a validation error, an export the tool would not write. The server's own `kind` / `reason` / `fix` are printed. |
-| `2` | The **invocation** was wrong and nothing was sent to Spotify — a bad flag, malformed JSON, an unknown tool name, a missing client id. |
+| `2` | The **invocation** was wrong and nothing was sent to Spotify — a bad flag, malformed JSON, an unknown tool name, a missing client id, a profile name the server would refuse. |
 
 "Your arguments are wrong" and "Spotify said no" are different mistakes, and a
 script needs to tell them apart. A CLI path that swallows an error and exits 0
 is a defect, not a convenience.
+
+## `--profile` is read once, by the dispatcher
+
+`--profile <name>` names the **account** — which token file the client loads —
+so it means the same thing to `tools`, `call`, `watch` and `export`, and it is
+lifted out of `argv` once, before the session is opened, rather than parsed four
+times. Its value is validated by the same `activeProfile()` that
+`spotify-mcp auth --profile` uses, so the two cannot disagree about what a legal
+account name is; a name that would become a path (`../escape`, `..`) is refused
+at exit 2 before the registry boots.
+
+The token file itself comes from `getTokenFile()`, so the documented precedence
+is the one in force:
+
+```
+SPOTIFY_MCP_TOKEN_FILE  >  --profile  >  SPOTIFY_MCP_PROFILE  >  the default file
+```
+
+An explicit `SPOTIFY_MCP_TOKEN_FILE` therefore outranks `--profile` here exactly
+as it does in `auth`. That precedence is asserted, not described: a test reads
+the client's own `tokenFile` back after a session is built each way, so a change
+that quietly sent one account's token on a request meant for another would fail
+rather than pass.
 
 ## `spotify-mcp tools`
 
@@ -57,6 +80,7 @@ get_now_playing
 | `--json` | Emit the whole report as JSON |
 | `--filter <text>` | Only tools whose name contains `<text>` (case-insensitive) |
 | `--module <key>` | Only tools registered by one manifest module |
+| `--profile <name>` | Act on a named account profile (see above) |
 | `--help` | Usage |
 
 Each row carries four facts, read from three different places on purpose:
@@ -89,7 +113,6 @@ $ spotify-mcp call get_playlist --args '{"playlist_id":"37i9dQZF1DXcBWIGoYBM5M"}
 | `--args '<json>'` | Object of arguments, as a JSON string (default `{}`) |
 | `--dry-run` | Set the tool's **own** `dry_run` parameter to true |
 | `--json` | Emit the raw MCP result as JSON |
-| `--profile <name>` | Act on a named profile, as with `spotify-mcp auth --profile` |
 
 ### `--dry-run` is a request, not a promise
 
@@ -132,6 +155,7 @@ $ spotify-mcp watch --tool get_now_playing --interval 5 --count 12
 | `--count <n>` | Stop after n polls; `0` (the default) runs until Ctrl-C |
 | `--json` | One JSON object per poll, plus a summary object |
 | `--tolerate-errors` | Keep polling after an error instead of stopping |
+| `--profile <name>` | Act on a named account profile (see above) |
 
 ### What the ETag story actually is
 
@@ -183,6 +207,7 @@ $ spotify-mcp export --kind playlist --playlist 37i9dQZF1DXcBWIGoYBM5M --out roa
 | `--playlist <id>` | Required for `--kind playlist` |
 | `--overwrite` | Replace an existing file (refused by default) |
 | `--json` | Emit the tool's result as JSON |
+| `--profile <name>` | Act on a named account profile (see above) |
 
 `--kind playlists` is **refused** with an explanation. No tool exports every
 playlist, and treating the plural as the singular would export a playlist the

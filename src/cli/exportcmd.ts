@@ -60,6 +60,9 @@ Options:
   --playlist <id>      Required for --kind playlist
   --overwrite          Replace an existing file (refused by default)
   --json               Emit the tool's result as JSON
+  --profile <name>    Act on a named ACCOUNT profile, as with
+                       \`auth --profile\`. Read once by the dispatcher and
+                       applied to this subcommand's token file
   --help               Show this message
 
 Exit codes: 0 written, 1 the tool reported a failure, 2 the invocation was

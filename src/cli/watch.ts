@@ -65,6 +65,9 @@ Options:
   --count <n>         Stop after n polls (default 0 = run until Ctrl-C)
   --json              Emit one JSON object per poll instead of prose
   --tolerate-errors   Keep polling after an error instead of stopping
+  --profile <name>    Act on a named ACCOUNT profile, as with
+                       \`auth --profile\`. Read once by the dispatcher and
+                       applied to this subcommand's token file
   --help              Show this message
 
 Exit codes: 0 ran to completion, 1 a poll failed.`;

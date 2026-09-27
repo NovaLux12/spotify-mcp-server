@@ -21,6 +21,8 @@
  * draws this line for `--profile`; this is the same rule generalised.
  */
 
+import { activeProfile } from '../auth.js';
+
 export class CliUsageError extends Error {
   constructor(message: string) {
     super(message);
@@ -82,4 +84,60 @@ export function positionals(argv: readonly string[]): { words: string[]; unknown
 /** The usage line a subcommand prints on a bad flag, followed by its help. */
 export function usageFailure(message: string, help: string): string {
   return `spotify-mcp: ${message}\n\n${help}`;
+}
+
+/**
+ * Lift `--profile <name>` out of a subcommand's argv, and hand back the rest.
+ *
+ * ## Why this is not in each subcommand's own parser
+ *
+ * `--profile` names the ACCOUNT, not the operation, so it has the same answer
+ * for `tools`, `call`, `watch` and `export`: it decides which token file the
+ * client loads. Issue #606 asks for it to be shared across the subcommands
+ * rather than spelled per command, and there is a second reason to keep it out
+ * of the four parsers — a flag each of them had to recognise was a flag four of
+ * them could each get wrong, and a subcommand that forgot it would reject a
+ * flag the dispatcher has already acted on.
+ *
+ * Stripping it here (rather than leaving it for the runner) is what makes that
+ * safe: the runner never sees the token, and the dispatcher has already turned
+ * it into the one thing it means, a resolved token file.
+ *
+ * ## Why it is not simply left in argv
+ *
+ * `SpotifyClient` resolves its own token file from `getTokenFilePath()`, which
+ * reads `process.argv` — so a `--profile` left in argv would *happen* to work,
+ * and the flag's real behaviour would be a property of argv leaking into a
+ * module that was not told about it. #109 is what that class of accident costs:
+ * `loadTokens` and `saveTokens` asking for the argv profile while a module-level
+ * resolver answered something else, so a server refreshed one account's tokens
+ * into another account's file. Resolving it once, here, and passing an explicit
+ * path to the session is the same value with the mechanism attached to the code
+ * that decided it.
+ *
+ * ## Validation is not re-implemented
+ *
+ * The name is checked by `activeProfile()` in `src/auth.ts`, so the rule an
+ * account profile must satisfy is the rule `spotify-mcp auth` enforces, read
+ * from the one function that owns it. A second `PROFILE_NAME_PATTERN` here
+ * would be a second answer to "what is a legal profile name".
+ */
+export function takeProfileFlag(argv: readonly string[]): { profile?: string; rest: string[] } {
+  const rest: string[] = [];
+  let profile: string | undefined;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--profile' || arg.startsWith('--profile=')) {
+      profile = takeValue(argv, i, '--profile');
+      if (arg === '--profile') i += 1;
+      continue;
+    }
+    rest.push(arg);
+  }
+  if (profile === undefined) return { rest };
+  // `{}` as the environment on purpose: `activeProfile` falls back to
+  // SPOTIFY_MCP_PROFILE, and this call is validating the name the user typed,
+  // not resolving which profile wins. The precedence question is
+  // `getTokenFile`'s, one layer up.
+  return { profile: activeProfile(profile, {}), rest };
 }

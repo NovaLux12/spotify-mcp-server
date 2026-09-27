@@ -55,7 +55,9 @@ Options:
                          before any request when the tool has no such
                          parameter, rather than pretending to preview.
   --json                 Emit the raw MCP result as JSON on stdout
-  --profile <name>       Act on a named profile (as with \`auth --profile\`)
+  --profile <name>       Act on a named ACCOUNT profile, as with
+                         \`auth --profile\`. Handled once by the dispatcher
+                         for all four session subcommands, not per command.
   --help                 Show this message
 
 Exit codes: 0 success, 1 the tool returned an error envelope, 2 the
@@ -66,7 +68,6 @@ export interface CallOptions {
   args: Record<string, unknown>;
   dryRun: boolean;
   json: boolean;
-  profile?: string;
 }
 
 /**
@@ -79,7 +80,7 @@ export interface CallOptions {
  * testing without the ~2 s a registry boot costs.
  */
 export function parseCallArgs(argv: readonly string[]): CallOptions {
-  const opts = { tool: undefined as string | undefined, args: undefined as Record<string, unknown> | undefined, dryRun: false, json: false, profile: undefined as string | undefined };
+  const opts = { tool: undefined as string | undefined, args: undefined as Record<string, unknown> | undefined, dryRun: false, json: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--dry-run') opts.dryRun = true;
@@ -101,9 +102,6 @@ export function parseCallArgs(argv: readonly string[]): CallOptions {
         throw new CliUsageError(`--args must be a JSON object, got ${describeJson(parsed)}`);
       }
       opts.args = parsed as Record<string, unknown>;
-    } else if (arg === '--profile' || arg.startsWith('--profile=')) {
-      opts.profile = takeValue(argv, i, '--profile');
-      if (arg === '--profile') i += 1;
     } else if (arg.startsWith('-')) {
       throw new CliUsageError(`unknown argument: ${arg}`);
     } else if (opts.tool === undefined) {
@@ -118,7 +116,6 @@ export function parseCallArgs(argv: readonly string[]): CallOptions {
     args: opts.args ?? {},
     dryRun: opts.dryRun,
     json: opts.json,
-    profile: opts.profile,
   };
 }
 

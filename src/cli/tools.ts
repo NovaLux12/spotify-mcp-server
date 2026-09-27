@@ -60,6 +60,9 @@ Options:
   --json           Emit the surface as JSON on stdout
   --filter <text>  Only tools whose name contains <text> (case-insensitive)
   --module <key>   Only tools registered by one manifest module
+  --profile <name> Act on a named ACCOUNT profile, as with
+                  \`auth --profile\`. Read once by the dispatcher and
+                  applied to this subcommand's token file
   --help           Show this message`;
 
 export interface ToolsOptions {

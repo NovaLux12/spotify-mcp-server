@@ -34,7 +34,7 @@ import './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { CliUsageError, parsePositiveInt, positionals, takeValue, usageFailure } from '../src/cli/args.js';
+import { CliUsageError, parsePositiveInt, positionals, takeProfileFlag, takeValue, usageFailure } from '../src/cli/args.js';
 import { parseCallArgs, nearest } from '../src/cli/call.js';
 import { parseToolsArgs, quotaMarker } from '../src/cli/tools.js';
 import { parseWatchArgs } from '../src/cli/watch.js';
@@ -130,7 +130,6 @@ describe('#606 call: parseCallArgs', () => {
       args: {},
       dryRun: false,
       json: false,
-      profile: undefined,
     });
   });
 
@@ -160,6 +159,50 @@ describe('#606 call: parseCallArgs', () => {
     // The class this repository's CLI rule exists for: a `--dry-runn` typo that
     // ran a real, destructive write while the user believed it was a preview.
     refuses(() => parseCallArgs(['get_me', '--dry-runn']), /unknown argument: --dry-runn/);
+  });
+});
+
+describe('#606 --profile: takeProfileFlag', () => {
+  it('lifts the flag out and hands the runner the rest of argv', () => {
+    // The positive control. `rest` matters as much as `profile`: the runner
+    // must not see the flag, because the flag has already been acted on and a
+    // runner that re-reads it would be the second place deciding the account.
+    assert.deepEqual(takeProfileFlag(['get_user_profile', '--profile', 'work', '--json']), {
+      profile: 'work',
+      rest: ['get_user_profile', '--json'],
+    });
+  });
+
+  it('accepts the inline form and trims the name', () => {
+    assert.deepEqual(takeProfileFlag(['--profile=work']), { profile: 'work', rest: [] });
+    assert.deepEqual(takeProfileFlag(['--profile', '  work  ']), { profile: 'work', rest: [] });
+  });
+
+  it('leaves argv alone when the flag is absent', () => {
+    // A `--profile` that is not there must not become an empty string, which
+    // `getTokenFile` would read as "no profile" and send the call to the
+    // default account.
+    assert.deepEqual(takeProfileFlag(['--json', '--filter', 'now_playing']), {
+      rest: ['--json', '--filter', 'now_playing'],
+    });
+  });
+
+  it('refuses a missing value rather than eating the next flag', () => {
+    // `--profile --json` reading `--json` as the account name is the same
+    // two-value rule every other flag here follows.
+    assert.throws(() => takeProfileFlag(['--profile', '--json']), /--profile requires a value/);
+    assert.throws(() => takeProfileFlag(['--profile']), /--profile requires a value/);
+    assert.throws(() => takeProfileFlag(['--profile=']), /--profile requires a value/);
+  });
+
+  it('refuses a name the server\'s own validator rejects, with its message', () => {
+    // Validation is `activeProfile`'s, not a second pattern: a profile name
+    // `spotify-mcp auth` would accept must not be rejected here, and one it
+    // would reject must not be accepted. `/`, `..` and a space are the three
+    // that matter, because each becomes a path.
+    assert.throws(() => takeProfileFlag(['--profile', '../escape']), /Invalid --profile "\.\.\/escape"/);
+    assert.throws(() => takeProfileFlag(['--profile', '..']), /Invalid --profile "\.\."/);
+    assert.throws(() => takeProfileFlag(['--profile', 'two words']), /Invalid --profile "two words"/);
   });
 });
 
