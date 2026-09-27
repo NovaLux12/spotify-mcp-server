@@ -113,8 +113,22 @@ jobs:
         # failed with `ENOENT: no such file or directory, open
         # '…/.surface-census.json'`. One real failure, and a second that named
         # a documentation regression that was not there.
+        #
+        # #1487. This used to capture the census with a shell redirect, and a
+        # redirect truncates the target *before* the command runs — so a failed
+        # census left an artifact behind and the three guarded readers below
+        # all read it. A run that fails before printing left a zero-byte file
+        # and they reported `SyntaxError: Unexpected end of JSON input`; a run
+        # that prints and then fails left a file that *parses* and is not a
+        # census, so a reader got past `JSON.parse` and died on an absent field
+        # instead. Neither named the census, and neither was the `ENOENT` the
+        # `!cancelled()` guard above was written to produce.
+        #
+        # `--out` makes the writer hold the exit status: the file is installed
+        # only when the run succeeded, and a failure leaves nothing at all, so
+        # the readers fail on the missing artifact this step's own log explains.
         if: ${{ !cancelled() }}
-        run: node scripts/surface-census.mjs > .surface-census.json
+        run: node scripts/surface-census.mjs --out .surface-census.json
 
       - name: Check generated documentation inventory
         # The other half of the same pair: a reader of the census. A step with
