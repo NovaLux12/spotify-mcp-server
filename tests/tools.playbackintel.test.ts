@@ -27,6 +27,10 @@ function makeHarness(opts: { getResponse?: (path:string, params?:Record<string,s
     getAllPages: async()=>[],
   };
   registerPlaybackIntelTools(server, client);
+  // #848 moved `volume_step` out of this module and into `set_volume`, so the
+  // survivor is registered here too. The two modules do not share a tool name,
+  // so `find` is unaffected.
+  registerPlaybackTools(server, client);
   return { registered, calls, client };
 }
 function find(registered:RegisteredTool[], name:string){ const t=registered.find(x=>x.name===name); assert.ok(t, `tool ${name} not found`); return t!; }
@@ -203,11 +207,14 @@ test('get_playback_context still reads deprecated tracks.total projection', asyn
 });
 // #830: Spotify declares volume_percent as the required query parameter; the
 // `volume` spelling is silently rejected, so the nudge never applied.
-test('volume_step writes volume_percent, not volume', async()=>{
+// #848 moved this from `volume_step` to `set_volume`'s `delta_step`, so the
+// assertion moves with it — the property is unchanged, only the tool name and
+// the spelling of the step.
+test('set_volume delta_step writes volume_percent, not volume', async()=>{
   const { registered, calls } = makeHarness({ getResponse:(p)=> p==='/me/player'?{ device:{ id:'d1', volume_percent:50}}:null });
-  await invoke(find(registered,'volume_step'), { step:10 });
+  await invoke(find(registered,'set_volume'), { delta_step:10 });
   const put = calls.find(c=>c.method==='PUT' && c.path.startsWith('/me/player/volume'));
-  assert.ok(put, 'volume_step must PUT the volume');
+  assert.ok(put, 'a delta step must PUT the volume');
   const qs = new URLSearchParams(put!.path.split('?')[1]);
   assert.equal(qs.get('volume_percent'), '60');
   assert.equal(qs.get('device_id'), 'd1');

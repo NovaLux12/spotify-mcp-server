@@ -638,7 +638,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **566 tools** (all 566 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **129 tools** / 143,659 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 144,870 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -750,13 +750,18 @@ Seek to a position in the current track.
 ---
 
 #### `set_volume`
-Set playback volume.
+Set playback volume on one device, on a selection, or across every live device. One tool for the whole family (#848); the retired names forward to it with the flags that made them themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `volume_percent` | number | yes | 0–100 |
-| `device_id` | string | no | |
+| `op` | `"level"` \| `"mute"` \| `"unmute"` \| `"preset"` | no | Variant. `"level"` (default) sets or copies a level; `"mute"` drops to 0 and remembers the level, `"unmute"` restores what mute kept, `"preset"` applies the stored per-device presets. |
+| `volume_percent` | number | no | Absolute level 0–100. Omit it only to nudge with `delta_step` or to copy the active level across devices. Mutually exclusive with `delta_step`. |
+| `delta_step` | number | no | Signed nudge, e.g. +10 or -10, clamped to 0–100. Mutually exclusive with `volume_percent`. |
+| `device_id` | string | no | Device for a single-device write (default: the active device). |
+| `device_ids` | string[] | no | For `op: "level"`: fan the one `volume_percent` out over these device ids or names. |
+| `all_devices` | boolean | no | For `op: "level"`: set every volume-capable device rather than a named selection. |
+| `exclude_device_id` | string | no | For `op: "level"` with no `volume_percent`: leave this device untouched while levelling the rest. |
 
 ---
 
@@ -857,13 +862,17 @@ List available Spotify Connect devices.
 ---
 
 #### `transfer_playback`
-Move playback to a different device.
+Move playback to a different device, named by id, by the label you gave it, or by a name substring. One tool for the whole family (#848); the retired names forward to it with the flags that made them themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `device_id` | string | yes | Target device ID |
-| `play` | boolean | no | Force play immediately (default: maintain current state) |
+| `device` | string | yes | Target device: exact id, the sidecar label set by rename_device, or a case-insensitive name substring. |
+| `play` | boolean | no | Force play (`true`) or arrive paused (`false`); omit to preserve the current play state. |
+| `preserve_position` | boolean | no | Resume the current track at its current position on the target instead of restarting it (default: `false`). |
+| `restore_shuffle_repeat` | boolean | no | Re-apply the current shuffle and repeat modes on the target (default: `false`). |
+| `volume` | number | no | Volume to set on the target after the transfer, 0–100. |
+| `device_id` | string | no | Deprecated alias for `device`; still accepted for one release. |
 
 ---
 

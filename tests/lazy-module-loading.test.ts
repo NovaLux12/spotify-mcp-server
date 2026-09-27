@@ -238,21 +238,8 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
-    // Two deltas land on this number, from opposite directions, and the
-    // comment has to carry both or the next reader attributes it to the wrong
-    // one.
-    //
-    // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
-    // registers under every toolset — the `prompts` set is in the default
-    // install and the four mood prompts name this tool, and a prompt naming a
-    // tool the surface trimmed is what `prompt-resource-hints` fails on. The
-    // cost of that choice is visible right here: an `alwaysActive` module
-    // lands in EVERY trimmed surface, not only the default one. Stated rather
-    // than absorbed, because the next person to add a helper will hit the same
-    // number and should know they will.
-    //
-    // Three deltas land on this number, and the comment has to carry all of
-    // them or the next reader attributes a change to the wrong one.
+    // Four deltas land on this number, and the comment has to carry all of them
+    // or the next reader attributes a change to the wrong one.
     //
     // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
     // registers under every toolset — the `prompts` set is in the default
@@ -272,7 +259,20 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // `peek_next`. The retired names still forward for one release, so the
     // tools a caller can name did not shrink by six — the registrations did,
     // and this is the count of registrations.
-    assert.equal(playback.toolCount, 102, 'the playback surface itself must not change');
+    //
+    // 102 -> 92 (#848): the same kind of collapse, ten registrations this time.
+    // Four transfer tools and eight volume writers of `PUT /me/player/volume`
+    // became one `transfer_playback` and one `set_volume`, whose two schemas
+    // carry the union of the flags the twelve each needed. Each retired name
+    // still resolves — `RETIRED_TOOL_FORWARDS` in `src/shaping.ts` forwards it
+    // to the survivor with the flags that made it itself, for one release — so
+    // a caller of an old name keeps working, but it is a registration rather
+    // than a tool, and tools are what this number counts. The two behaviour
+    // differences the collapse does make (a device that resolved only by id
+    // now also resolves by its sidecar label, and a resume that silently
+    // landed at 0:00 is now seek-corrected) are additive and narrowing
+    // respectively, never a removed capability.
+    assert.equal(playback.toolCount, 92, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -287,55 +287,16 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
 
   it('evaluates every manifest module for the default install', async () => {
     const full = await recordStartup('all');
-    // A tripwire, deliberately a literal: it is here to catch surface growth
-    // nobody intended. #1099 grew 592 -> 594 by adding the two deprecated
-    // `pin_playlist` / `unpin_playlist` aliases beside their canonical
-    // replacements; #638 then took it back down by removing the eight tools
-    // whose only endpoint Spotify deleted in February 2026. Writing each change
-    // down rather than widening the assertion to a computed one is the point:
-    // a number that moves for a stated reason is information, and one that
-    // moves silently is the failure this tripwire exists to catch.
-    //
-    // #602 grew 587 -> 589 by adding `list_accounts` / `switch_account` —
-    // the account registry's two tools, both of which the issue asked for by
-    // name, and neither of which replaces an existing tool.
-    //
-    // #695 took the default surface 589 -> 578 by withholding eleven derived
-    // listening-analytics tools unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is
-    // set. A DELIBERATE reduction, not surface loss: the opted-in surface is
-    // byte-identical to the 589 this tripwire used to pin, which
-    // tests/analytics-optin-registry.test.ts asserts over a real server. A
-    // silent drop from here would mean the gate took something it was not
-    // supposed to take.
-    //
-    // Measured from the live registry on the post-rebase tree, not derived by
-    // subtracting: main moved underneath this branch twice, and the removals
-    // did not compose with the other changes to the plain arithmetic.
-    //
-    // #908 took the full surface from 589 -> 581 by dropping the eight legacy
-    // `taste_*` alias registrations, each a duplicate of a canonical
-    // `statsfm_*` tool with the same params and the same handler. They are not
-    // in this number's arithmetic because they were never in the manifest — a
-    // registration with no row of its own, which is exactly why removing them
-    // could not be seen in a per-module diff and had to be measured.
+    // The same four deltas as the `playback` figure above, measured on the full
+    // surface: 570 -> 571 (#598), 571 -> 572 (#846), 572 -> 566 (#847), and
+    // 566 -> 556 (#848, the same ten). Each is a registration count, and the
+    // forwarding aliases add no line here.
     //
     // The message says "full surface", not "default surface": since #889 an
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
-    // tool. Same choice, and the same trade, as the `playback` figure above.
-    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
-    // tool. Same choice, and the same trade, as the `playback` figure above.
-    //
-    // 571 -> 572 (#846): `migrate_playback_positions`, the same one tool as
-    // above.
-    //
-    // 572 -> 566 (#847): the six queue readers, same trade again — a
-    // registration count, and the forwarding aliases do not add a line here.
-    assert.equal(full.toolCount, 566, 'the full (TOOLSETS=all) surface must be unchanged');
-    // `annotations.ts` registers verify_receipt itself, so it is in the
-    // manifest's file list without being imported through a thunk.
+    assert.equal(full.toolCount, 556, 'the full (TOOLSETS=all) surface must be unchanged');
     const missing = REGISTRAR_MANIFEST
       .map((module) => module.file.replace(/^src\/tools\//, '').replace(/\.ts$/, ''))
       .filter((stem) => !full.toolModules.includes(stem));

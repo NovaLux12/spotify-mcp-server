@@ -12,7 +12,7 @@ A broad Spotify Web API tool surface, plus extras most servers skip. Registratio
 **What you get by default, and what to do about the rest.** A server started with no environment registers a curated surface — search, playback, playlists, library, following — sized so the tool list does not dominate the context window before you have typed anything. `SPOTIFY_MCP_TOOLSETS=all` registers the entire registry instead, and the stats.fm tools are opt-in with `SPOTIFY_MCP_STATSFM=1`. Both are one line in [docs/configuration.md](docs/configuration.md#toolsets-and-registration-keys).
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **129 tools** (143,659 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **566 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (144,870 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **556 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ### 🚧 3.0 is landing

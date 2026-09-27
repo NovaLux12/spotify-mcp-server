@@ -12,6 +12,11 @@
  * any of them shipped green. These cases drive the real handlers against a
  * recording stub and assert the exact wire call.
  *
+ * #848 later removed three of them from this module — the two volume-plan
+ * tools and `transfer_playback_with_state` — and their cases moved to
+ * `tests/tools.playback-collapse.test.ts`, driven through the survivors. What
+ * is left here is 19 of the original 20, plus the census.
+ *
  * The module's mutations carry `dry_run` (default false, #836) and are covered
  * on BOTH sides here: the preview must issue no write at all, and the commit
  * must issue exactly the documented one. `delete_playback_bookmark` is the
@@ -904,82 +909,6 @@ describe('#668 listening_session_report', () => {
 });
 
 // ===========================================================================
-// 19. transfer_playback_with_state — the multi-step Spotify write
-// ===========================================================================
-
-describe('#668 transfer_playback_with_state', () => {
-  it('issues the documented PUTs in order against the resolved device', async () => {
-    const h = makeHarness({ state: state({ shuffle_state: true, repeat_state: 'track' }) });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'Desk', dry_run: false });
-    assert.equal(h.structured(out).transferred, true);
-
-    const puts = h.calls.filter((c) => c.method === 'PUT');
-    assert.deepEqual(puts.map((c) => c.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_desk',
-      '/me/player/shuffle?state=true&device_id=dev_desk',
-      '/me/player/repeat?state=track&device_id=dev_desk',
-    ]);
-    assert.deepEqual(puts[0]?.body, { device_ids: ['dev_desk'], play: true }, 'the transfer body is the contract');
-    assert.deepEqual(puts[1]?.body, { uris: ['spotify:track:t01'], position_ms: 30_000 });
-  });
-
-  it('falls back to a seek when the context-less resume is refused', async () => {
-    const h = makeHarness({ failWrite: ['/me/player/play'] });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: false });
-    const puts = h.calls.filter((c) => c.method === 'PUT');
-    assert.deepEqual(puts.map((c) => c.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_desk',
-      '/me/player/seek?position_ms=30000&device_id=dev_desk',
-      '/me/player/shuffle?state=false&device_id=dev_desk',
-      '/me/player/repeat?state=off&device_id=dev_desk',
-    ]);
-    assert.equal(h.structured(out).transferred, true, 'the seek fallback is a success, not a partial failure');
-  });
-
-  it('names the steps that failed instead of claiming a clean transfer', async () => {
-    // play:false takes the else-branch seek, so the failure lands on `seek`.
-    const h = makeHarness({ failWrite: ['/me/player/seek'] });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', play: false, dry_run: false });
-    const sc = h.structured(out);
-    assert.equal(sc.transferred, false);
-    assert.deepEqual(sc.failed_steps, ['seek']);
-    assert.match(h.text(out), /failed steps: seek/);
-  });
-
-  it('appends device_id to the shuffle/repeat queries with &, not a second ?', async () => {
-    // The regression this file exists for: `?state=false?device_id=X` put the
-    // device id inside the `state` value, so the state was never restored.
-    const h = makeHarness({ state: state({ shuffle_state: true, repeat_state: 'context' }) });
-    await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: false });
-    for (const path of h.paths('PUT')) {
-      assert.doesNotMatch(path, /\?[^?]*\?/, `"${path}" has two '?' — the second parameter is part of the first value`);
-    }
-    assert.ok(h.paths('PUT').includes('/me/player/shuffle?state=true&device_id=dev_desk'));
-    assert.ok(h.paths('PUT').includes('/me/player/repeat?state=context&device_id=dev_desk'));
-  });
-
-  it('refuses to transfer when no device matches, issuing no write at all', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'Car', dry_run: false });
-    assert.equal(h.structured(out).target_found, false);
-    assert.deepEqual(h.paths('PUT'), [], 'an unresolved target must not reach the player endpoint');
-    assert.match(h.text(out), /No device matches "Car" among 2 device\(s\)\./);
-  });
-
-  it('previews the same steps without issuing any of them', async () => {
-    const h = makeHarness({ state: state({ shuffle_state: true }) });
-    const out = await h.invoke('transfer_playback_with_state', { target_device: 'dev_desk', dry_run: true });
-    assert.deepEqual(h.paths('PUT'), []);
-    const sc = h.structured(out);
-    assert.equal(sc.dry_run, true);
-    const steps = sc.steps as string[];
-    assert.ok(steps.some((s) => s.startsWith('PUT /me/player/seek?position_ms=30000')), steps.join(' | '));
-  });
-});
-
-// ===========================================================================
 // 20. sleep_timer_plan
 // ===========================================================================
 
@@ -1021,7 +950,7 @@ describe('#668 sleep_timer_plan', () => {
 });
 
 // ===========================================================================
-// 21. device_type_census
+// 19. device_type_census
 // ===========================================================================
 
 describe('#668 device_type_census', () => {
@@ -1067,27 +996,27 @@ describe('#668 device_type_census', () => {
  */
 const COVERED_ELSEWHERE = new Set([
   'get_context_inspect', // tests/tools.swarm3playback-context.test.ts
-  'plan_volume_level_across_devices', // tests/tools.swarm3playback-volume.test.ts
-  'apply_volume_plan', // tests/tools.swarm3playback-volume.test.ts
   'resume_playback_position', // tests/tools.swarm3playback-resume.test.ts
 ]);
 
 describe('#668 anti-vacuity', () => {
-  it('registers all 20 playback tools, so a renamed or dropped tool fails here', () => {
+  // 24 -> 20 (#847) retired `get_queue_snapshot`, `queue_runtime_report`,
+  // `queue_duplicate_check` and `predict_next_tracks`. 20 -> 17 (#848) retired
+  // `apply_volume_plan`, `plan_volume_level_across_devices` and
+  // `transfer_playback_with_state` into `set_volume` and `transfer_playback` in
+  // playback.ts. Both counts stay pinned so the NEXT removal is equally loud.
+  it('registers all 17 playback tools, so a renamed or dropped tool fails here', () => {
     const names = makeHarness().names();
-    // #847 retired four of them (`get_queue_snapshot`, `queue_runtime_report`,
-    // `queue_duplicate_check`, `predict_next_tracks`), so 24 became 20. The count
-    // stays pinned so the NEXT removal is equally loud.
-    assert.equal(names.length, 20, `expected the module's 20 tools, got ${names.length}: ${names.join(', ')}`);
-    assert.equal(new Set(names).size, 20, 'tool names must be unique');
+    assert.equal(names.length, 17, `expected the module's 17 tools, got ${names.length}: ${names.join(', ')}`);
+    assert.equal(new Set(names).size, 17, 'tool names must be unique');
   });
 
-  it('classifies the two mutating playback tools as writes, not reads', async () => {
+  it('classifies the mutating playback tools as writes, not reads', async () => {
     // Guards the readOnly/destructive split for the tools whose names do not
     // start with a read verb. `delete_playback_bookmark` is the destructive one.
     const { classifyToolAnnotations } = await import('../src/tools/annotations.js');
     assert.deepEqual(classifyToolAnnotations('delete_playback_bookmark'), { destructiveHint: true });
-    assert.deepEqual(classifyToolAnnotations('transfer_playback_with_state'), { destructiveHint: false });
+    assert.deepEqual(classifyToolAnnotations('transfer_playback'), { destructiveHint: false });
     assert.deepEqual(classifyToolAnnotations('list_playback_bookmarks'), { readOnlyHint: true, idempotentHint: true });
   });
 });
@@ -1106,7 +1035,9 @@ describe('#668 anti-vacuity', () => {
     const stale = [...COVERED_ELSEWHERE].filter((n) => !names.includes(n));
     assert.deepEqual(stale, [], `COVERED_ELSEWHERE names tools this module no longer registers: ${stale.join(', ')}`);
     // 20 when #668 measured it; 16 after #847 retired the four queue readers
-    // whose cases moved to tests/queue.tools.test.ts. The assertion is a floor on
-    // COVERAGE, not a record of the old number, so it tracks what is still here.
-    assert.equal(invoked.size, 16, `this file should drive the 16 remaining uncovered tools; it drove ${invoked.size}`);
+    // whose cases moved to tests/queue.tools.test.ts; 15 after #848 retired
+    // three more, whose cases moved to tests/tools.playback-collapse.test.ts.
+    // The assertion is a floor on COVERAGE, not a record of the old number, so
+    // it tracks what is still here.
+    assert.equal(invoked.size, 15, `this file should drive the 15 remaining uncovered tools; it drove ${invoked.size}`);
   });

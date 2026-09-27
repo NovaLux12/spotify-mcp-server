@@ -634,6 +634,209 @@ export function retiredToolAliasMessage(name: string, canonical: string): string
   return `${name} was removed in ${RETIRED_TOOL_ALIASES_REMOVED_IN}; use ${canonical} instead.`;
 }
 
+// ---------------------------------------------------------------------------
+// Retired tools that still FORWARD (#848)
+// ---------------------------------------------------------------------------
+
+/**
+ * The release that stops answering these names. Named once here for the same
+ * reason {@link RETIRED_PLAYLIST_INPUTS_REMOVED_IN} is named once: the notice
+ * in a refusal, the SPEC table and the census must not be able to disagree
+ * about when the name goes away.
+ */
+export const RETIRED_TOOL_FORWARDS_REMOVED_IN = 'v3.0';
+
+export interface RetiredToolForward {
+  /** The surviving tool the call dispatches to. */
+  readonly tool: string;
+  /**
+   * Translate the retired tool's arguments into the survivor's.
+   *
+   * This is the reason #848 needed a new mechanism rather than
+   * {@link LEGACY_TOOL_ALIASES}. That table is a name→name map because every
+   * alias it carries has an IDENTICAL schema to its target — the eight
+   * stats.fm `taste_*` names were the same tool registered twice. #848's names
+   * are not the same tool twice; `handoff` is `transfer_playback` plus
+   * `preserve_position`, and `apply_device_presets` is `set_volume` plus
+   * `op: 'preset'`. A name-only map would forward the arguments unchanged and
+   * the canonical tool would refuse them as unknown parameters, which is a
+   * worse outcome for the caller than the name simply disappearing: they would
+   * get a schema error instead of the behaviour they asked for.
+   *
+   * A rewriter returns the survivor's arguments with no `undefined` values —
+   * `compact` below drops them — so the boundary's unknown-parameter check
+   * then runs against the SURVIVOR's schema, which is where a mistranslation
+   * is caught, before any Spotify request.
+   */
+  readonly rewrite: (args: Readonly<Record<string, unknown>>) => Record<string, unknown>;
+  /** One line naming what to send instead, shown to the caller on every call. */
+  readonly note: string;
+}
+
+/** Drop keys whose value is `undefined`, so a rewriter cannot invent a key. */
+function compact(args: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
+}
+
+/** Carry the arguments a retired tool did not reinterpret, unchanged. */
+function passthrough(
+  args: Readonly<Record<string, unknown>>,
+  known: readonly string[],
+): Record<string, unknown> {
+  return compact(Object.fromEntries(Object.entries(args).filter(([k]) => !known.includes(k))));
+}
+
+/**
+ * Retired tool name → the surviving tool and the flag translation (#848).
+ *
+ * Ten names go away: three of the four transfer tools and seven of the volume
+ * family. Every one of them keeps working for one release through this table,
+ * and the caller's result carries `deprecated_inputs` / `deprecation_note` so
+ * the migration is announced rather than silent.
+ *
+ * It lives beside {@link LEGACY_TOOL_ALIASES} for the reason that table's header
+ * gives: the consumer is the CallTool boundary in `tools/annotations.ts`, and
+ * that module must never statically import a tool registrar. A table of
+ * argument mappings costs nothing to import; the alternative would evaluate
+ * `playback.js` — and with it the `core` toolset's whole surface — in every
+ * process.
+ */
+export const RETIRED_TOOL_FORWARDS: Readonly<Record<string, RetiredToolForward>> = Object.freeze({
+  // --- transfer family → transfer_playback ---------------------------------
+  handoff: {
+    tool: 'transfer_playback',
+    note: 'handoff forwards to transfer_playback with preserve_position: true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['device_id', 'play', 'volume']),
+      device: args.device_id,
+      play: args.play,
+      volume: args.volume,
+      // handoff's whole reason for existing: carry the track and position over
+      // instead of restarting it at 0:00 on the target.
+      preserve_position: true,
+    }),
+  },
+  switch_device: {
+    tool: 'transfer_playback',
+    note: 'switch_device forwards to transfer_playback; pass the device as `device`.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['device_name', 'play']),
+      device: args.device_name,
+      // switch_device defaulted `play` to true and transfer_playback does not;
+      // forwarding without it would silently change "transfer paused" callers
+      // into "starts playing" callers.
+      play: args.play ?? true,
+    }),
+  },
+  transfer_playback_with_state: {
+    tool: 'transfer_playback',
+    note: 'transfer_playback_with_state forwards to transfer_playback with preserve_position and restore_shuffle_repeat both true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['target_device', 'play']),
+      device: args.target_device,
+      play: args.play ?? true,
+      preserve_position: true,
+      restore_shuffle_repeat: true,
+    }),
+  },
+
+  // --- volume family → set_volume ------------------------------------------
+  volume_step: {
+    tool: 'set_volume',
+    note: 'volume_step forwards to set_volume with the same step as delta_step.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['step', 'device_id']),
+      delta_step: args.step,
+      device_id: args.device_id,
+    }),
+  },
+  mute: {
+    tool: 'set_volume',
+    note: 'mute forwards to set_volume with op: mute.',
+    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'mute', device_id: args.device_id }),
+  },
+  unmute: {
+    tool: 'set_volume',
+    note: 'unmute forwards to set_volume with op: unmute.',
+    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'unmute', device_id: args.device_id }),
+  },
+  room_level: {
+    tool: 'set_volume',
+    note: 'room_level forwards to set_volume with op: level and no volume_percent, which copies the active device\'s level to the others.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['exclude_device_id']),
+      op: 'level',
+      exclude_device_id: args.exclude_device_id,
+    }),
+  },
+  apply_device_presets: {
+    tool: 'set_volume',
+    note: 'apply_device_presets forwards to set_volume with op: preset.',
+    rewrite: (args) => compact({ ...passthrough(args, []), op: 'preset' }),
+  },
+  apply_volume_plan: {
+    tool: 'set_volume',
+    note: 'apply_volume_plan forwards to set_volume with op: level and the plan\'s volume as volume_percent.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['volume', 'device_ids']),
+      op: 'level',
+      volume_percent: args.volume,
+      device_ids: args.device_ids,
+      // An OMITTED selection meant "every volume-capable device" to
+      // apply_volume_plan. set_volume's own default is the active device, so
+      // without this the forward would turn a four-speaker write into a
+      // one-speaker one and report success for the three it skipped.
+      ...(args.device_ids === undefined ? { all_devices: true } : {}),
+    }),
+  },
+  plan_volume_level_across_devices: {
+    tool: 'set_volume',
+    note: 'plan_volume_level_across_devices forwards to set_volume with op: level and dry_run: true.',
+    rewrite: (args) => compact({
+      ...passthrough(args, ['volume', 'device_ids', 'dry_run']),
+      op: 'level',
+      volume_percent: args.volume,
+      device_ids: args.device_ids,
+      // Same "omitted means all" contract as apply_volume_plan, and for the
+      // same reason: this planner listed every device it would have hit.
+      ...(args.device_ids === undefined ? { all_devices: true } : {}),
+      // Forced LAST, and not merely defaulted: this was a read-only planner, and
+      // a caller that passes dry_run: false must still get a plan rather than a
+      // volume write it never asked for. A retired read-only tool must not
+      // become a mutator on the way out.
+      dry_run: true,
+    }),
+  },
+});
+
+/** Every retired name that still forwards, sorted, for gates and docs. */
+export const RETIRED_TOOL_FORWARD_NAMES: readonly string[] = Object.freeze(
+  Object.keys(RETIRED_TOOL_FORWARDS).sort(),
+);
+
+/**
+ * The forward record for a retired name, or `undefined` when `name` was never
+ * one. `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias}
+ * guards its lookup: a tool name reaches here from the wire, and the table is a
+ * frozen object literal that still carries `Object.prototype`.
+ */
+export function resolveRetiredToolForward(name: string): RetiredToolForward | undefined {
+  if (!Object.hasOwn(RETIRED_TOOL_FORWARDS, name)) return undefined;
+  return RETIRED_TOOL_FORWARDS[name];
+}
+
+/**
+ * The one-line migration note for a forwarded call.
+ *
+ * It states the release the name disappears in as well as the replacement,
+ * because a note that only names the replacement leaves a caller with no way to
+ * tell a deprecation from a permanent rename — and that notice-and-code
+ * disagreement is what #1287 and #1099 were both filed for.
+ */
+export function retiredToolForwardNote(alias: string, forward: RetiredToolForward): string {
+  return `${alias} is deprecated and stops being callable in ${RETIRED_TOOL_FORWARDS_REMOVED_IN}. ${forward.note}`;
+}
+
 /** The release that stopped registering the six queue-read tool names (#847). */
 export const RETIRED_QUEUE_TOOLS_REMOVED_IN = 'v3.0';
 
@@ -702,7 +905,7 @@ export function retiredQueueToolMessage(name: string, tool: RetiredQueueTool): s
   return `${name} was removed in ${RETIRED_QUEUE_TOOLS_REMOVED_IN}; use ${tool.canonical} instead.`;
 }
 
-interface PlaylistInputResolution {
+export interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];
   /** Deprecated input names actually present on the call. */
@@ -904,6 +1107,101 @@ export function resolvePlaylistInput(
 export const NO_INPUT_DEPRECATION: PlaylistInputResolution = Object.freeze({
   values: [], deprecatedInputs: [], deprecationNote: null,
 });
+
+/**
+ * The release that removes the deprecated scalar input names below (#848).
+ * Named once, for the reason {@link RETIRED_PLAYLIST_INPUTS_REMOVED_IN} is.
+ */
+export const DEPRECATED_INPUT_ALIASES_REMOVED_IN = 'v2.2';
+
+/**
+ * Per-tool deprecated input spellings that are still ACCEPTED (#848).
+ *
+ * Distinct from {@link RETIRED_PLAYLIST_INPUTS}, which are REFUSED: those names
+ * were withdrawn, this one is on its way out and still works. The difference
+ * matters at the boundary, where one list produces a typed refusal and the
+ * other produces a call that runs.
+ *
+ * The legacy name is deliberately ABSENT from the tool's published
+ * `inputSchema`, so it costs no schema bytes in every `tools/list` response —
+ * the same reason #1287 removed the playlist spellings from the schemas instead
+ * of advertising them. Normalisation happens in `installToolErrorBoundary`
+ * before validation, which is the only place that can work: the canonical input
+ * is required, so a call carrying only the legacy name would be refused by
+ * `required_param` before any handler ran.
+ *
+ * Legacy → canonical, per tool. When BOTH are present the canonical one wins
+ * and the call is still reported as deprecated — the caller is mid-migration,
+ * not broken, and refusing would be a worse answer than ignoring the stale key.
+ */
+export const DEPRECATED_INPUT_ALIASES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  // #848: `transfer_playback` used to take a bare id; it now resolves names,
+  // labels and ids, and `device` is the name that says so.
+  transfer_playback: Object.freeze({ device_id: 'device' }),
+});
+
+/** Every deprecated input spelling still accepted, sorted, for gates and docs. */
+export const DEPRECATED_INPUT_ALIAS_NAMES: Readonly<Record<string, string>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(DEPRECATED_INPUT_ALIASES).flatMap(([tool, aliases]) =>
+      Object.keys(aliases).map((legacy) => [legacy, tool] as const),
+    ),
+  ),
+);
+
+/**
+ * Fold this tool's deprecated input spellings into their canonical names.
+ *
+ * Returns the arguments to validate against, plus the legacy names that were
+ * actually folded — the caller's only evidence, once the legacy key is gone,
+ * that it used one. A caller sending the canonical name gets an empty list and
+ * byte-identical behaviour, which is the property the tests pin.
+ */
+export function normalizeDeprecatedInputs(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+): { args: Record<string, unknown>; deprecated: string[] } {
+  const aliases = DEPRECATED_INPUT_ALIASES[tool];
+  if (aliases === undefined) return { args: args as Record<string, unknown>, deprecated: [] };
+  const deprecated: string[] = [];
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    const canonical = Object.hasOwn(aliases, key) ? aliases[key] : undefined;
+    if (canonical === undefined) {
+      out[key] = value;
+      continue;
+    }
+    deprecated.push(key);
+    // Canonical wins when both are present: it is the name the tool documents,
+    // so the stale copy is the one that was going to be dropped anyway.
+    if (out[canonical] === undefined) out[canonical] = value;
+  }
+  return { args: out, deprecated };
+}
+
+/**
+ * The deprecation notice for the input spellings folded on one call.
+ *
+ * Same shape as every other deprecation notice in the repo, so a caller reads
+ * one `deprecated_inputs` / `deprecation_note` pair whichever kind of
+ * deprecation it hit.
+ */
+export function deprecatedInputResolution(deprecated: readonly string[]): PlaylistInputResolution {
+  if (deprecated.length === 0) return { values: [], deprecatedInputs: [], deprecationNote: null };
+  const names = deprecated.map((name) => {
+    const tool = DEPRECATED_INPUT_ALIAS_NAMES[name];
+    const canonical = tool === undefined ? undefined : DEPRECATED_INPUT_ALIASES[tool]?.[name];
+    return canonical === undefined ? name : `${name} → ${canonical}`;
+  });
+  return Object.freeze({
+    values: [],
+    deprecatedInputs: [...deprecated],
+    deprecationNote:
+      `${deprecated.join(', ')} ${deprecated.length === 1 ? 'is' : 'are'} deprecated and ` +
+      `${deprecated.length === 1 ? 'is' : 'are'} removed in ${DEPRECATED_INPUT_ALIASES_REMOVED_IN}; ` +
+      `use ${names.join(', ')} instead.`,
+  });
+}
 
 /**
  * A deprecated TOOL NAME (#1099), as distinct from a deprecated input.

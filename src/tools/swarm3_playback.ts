@@ -639,79 +639,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   );
 
   // -------------------------------------------------------------------------
-  // 8. plan_volume_level_across_devices — deterministic plan
-  // -------------------------------------------------------------------------
-  server.tool(
-    'plan_volume_level_across_devices',
-    'Plan setting every (volume-capable) Spotify device to one target volume level — returns the exact per-device PUT calls without executing anything. Read-only planner.',
-    {
-      volume: z.number().int().min(0).max(100).describe('Target volume percent for every selected device (0–100)'),
-      device_ids: z.array(z.string().min(1)).optional().describe('Restrict the plan to these device ids/names; default all volume-capable devices'),
-      response_format: ResponseFormat,
-    },
-    async (args: { volume: number; device_ids?: string[]; response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const all = await fetchDevices(client);
-      const { selected, skippedNoId } = selectVolumeTargets(all, args.device_ids);
-      const steps = selected.map((d) => volumePlanLine(d, args.volume));
-      const prose = [
-        `[plan] Set volume to ${args.volume}% on ${selected.length} device(s)${skippedNoIdNote(skippedNoId)}:`,
-        ...(steps.length ? steps.map((s) => `  - ${s}`) : ['  (no volume-capable devices with a device id matched)']),
-      ].join('\n');
-      return emit(rf, prose, {
-        volume: args.volume,
-        steps,
-        devices: selected.map((d) => d.id),
-        skipped_no_id: skippedNoId,
-      });
-    },
-  );
+;
 
   // -------------------------------------------------------------------------
-  // 9. apply_volume_plan (mutator, dry_run)
-  // -------------------------------------------------------------------------
-  server.tool(
-    'apply_volume_plan',
-    'Set one target volume level across all (or selected) Spotify devices via per-device PUT /me/player/volume. Commits by default — pass dry_run=true to preview.',
-    {
-      volume: z.number().int().min(0).max(100).describe('Target volume percent for every selected device (0–100)'),
-      device_ids: z.array(z.string().min(1)).optional().describe('Restrict to these device ids/names; default all volume-capable devices'),
-      dry_run: PlaybackDryRun,
-      response_format: ResponseFormat,
-    },
-    async (args: { volume: number; device_ids?: string[]; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const all = await fetchDevices(client);
-      const { selected, skippedNoId } = selectVolumeTargets(all, args.device_ids);
-      if (isDry(args)) {
-        const steps = selected.map((d) => volumePlanLine(d, args.volume));
-        const prose = describeDryRun(
-          'apply volume plan',
-          `${selected.length} device(s) → ${args.volume}%${skippedNoIdNote(skippedNoId)}`,
-          steps,
-        );
-        return emit(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
-      }
-      const applied: string[] = [];
-      const failed: string[] = [];
-      for (const d of selected) {
-        try {
-          await client.put(`/me/player/volume?${new URLSearchParams({ volume_percent: String(args.volume), device_id: d.id })}`);
-          applied.push(d.name);
-        } catch {
-          failed.push(d.name);
-        }
-      }
-      const prose = `Volume set to ${args.volume}% on ${applied.length}/${selected.length} device(s)${skippedNoIdNote(skippedNoId)}${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`;
-      return emit(rf, prose, {
-        applied: true,
-        volume: args.volume,
-        applied_devices: applied,
-        failed_devices: failed,
-        skipped_no_id: skippedNoId,
-      });
-    },
-  );
+;
 
   // ---------------------------------------------------------------------------
   // #847 removed: get_queue_snapshot (#668)
@@ -1235,82 +1166,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
   );
 
   // -------------------------------------------------------------------------
-  // 22. transfer_playback_with_state — capture + transfer + restore (mutator)
-  // -------------------------------------------------------------------------
-  server.tool(
-    'transfer_playback_with_state',
-    'Transfer playback to another device while restoring the full state: same track, position, shuffle and repeat. Commits by default — pass dry_run=true to preview.',
-    {
-      target_device: z.string().min(1).describe('Target device id or name substring'),
-      play: z.boolean().optional().default(true).describe('Start playback after transferring. Default true'),
-      dry_run: PlaybackDryRun,
-      response_format: ResponseFormat,
-    },
-    async (args: { target_device: string; play?: boolean; dry_run?: boolean; response_format?: ResponseFormatValue }) => {
-      const rf = args.response_format ?? 'concise';
-      const [state, devices] = await Promise.all([fetchPlaybackState(client), fetchDevices(client)]);
-      const target = resolveDevice(devices, args.target_device);
-      if (!target?.id) {
-        return textResult(`No device matches "${args.target_device}" among ${devices.length} device(s).`, { target_found: false });
-      }
-      const captured = {
-        track_uri: state?.item?.uri ?? null,
-        track_name: itemTitle(state?.item ?? null),
-        position_ms: state?.progress_ms ?? 0,
-        shuffle_state: state?.shuffle_state ?? null,
-        repeat_state: state?.repeat_state ?? null,
-      };
-      // Two spellings of the same device parameter, because the two call sites
-      // sit in different positions in the query string. `?device_id=` opens a
-      // query that has nothing before it (`/me/player/play`), and `&device_id=`
-      // appends to one that already carries `?state=` (`/me/player/shuffle`).
-      // Using the leading-`?` form after `?state=` produced
-      // `/me/player/shuffle?state=false?device_id=X` — two `?`, so Spotify read
-      // `device_id` as part of the `state` value and the state was never
-      // restored on the target device (#668).
-      const qs = `?device_id=${encodeURIComponent(target.id)}`;
-      const qsAmp = `&device_id=${encodeURIComponent(target.id)}`;
-      const steps = [
-        `PUT /me/player ${JSON.stringify({ device_ids: [target.id], play: args.play ?? true })}`,
-        ...(captured.track_uri ? [`PUT /me/player/play${qs} context-less resume of ${captured.track_uri}`] : []),
-        `PUT /me/player/seek?position_ms=${captured.position_ms}&device_id=${encodeURIComponent(target.id)}`,
-        ...(captured.shuffle_state !== null ? [`PUT /me/player/shuffle?state=${captured.shuffle_state}${qsAmp}`] : []),
-        ...(captured.repeat_state ? [`PUT /me/player/repeat?state=${captured.repeat_state}${qsAmp}`] : []),
-      ];
-      if (isDry(args)) {
-        const prose = describeDryRun('transfer playback with state', `"${target.name}" [${target.type}]`, steps);
-        return emit(rf, prose, { dry_run: true, target: { id: target.id, name: target.name }, captured, steps });
-      }
-      const failed: string[] = [];
-      await client.put('/me/player', { device_ids: [target.id], play: args.play ?? true }).catch(() => { failed.push('transfer'); });
-      if (captured.track_uri && args.play !== false) {
-        try {
-          await client.put(`/me/player/play${qs}`, { uris: [captured.track_uri], position_ms: captured.position_ms });
-        } catch {
-          // Fall back to transfer + separate seek when context-less resume is refused.
-          try {
-            await client.put(`/me/player/seek?position_ms=${captured.position_ms}&device_id=${encodeURIComponent(target.id)}`);
-          } catch {
-            failed.push('seek');
-          }
-        }
-      } else {
-        try {
-          await client.put(`/me/player/seek?position_ms=${captured.position_ms}&device_id=${encodeURIComponent(target.id)}`);
-        } catch {
-          failed.push('seek');
-        }
-      }
-      if (captured.shuffle_state !== null) {
-        await client.put(`/me/player/shuffle?state=${captured.shuffle_state}${qsAmp}`).catch(() => { failed.push('shuffle'); });
-      }
-      if (captured.repeat_state) {
-        await client.put(`/me/player/repeat?state=${captured.repeat_state}${qsAmp}`).catch(() => { failed.push('repeat'); });
-      }
-      const prose = `Transferred playback to "${target.name}" with state restored${failed.length ? ` (failed steps: ${failed.join(', ')})` : ''}.`;
-      return emit(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
-    },
-  );
+;
 
   // -------------------------------------------------------------------------
   // 23. sleep_timer_plan — pick N tracks ≈ X min then pause plan
