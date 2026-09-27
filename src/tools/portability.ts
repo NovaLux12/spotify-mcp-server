@@ -16,6 +16,8 @@ import { CHUNK_CAPS, capFor } from '../chunk.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+import type { ElicitVerdict } from './confirm.js';
+import { consentAfterGate, consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 // #637: the batch-add gate constant is shared, never re-declared here.
 import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
 import { getConfig, storePath } from '../config.js';
@@ -1995,7 +1997,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: local read + contains-check + chunked writes when dry_run=false.',
+    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. The prompt and the result both state the sidecar path, the date the file itself declares (exported_at, or the named reason it declares none — never the mtime), the row count, the one use being made of it, and whether a human confirmed that use (see consent_note). dry_run=true by default. Quota: local read + contains-check + chunked writes when dry_run=false.',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
       dry_run: z.boolean().optional().default(true).describe('Preview only, making no API calls at all. Writes happen only when explicitly set to false.'),
@@ -2013,6 +2015,22 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const doc = JSON.parse(raw) as Record<string, unknown>;
       // #736: every collection the exporter writes is planned, not just tracks.
       const plan = planSidecarRestore(doc);
+      // #708: built once, before any gate. The exporter stamps `exported_at` at
+      // the document root, so that is the declared date — a file written by
+      // anything else declares none, and the record says so by name rather
+      // than falling back to the mtime a copy would reset.
+      const provenanceBase = {
+        source: {
+          kind: 'library_sidecar' as const,
+          path: inputPath as string,
+          items: plan.inFile,
+          ...declaredCreationDate(doc, 'exported_at'),
+        },
+        purpose:
+          're-add the saved items this local library sidecar holds to this Spotify account, '
+          + 'skipping any the account already holds and modifying nothing that exists',
+      };
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
 
       const absentLine = plan.absent.length > 0
         ? `${inputPath} has no ${plan.absent.join(' / ')} key — nothing to restore for ${plan.absent.join(' / ')}.`
@@ -2040,8 +2058,15 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           invalid_samples: plan.invalidSamples,
           sample: plan.candidates.slice(0, 5),
           ...truncationPayload(plan),
+          ...consentFields(
+            prov({
+              state: 'not_requested',
+              because: 'dry_run=true — nothing was written and no confirmation was requested',
+            }),
+          ),
         };
         const lines = [
+          ...provenancePromptLines(provenanceBase),
           `Would restore ${plan.candidates.length} item(s) from ${plan.present.length} collection(s): ${plan.present.join(', ') || '—'}`,
           ...plan.candidates.slice(0, 5).map((u) => u),
         ];
@@ -2068,6 +2093,12 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           invalid_samples: plan.invalidSamples,
           total_in_file: plan.inFile,
           ...truncationPayload(plan),
+          ...consentFields(
+            prov({
+              state: 'not_requested',
+              because: 'the sidecar held no valid library URI to restore, so there was no write to confirm',
+            }),
+          ),
         };
         return shapeResult(
           rf,
@@ -2084,9 +2115,15 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
       const skippedByCollection = countByCollection(plan, (u) => !addedSet.has(u));
       const skippedExisting = plan.candidates.length - missing.length;
 
+      // #708: `verdict` stays null when the batch is under the threshold and no
+      // prompt is issued; the record then says exactly that rather than
+      // implying a human was asked.
+      let verdict: ElicitVerdict | null = null;
+      let refusal: ReturnType<typeof requiredConfirmationRefusal> = null;
       if (missing.length >= BATCH_ADD_ELICIT_THRESHOLD) {
-        const verdict = await confirmViaElicitation(server, {
+        verdict = await confirmViaElicitation(server, {
           message: describeConfirmation('restore library items from', inputPath, [
+            ...provenancePromptLines(provenanceBase),
             `Re-add ${missing.length} item(s) across ${Object.entries(imported).filter(([, n]) => n > 0).map(([k, n]) => `${k}: ${n}`).join(', ')}:`,
             ...missing.slice(0, 10).map((u) => `  - ${u}`),
             ...(missing.length > 10 ? [`  (…and ${missing.length - 10} more)`] : []),
@@ -2098,9 +2135,21 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
           ]),
           confirmLabel: 'Restore library',
         });
-        const refusal = requiredConfirmationRefusal(verdict);
-        if (refusal) return shapeResult(rf, refusal.message, refusal.payload);
+        refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) {
+          return shapeResult(rf, refusal.message, {
+            ...consentFields(
+              prov(consentAfterGate(verdict, { refusalReason: refusal.reason, notRequestedBecause: '' })),
+            ),
+            ...refusal.payload,
+          });
+        }
       }
+      const consent = consentAfterGate(verdict, {
+        notRequestedBecause:
+          `only ${missing.length} of the sidecar's items are missing from the library, under the `
+          + `${BATCH_ADD_ELICIT_THRESHOLD}-item confirmation threshold, so no prompt was issued`,
+      });
 
       for (let i = 0; i < missing.length; i += CHUNK_CAPS.library_writes) {
         const chunk = missing.slice(i, i + CHUNK_CAPS.library_writes);
@@ -2128,6 +2177,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         total_in_file: plan.inFile,
         sample: missing.slice(0, 5),
         ...truncationPayload(plan),
+        ...consentFields(prov(consent)),
         ...(receipt ? { receipt: receipt.receipt_id } : {}),
       };
       const summary = Object.entries(imported)
@@ -2136,6 +2186,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         .join(', ');
       const prose = [
         `Import from ${inputPath}: added ${missing.length} item(s) to Your Library (${summary || 'none'}) across ${plan.present.length} collection(s).`,
+        `#708 ${provenanceNote(prov(consent))}`,
         skippedExisting > 0 ? `${skippedExisting} item(s) were already in the library and were left untouched.` : '',
         invalidLine,
         absentLine,

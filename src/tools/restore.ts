@@ -14,6 +14,11 @@
  *    the planned writes per category. A declined prompt cancels with zero
  *    writes; elicitation errors and clients without support refuse restores
  *    entirely. SPOTIFY_MCP_CONFIRM=never is the explicit automation bypass.
+ *  - #708: the prompt names the stored data's source, the date the FILE
+ *    declares, the item count in scope and the one use being made of it, and
+ *    the same facts plus the consent outcome ride out in
+ *    `structuredContent.consent_note`. A file that declares no date says so
+ *    by name instead of being dated from its mtime.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -31,6 +36,14 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { READ_ROOTS_ENV_HINT, readLocalFile, readRoots } from '../paths.js';
 import { confirmViaElicitation, requiredConfirmationRefusal } from './confirm.js';
+import {
+  consentAfterGate,
+  consentFields,
+  declaredCreationDate,
+  provenancePromptLines,
+  type StoredDataSource,
+  type WriteProvenance,
+} from './provenance.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
@@ -300,6 +313,33 @@ async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
 function snapshotDate(snapshot: LibrarySnapshot): string {
   const created = snapshot._meta?.created;
   return typeof created === 'string' && created.length >= 10 ? created.slice(0, 10) : 'unknown date';
+}
+
+/**
+ * The use this server makes of the snapshot. Deliberately the OPERATION and
+ * not a motive: nothing here can observe why somebody is restoring a library,
+ * and a plausible invented reason would be a fabricated answer wearing a
+ * compliance label (#708). Same words as PRIVACY.md's purpose limitation.
+ */
+const RESTORE_PURPOSE =
+  'write the selected saved items, follows and playlists in this local snapshot back into this Spotify account, additively — nothing existing is modified or removed';
+
+/**
+ * What the snapshot is, where it came from, and what the FILE says about when
+ * it was taken. #708: the date is `_meta.created` when the file carries one and
+ * absent-with-a-reasoned-name when it does not — never the mtime, which a copy
+ * resets. `items` is the rows the SELECTED categories actually hold, summed by
+ * named field from the per-category plan, so it counts the snapshot's contents
+ * under this call's scope rather than every key in the file.
+ */
+function restoreSource(path: string, snapshot: LibrarySnapshot, plan: RestorePlan): StoredDataSource {
+  const items = plan.perCategory.reduce((n, c) => n + c.total, 0);
+  return {
+    kind: 'library_snapshot',
+    path,
+    items,
+    ...declaredCreationDate(snapshot._meta, 'created', '_meta.created'),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +934,7 @@ function buildPayload(
   plan: RestorePlan,
   status: string,
   outcome: RestoreOutcome | null,
+  provenance: WriteProvenance,
 ): Record<string, unknown> {
   const categories: Record<string, unknown> = {};
   for (const c of plan.perCategory) categories[c.category] = categoryPayload(c, outcome);
@@ -902,6 +943,11 @@ function buildPayload(
     tool: 'restore_library_snapshot',
     backup_path: backupPath,
     snapshot_created: plan.snapshotCreated,
+    // #708: what this stored data is being used for, where it came from, and
+    // whether a human confirmed that use. Present on every status — a dry run
+    // previews the same use, and a cancelled run is the record that it was
+    // asked about and refused.
+    ...consentFields(provenance),
     status,
     snapshot_state: plan.snapshotState,
     restorable_complete: plan.restorableComplete,
@@ -957,6 +1003,7 @@ function buildProse(
   status: 'planned' | 'executed' | 'cancelled' | 'partial_restore',
   outcome: RestoreOutcome | null,
   maxItems: number,
+  provenance: WriteProvenance,
 ): string {
   const done = status === 'executed' || status === 'partial_restore';
   const header =
@@ -969,6 +1016,10 @@ function buildProse(
           : `Restore complete for ${backupPath} (strictly additive; nothing existing was modified):`;
   const lines: string[] = [
     header,
+    // #708: the source, the file's own date (or the named reason it has none),
+    // the item count, and the single use. `json` mode reads structuredContent
+    // instead, where the same facts ride as `consent_note` + `provenance`.
+    ...provenancePromptLines(provenance),
     `Snapshot completeness: ${plan.snapshotState}${plan.restorableComplete === false ? ' — incomplete collections/playlists will not be restored' : ''}`,
   ];
   if (plan.selectedFetched !== null && plan.selectedCap !== null) {
@@ -1070,7 +1121,7 @@ function buildProse(
 export function registerRestoreTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'restore_library_snapshot',
-    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library (see list_backups). Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is deleted, renamed, or overwritten. Truncated snapshots are previewable but refused before confirmation or writes; quota-hit, contentless or wrong-schema_version snapshots are refused outright. dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
+    "STRICTLY ADDITIVE restore of a library snapshot written by backup_library (see list_backups). Adds only what is missing: saves absent tracks/albums/shows/episodes/audiobooks, follows unfollowed artists, and creates NEW playlists named 'Restored · <name> (<snapshot date>)' — existing playlists are never touched and nothing is deleted, renamed, or overwritten. Truncated snapshots are previewable but refused before confirmation or writes; quota-hit, contentless or wrong-schema_version snapshots are refused outright. Prompt and result state where the stored data came from, the date the FILE declares (naming the reason when absent — never the mtime), the item count, and the single use made of it; dry_run defaults to TRUE (read-only preview); setting dry_run=false requires explicit confirmation before any write, fails closed when elicitation is unavailable or errors, and allows writes when SPOTIFY_MCP_CONFIRM=never.",
     {
       backup_path: z
         .string()
@@ -1096,6 +1147,15 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       const plan = await computeRestorePlan(client, snapshot, categories);
       const maxItems = resolveMaxResults(args.max_results, getConfig().maxItems);
       const plannedTotal = plan.perCategory.reduce((n, c) => n + c.planned, 0);
+      // #708: built once, before any gate, so the words the prompt shows and
+      // the words the result records come from the same object. `consent` is
+      // filled in per return below from what the gate actually returned.
+      const source = restoreSource(args.backup_path, snapshot, plan);
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({
+        source,
+        purpose: RESTORE_PURPOSE,
+        consent,
+      });
       if (!args.dry_run && plan.restorableComplete === false) {
         throw new Error(
           `Refusing to restore incomplete snapshot at ${args.backup_path}: ${plan.shortfalls.join('; ')}`,
@@ -1120,10 +1180,24 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       }
 
       if (args.dry_run || plannedTotal === 0) {
+        // #708: a dry run states the use it previews; a run with nothing to add
+        // reached the same branch without ever asking, and says so rather than
+        // implying a prompt was shown.
+        const consent = consentAfterGate(null, {
+          notRequestedBecause: args.dry_run
+            ? 'dry_run=true — nothing was written and no confirmation was requested'
+            : 'the snapshot holds nothing absent that needs writing, so there was no write to confirm',
+        });
         return shapeResult(
           rf,
-          buildProse(args.backup_path, plan, 'planned', null, maxItems),
-          buildPayload(args.backup_path, plan, args.dry_run ? 'planned' : 'nothing_to_add', null),
+          buildProse(args.backup_path, plan, 'planned', null, maxItems, prov(consent)),
+          buildPayload(
+            args.backup_path,
+            plan,
+            args.dry_run ? 'planned' : 'nothing_to_add',
+            null,
+            prov(consent),
+          ),
         );
       }
 
@@ -1157,6 +1231,12 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       const verdict = await confirmViaElicitation(server, {
         message: [
           `About to restore library snapshot "${args.backup_path}" (created ${plan.snapshotCreated ?? 'unknown date'}).`,
+          // #708: what the stored data IS, where it came from, when the file
+          // says it was taken, how much of it is in play, and the one use being
+          // made of it — at the point of consent, not only in the result. The
+          // previous prompt named the path and the date and nothing about the
+          // use, so an approval could not be shown to have been specific.
+          ...provenancePromptLines({ source, purpose: RESTORE_PURPOSE }),
           'STRICTLY ADDITIVE — nothing existing will be modified, renamed, or removed:',
           ...changeLines,
           '',
@@ -1174,11 +1254,22 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       // `reason` discriminator and the documented ok/cancelled pair ride
       // alongside the plan summary a host already parses.
       const refusal = requiredConfirmationRefusal(verdict);
+      // #708: the record is built from the guard's own decision, so a run that
+      // was refused for an unpromptable host cannot be recorded as the
+      // SPOTIFY_MCP_CONFIRM=never bypass (both look like an 'unsupported'
+      // verdict until you read which one happened).
+      const consent = consentAfterGate(verdict, {
+        ...(refusal ? { refusalReason: refusal.reason } : {}),
+        notRequestedBecause: 'this restore reached the confirmation gate and was answered',
+      });
       if (refusal) {
         return shapeResult(
           rf,
-          buildProse(args.backup_path, plan, 'cancelled', null, maxItems),
-          { ...buildPayload(args.backup_path, plan, 'cancelled', null), ...refusal.payload },
+          buildProse(args.backup_path, plan, 'cancelled', null, maxItems, prov(consent)),
+          {
+            ...buildPayload(args.backup_path, plan, 'cancelled', null, prov(consent)),
+            ...refusal.payload,
+          },
         );
       }
 
@@ -1188,8 +1279,8 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
       const status = outcome.failures.length > 0 ? 'partial_restore' : 'executed';
       return shapeResult(
         rf,
-        buildProse(args.backup_path, plan, status, outcome, maxItems),
-        buildPayload(args.backup_path, plan, status, outcome),
+        buildProse(args.backup_path, plan, status, outcome, maxItems, prov(consent)),
+        buildPayload(args.backup_path, plan, status, outcome, prov(consent)),
       );
     },
   );

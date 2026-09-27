@@ -170,12 +170,12 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm3snapshots',
     reason:
-      'The snapshot family is 20/24 untested and includes apply_snapshot_changes, restore_playlist_from_snapshot and prune_old_snapshots — destructive operations with no test at all. Largest untested block in the tree (epic #575).',
+      'The snapshot family is 18/24 untested and includes prune_old_snapshots, which deletes files with no test at all. Largest untested block in the tree (epic #575). apply_snapshot_changes and restore_playlist_from_snapshot left this list in #708, which drives both and asserts the purpose + provenance record they publish — two of the three destructive operations this reason named are now covered.',
     tools: [
-      'apply_snapshot_changes', 'delete_playlist_snapshot', 'export_snapshot_bundle',
+      'delete_playlist_snapshot', 'export_snapshot_bundle',
       'find_lost_since_snapshot', 'find_new_since_snapshot', 'list_saved_snapshots',
       'merge_snapshot_changes_plan', 'prune_old_snapshots', 'read_playlist_snapshot',
-      'restore_playlist_from_snapshot', 'snapshot_added_at_report', 'snapshot_diff_summary',
+      'snapshot_added_at_report', 'snapshot_diff_summary',
       'snapshot_disk_usage', 'snapshot_integrity_check', 'snapshot_integrity_report',
       'snapshot_new_tracks', 'snapshot_registry_report', 'snapshot_removed_tracks',
       'snapshot_retention_plan', 'snapshot_stats_report',
@@ -184,10 +184,10 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm4playlists',
     reason:
-      'The fourth-wave playlist family is 5/18 untested: the four read-only observers (clone, diff, history, snapshot detail) and the non-destructive balance split, which creates new playlists and leaves the source untouched. The ten tools that commit one atomic full-content replace are covered by tests/tools.swarm4-truncated-rewrite.test.ts (#1362), and the rest by tests/tools.swarm4-playlists.test.ts and the chunk-preview coverage on main (epic #575).',
+      'The fourth-wave playlist family is 4/18 untested: the three read-only observers (diff, history, snapshot detail) and the non-destructive balance split, which creates new playlists and leaves the source untouched. The ten tools that commit one atomic full-content replace are covered by tests/tools.swarm4-truncated-rewrite.test.ts (#1362), and the rest by tests/tools.swarm4-playlists.test.ts and the chunk-preview coverage on main (epic #575). playlist_clone_snapshot left this list in #708, which drives it and asserts the provenance record it publishes.',
     tools: [
-      'playlist_balance', 'playlist_clone_snapshot', 'playlist_diff',
-      'playlist_history', 'playlist_snapshot_detail',
+      'playlist_balance', 'playlist_diff', 'playlist_history',
+      'playlist_snapshot_detail',
     ],
   },
 ];

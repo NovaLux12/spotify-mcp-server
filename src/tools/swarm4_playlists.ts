@@ -53,6 +53,7 @@ import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
+import { consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -1531,7 +1532,9 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_clone_snapshot',
     'Restore a playlist from a local backup snapshot as a NEW playlist (never overwrites the '
       + 'live one — clone, don\'t clobber). Items restore by URI; catalog-removed items are '
-      + 'skipped by Spotify automatically. Quota: 0 GETs + create + chunked adds.',
+      + 'skipped by Spotify automatically. The result records the snapshot path, the date the file '
+      + 'declares, and the use made of it (consent_note; no confirmation gate). '
+      + 'Quota: 0 GETs + create + chunked adds.',
     {
       backup_file: z.string().describe('Snapshot file name, e.g. backup-2026-08-28-1.json (see playlist_history)'),
       playlist_name: z.string().describe('Playlist name inside the snapshot to clone'),
@@ -1560,6 +1563,27 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           album: null,
         }));
       const itemBudget = budgetedArray(uris, max);
+      // #708: the snapshot is a library backup file, so the declared date is
+      // `_meta.created`. A file predating the schema that stamps it declares
+      // none, and the record names the reason instead of borrowing the mtime.
+      const provenanceBase = {
+        source: {
+          kind: 'library_snapshot' as const,
+          path: join(backupDir(), args.backup_file),
+          items: uris.length,
+          ...declaredCreationDate(snap._meta, 'created', '_meta.created'),
+        },
+        purpose:
+          `create a NEW Spotify playlist "${name}" holding the ${uris.length} item(s) this local library `
+          + 'snapshot records for the playlist ' + `"${row.name}" — the live playlist is not read or modified`,
+      };
+      const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
+      const consent = prov({
+        state: 'not_requested',
+        because: args.dry_run
+          ? 'dry_run=true — nothing was written and no confirmation was requested'
+          : 'this tool asks for no confirmation: the write is the single explicit request the caller already made, and no prompt is issued before it',
+      });
       const payload = {
         ok: true,
         backup_file: args.backup_file,
@@ -1569,9 +1593,11 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         uris: itemBudget.value,
         ...itemBudget.disclosure,
         dry_run: args.dry_run,
+        ...consentFields(consent),
       };
       if (args.dry_run) {
         return shape(rf, describeDryRun('clone from snapshot', `new playlist "${name}"`, [
+          ...provenancePromptLines(provenanceBase),
           `Create "${name}" with ${uris.length} item(s) from snapshot ${args.backup_file}:`,
           ...renderRows(pseudoRows, max),
         ]), payload);
@@ -1581,7 +1607,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       return shape(
         rf,
         `Cloned "${row.name}" from snapshot ${args.backup_file} into new playlist ${created} `
-          + `("${name}", ${uris.length} item(s), ${add.requests} add request(s)).`,
+          + `("${name}", ${uris.length} item(s), ${add.requests} add request(s)).\n`
+          + `#708 ${provenanceNote(consent)}`,
         { ...payload, dry_run: false, playlist_id: created, requests: add.requests },
       );
     },

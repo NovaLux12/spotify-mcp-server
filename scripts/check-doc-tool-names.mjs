@@ -163,6 +163,17 @@ const parameterAllowlist = new Set([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // #708: the purpose + provenance record every write driven by stored Spotify
+  // data publishes. `consent_note` is the sentence, the `source_*` keys are the
+  // fields beside it, and `not_requested` is a value of `consent.state` — the
+  // state a write is in when no prompt was issued. `exported_at` and
+  // `taken_at` are the two other declared-date fields the record reads, named
+  // so a caller knows which field of which file the date came from. All are
+  // structuredContent keys or stored-file fields describing a call's own
+  // result, not tools and not request parameters.
+  'consent_note', 'source_kind', 'source_path', 'source_related_paths',
+  'source_created', 'source_created_field', 'source_missing_date_reason',
+  'source_items', 'not_requested', 'exported_at', 'taken_at',
   // #1006: the six per-entity stats.fm tools report the measured total
   // separately from the play sample read beside it, and SPEC.md names both so
   // a sample's span is never read as the entity's whole history. Every one is
