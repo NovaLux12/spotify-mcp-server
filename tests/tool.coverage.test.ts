@@ -160,7 +160,7 @@ const KNOWN_UNTESTED: readonly {
     tools: [
       'dedupe_playlist_apply', 'dedupe_playlist_plan',
       'filter_playlist_by_artist', 'filter_playlist_by_duration', 'filter_playlist_by_era',
-      'interleave_playlists_plan', 'move_tracks_between_playlists',
+      'interleave_playlists_plan',
       'playlist_difference_plan', 'playlist_edit_journal', 'playlist_intersection',
       'playlist_table_of_contents', 'playlist_union_preview', 'rotate_playlist_plan',
       'sample_playlist_tracks', 'split_playlist_by_count',

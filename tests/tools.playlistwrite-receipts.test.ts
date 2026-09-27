@@ -642,6 +642,14 @@ describe('#1529 swarm3_playlistops reads the playlist total, never the row count
   // `row count 50 ≠ expected NaN` for a write that landed. 150 doomed rows is
   // two chunks at the 100-per-request cap.
   it('does not print NaN as a row count on the second chunk of a multi-chunk delete', async () => {
+    // #1568: a 150-row range removal is above REMOVE_ELICIT_THRESHOLD, so the
+    // commit now asks. This test is about the receipt arithmetic, not the
+    // gate, and its harness supplies a server that cannot prompt — so the
+    // documented automation bypass is what lets the write reach the two
+    // chunks under test. The gate itself is asserted from both sides of its
+    // threshold in tests/tools.bulk-removal-gates.test.ts.
+    const priorConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
     initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '200' });
     try {
       const h = harness(registerSwarm3PlaylistopsTools, {
@@ -665,6 +673,8 @@ describe('#1529 swarm3_playlistops reads the playlist total, never the row count
       }
       assert.equal(h.stub.playlists.get('src')?.uris.length, 0, 'both chunks landed');
     } finally {
+      if (priorConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = priorConfirm;
       initConfig();
     }
   });

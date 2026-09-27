@@ -159,7 +159,7 @@ function harness(playlists: PlaylistState[], elicit?: unknown) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
     registerTool(name: string, cfg: { description?: string; inputSchema?: z.ZodType }, handler: Registered['handler']) {
-      registered.push({ name, validate: (a) => (cfg.inputSchema as z.ZodType).parse(a), handler });
+      registered.push({ name, validate: (a: Record<string, unknown>) => (cfg.inputSchema as z.ZodType).parse(a) as Record<string, unknown>, handler });
     },
     ...(elicit !== undefined
       ? {
@@ -188,7 +188,7 @@ function harness(playlists: PlaylistState[], elicit?: unknown) {
         'GET',
         META_PATH,
         {
-          respond: (call) => {
+          respond: (call: StubCall) => {
             const id = decodeURIComponent(META_PATH.exec(call.path)![1]!);
             const items = store.get(id);
             if (!items) return null;
@@ -200,7 +200,7 @@ function harness(playlists: PlaylistState[], elicit?: unknown) {
         'GET',
         ITEMS_PATH,
         {
-          respond: (call) => {
+          respond: (call: StubCall) => {
             const id = decodeURIComponent(ITEMS_PATH.exec(call.path)![1]!);
             const items = store.get(id);
             if (!items) return null;
@@ -216,7 +216,7 @@ function harness(playlists: PlaylistState[], elicit?: unknown) {
         'DELETE',
         ITEMS_PATH,
         {
-          respond: (call) => {
+          respond: (call: StubCall) => {
             const id = decodeURIComponent(ITEMS_PATH.exec(call.path)![1]!);
             const items = store.get(id) ?? [];
             const tracks = (call.arg as { tracks?: Array<{ uri?: string; positions?: number[] }> })?.tracks ?? [];

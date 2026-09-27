@@ -489,16 +489,27 @@ function referenceBalance(buckets: RefBucket[]) {
 describe('balance_playlist_pairs commit path (#903)', () => {
   let backupDir: string;
   let previousBackupDir: string | undefined;
+  let previousConfirm: string | undefined;
 
   before(() => {
     backupDir = mkdtempSync(join(tmpdir(), 'w903-'));
     previousBackupDir = process.env.SPOTIFY_MCP_BACKUP_DIR;
     process.env.SPOTIFY_MCP_BACKUP_DIR = backupDir;
+    // #1568: this fixture balances to a couple of hundred moves, which is far
+    // above MOVE_ELICIT_THRESHOLD, so the commit now asks. The suite is about
+    // the plan matching the pre-refactor linear scans, not the gate, and its
+    // server cannot prompt — the documented automation bypass is what lets the
+    // commit reach the code under test. The gate is asserted from both sides
+    // of its threshold in tests/tools.bulk-removal-gates.test.ts.
+    previousConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
     // Fixtures below exceed the default 500-row fetch-all cap.
     initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '5000' });
   });
 
   after(() => {
+    if (previousConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+    else process.env.SPOTIFY_MCP_CONFIRM = previousConfirm;
     if (previousBackupDir === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
     else process.env.SPOTIFY_MCP_BACKUP_DIR = previousBackupDir;
     rmSync(backupDir, { recursive: true, force: true });
