@@ -1917,6 +1917,8 @@ The `{?…}` template is still registered and still earns its place: it is what 
 
 `limit` is bounded to 1–50 and `offset` to ≥0 before forwarding, matching the tool schemas and the OpenAPI maxima. An unparseable value falls back to the endpoint default rather than failing the read.
 
+**Normalising silently is a reason to publish the bound, so the bound is in the description.** Each parameterised resource states its range, its default and — for `time_range` and the cursors — its unit and legal values, on all three of its registered entries, so a host reads the contract from `resources/list` before it builds the URI rather than inferring it from a shortened response. `?limit` and `?offset` are zero-anchored numbers a natural-language request becomes ("the next ten"), so the same failure #883 fixed for playlist position bases applies here in the other direction: a guessed bound produces a *narrower* window than asked for and nothing in the body says the request was rewritten. `?after` and `?before` are **Unix epoch milliseconds**, not seconds and not an ISO date — a seconds cursor selects 1970 and returns an empty page. `tests/resources-603.test.ts` fails if any advertised parameter loses its bound.
+
 ### 6.2 Audiobook and chapter templates
 
 `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` close the gap between a complete audiobook **tool** surface and a resource surface that had no audiobook URI at all.
