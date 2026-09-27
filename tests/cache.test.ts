@@ -19,9 +19,10 @@
  * written under os.tmpdir().
  */
 
-import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
+import { describe, it, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -38,6 +39,7 @@ process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 const { LruTtlCache, cacheKey } = await import('../src/cache.ts');
 const { SpotifyClient } = await import('../src/client.ts');
 const { TOKEN_FILE } = await import('../src/auth.ts');
+const persist = await import('../src/cachepersist.ts');
 
 const realFetch = globalThis.fetch;
 after(() => {
@@ -306,5 +308,355 @@ describe('cache: SpotifyClient reads (#894)', () => {
     const status = client.getRateLimitStatus();
     assert.equal(status.cacheEntries, undefined, 'disabled cache is not the same as an empty one');
     assert.equal(status.cacheBytes, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped invalidation (#893)
+//
+// These drive REAL writes through the client and then read again, asserting on
+// the PARSED body the second read returns. A test that only checks a prefix
+// string was constructed would pass even if every lookup were wired to the
+// wrong key, which is the failure mode this whole change risks.
+// ---------------------------------------------------------------------------
+
+describe('cache: scoped invalidation (#893)', () => {
+  let calls: Array<{ method: string; href: string }> = [];
+  const realFetchRef = { current: realFetch };
+
+  beforeEach(async () => {
+    calls = [];
+    await writeFile(
+      TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push({ method, href });
+      if (method !== 'GET') return new Response(JSON.stringify({ snapshot_id: 'snap-1' }), { status: 200 });
+      // The body states which resource and which generation it came from, so
+      // the assertions can tell "refetched" from "served the old entry" rather
+      // than comparing URLs.
+      const body = href.includes('/artists/B/')
+        ? { items: [{ id: 'artist-b-track', generation: 'current' }] }
+        : { items: [{ id: `${href.includes('/playlists/A') ? 'playlist-a' : 'other'}-track`, generation: 'current' }] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = realFetchRef.current;
+  });
+
+  it('a playlist write drops that playlist’s reads and keeps unrelated ones', async () => {
+    const client = new SpotifyClient();
+
+    await client.get('/playlists/A/items', { limit: '50', offset: '0' });
+    await client.get('/playlists/A', {});
+    await client.get('/artists/B/albums', { limit: '50' });
+    assert.equal(client.cache?.size, 3, 'all three reads are cached before the write');
+
+    await client.post('/playlists/A/items', { uris: ['spotify:track:new'] });
+
+    const rl = client.getRateLimitStatus();
+    assert.equal(rl.cacheEntries, 1, 'only the unrelated artist read survives the scoped invalidation');
+
+    // The surviving read is still served from cache — a scoped invalidation
+    // that refetched everything would be the old wholesale clear.
+    const beforeReread = calls.length;
+    const kept = await client.get('/artists/B/albums', { limit: '50' });
+    assert.equal(calls.length, beforeReread, 'the unrelated read is served from cache, not refetched');
+    assert.equal((kept as { items: Array<{ id: string }> }).items[0]?.id, 'artist-b-track');
+
+    // And the mutated playlist's reads are gone: they must be refetched.
+    const items = await client.get('/playlists/A/items', { limit: '50', offset: '0' });
+    assert.equal(calls.length, beforeReread + 1, 'the mutated playlist’s read is refetched, not served stale');
+    assert.equal((items as { items: Array<{ id: string }> }).items[0]?.id, 'playlist-a-track');
+  });
+
+  it('one playlist’s write does not evict a DIFFERENT playlist whose id shares its prefix', async () => {
+    const client = new SpotifyClient();
+    // `/playlists/AB` starts with `/playlists/A`. A naive prefix match drops
+    // AB's cached reads when A is written to, and the caller never learns.
+    await client.get('/playlists/AB/items', { limit: '50' });
+    await client.post('/playlists/A/items', { uris: ['spotify:track:new'] });
+    assert.equal(client.getRateLimitStatus().cacheEntries, 1, 'the AB playlist read survives a write to playlist A');
+  });
+
+  it('a player command invalidates nothing — an unrelated read-mutate-read keeps its pages', async () => {
+    const client = new SpotifyClient();
+    // Count GETs only: the assertion is about re-walking the catalog, and the
+    // queue add itself is a request that legitimately happens.
+    const gets = (): number => calls.filter((c) => c.method === 'GET').length;
+    // A five-page playlist walk, then an unrelated mutation, then the re-read.
+    for (let offset = 0; offset < 500; offset += 100) {
+      await client.get('/playlists/A/items', { limit: '100', offset: String(offset) });
+    }
+    const afterWalk = gets();
+    assert.equal(afterWalk, 5, 'the first walk costs one request per page');
+
+    await client.post('/me/player/queue', { uri: 'spotify:track:new' });
+
+    for (let offset = 0; offset < 500; offset += 100) {
+      await client.get('/playlists/A/items', { limit: '100', offset: String(offset) });
+    }
+    assert.equal(gets(), afterWalk, 'a queue add must not cost the agent the whole cached walk');
+  });
+
+  it('a library write drops the library reads it can change', async () => {
+    const client = new SpotifyClient();
+    await client.get('/me/tracks', { limit: '50', offset: '0' });
+    await client.get('/artists/B/albums', { limit: '50' });
+    assert.equal(client.cache?.size, 2);
+
+    await client.put('/me/library', { uris: ['spotify:track:t1'] });
+
+    assert.equal(client.getRateLimitStatus().cacheEntries, 1, 'the /me/tracks read is dropped, the catalog read is not');
+    const beforeReread = calls.length;
+    await client.get('/me/tracks', { limit: '50', offset: '0' });
+    assert.equal(calls.length, beforeReread + 1, 'the library read is refetched after a save');
+  });
+
+  it('an unclassified write falls back to a full clear rather than a guess', async () => {
+    const client = new SpotifyClient();
+    await client.get('/artists/B/albums', { limit: '50' });
+    await client.get('/albums/X', {});
+    assert.equal(client.cache?.size, 2);
+
+    // No rule covers this endpoint. Failing closed costs a refetch; failing
+    // open would serve a stale read as if it were fresh.
+    await client.post('/some/future/endpoint', {});
+
+    assert.equal(client.getRateLimitStatus().cacheEntries, 0, 'an unknown write endpoint clears the cache');
+  });
+
+  it('a read in flight across a write is NOT stored, so the next read refetches', async () => {
+    // The bug this guards: the funnel runs up to maxConcurrency requests at
+    // once, so a read issued BEFORE a write can complete AFTER it. Storing
+    // that body re-seeds the entry the write just invalidated, and the stale
+    // value is then served for the full TTL while looking fresh.
+    await writeFile(
+      TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+
+    let generation = 'before';
+    let releaseRead: (() => void) | null = null;
+    let gateRead = true;
+    globalThis.fetch = (async (url: unknown, init?: RequestInit) => {
+      const href = String(url);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method !== 'GET') {
+        generation = 'after';
+        return new Response(JSON.stringify({ snapshot_id: 's' }), { status: 200 });
+      }
+      // Snapshot the body at REQUEST time: what Spotify would have answered
+      // then, which is the whole point — a response captured after the write
+      // would prove nothing.
+      const body = JSON.stringify({ items: [{ id: `track-${generation}` }] });
+      if (gateRead) {
+        return new Promise<Response>((resolve) => {
+          releaseRead = () => resolve(new Response(body, { status: 200 }));
+        });
+      }
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+
+    const client = new SpotifyClient();
+    const inflight = client.get('/playlists/A/items', { limit: '50' });
+    await new Promise((r) => setTimeout(r, 40)); // the read is now in flight
+    gateRead = false;
+    await client.post('/playlists/A/items', { uris: ['spotify:track:new'] });
+    releaseRead?.();
+
+    // The in-flight caller still gets a truthful answer to its own read.
+    const first = await inflight;
+    assert.equal((first as { items: Array<{ id: string }> }).items[0]?.id, 'track-before');
+
+    assert.equal(client.getRateLimitStatus().cacheEntries, 0, 'a body that predates the write is not stored');
+
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ items: [{ id: `track-${generation}` }] }), { status: 200 });
+    }) as typeof fetch;
+
+    const second = await client.get('/playlists/A/items', { limit: '50' });
+    assert.equal(calls, 1, 'the next read must hit the network, not the pre-write body');
+    assert.equal(
+      (second as { items: Array<{ id: string }> }).items[0]?.id,
+      'track-after',
+      'the value served is the post-write one',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Persistence policy (#893) — pure, no client and no network
+// ---------------------------------------------------------------------------
+
+describe('cache: persistence policy (#893)', () => {
+  it('persists catalog reads and refuses every /me read', () => {
+    const { isPersistableKey } = persist;
+    for (const key of [
+      cacheKey('GET', '/tracks/t1'),
+      cacheKey('GET', '/albums/a1'),
+      cacheKey('GET', '/artists/ar1/albums', { limit: '50' }),
+      cacheKey('GET', '/shows/s1'),
+    ]) {
+      assert.equal(isPersistableKey(key), true, `${key} is immutable catalog and should persist`);
+    }
+    // /me/* is user-owned and changes under this server's own write tools. A
+    // second process would serve these without ever seeing the mutation.
+    for (const key of [
+      cacheKey('GET', '/me/tracks', { limit: '50' }),
+      cacheKey('GET', '/me/playlists', { limit: '50' }),
+      cacheKey('GET', '/me/player/queue'),
+      cacheKey('GET', '/me/library/contains'),
+    ]) {
+      assert.equal(isPersistableKey(key), false, `${key} must never be persisted`);
+    }
+    // Playlists are writable here, so a playlist read persisted by one process
+    // would be stale for another that never saw the edit.
+    assert.equal(isPersistableKey(cacheKey('GET', '/playlists/p1/items', { limit: '50' })), false);
+    // A non-GET key is refused on shape, not on a path allowlist.
+    assert.equal(isPersistableKey('POST /tracks/t1 '), false);
+  });
+
+  it('drops expired entries on load instead of reviving them', () => {
+    const now = Date.now();
+    const doc = {
+      version: 1,
+      entries: [
+        { key: cacheKey('GET', '/tracks/t1'), value: { id: 't1' }, expiresAt: now + 60_000 },
+        { key: cacheKey('GET', '/tracks/t2'), value: { id: 't2' }, expiresAt: now - 1 },
+      ],
+    };
+    const kept = persist.validatePersisted(doc, now);
+    assert.deepEqual(kept.entries.map((e) => e.key), [cacheKey('GET', '/tracks/t1')]);
+  });
+
+  it('refuses a file whose schema version is not this one', () => {
+    assert.throws(
+      () => persist.validatePersisted({ version: 99, entries: [] }),
+      /version 99 is not 1/,
+    );
+  });
+
+  it('skips malformed rows rather than failing the whole file', () => {
+    const now = Date.now();
+    const kept = persist.validatePersisted(
+      {
+        version: 1,
+        entries: [
+          { key: cacheKey('GET', '/tracks/t1'), value: { id: 't1' }, expiresAt: now + 60_000 },
+          { key: '', value: {}, expiresAt: now + 60_000 },
+          { key: cacheKey('GET', '/tracks/t3'), expiresAt: now + 60_000 },
+          { key: cacheKey('GET', '/tracks/t4'), value: {}, expiresAt: 'soon' },
+          null,
+        ],
+      },
+      now,
+    );
+    assert.deepEqual(kept.entries.map((e) => e.key), [cacheKey('GET', '/tracks/t1')]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-process persistence (#893)
+//
+// Everything here writes under a fresh `mkdtemp` directory via
+// `SPOTIFY_MCP_DATA_DIR` + the client's `cachePersist.file` override. The real
+// `~/.spotify-mcp/` must never be a target of a test run, so the override is
+// not optional here and there is no path through these tests that falls back
+// to `homedir()`.
+// ---------------------------------------------------------------------------
+
+describe('cache: cross-process persistence (#893)', () => {
+  let dir = '';
+  let prevPersist: string | undefined;
+  let prevDataDir: string | undefined;
+  let prevTokenFile: string | undefined;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-persist-'));
+    prevPersist = process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    prevDataDir = process.env.SPOTIFY_MCP_DATA_DIR;
+    prevTokenFile = process.env.SPOTIFY_MCP_TOKEN_FILE;
+    process.env.SPOTIFY_MCP_CACHE_PERSIST = '1';
+    process.env.SPOTIFY_MCP_DATA_DIR = dir;
+    process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(dir, 'tokens.json');
+    await writeFile(
+      process.env.SPOTIFY_MCP_TOKEN_FILE,
+      JSON.stringify({ access_token: 'tok', refresh_token: 'ref', expires_at: Date.now() + 3_600_000 }),
+      'utf8',
+    );
+  });
+
+  afterEach(async () => {
+    if (prevPersist === undefined) delete process.env.SPOTIFY_MCP_CACHE_PERSIST;
+    else process.env.SPOTIFY_MCP_CACHE_PERSIST = prevPersist;
+    if (prevDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR;
+    else process.env.SPOTIFY_MCP_DATA_DIR = prevDataDir;
+    if (prevTokenFile === undefined) delete process.env.SPOTIFY_MCP_TOKEN_FILE;
+    else process.env.SPOTIFY_MCP_TOKEN_FILE = prevTokenFile;
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('a second client serves a catalog read with no network call, and never persists a /me read', async () => {
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls += 1;
+      return new Response(JSON.stringify({ items: [{ id: 'tr1' }] }), { status: 200 });
+    }) as typeof fetch;
+
+    const first = new SpotifyClient();
+    await first.get('/tracks/tr1', {});
+    assert.equal(first.getRateLimitStatus().cachePersist, true, 'persistence is reported as on, not implied');
+
+    // The write is debounced; wait past the debounce so the file is on disk.
+    await persist.savePersistedCache(
+      first.cache?.snapshot().map((e) => ({ key: e.key, value: e.value, expiresAt: e.expiresAt })) ?? [],
+      { file: path.join(dir, 'cache.json') },
+    );
+
+    const second = new SpotifyClient();
+    await second.get('/tracks/tr1', {});
+    const before = calls;
+    const served = await second.get('/tracks/tr1', {});
+    assert.equal(calls, before, 'the second client answered from the persisted file, not the network');
+    assert.deepEqual(served, { items: [{ id: 'tr1' }] });
+
+    // The /me read is the case that must never cross a process boundary: a
+    // second process would serve it without having seen the mutation.
+    await second.get('/me/tracks', {});
+    const written = persist.validatePersisted(
+      JSON.parse(await readFile(path.join(dir, 'cache.json'), 'utf8')),
+    );
+    assert.ok(
+      written.entries.every((e) => !e.key.includes('/me/')),
+      `no /me key may be persisted, got: ${written.entries.map((e) => e.key).join(', ')}`,
+    );
+  });
+
+  it('a persisted entry does not outlive the expiry it was written with', async () => {
+    const file = path.join(dir, 'cache.json');
+    const key = cacheKey('GET', '/tracks/tr1', {});
+    await persist.savePersistedCache([{ key, value: { id: 'tr1' }, expiresAt: Date.now() - 1 }], { file });
+
+    // Already past its deadline, so a load must not hand it back.
+    const loaded = await persist.loadPersistedCache({ file });
+    assert.equal(loaded.length, 0, 'an expired entry is dropped on load, not revived');
+  });
+
+  it('a corrupt cache file is preserved and reported, not read as an empty cache', async () => {
+    const file = path.join(dir, 'cache.json');
+    await writeFile(file, '{ this is not json', 'utf8');
+    await assert.rejects(persist.loadPersistedCache({ file }), /not valid JSON|cache file/);
+    // The bytes are still there, moved aside rather than destroyed.
+    assert.ok(existsSync(file) || existsSync(`${file}.corrupt`), 'the unreadable file is preserved, not deleted');
   });
 });

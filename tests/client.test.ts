@@ -1230,23 +1230,27 @@ describe('SpotifyClient', () => {
 
     it('invalidates the read cache after a write whose body would not parse', async () => {
       await seedTokens();
-      let albumReads = 0;
+      let reads = 0;
       responder = (_url, init) => {
         if (init.method === 'POST') return jsonBodyResponse('');
-        albumReads++;
-        return jsonResponse({ items: [{ id: `read-${albumReads}` }], total: 1, limit: 1, offset: 0 });
+        reads++;
+        return jsonResponse({ items: [{ id: `read-${reads}` }], total: 1, limit: 1, offset: 0 });
       };
 
       const client = new SpotifyClient();
-      const first = await client.get<{ items: { id: string }[] }>('/albums');
-      const cached = await client.get<{ items: { id: string }[] }>('/albums');
+      // A playlist read, because the write below targets that playlist: since
+      // #893 a write invalidates the reads it could have changed rather than
+      // the whole cache, so a queue write would (correctly) leave this entry
+      // alone and would no longer exercise the #674 behaviour under test.
+      const first = await client.get<{ items: { id: string }[] }>('/playlists/p1/items');
+      const cached = await client.get<{ items: { id: string }[] }>('/playlists/p1/items');
       assert.deepEqual(cached, first);
-      assert.equal(albumReads, 1, 'the second read was a cache hit');
+      assert.equal(reads, 1, 'the second read was a cache hit');
 
-      assert.equal(await client.post('/me/player/queue', { uri: 'spotify:track:x' }), null);
+      assert.equal(await client.post('/playlists/p1/items', { uris: ['spotify:track:x'] }), null);
 
-      const after = await client.get<{ items: { id: string }[] }>('/albums');
-      assert.equal(albumReads, 2, 'the accepted write dropped the cached read');
+      const after = await client.get<{ items: { id: string }[] }>('/playlists/p1/items');
+      assert.equal(reads, 2, 'the accepted write dropped the cached read despite its unreadable body');
       assert.notDeepEqual(after, first, 'the post-write read is not the pre-write payload');
     });
 

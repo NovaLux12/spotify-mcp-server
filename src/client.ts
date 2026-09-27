@@ -1,11 +1,25 @@
 import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
-import { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey } from './cache.js';
+import { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey, invalidationPlan } from './cache.js';
+import {
+  cachePersistEnabled,
+  cachePersistPath,
+  isPersistableKey,
+  loadPersistedCache,
+  savePersistedCache,
+} from './cachepersist.js';
 import { getConfig } from './config.js';
 import { appendHistory, currentToolName } from './history.js';
 import type { MutationRecord } from './history.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
+
+/**
+ * How long a burst of cache writes coalesces into one file write (#893).
+ * Long enough that a paged walk costs one write rather than one per page,
+ * short enough that a session that ends shortly after a read still persists.
+ */
+const CACHE_PERSIST_DEBOUNCE_MS = 250;
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
 /**
@@ -266,6 +280,12 @@ interface SpotifyClientOptions {
   /** TTL cache tuning (#54); omit for defaults. */
   cache?: { ttlMs?: number; maxEntries?: number };
   /**
+   * Cross-process cache persistence (#893). Only read when
+   * `SPOTIFY_MCP_CACHE_PERSIST` opts in; `file` overrides the path and
+   * `maxBytes` the cap, which is how tests keep every write under a temp dir.
+   */
+  cachePersist?: { file?: string; maxBytes?: number };
+  /**
    * How long a stored ETag stays usable as an `If-None-Match` validator
    * (#601); omit for the default window. Ignored when `disableCache` is set.
    */
@@ -378,6 +398,13 @@ interface RateLimitStatus {
   cacheBytes?: number;
   cacheMaxBytes?: number;
   cacheSkippedOversize?: number;
+  /** True when `SPOTIFY_MCP_CACHE_PERSIST` is on (#893). Absent when it is not. */
+  cachePersist?: boolean;
+  /** Entries restored from the persisted file at startup (#893). */
+  cacheRestored?: number;
+  /** Persist failures and allowlist refusals, so a dead cache is visible (#893). */
+  cachePersistFailed?: number;
+  cachePersistRefused?: number;
   /** Requests currently open in the funnel (#892). */
   inFlight: number;
   /** The funnel's concurrency ceiling for this process (#892). */
@@ -704,6 +731,87 @@ function classifyTokenTransportFailure(err: unknown): TokenFailure {
   };
 }
 
+/**
+ * Owns the persisted half of the read cache (#893): restores once, and
+ * debounces saves so a burst of reads costs one write.
+ *
+ * Deliberately separate from {@link SpotifyClient} so the persistence policy —
+ * which keys may be written, what happens to a corrupt file — is testable
+ * without a client, a token file, or a network stub.
+ */
+class CachePersistController {
+  private restoredCount = 0;
+  private failed = 0;
+  private refused = 0;
+  private loaded: Promise<void> | null = null;
+  private pendingSave: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(
+    private readonly file: string,
+    private readonly opts: { file?: string; maxBytes?: number } | undefined,
+    private readonly schedule: (fn: () => void, ms: number) => ReturnType<typeof setTimeout> = setTimeout,
+  ) {}
+
+  /** What the persistence layer did, for `spotify_doctor`. */
+  stats(): { restored: number; failed: number; refused: number } {
+    return { restored: this.restoredCount, failed: this.failed, refused: this.refused };
+  }
+
+  /**
+   * Restore persisted entries into `cache`, once.
+   *
+   * A load failure is counted and not rethrown HERE — a broken sidecar is an
+   * optimisation that cannot be allowed to stop the server booting — but it is
+   * visible through {@link stats} and `spotify_doctor`, so "the persisted cache
+   * is not loading" is reportable rather than silent. `loadSidecar` preserves
+   * the corrupt bytes, so attempting the load destroys nothing.
+   */
+  load(cache: LruTtlCache<unknown> | null): Promise<void> {
+    if (this.loaded) return this.loaded;
+    if (!cache) return Promise.resolve();
+    this.loaded = loadPersistedCache({ ...this.opts, file: this.file }).then(
+      (entries) => {
+        for (const entry of entries) {
+          if (!isPersistableKey(entry.key)) {
+            this.refused += 1;
+            continue;
+          }
+          // Re-apply the entry's own remaining lifetime rather than restarting
+          // its TTL: persisting an entry must not extend it. `snapshot` already
+          // filtered expired rows, so this is positive.
+          cache.set(entry.key, entry.value, { ttlMs: Math.max(1, entry.expiresAt - Date.now()) });
+          this.restoredCount += 1;
+        }
+      },
+      () => {
+        this.failed += 1;
+      },
+    );
+    return this.loaded;
+  }
+
+  /** Queue a debounced save of the current cache contents. */
+  scheduleSave(cache: LruTtlCache<unknown> | null): void {
+    if (!cache) return;
+    // Snapshot at schedule time and write that, so a later mutation's
+    // invalidation (which the next schedule will capture) is never undone by a
+    // save that was queued before it.
+    const entries = cache.snapshot();
+    if (this.pendingSave !== null) clearTimeout(this.pendingSave);
+    this.pendingSave = this.schedule(() => {
+      this.pendingSave = null;
+      savePersistedCache(entries, { ...this.opts, file: this.file }).then(
+        (stats) => {
+          this.refused += stats.refused;
+        },
+        () => {
+          this.failed += 1;
+        },
+      );
+    }, CACHE_PERSIST_DEBOUNCE_MS);
+  }
+}
+
 export class SpotifyClient {
   private tokens: TokenData | null = null;
   private loadPromise: Promise<TokenData> | null = null;
@@ -744,6 +852,33 @@ export class SpotifyClient {
   // ETag validators for conditional reads (#601) — null when disabled. Holds
   // the payload an ETag identifies so a 304 can be answered without a body.
   readonly validators: ValidatorStore<unknown> | null;
+  /**
+   * Monotonic counter bumped by every invalidation (#893). A read captures it
+   * before it goes to the network and refuses to STORE its body if it moved
+   * while the request was in flight.
+   *
+   * This is the correctness half of scoped invalidation. Dropping keys at
+   * mutation time is not sufficient on its own: the funnel runs up to
+   * `maxConcurrency` requests at once, so a read issued BEFORE a mutation can
+   * complete AFTER it. That read's body describes the pre-mutation world, and
+   * storing it would re-seed the entry the mutation just invalidated — serving
+   * stale data for the full TTL, with the invalidation having already run. A
+   * wholesale `clear()` did not prevent this either; scoping does not make it
+   * worse, but only a generation check actually closes it.
+   *
+   * The read still RETURNS its own body to its caller: it is a truthful
+   * answer to the question that was asked. Only the write into shared state is
+   * suppressed.
+   */
+  private _invalidationEpoch = 0;
+  /**
+   * Optional cross-process persistence for the catalog cache (#893). Null
+   * unless `SPOTIFY_MCP_CACHE_PERSIST=1`. Only ever holds allowlisted,
+   * non-`/me` catalog reads — see {@link isPersistableKey}.
+   */
+  private readonly _persist: CachePersistController | null;
+  /** Pending debounced save, so N mutations in a burst cost one write. */
+  private _persistTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly fetchAllCap: number;
   /**
    * Ceiling on requests in flight at once (#892). Read once at construction,
@@ -768,6 +903,13 @@ export class SpotifyClient {
     this.validators = opts.disableCache
       ? null
       : new ValidatorStore<unknown>(opts.validatorTtlMs, opts.cache?.maxEntries);
+    this._persist = opts.disableCache || !cachePersistEnabled()
+      ? null
+      : new CachePersistController(cachePersistPath(), opts.cachePersist);
+    // Restore before the first read can miss: a load that lands after a read
+    // would make the second process pay the fetch anyway, and the restored
+    // entries are deadline-checked on load so nothing expired is revived.
+    if (this._persist) void this._persist.load(this.cache);
   }
 
   /**
@@ -802,6 +944,7 @@ export class SpotifyClient {
       requestsLastMinute: this.requestsSince(60_000),
       requestsLastHour: this.requestsSince(3_600_000),
       ...this.cacheStats(),
+      ...this.cachePersistStats(),
       inFlight: this._inFlight,
       maxConcurrency: this._maxConcurrency,
       peakInFlight: this._peakInFlight,
@@ -821,6 +964,25 @@ export class SpotifyClient {
       cacheBytes: this.cache.bytes,
       cacheMaxBytes: this.cache.limits.maxBytes,
       cacheSkippedOversize: this.cache.skippedOversize,
+    };
+  }
+
+  /**
+   * Persistence counters (#893), or an empty object when persistence is off —
+   * so a caller can report "not enabled" rather than "restored nothing", which
+   * are different facts.
+   */
+  private cachePersistStats(): Pick<
+    RateLimitStatus,
+    'cachePersist' | 'cacheRestored' | 'cachePersistFailed' | 'cachePersistRefused'
+  > {
+    if (!this._persist) return this.cache ? { cachePersist: false } : {};
+    const stats = this._persist.stats();
+    return {
+      cachePersist: true,
+      cacheRestored: stats.restored,
+      cachePersistFailed: stats.failed,
+      cachePersistRefused: stats.refused,
     };
   }
 
@@ -900,8 +1062,18 @@ export class SpotifyClient {
    * opt-in history JSONL. Never fails the underlying mutation.
    */
   private afterMutation(method: string, path: string, response: unknown): void {
-    this.cache?.clear();
-    this.validators?.clear();
+    this._invalidationEpoch += 1;
+    const plan = invalidationPlan(method, path);
+    if (plan.scope === 'all') {
+      this.cache?.clear();
+      this.validators?.clear();
+    } else {
+      for (const prefix of plan.payload) this.cache?.deleteByPrefix(prefix);
+      for (const prefix of plan.validators) this.validators?.deleteByPrefix(prefix);
+    }
+    // A mutation also re-shapes what is worth persisting, so a save queued
+    // before it must not write the dropped entries back to disk.
+    this._persist?.scheduleSave(this.cache);
     void this.recordMutation(method, path, response);
   }
 
@@ -1604,6 +1776,11 @@ export class SpotifyClient {
     // ETag identifies is the answer (#601). Only its freshness is never
     // assumed — it is returned only after the origin confirms it.
     const key = cacheKey('GET', relative);
+    // The world as of before this request goes out (#893). If a mutation
+    // invalidates anything while the request is in flight, this body is a
+    // pre-mutation snapshot and must not be written into shared state — see
+    // `_invalidationEpoch`.
+    const epochAtRequest = this._invalidationEpoch;
     if (cacheable) {
       const hit = this.cache!.get(key);
       if (hit !== undefined) return hit as T;
@@ -1648,8 +1825,15 @@ export class SpotifyClient {
           // window so the next read revalidates against the same ETag. The
           // payload is the same object, so its measured size is still
           // recorded and the byte budget keeps charging it exactly once.
-          if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
-          this.validators?.set(key, validator.value, validator.etag);
+          //
+          // Epoch-guarded like the store below (#893): a 304 answers "this
+          // body is unchanged", which is only true of the world the validator
+          // was taken from. A mutation that landed mid-request makes the
+          // "unchanged" claim refer to the past.
+          if (this._invalidationEpoch === epochAtRequest) {
+            if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
+            this.validators?.set(key, validator.value, validator.etag);
+          }
           opts?.onNotModified?.();
           return validator.value as T;
         }
@@ -1677,7 +1861,17 @@ export class SpotifyClient {
       opts?.priority,
     );
     if (servedFrom304) return result;
-    if (cacheable && result !== null) this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
+    // Do not write a body into shared state if anything was invalidated while
+    // this request was in flight (#893). Without this, a read issued before a
+    // mutation re-seeds the entry that mutation dropped, and the stale body is
+    // then served from cache for the full TTL while looking perfectly fresh.
+    // The caller still gets `result` — this is a truthful answer to the read it
+    // made; only the cache write is withheld.
+    if (this._invalidationEpoch !== epochAtRequest) return result;
+    if (cacheable && result !== null) {
+      this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
+      this._persist?.scheduleSave(this.cache);
+    }
     // A body that no longer carries an ETag supersedes any stored validator:
     // keeping the old one would offer a tag whose payload we just replaced.
     if (responseEtag && result !== null) this.validators?.set(key, result, responseEtag);
