@@ -277,7 +277,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
     'Structured advanced-search composer: builds a valid Spotify filter query from typed fields and runs it. '
       + 'Supported filter syntax: track:"name" artist:"name" album:"name" year:1984 year:1980-1989 genre:"pop" '
       + 'tag:new (last ~2 weeks) tag:hipster (lowest-popularity) isrc:CCXXXNNNNNNN upc:NNNNNNNNNNNNN. '
-      + 'Pass whichever fields you have; they are quoted and composed for you. Quota: 🟢 one GET /search call.',
+      + 'Pass whichever fields you have; they are quoted and composed for you. Quota: one GET /search call.',
     {
       fields: z
         .object({
@@ -371,7 +371,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
   server.tool(
     'track_album_bundle',
     'Context card for one track: the track plus its full album metadata and the album\'s remaining track listing '
-      + '(the "what am I listening to" card). Quota: 🟡 2 API calls (GET /tracks/{id} + GET /albums/{id}/tracks).',
+      + '(the "what am I listening to" card). Quota: 2 API calls (GET /tracks/{id} + GET /albums/{id}/tracks).',
     {
       track_id: z.string().min(1).describe('Spotify track ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -421,7 +421,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
     'artist_discography_timeline',
     '[local-compute] Chronological release table (year · type · name · tracks) built from a paginated '
       + '/artists/{id}/albums walk. Sorted newest first; `since_year` trims older rows client-side. '
-      + 'Quota: 🟡 one paginated walk (typically several API calls on the rate-limited queue).',
+      + 'Quota: one paginated walk (typically several API calls on the rate-limited queue).',
     {
       artist_id: z.string().min(1).describe('Spotify artist ID'),
       include_groups: z
@@ -474,7 +474,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
     'search_fresh',
     'Query-scoped newness: runs your query with Spotify\'s `tag:new` filter (last ~2 weeks of releases) — '
       + 'per-artist/genre "what just dropped" without the dead browse/new-releases endpoint. '
-      + 'Quota: 🟢 one GET /search call. Decision guide: search_fresh for newness-filtered hits; search (general), search_deep (paginated), search_by_isrc (ISRC-exact), whats_new (personal follows).',
+      + 'Quota: one GET /search call. Decision guide: search_fresh for newness-filtered hits; search (general), search_deep (paginated), search_by_isrc (ISRC-exact), whats_new (personal follows).',
     {
       query: z.string().min(1).describe("Base query, e.g. an artist name ('Noise Pop 2026') or genre"),
       types: z
@@ -527,7 +527,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
   server.tool(
     'track_enrichment_batch',
     'Up to 50 track IDs → enriched rows: album release date, label and artist genres joined back onto each track. '
-      + 'Quota: 🟡 1 GET /tracks?ids= + 1 GET /albums?ids= per 20 albums + 1 GET /artists/{id} per distinct '
+      + 'Quota: 1 GET /tracks?ids= + 1 GET /albums?ids= per 20 albums + 1 GET /artists/{id} per distinct '
       + 'artist (Feb 2026 removed the batch artist lookup; counts carry the real request total).',
     {
       track_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify track IDs'),
@@ -636,7 +636,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'albums_runtime_batch',
     '[local-compute] Runtime per album — total and mean track length — for up to 20 albums in one pass '
       + '(album objects embed the first 50 tracks, so totals are exact for albums up to 50 tracks and '
-      + 'flagged as partial above that). Quota: 🟢 one GET /albums?ids= call.',
+      + 'flagged as partial above that). Quota: one GET /albums?ids= call.',
     {
       album_ids: z.array(z.string().min(1)).min(1).max(20).describe('Up to 20 Spotify album IDs'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -714,7 +714,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'album_track_stats',
     '[local-compute] Track-length statistics for one album: min/max/mean/median plus a longest-track callout, '
-      + 'built from a paged /albums/{id}/tracks walk. Quota: 🟡 one paginated walk (usually a single call).',
+      + 'built from a paged /albums/{id}/tracks walk. Quota: one paginated walk (usually a single call).',
     {
       album_id: z.string().min(1).describe('Spotify album ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -787,7 +787,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'artist_discography_stats',
     '[local-compute] Discography shape for one artist: release counts by album/single/compilation, first and '
       + 'latest release, releases-per-year rate and the longest silence gap between releases. '
-      + 'Quota: 🟡 one paginated /artists/{id}/albums walk (typically several API calls).',
+      + 'Quota: one paginated /artists/{id}/albums walk (typically several API calls).',
     {
       artist_id: z.string().min(1).describe('Spotify artist ID'),
       include_groups: z
@@ -854,7 +854,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'show_runtime_stats',
     '[local-compute] Runtime profile for one show: total and average episode runtime plus release cadence '
       + '(days between episodes), built from a paged /shows/{id}/episodes walk. '
-      + 'Quota: 🟡 one paginated walk (typically several API calls).',
+      + 'Quota: one paginated walk (typically several API calls).',
     {
       show_id: z.string().min(1).describe('Spotify show ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -914,7 +914,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'show_episode_timeline',
     '[local-compute] One show\'s episodes chronologically with hiatus-gap detection — any gap between consecutive '
       + 'release dates larger than the threshold is called out ("no episode in N days"). '
-      + 'Quota: 🟡 one paginated /shows/{id}/episodes walk (typically several API calls).',
+      + 'Quota: one paginated /shows/{id}/episodes walk (typically several API calls).',
     {
       show_id: z.string().min(1).describe('Spotify show ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -975,7 +975,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'category_resolver',
     'Free-text genre/vibe → best-matching browse category ID via local fuzzy match over GET /browse/categories '
       + 'results. REGISTRATION GATE: /browse/categories is on the #329 app-registration gated surface — on fresh '
-      + 'registrations this short-circuits with a clear disclosure instead of a raw 403. Quota: 🟡 1–4 API calls '
+      + 'registrations this short-circuits with a clear disclosure instead of a raw 403. Quota: 1–4 API calls '
       + '(paged category walk).',
     {
       text: z.string().min(1).describe('Free-text genre/vibe, e.g. "chill electronic"'),
@@ -1043,7 +1043,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'search_by_isrc',
     'Exact track resolution from an ISRC via the `isrc:` search filter — the dedupe/relink anchor for catalog '
-      + 'work. Quota: 🟢 one GET /search call. Decision guide: search_by_isrc for ISRC-only exact match; search/search_deep for general text, search_fresh for tag:new newness.',
+      + 'work. Quota: one GET /search call. Decision guide: search_by_isrc for ISRC-only exact match; search/search_deep for general text, search_fresh for tag:new newness.',
     {
       isrc: z.string().min(12).max(15).describe('ISRC code, e.g. USUM71703861 (spaces/dashes tolerated)'),
       // #781: an ISRC filter usually matches one track, but `isrc:` is a text
@@ -1084,7 +1084,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'find_canonical_track',
     '[local-compute] Given a title + artist, search all versions, group by (artist, title) and rank them — '
       + 'studio > album > live/remaster — to return the canonical URI plus a variant table. '
-      + 'Quota: 🟡 1–2 GET /search calls (fallback broad search when the precise filter comes back empty).',
+      + 'Quota: 1–2 GET /search calls (fallback broad search when the precise filter comes back empty).',
     {
       title: z.string().min(1).describe('Track title'),
       artist: z.string().min(1).describe('Primary artist name'),
@@ -1167,7 +1167,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'audiobook_chapter_map',
     '[local-compute] Chapter-by-chapter duration map, total runtime and the mid-point chapter for one audiobook. '
-      + 'MARKET GATE: audiobooks are US/UK/CA/IE/NZ/AU only. Quota: 🟡 2+ API calls '
+      + 'MARKET GATE: audiobooks are US/UK/CA/IE/NZ/AU only. Quota: 2+ API calls '
       + '(GET /audiobooks/{id} + paged GET /audiobooks/{id}/chapters).',
     {
       audiobook_id: z.string().min(1).describe('Spotify audiobook ID'),
@@ -1225,7 +1225,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'NOTE: /artists/{id}/albums returns SIMPLIFIED album objects (no track list), so the default is '
       + 'album-level co-billing only; pass include_track_features to read track credits for real. '
       + 'NOTE: /artists/{id}/top-tracks is on the #329 registration-gated surface; if it 403s the network is '
-      + 'computed from recent albums only, with an explicit disclosure. Quota: 🟡 1 + paginated API calls.',
+      + 'computed from recent albums only, with an explicit disclosure. Quota: 1 + paginated API calls.',
     {
       artist_id: z.string().min(1).describe('Spotify artist ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -1397,7 +1397,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'search_market_diff',
     'Same query run in two markets with the result sets diffed — availability/regional insight in one card. '
-      + 'Quota: 🟡 2 GET /search calls (one per market).',
+      + 'Quota: 2 GET /search calls (one per market).',
     {
       query: z.string().min(1).describe('Search query'),
       // One type per call. `types` was capped at 2 but only `types[0]` was ever
@@ -1453,7 +1453,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'episode_context_bundle',
     'Episode + parent show + neighbouring episodes (prev/next by release date) in one card. '
-      + 'Quota: 🟡 2 API calls (GET /episodes/{id} + GET /shows/{id}/episodes).',
+      + 'Quota: 2 API calls (GET /episodes/{id} + GET /shows/{id}/episodes).',
     {
       episode_id: z.string().min(1).describe('Spotify episode ID'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
@@ -1506,7 +1506,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'audiobooks_by_author',
     'Author catalogue via the `author:` search filter with client-side sorting — `sort=release` orders by release '
       + 'date (when Spotify exposes one; unknown dates sort last) and `sort=length` orders by chapter count as '
-      + 'the length proxy. MARKET GATE: audiobooks are US/UK/CA/IE/NZ/AU only. Quota: 🟢 one GET /search call.',
+      + 'the length proxy. MARKET GATE: audiobooks are US/UK/CA/IE/NZ/AU only. Quota: one GET /search call.',
     {
       author: z.string().min(1).describe('Author name'),
       sort: z.enum(['release', 'length']).optional().describe("Sort client-side by release date or chapter count. Default: 'release'"),
@@ -1552,7 +1552,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
   server.tool(
     'artist_genres_compact',
     'Up to 50 artist IDs → name·genres two-column projection (compact roster view). '
-      + 'Quota: 🟡 1 GET /artists/{id} per distinct id (Feb 2026 removed the batch GET /artists?ids=).',
+      + 'Quota: 1 GET /artists/{id} per distinct id (Feb 2026 removed the batch GET /artists?ids=).',
     {
       artist_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify artist IDs'),
       response_format: ResponseFormat,

@@ -810,7 +810,7 @@ test('play dry_run previews what would be queued with NO endpoint call (#57)', a
   assert.equal(calls.length, 0); // nothing hit the API — not even reads
   assert.match(
     text(result),
-    /\[dry run\] start playback on spotify:album:alb1 — nothing was changed\./,
+    /\[dry run\] start playback on <<untrusted: spotify:album:alb1 >> — nothing was changed\./,
   );
   assert.match(text(result), /queue spotify:album:alb1/);
   assert.match(text(result), /start at index 3/);
@@ -829,7 +829,7 @@ test('skip_next dry_run consumes nothing and makes no POST call (#57)', async ()
   const { registered, calls } = makeHarness();
   const result = await invoke(findTool(registered, 'skip_next'), { dry_run: true });
   assert.equal(calls.length, 0);
-  assert.match(text(result), /\[dry run\] skip to next track on the active device/);
+  assert.match(text(result), /\[dry run\] skip to next track on <<untrusted: the active device >>/);
 });
 
 test('add_to_queue dry_run validates track/episode URIs and previews without POSTing (#57)', async () => {
@@ -839,7 +839,7 @@ test('add_to_queue dry_run validates track/episode URIs and previews without POS
     dry_run: true,
   });
   assert.equal(calls.length, 0);
-  assert.match(text(result), /\[dry run\] add to queue on spotify:episode:ep1/);
+  assert.match(text(result), /\[dry run\] add to queue on <<untrusted: spotify:episode:ep1 >>/);
 
   await assert.rejects(
     invoke(findTool(registered, 'add_to_queue'), { uri: 'spotify:artist:nope', dry_run: true }),
@@ -859,7 +859,7 @@ test('play_from_search dry_run resolves the match read-only but never plays it (
   });
   assert.equal(calls.some((c) => c.method === 'PUT'), false);
   assert.ok(calls.every((c) => c.method === 'GET'));
-  assert.match(text(result), /\[dry run\] start playback on spotify:track:trk1/);
+  assert.match(text(result), /\[dry run\] start playback on <<untrusted: spotify:track:trk1 >>/);
 });
 
 test('transfer_playback dry_run previews the move without PUT /me/player (#57)', async () => {
@@ -870,7 +870,7 @@ test('transfer_playback dry_run previews the move without PUT /me/player (#57)',
     dry_run: true,
   });
   assert.equal(calls.length, 0);
-  assert.match(text(result), /\[dry run\] transfer playback on dev2/);
+  assert.match(text(result), /\[dry run\] transfer playback on <<untrusted: dev2 >>/);
   assert.match(text(result), /force play on arrival/);
 });
 

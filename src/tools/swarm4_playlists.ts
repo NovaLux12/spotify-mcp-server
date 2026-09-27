@@ -422,7 +422,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_resequence',
     'Sort a playlist in place — by track name, artist, album, duration, or date added — written '
       + 'back as one atomic replace. Episodes sort last (no artist/album key). '
-      + 'Quota: 🟢 2 GETs + 1 PUT. Also covers: reorder_playlist_items (range-based), playlist_move_block — See also: reorder_playlist_items, playlist_move_block.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to sort, as ID or spotify:playlist: URI'),
       sort_by: z
@@ -527,7 +527,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_rotate',
     'Rotate a playlist by N positions: positive N moves the first N items to the end, negative N '
       + 'moves the last |N| to the front (wraps around). Written as one atomic replace. '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to rotate, as ID or spotify:playlist: URI'),
       positions: z
@@ -589,7 +589,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_seed_shuffle',
     'Shuffle a playlist in place (Fisher–Yates) with an optional deterministic seed — same seed, '
       + 'same order, so you can preview and commit the exact same shuffle. Unavailable items are '
-      + 'kept, pinned at the end. Quota: 🟢 2 GETs + 1 PUT.',
+      + 'kept, pinned at the end. Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to shuffle, as ID or spotify:playlist: URI'),
       seed: z
@@ -646,7 +646,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   server.tool(
     'playlist_flip_order',
     'Reverse a playlist: last item becomes first, written as one atomic replace. The standard '
-      + 'fix for imports that arrived backwards. Quota: 🟢 2 GETs + 1 PUT.',
+      + 'fix for imports that arrived backwards. Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to reverse, as ID or spotify:playlist: URI'),
       dry_run: DryRunDefault,
@@ -695,7 +695,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_move_block',
     'Move a contiguous block of items (1-based start + count) so its first item lands at a target '
       + 'position expressed in the ORIGINAL numbering. The rest of the playlist closes up around '
-      + 'it. Written as one atomic replace. Quota: 🟢 2 GETs + 1 PUT. Also covers: reorder_playlist_items, playlist_resequence — See also: reorder_playlist_items, playlist_resequence.',
+      + 'it. Written as one atomic replace. Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       start: z.number().int().min(1).describe('1-based position of the first item to move'),
@@ -794,7 +794,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_swap_positions',
     'Swap the items at two 1-based positions — e.g. flip tracks 3 and 7. Positions may be any '
       + 'two distinct slots in the playlist. Written as one atomic replace. '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       position_a: z.number().int().min(1).describe('First position (1-based)'),
@@ -863,7 +863,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'Remove duplicate items from a playlist, matching by URI (exact copies) OR by track name '
       + '(catches re-adds of the same song from different albums/singles when combined with '
       + 'dedupe by uri). Choose keep-first or keep-last. Written as one atomic replace. '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to dedupe, as ID or spotify:playlist: URI'),
       keep: z.enum(['first', 'last']).optional().default('first').describe('Which occurrence to keep. Default first'),
@@ -940,7 +940,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_remove_artist',
     'Remove every track by one artist from a playlist (match by artist name, case-insensitive, '
       + 'or by artist ID / spotify:artist: URI). Shows exactly what would go. '
-      + 'Quota: 🟢 2 GETs + 1 PUT when committing.',
+      + 'Quota: 2 GETs + 1 PUT when committing.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       artist: z
@@ -1010,7 +1010,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_keep_artist',
     'Inverse filter: keep ONLY tracks by one artist in a playlist and drop everything else. '
       + 'Optionally keep podcast episodes too (they have no artist). One atomic replace. '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
       artist: z.string().describe('Artist name (case-insensitive) or artist ID / spotify:artist: URI'),
@@ -1074,7 +1074,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_filter_runtime',
     'Keep only items whose duration falls inside a window (e.g. min_sec 120 → drop intros/interludes; '
       + 'max_sec 360 → drop 6-minute epics). At least one bound required. One atomic replace. '
-      + 'Quota: 🟢 2 GETs + 1 PUT.',
+      + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to filter, as ID or spotify:playlist: URI'),
       min_sec: z.number().int().min(0).optional().describe('Minimum duration in seconds'),
@@ -1151,7 +1151,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_chunk_preview',
     'Read-only pagination preview: how a playlist splits into write-sized chunks (the 100-URI '
       + 'replace limit) or any custom size — per-chunk position ranges, first/last items, and '
-      + 'item counts. Plan batched edits before running them. Quota: 🟢 2 GETs.',
+      + 'item counts. Plan batched edits before running them. Quota: 2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to preview, as ID or spotify:playlist: URI'),
       page_size: z
@@ -1232,7 +1232,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   server.tool(
     'playlist_diff',
     'Compare two playlists: what is only in A, only in B, and in both — plus whether the shared '
-      + 'tracks appear in the same relative order. Read-only. Quota: 🟢 4 GETs. Also covers: diff_playlists (live playlist diff), playlist_difference_plan (subtract plan) — See also: diff_playlists, playlist_difference_plan.',
+      + 'tracks appear in the same relative order. Read-only. Quota: 4 GETs.',
     {
       ...PlaylistPairFields,
       ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
@@ -1285,8 +1285,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
   // -----------------------------------------------------------------------
   server.tool(
     'playlist_history',
-    'List local backup snapshots (from backup_library): filename, created timestamp, per-snapshot counts. '
-      + 'See also: playlist_snapshot_detail, playlist_changelog, playlist_clone_snapshot. Read-only, no API calls.',
+    'List local backup snapshots (from backup_library): filename, created timestamp, per-snapshot counts.',
     {
       ...sharedListFields,
     },
@@ -1399,7 +1398,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_clone_snapshot',
     'Restore a playlist from a local backup snapshot as a NEW playlist (never overwrites the '
       + 'live one — clone, don\'t clobber). Items restore by URI; catalog-removed items are '
-      + 'skipped by Spotify automatically. Quota: 🟡 0 GETs + create + chunked adds.',
+      + 'skipped by Spotify automatically. Quota: 0 GETs + create + chunked adds.',
     {
       backup_file: z.string().describe('Snapshot file name, e.g. backup-2026-08-28-1.json (see playlist_history)'),
       playlist_name: z.string().describe('Playlist name inside the snapshot to clone'),
@@ -1539,7 +1538,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_pair_check',
     'Pairwise relationship report for two playlists: sizes, overlap, Jaccard similarity, and '
       + 'sampled candidates from each side that the other lacks (for merging or splitting '
-      + 'decisions). Read-only. Quota: 🟢 4 GETs.',
+      + 'decisions). Read-only. Quota: 4 GETs.',
     {
       ...PlaylistPairFields,
       ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
@@ -1591,7 +1590,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     'playlist_balance',
     'Split a playlist into N balanced new playlists: sequential chunks (part 1 = first third, …) '
       + 'or interleave (round-robin deal, so every part samples the whole span). Creates N new '
-      + 'playlists; the source is left untouched. Quota: 🟡 2 GETs + N creates + chunked adds.',
+      + 'playlists; the source is left untouched. Quota: 2 GETs + N creates + chunked adds.',
     {
       playlist_id: z.string().describe('Playlist to split, as ID or spotify:playlist: URI'),
       parts: z.number().int().min(2).max(10).describe('How many playlists to create (2–10)'),

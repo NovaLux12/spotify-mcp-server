@@ -519,7 +519,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'sort_playlist_plan',
     'Plan a sort of a playlist by name, artist, album, duration, added-at date or release era '
       + 'and preview the exact resulting order — read-only, commits nothing (use '
-      + 'sort_playlist_apply to commit). Quota: 🟢 1–2 GETs.',
+      + 'sort_playlist_apply to commit). Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to plan a sort for (ID or spotify:playlist: URI)'),
       sort_by: z.enum(['name', 'artist', 'album', 'duration', 'added_at', 'release_date']).optional().describe('Sort key. Default name'),
@@ -561,7 +561,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'sort_playlist_apply',
     'Sort a playlist in place by name, artist, album, duration, added-at date or release era: '
       + 'backs up the current items to a local file first, then rewrites via one atomic '
-      + 'replace. dry_run=true (default) previews only. Quota: 🟢 GET + 1 local write + 1 PUT.',
+      + 'replace. dry_run=true (default) previews only. Quota: GET + 1 local write + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to sort (ID or spotify:playlist: URI)'),
       sort_by: z.enum(['name', 'artist', 'album', 'duration', 'added_at', 'release_date']).optional().describe('Sort key. Default name'),
@@ -616,7 +616,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'reverse_playlist_plan',
     'Plan (and optionally commit) reversing a playlist\'s entire order via one atomic replace — ' +
       'dry_run defaults to TRUE so it returns the reversed PLAN read-only. '
-      + 'Quota: 🟢 GET + 1 PUT when committing. Also covers: playlist_reverse variant — See also: playlist_reverse.',
+      + 'Quota: GET + 1 PUT when committing.',
     {
       playlist_id: z.string().describe('Playlist to reverse (ID or spotify:playlist: URI)'),
       dry_run: DryRunDefault,
@@ -666,7 +666,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'rotate_playlist_plan',
     'Plan (and optionally commit) rotating a playlist by N positions — positive moves the '
       + 'first N items to the end, negative moves the last |N| to the front; dry_run defaults '
-      + 'to TRUE so it returns the rotated PLAN read-only. Quota: 🟢 GET + 1 PUT when committing.',
+      + 'to TRUE so it returns the rotated PLAN read-only. Quota: GET + 1 PUT when committing.',
     {
       playlist_id: z.string().describe('Playlist to rotate (ID or spotify:playlist: URI)'),
       positions: z.number().int().optional().describe('Rotation amount; positive = first N to end, negative = last |N| to front. Default 1'),
@@ -724,7 +724,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'Plan (and optionally commit) interleaving 2–10 playlists — round-robin one track each or ' +
       'in N-track chunks. Without a target it returns the interleaved PLAN read-only; with ' +
       'target_playlist_id and dry_run=false it atomically overwrites the target. '
-      + 'Quota: 🟢 N GETs + 1 PUT when committing.',
+      + 'Quota: N GETs + 1 PUT when committing.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -807,7 +807,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'merge_playlists_plan',
     'Plan (and optionally commit) merging 2–10 playlists in order into a NEW playlist ' +
       '(optional first/last dedupe) — dry_run defaults to TRUE so it returns the merged ' +
-      'PLAN read-only. Quota: 🟡 N GETs + create + chunked adds when committing.',
+      'PLAN read-only. Quota: N GETs + create + chunked adds when committing.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -869,7 +869,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'Plan (and optionally commit) the set difference "base minus subtrahends": keep the base ' +
       'playlist\'s tracks that appear in NONE of up to 5 others. Without a target it returns ' +
       'the PLAN read-only; with target_playlist_id and dry_run=false it atomically overwrites ' +
-      'the target. Quota: 🟢 ≤7 GETs + 1 PUT when committing.',
+      'the target. Quota: ≤7 GETs + 1 PUT when committing.',
     {
       base_playlist_id: PlaylistId.describe('Base playlist (ID, URI, or URL) whose survivors are kept'),
       ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 5, limitReason: PAGED_WALK_LIST_REASON }),
@@ -937,7 +937,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'playlist_intersection',
     'Report the tracks present in ALL of 2–10 playlists, including which of the source ' +
       'playlists each common track appears in — the read-only intersection analysis ' +
-      '(commit variants live in the set-op plan tools). Quota: 🟢 N GETs.',
+      '(commit variants live in the set-op plan tools). Quota: N GETs.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -985,7 +985,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'playlist_union_preview',
     'Preview the union of 2–10 playlists as a first-seen-ordered sequence, with per-playlist ' +
       'counts and how many tracks are unique to each — read-only, no writes. '
-      + 'Quota: 🟢 N GETs.',
+      + 'Quota: N GETs.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -1026,7 +1026,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'extract_playlist_range',
     'Extract a positional range of a playlist (0-based start, EXCLUSIVE end; negative values ' +
       'count from the end) into a NEW playlist, reporting the original→new position map — ' +
-      'dry_run defaults to TRUE. Quota: 🟢 GET + create + chunked adds when committing.',
+      'dry_run defaults to TRUE. Quota: GET + create + chunked adds when committing.',
     {
       playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
       start: z.number().int().optional().describe('0-based inclusive start; negative = from end. Default 0'),
@@ -1080,7 +1080,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'remove_playlist_range',
     'Delete a positional range of a playlist (0-based start, EXCLUSIVE end; negative values ' +
       'count from the end): backs up the current items to a local file first, then removes by ' +
-      'positions + uris. dry_run defaults to TRUE. Quota: 🟢 GET + chunked deletes when committing.',
+      'positions + uris. dry_run defaults to TRUE. Quota: GET + chunked deletes when committing.',
     {
       playlist_id: z.string().describe('Playlist to trim (ID or spotify:playlist: URI)'),
       start: z.number().int().optional().describe('0-based inclusive start; negative = from end. Default 0'),
@@ -1150,7 +1150,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'dedupe_playlist_plan',
     'Census every duplicate uri in a playlist — groups, all positions, and the exact keep-' +
       'first/keep-last removal plan — read-only (commit with dedupe_playlist_apply). '
-      + 'Quota: 🟢 1–2 GETs.',
+      + 'Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to scan (ID or spotify:playlist: URI)'),
       response_format: ResponseFormatArgName,
@@ -1196,7 +1196,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'dedupe_playlist_apply',
     'Remove duplicate uris from a playlist keeping the first (or last) occurrence: backs up ' +
       'the current items to a local file first, then rewrites via one atomic replace. ' +
-      'dry_run defaults to TRUE. Quota: 🟢 GET + 1 local write + 1 PUT when committing.',
+      'dry_run defaults to TRUE. Quota: GET + 1 local write + 1 PUT when committing.',
     {
       playlist_id: z.string().describe('Playlist to dedupe (ID or spotify:playlist: URI)'),
       keep: z.enum(['first', 'last']).optional().describe('Which occurrence to keep. Default first'),
@@ -1250,7 +1250,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'split_playlist_by_count',
     'Split a playlist into N roughly-equal parts, each written to a NEW playlist named ' +
       '"<prefix> 1..N" — dry_run defaults to TRUE so it returns the part plan read-only. '
-      + 'Quota: 🟡 GET + N creates + chunked adds when committing.',
+      + 'Quota: GET + N creates + chunked adds when committing.',
     {
       playlist_id: z.string().describe('Playlist to split (ID or spotify:playlist: URI)'),
       parts: z.number().int().min(2).max(50).optional().describe('Number of parts (2–50). Default 2'),
@@ -1312,7 +1312,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'split_playlist_by_duration',
     'Split a playlist greedily into consecutive parts of a target runtime (e.g. 60-minute ' +
       'commute blocks), each written to a NEW playlist — dry_run defaults to TRUE. '
-      + 'Quota: 🟡 GET + N creates + chunked adds when committing.',
+      + 'Quota: GET + N creates + chunked adds when committing.',
     {
       playlist_id: z.string().describe('Playlist to split (ID or spotify:playlist: URI)'),
       target_minutes: z.number().positive().describe('Target runtime per part, in minutes'),
@@ -1380,7 +1380,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'filter_playlist_by_era',
     'Filter a playlist by album release era (decade and/or year window) and either report the ' +
       'matches read-only or — with a name and dry_run=false — write them to a NEW playlist. '
-      + 'Quota: 🟢 GET (+ create/adds when committing).',
+      + 'Quota: GET (+ create/adds when committing).',
     {
       playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
       decade: z.number().int().min(1900).max(2100).optional().describe('Decade start year (e.g. 1980 = 1980–1989)'),
@@ -1446,7 +1446,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'filter_playlist_by_artist',
     'Filter a playlist by artist (IDs/URIs or names, matched on id or exact name) and either ' +
       'report the matches read-only or — with a name and dry_run=false — write them to a NEW ' +
-      'playlist. Quota: 🟢 GET (+ create/adds when committing).',
+      'playlist. Quota: GET (+ create/adds when committing).',
     {
       playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
       artists: z.array(z.string()).min(1).max(20).describe('Artists to match: IDs/URIs or exact names (1–20)'),
@@ -1509,7 +1509,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'filter_playlist_by_duration',
     'Filter a playlist by track duration (min/max seconds) and either report the matches ' +
       'read-only or — with a name and dry_run=false — write them to a NEW playlist. '
-      + 'Quota: 🟢 GET (+ create/adds when committing).',
+      + 'Quota: GET (+ create/adds when committing).',
     {
       playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
       min_seconds: z.number().int().min(0).optional().describe('Inclusive minimum track length in seconds. Default 0'),
@@ -1569,7 +1569,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
   server.tool(
     'sample_playlist_tracks',
     'Draw a uniform random sample of N tracks from a playlist — deterministic when a seed is ' +
-      'given (same seed + same playlist = same sample), read-only. Quota: 🟢 1–2 GETs.',
+      'given (same seed + same playlist = same sample), read-only. Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to sample (ID or spotify:playlist: URI)'),
       count: z.number().int().min(1).max(200).optional().describe('Sample size (1–200). Default 10'),
@@ -1608,7 +1608,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'playlist_table_of_contents',
     'Build a table of contents for a playlist: totals, runtime, and "chapters" — contiguous ' +
       'position ranges grouped by the month each block was added — plus contributor counts. ' +
-      'Read-only. Quota: 🟢 1–2 GETs.',
+      'Read-only. Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to index (ID or spotify:playlist: URI)'),
       response_format: ResponseFormatArgName,
@@ -1664,7 +1664,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'playlist_edit_journal',
     'Journal a playlist\'s live edit history from added_at/added_by metadata: add-batches by ' +
       'date with who added them, collab contributors, and drift verdict — read-only, no local ' +
-      'snapshot needed. Quota: 🟢 1–2 GETs.',
+      'snapshot needed. Quota: 1–2 GETs.',
     {
       playlist_id: z.string().describe('Playlist to journal (ID or spotify:playlist: URI)'),
       response_format: ResponseFormatArgName,
@@ -1722,7 +1722,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'Move matching tracks (by uris, name substring, or artist) from one playlist to another: ' +
       'backs up the source to a local file first, deletes the matched positions from the ' +
       'source, then appends them to the destination. dry_run defaults to TRUE. '
-      + 'Quota: 🟡 GETs + chunked deletes + chunked adds when committing.',
+      + 'Quota: GETs + chunked deletes + chunked adds when committing.',
     {
       source_playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
       destination_playlist_id: z.string().describe('Destination playlist (ID or spotify:playlist: URI)'),
@@ -1820,7 +1820,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'balance_playlist_pairs',
     'Plan (and optionally commit) rebalancing 2–10 playlists to similar track counts or ' +
       'runtimes: computes surplus moves from the larger to the smaller. dry_run defaults to ' +
-      'TRUE so it returns the move PLAN read-only. Quota: 🟡 N GETs + moves when committing.',
+      'TRUE so it returns the move PLAN read-only. Quota: N GETs + moves when committing.',
     {
       ...PlaylistListFields,
       ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
@@ -2000,7 +2000,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'playlist_clone_live',
     'Clone a playlist AS IT IS RIGHT NOW into a NEW playlist (name, optional description and ' +
       'publicity) — works on the live playlist, not a local snapshot; dry_run defaults to ' +
-      'TRUE. Quota: 🟡 GET + create + chunked adds when committing.',
+      'TRUE. Quota: GET + create + chunked adds when committing.',
     {
       playlist_id: z.string().describe('Playlist to clone (ID or spotify:playlist: URI)'),
       name: z.string().optional().describe('New playlist name. Default "<original> (copy)"'),

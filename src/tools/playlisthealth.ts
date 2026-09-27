@@ -206,7 +206,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
 
   server.tool(
     'snapshot_playlist',
-    'Snapshot a playlist\'s current URIs+positions+timestamp to a sidecar JSON file (legacy, simple path playlistId→file). For transactional local snapshots with plsnapi naming, diff, and bundle tooling, use take_playlist_snapshot instead. Also covers: playlist snapshot (legacy).',
+    'Snapshot a playlist\'s current URIs+positions+timestamp to a sidecar JSON file (legacy, simple path playlistId→file). For transactional local snapshots with plsnapi naming, diff, and bundle tooling, use take_playlist_snapshot instead.',
     {
       playlist_id: z.string().min(1).describe('Playlist ID'),
       snapshot_id: z.string().optional().describe('Custom snapshot ID (default: timestamp)'),
@@ -377,7 +377,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
 
   server.tool(
     'find_duplicate_playlists',
-    'Scan your playlists for exact and near-duplicate track sets. Exact = identical URI sets (order-insensitive); near = Jaccard overlap >= threshold. Read-only. Also covers: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists — See also: find_duplicates_in_playlist, find_duplicate_tracks_across_playlists.',
+    'Scan your playlists for exact and near-duplicate track sets. Exact = identical URI sets (order-insensitive); near = Jaccard overlap >= threshold. Read-only.',
     {
       threshold: z.number().min(0).max(1).optional().default(0.85).describe('Jaccard threshold for near-duplicates (default 0.85)'),
       max_playlists: z.number().int().min(1).max(100).optional().describe('How many playlists to scan (default 50, max 100)'),

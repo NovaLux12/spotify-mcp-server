@@ -163,7 +163,7 @@ describe('follow_artists', () => {
 
     assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
     const text = textOf(out);
-    assert.match(text, /^\[dry run\] follow_artists on followed artists — nothing was changed\./);
+    assert.match(text, /^\[dry run\] follow_artists on <<untrusted: followed artists >> — nothing was changed\./);
     assert.match(text, /Would affect 1 item:/);
     assert.ok(text.includes('spotify:artist:a'));
 
@@ -372,7 +372,7 @@ describe('mutation summaries + dry_run on follow tools (#57/#58)', () => {
 
     assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
     const text = textOf(out);
-    assert.match(text, /^\[dry run\] unfollow_artists on followed artists — nothing was changed\./);
+    assert.match(text, /^\[dry run\] unfollow_artists on <<untrusted: followed artists >> — nothing was changed\./);
     assert.match(text, /Would affect 2 items:/);
     assert.ok(text.includes('spotify:artist:a') && text.includes('spotify:artist:b'));
 

@@ -707,7 +707,7 @@ describe('dry_run previews destructive operations without any mutating call (#57
 
     assert.equal(h.client.calls.length, 0, 'dry_run must not touch the API');
     const text = out.content[0].text;
-    assert.match(text, /^\[dry run\] remove_saved_items on user library — nothing was changed\./);
+    assert.match(text, /^\[dry run\] remove_saved_items on <<untrusted: user library >> — nothing was changed\./);
     assert.match(text, /Would affect 2 items:/);
     for (const uri of uris) assert.ok(text.includes(uri));
     const sc = out.structuredContent as Record<string, unknown>;
@@ -731,7 +731,7 @@ describe('dry_run previews destructive operations without any mutating call (#57
     const out = await h.invoke('remove_from_library', { uris, dry_run: true });
     assert.equal(h.client.calls.length, 0, 'dry_run must not touch the API');
     const text = out.content[0].text;
-    assert.match(text, /^\[dry run\] remove_from_library on user library — nothing was changed\./);
+    assert.match(text, /^\[dry run\] remove_from_library on <<untrusted: user library >> — nothing was changed\./);
     for (const uri of uris) assert.ok(text.includes(uri));
   });
 

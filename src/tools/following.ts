@@ -426,7 +426,7 @@ export function registerFollowingTools(server: McpServer, client: SpotifyClient)
   // following_analytics (#297, #733)
   server.tool(
     'following_analytics',
-    'Followed-artist rollups from the tag sidecar; popularity/followers unavailable (Spotify no longer returns those fields). Quota: 🟢 GET /me/following.',
+    'Followed-artist rollups from the tag sidecar; popularity/followers unavailable (Spotify no longer returns those fields). Quota: GET /me/following.',
     {
       group_by: z.enum(['genre', 'popularity', 'followers']).default('genre').describe("Rollup dimension; popularity/followers report 'unavailable'"),
       top_n: z.number().int().min(1).max(50).optional().describe('Top N groups to show'),

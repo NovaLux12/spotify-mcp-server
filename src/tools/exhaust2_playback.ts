@@ -445,7 +445,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 1. sleep_timer (#358) — fire-and-forget auto-pause, cancel-safe
   server.tool(
     'sleep_timer',
-    'Keep music playing and auto-pause after N minutes: registers an in-process timer (cancel-safe; calling again replaces it) that fires PUT /me/player/pause on expiry. No fade — distinct from stepped schedule_wind_down. Quota: 🟢 1 read now; 1 pause on expiry. Timer lives in this MCP server process only.',
+    'Keep music playing and auto-pause after N minutes: registers an in-process timer (cancel-safe; calling again replaces it) that fires PUT /me/player/pause on expiry. No fade — distinct from stepped schedule_wind_down. Quota: 1 read now; 1 pause on expiry. Timer lives in this MCP server process only.',
     {
       duration_min: z.number().int().min(1).max(480).describe('Minutes until auto-pause (1-480)'),
       device_id: z.string().optional().describe('Device to pause on expiry (defaults to the active device at expiry time)'),
@@ -494,7 +494,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 2. mute (#359) — volume 0 with remembered level
   server.tool(
     'mute',
-    'Set volume to 0 while remembering the previous level in the sidecar — one word beats volume_step ×N. unmute restores it. Quota: 🟢 1 read + 1 write.',
+    'Set volume to 0 while remembering the previous level in the sidecar — one word beats volume_step ×N. unmute restores it. Quota: 1 read + 1 write.',
     {
       device_id: z.string().optional().describe('Device to mute (defaults to active device)'),
       response_format: ResponseFormat,
@@ -526,7 +526,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 3. unmute (#360) — restore remembered level
   server.tool(
     'unmute',
-    'Restore the volume level remembered by mute (falls back to 50% if nothing remembered). Quota: 🟢 1 write (sidecar read is local).',
+    'Restore the volume level remembered by mute (falls back to 50% if nothing remembered). Quota: 1 write (sidecar read is local).',
     {
       device_id: z.string().optional().describe('Device to unmute (defaults to the key mute remembered / active device)'),
       response_format: ResponseFormat,
@@ -558,7 +558,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 4. switch_device (#361) — fuzzy-name transfer, pure handoff
   server.tool(
     'switch_device',
-    'Transfer playback to a device by fuzzy name or sidecar label — pure handoff, no content args (complements play_on which plays content, and handoff which is pos-preserving id-only). Quota: 🟢 1 read + 1 write.',
+    'Transfer playback to a device by fuzzy name or sidecar label — pure handoff, no content args (complements play_on which plays content, and handoff which is pos-preserving id-only). Quota: 1 read + 1 write.',
     {
       device_name: z.string().min(1).describe('Device name substring (case-insensitive), exact id, or sidecar label'),
       play: z.boolean().optional().default(true).describe('true = keep playing on the target (default); false = transfer paused'),
@@ -586,7 +586,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 5. surprise_me (#362) — seeded random play
   server.tool(
     'surprise_me',
-    '"Surprise me": picks a random saved track, saved album, or owned playlist and plays it. Randomness seedable via seed for reproducible picks. Quota: 🟡 1-3 reads + 1 write (PUT /me/player/play).',
+    '"Surprise me": picks a random saved track, saved album, or owned playlist and plays it. Randomness seedable via seed for reproducible picks. Quota: 1-3 reads + 1 write (PUT /me/player/play).',
     {
       type: z.enum(['track', 'album', 'playlist', 'any']).optional().default('any').describe('What to surprise you with (default any)'),
       device_id: z.string().optional().describe('Target device id'),
@@ -652,7 +652,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 6. skip_n (#363) — looped next with honest N-call disclosure
   server.tool(
     'skip_n',
-    'Advance N tracks at once via N sequential POST /me/player/next calls. Quota: 🔴 N writes (1-20, one call per skip — Spotify has no batch-skip endpoint). Also covers: single skip via skip_next / skip_previous — See also: skip_next, skip_previous.',
+    'Advance N tracks at once via N sequential POST /me/player/next calls. Quota: N writes (1-20, one call per skip — Spotify has no batch-skip endpoint).',
     {
       n: z.number().int().min(1).max(20).optional().default(1).describe('How many tracks to skip (1-20)'),
       device_id: z.string().optional().describe('Device to skip on'),
@@ -679,7 +679,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 7. pause_everywhere (#364) — pause every live Connect device
   server.tool(
     'pause_everywhere',
-    'Pause every live Connect device (attempts PUT /me/player/pause per non-restricted device) — kills the "which speaker is still playing" hunt. Quota: 🟡 1 read + N writes (one pause per live device).',
+    'Pause every live Connect device (attempts PUT /me/player/pause per non-restricted device) — kills the "which speaker is still playing" hunt. Quota: 1 read + N writes (one pause per live device).',
     {
       response_format: ResponseFormat,
       dry_run: PlaybackDryRun,
@@ -706,7 +706,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 8. volume_ramp (#365) — generic stepped ramp, up or down
   server.tool(
     'volume_ramp',
-    'Generic volume ramp to a target percent over N minutes (up OR down, step-controlled, optional end-state pause/play) — a superset of schedule_wind_down (which is down-only with floor+pause). Quota: 🟢 stepped PUT /me/player/volume writes (ceil(minutes/step_minutes) calls), in-process, cancel-safe (restart replaces).',
+    'Generic volume ramp to a target percent over N minutes (up OR down, step-controlled, optional end-state pause/play) — a superset of schedule_wind_down (which is down-only with floor+pause). Quota: stepped PUT /me/player/volume writes (ceil(minutes/step_minutes) calls), in-process, cancel-safe (restart replaces).',
     {
       target_percent: z.number().int().min(0).max(100).describe('Ramp target (0-100)'),
       minutes: z.number().int().min(1).max(120).optional().default(5).describe('Total ramp duration in minutes (default 5)'),
@@ -788,7 +788,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
 
   server.tool(
     'playback_timer_status',
-    'Read sleep_timer and volume_ramp progress, including every applied, failed, or pending step. Quota: 🟢 local in-process state only.',
+    'Read sleep_timer and volume_ramp progress, including every applied, failed, or pending step. Quota: local in-process state only.',
     {
       kind: z.enum(['sleep_timer', 'volume_ramp']).optional().describe('Only return this timer kind'),
       response_format: ResponseFormat,
@@ -814,7 +814,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 9. episode_bookmark (#366) — podcast position sidecar
   server.tool(
     'episode_bookmark',
-    'Bookmark the current podcast-episode position to the sidecar (title, show, progress, optional note) — where_was_i is audiobooks-only today. Quota: 🟢 1 read (GET /me/player).',
+    'Bookmark the current podcast-episode position to the sidecar (title, show, progress, optional note) — where_was_i is audiobooks-only today. Quota: 1 read (GET /me/player).',
     {
       note: z.string().optional().describe('Optional note to attach to the bookmark'),
       response_format: ResponseFormat,
@@ -850,7 +850,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 10. episode_resume (#367) — transfer + seek + play to bookmark
   server.tool(
     'episode_resume',
-    'Jump straight back to the newest (or a named) episode bookmark: transfer + play with position + seek (2-3 writes). Pairs with episode_bookmark. Quota: 🟡 2-3 writes.',
+    'Jump straight back to the newest (or a named) episode bookmark: transfer + play with position + seek (2-3 writes). Pairs with episode_bookmark. Quota: 2-3 writes.',
     {
       bookmark_id: z.string().optional().describe('Bookmark id (default: newest by saved_at)'),
       device_id: z.string().optional().describe('Target device id (defaults to bookmarked device)'),
@@ -887,7 +887,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 11. queue_next_episode (#368) — next unplayed episode of a show
   server.tool(
     'queue_next_episode',
-    'Find the next unplayed episode of a show (not in recently-played and not fully played) within an episodes_back lookahead and queue it — podcast binge glue. Quota: 🟡 2-3 reads + 1 write (POST /me/player/queue).',
+    'Find the next unplayed episode of a show (not in recently-played and not fully played) within an episodes_back lookahead and queue it — podcast binge glue. Quota: 2-3 reads + 1 write (POST /me/player/queue).',
     {
       show_id: z.string().min(1).describe('Show ID (or spotify:show: URI)'),
       episodes_back: z.number().int().min(1).max(50).optional().default(10).describe('How many of the newest episodes to look back through (default 10)'),
@@ -922,7 +922,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 12. queue_replace_via_playlist (#369) — honest no-clear-endpoint workaround
   server.tool(
     'queue_replace_via_playlist',
-    'Honest no-clear-endpoint workaround to replace the live queue: snapshot it, optionally filter (drop dupes / keep only given artists), build a playlist, and start it as the playback context — the live queue is replaced via context switch (Spotify has no queue-clear endpoint). Quota: 🟡 1 read + 2-3 writes.',
+    'Honest no-clear-endpoint workaround to replace the live queue: snapshot it, optionally filter (drop dupes / keep only given artists), build a playlist, and start it as the playback context — the live queue is replaced via context switch (Spotify has no queue-clear endpoint). Quota: 1 read + 2-3 writes.',
     {
       keep_artists: z.array(z.string()).optional().describe('When given, keep only tracks by these artists (case-insensitive; episodes are dropped under this filter)'),
       drop_dupes: z.boolean().optional().default(true).describe('Drop repeated URIs from the snapshot (default true)'),
@@ -1011,7 +1011,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 13. session_stats (#370) — session-size distribution (local compute)
   server.tool(
     'session_stats',
-    'Session-size distribution from recently-played via detectSessions (30-min gap): session count, median/mean tracks per session, longest session, avg session length. Quota: 🟢 1-2 reads, local compute.',
+    'Session-size distribution from recently-played via detectSessions (30-min gap): session count, median/mean tracks per session, longest session, avg session length. Quota: 1-2 reads, local compute.',
     {
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2, 50 items each)'),
       response_format: ResponseFormat,
@@ -1049,7 +1049,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 14. most_replayed (#371) — plays-per-track in the recent window
   server.tool(
     'most_replayed',
-    'Most-replayed tracks in the recent window: play counts per track from recently-played, deduped — "on repeat" computed locally (complements window-based listening_report). Quota: 🟢 1-2 reads, local compute.',
+    'Most-replayed tracks in the recent window: play counts per track from recently-played, deduped — "on repeat" computed locally (complements window-based listening_report). Quota: 1-2 reads, local compute.',
     {
       limit: z.number().int().min(1).max(50).optional().default(10).describe('Top N tracks to return (default 10)'),
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2)'),
@@ -1086,7 +1086,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 15. last_heard (#372) — when did you last actually play X?
   server.tool(
     'last_heard',
-    'For 1-10 artists: when did you last actually play them (recently-played cursor walk) + the gap — answers "when did I last listen to X?" without guessing. Quota: 🟡 2-10 pages walked (max_pages, disclosed; stops early once all found).',
+    'For 1-10 artists: when did you last actually play them (recently-played cursor walk) + the gap — answers "when did I last listen to X?" without guessing. Quota: 2-10 pages walked (max_pages, disclosed; stops early once all found).',
     {
       artists: z.array(z.string()).min(1).max(10).describe('Artist names to look up (1-10)'),
       max_pages: z.number().int().min(1).max(50).optional().default(10).describe('Max recently-played pages to walk (default 10)'),
@@ -1126,7 +1126,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 16. weekday_heatmap (#373) — weekday × daypart buckets
   server.tool(
     'weekday_heatmap',
-    'Plays bucketed by weekday × daypart (morning/afternoon/evening/night) — listening_heatmap is hour-of-day; this adds the weekly dimension. Quota: 🟢 1-2 reads, local compute.',
+    'Plays bucketed by weekday × daypart (morning/afternoon/evening/night) — listening_heatmap is hour-of-day; this adds the weekly dimension. Quota: 1-2 reads, local compute.',
     {
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2)'),
       response_format: ResponseFormat,
@@ -1157,7 +1157,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 17. queue_profile (#374) — composition profile of the current queue
   server.tool(
     'queue_profile',
-    'Composition profile of the current queue: unique artists, albums, track-vs-episode mix, longest consecutive block by one artist. Quota: 🟢 1 read (GET /me/player/queue), local compute.',
+    'Composition profile of the current queue: unique artists, albums, track-vs-episode mix, longest consecutive block by one artist. Quota: 1 read (GET /me/player/queue), local compute.',
     { response_format: ResponseFormat },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
@@ -1213,7 +1213,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 18. checkpoint_playback (#375) — auto-named timestamped checkpoint
   server.tool(
     'checkpoint_playback',
-    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Quota: 🟢 1 read + local sidecar write.',
+    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Quota: 1 read + local sidecar write.',
     {
       note: z.string().optional().describe('Optional note to attach'),
       response_format: ResponseFormat,
@@ -1235,7 +1235,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 19. continue_last (#376) — resume newest checkpoint by saved_at
   server.tool(
     'continue_last',
-    'Resume the most recent checkpoint without knowing its name (sidecar lookup by saved_at). Pairs with checkpoint_playback. Quota: 🟡 2-3 writes (play + shuffle/repeat best-effort).',
+    'Resume the most recent checkpoint without knowing its name (sidecar lookup by saved_at). Pairs with checkpoint_playback. Quota: 2-3 writes (play + shuffle/repeat best-effort).',
     {
       device_id: z.string().optional().describe('Target device id'),
       response_format: ResponseFormat,
@@ -1270,7 +1270,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 20. room_level (#377) — same volume percent on every live device
   server.tool(
     'room_level',
-    'Level the room: read the active device volume and apply the same percent to every other live device. Quota: 🟡 1 read + N writes (one volume PUT per target device).',
+    'Level the room: read the active device volume and apply the same percent to every other live device. Quota: 1 read + N writes (one volume PUT per target device).',
     {
       exclude_device_id: z.string().optional().describe('Additional device id to leave untouched'),
       response_format: ResponseFormat,
@@ -1301,7 +1301,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 21. volume_report (#378) — read-only volume snapshot across devices
   server.tool(
     'volume_report',
-    'Read-only volume snapshot across all devices, including sidecar presets vs live deltas — "what\'s the volume everywhere right now?". Quota: 🟢 1 read (GET /me/player/devices).',
+    'Read-only volume snapshot across all devices, including sidecar presets vs live deltas — "what\'s the volume everywhere right now?". Quota: 1 read (GET /me/player/devices).',
     { response_format: ResponseFormat },
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
@@ -1336,7 +1336,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 22. daily_pick (#379) — deterministic date-seeded banger of the day
   server.tool(
     'daily_pick',
-    'Deterministic "banger of the day": date-seeded pick from recently-played highlights (most-played pool + seeded tiebreak) — same date, same pick. Quota: 🟢 1-2 reads, local compute.',
+    'Deterministic "banger of the day": date-seeded pick from recently-played highlights (most-played pool + seeded tiebreak) — same date, same pick. Quota: 1-2 reads, local compute.',
     {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'date must be YYYY-MM-DD').optional().describe('Seed date (default today, YYYY-MM-DD)'),
       pool_size: z.number().int().min(1).max(50).optional().default(10).describe('Highlight pool size to pick from (default 10)'),

@@ -1801,7 +1801,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // library_snapshot_diff — diff two sidecar files locally
   server.tool(
     'library_snapshot_diff',
-    'Diff two sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Quota: 🟢 local only (no API).',
+    'Diff two sidecar JSON files (library.json or playlists.json): added/removed counts + samples. Quota: local only (no API).',
     {
       before_path: z.string().describe('Path to before snapshot JSON'),
       after_path: z.string().describe('Path to after snapshot JSON'),
@@ -1836,7 +1836,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // history_search — search the portability, backup and mutation-history stores (#754)
   server.tool(
     'history_search',
-    'Search portability, backup and mutation-history stores; hits name their source. Quota: 🟢 local only (no API).',
+    'Search portability, backup and mutation-history stores; hits name their source. Quota: local only (no API).',
     {
       query: z.string().optional().describe('Substring to match'),
       scope: z.enum(HISTORY_SEARCH_SCOPES).optional().default('all').describe('Scope'),
@@ -1946,7 +1946,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
   // import_from_sidecar — additive restore from sidecar (dry_run defaults true)
   server.tool(
     'import_from_sidecar',
-    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: 🟢 local read + 🟡 contains-check + writes when dry_run=false (chunked).',
+    'Additive restore from a library.json sidecar written by export_library_json: re-adds every missing saved item across all five collections (tracks, albums, shows, episodes, audiobooks) through the unified PUT /me/library endpoint, skipping items the library already holds. Rows whose uri is not a canonical spotify:<kind>:<22-char id> URI are counted as invalid and never sent. Collections the file does not carry are named in absent_keys. The exporter\'s own truncated / cap_reached flags are surfaced as sidecar_truncated + truncated_collections: a capped sidecar restores only the rows it holds and says so, and a file with no flag reports completeness as UNKNOWN rather than complete. dry_run=true by default. Quota: local read + contains-check + chunked writes when dry_run=false.',
     {
       input_path: z.string().optional().describe('Path to sidecar JSON (default: <portability>/library.json)'),
       dry_run: z.boolean().optional().default(true).describe('Preview only, making no API calls at all. Writes happen only when explicitly set to false.'),

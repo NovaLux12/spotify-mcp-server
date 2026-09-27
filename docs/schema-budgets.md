@@ -107,15 +107,15 @@ if you lower the limit to force one.
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
-| catalog | 31 | 26,953 | 31 | 26,953 | 32 | 29,649 |
-| library | 16 | 14,957 | 16 | 14,957 | 17 | 16,453 |
-| playback | 16 | 12,635 | 16 | 12,635 | 17 | 13,899 |
-| following | 5 | 3,953 | 5 | 3,953 | 6 | 4,349 |
+| catalog | 31 | 26,883 | 31 | 26,883 | 32 | 29,572 |
+| library | 16 | 14,932 | 16 | 14,932 | 17 | 16,426 |
+| playback | 16 | 12,077 | 16 | 12,077 | 17 | 13,285 |
+| following | 5 | 3,948 | 5 | 3,948 | 6 | 4,343 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
-| playlists | 26 | 26,976 | 26 | 26,976 | 27 | 29,674 |
-| playlistops | 3 | 5,489 | 3 | 5,489 | 4 | 6,038 |
+| playlists | 26 | 26,214 | 26 | 26,214 | 27 | 28,836 |
+| playlistops | 3 | 5,348 | 3 | 5,348 | 4 | 5,883 |
 | playlistbatch | 3 | 4,896 | 3 | 4,896 | 4 | 5,386 |
 | playlistfollow | 2 | 1,449 | 2 | 1,449 | 3 | 1,594 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
@@ -128,11 +128,11 @@ if you lower the limit to force one.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
 | libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
-| portability | 11 | 10,058 | 11 | 10,058 | 12 | 11,064 |
+| portability | 11 | 10,036 | 11 | 10,036 | 12 | 11,040 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
 | showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
-| saveddedupe | 1 | 1,562 | 1 | 1,562 | 2 | 1,719 |
+| saveddedupe | 1 | 1,438 | 1 | 1,438 | 2 | 1,582 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
 | backup | 2 | 1,632 | 2 | 1,632 | 3 | 1,796 |
@@ -146,32 +146,32 @@ if you lower the limit to force one.
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
 | artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
-| queueops | 3 | 3,536 | 3 | 3,536 | 4 | 3,890 |
+| queueops | 3 | 3,293 | 3 | 3,293 | 4 | 3,623 |
 | playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
-| playbackintel | 15 | 11,882 | 15 | 11,882 | 16 | 13,071 |
+| playbackintel | 15 | 11,773 | 15 | 11,773 | 16 | 12,951 |
 | scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
-| playlisthealth | 8 | 5,285 | 8 | 5,285 | 9 | 5,814 |
+| playlisthealth | 8 | 5,080 | 8 | 5,080 | 9 | 5,588 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
-| exhaustmisc | 10 | 8,528 | 10 | 8,528 | 11 | 9,381 |
-| exhaust2catalog | 19 | 19,467 | 19 | 19,467 | 20 | 21,414 |
+| exhaustmisc | 10 | 8,324 | 10 | 8,324 | 11 | 9,157 |
+| exhaust2catalog | 19 | 19,372 | 19 | 19,372 | 20 | 21,310 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 23 | 17,683 | 23 | 17,683 | 24 | 19,452 |
-| exhaust2playlists | 18 | 23,507 | 18 | 23,507 | 19 | 25,858 |
+| exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
+| exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
 | exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
-| exhaust2extra | 3 | 4,039 | 3 | 4,039 | 4 | 4,443 |
-| swarm3discovery | 24 | 21,887 | 24 | 21,887 | 25 | 24,076 |
-| swarm3bdiscovery | 24 | 20,039 | 24 | 20,039 | 25 | 22,043 |
+| exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
+| swarm3discovery | 24 | 21,825 | 24 | 21,825 | 25 | 24,008 |
+| swarm3bdiscovery | 24 | 19,919 | 24 | 19,919 | 25 | 21,911 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
 | swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
-| swarm3playback | 24 | 14,155 | 24 | 14,155 | 25 | 15,571 |
-| swarm3playlistops | 24 | 31,777 | 24 | 31,777 | 25 | 34,955 |
-| swarm3snapshots | 24 | 23,744 | 24 | 23,744 | 25 | 26,119 |
-| swarm4playlists | 18 | 22,590 | 18 | 22,590 | 19 | 24,850 |
+| swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
+| swarm3playlistops | 24 | 31,587 | 24 | 31,587 | 25 | 34,746 |
+| swarm3snapshots | 24 | 23,449 | 24 | 23,449 | 25 | 25,794 |
+| swarm4playlists | 18 | 22,016 | 18 | 22,016 | 19 | 24,218 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared
