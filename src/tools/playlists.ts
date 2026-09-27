@@ -69,9 +69,8 @@ import type {
 import { playlistItemTotal } from '../types/spotify.js';
 import { positionBaseClause, positionSchema } from '../positionbase.js';
 import { spotifyId } from '../refs.js';
+import { textResult, jsonText, formatDuration } from '../result.js';
 
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
 /**
  * `GET /me/library/contains` takes "Maximum: 40 URIs" per request
  * (Spotify reference: Check User's Saved Items). Requests over the cap are
@@ -122,22 +121,9 @@ interface PlaylistRead {
 }
 
 /** Build a tool result; attaches structuredContent when provided (#52). */
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  const content: TextContent[] = [{ type: 'text', text }];
-  return structured ? { content, structuredContent: structured } : { content };
-}
-
 // #63/#885: the relink identity key (`trackIdentityKey`) that used to live
 // here is now `duplicateKey(item, 'name_artist')` in ../playlistmatch.js, so
 // the read-only and the mutating duplicate tools group on one function.
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
 
 // Hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;

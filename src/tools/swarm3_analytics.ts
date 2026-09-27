@@ -40,6 +40,7 @@ import type {
   RecentlyPlayedResponse,
   SpotifyTrackWithReleaseDate,
 } from '../types/spotify.js';
+import { emit } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
 interface ToolOut {
@@ -52,20 +53,11 @@ interface ToolOut {
 // Shared plumbing
 // ---------------------------------------------------------------------------
 
-/** shape(): json mode stringifies the payload; payload always rides as structuredContent. */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
-}
-
+/** emit(): json mode stringifies the payload; payload always rides as structuredContent. */
 const empty = (rf: ResponseFormatValue, why: string): ToolOut =>
-  shape(rf, why, { ok: true, empty: true, reason: why });
+  emit(rf, why, { ok: true, empty: true, reason: why });
 
 const TIME_RANGES = ['short_term', 'medium_term', 'long_term'] as const;
-type TimeRangeValue = (typeof TIME_RANGES)[number];
-
 const TimeRange = z
   .enum(['short_term', 'medium_term', 'long_term'])
   .optional()
@@ -365,7 +357,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         dropped_from_base: dropped,
       };
       const top = rows.slice(0, 5).map((r) => `#${r.compare_rank} ${r.name} (${r.status}${r.delta === null ? '' : ` ${r.delta > 0 ? '+' : ''}${r.delta}`})`).join(', ');
-      return shape(rf, `Artist rank delta ${args.compare_range} vs ${args.base_range}: ${counts.up} up, ${counts.down} down, ${counts.flat} flat, ${counts.new} new. Top movers: ${top || '—'}.`, payload);
+      return emit(rf, `Artist rank delta ${args.compare_range} vs ${args.base_range}: ${counts.up} up, ${counts.down} down, ${counts.flat} flat, ${counts.new} new. Top movers: ${top || '—'}.`, payload);
     },
   );
 
@@ -417,7 +409,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         dropped_from_base: dropped,
       };
       const top = rows.slice(0, 5).map((r) => `"${r.name}" (${r.status}${r.delta === null ? '' : ` ${r.delta > 0 ? '+' : ''}${r.delta}`})`).join(', ');
-      return shape(rf, `Track rank delta ${args.compare_range} vs ${args.base_range}: ${counts.up} up, ${counts.down} down, ${counts.flat} flat, ${counts.new} new. Top movers: ${top || '—'}.`, payload);
+      return emit(rf, `Track rank delta ${args.compare_range} vs ${args.base_range}: ${counts.up} up, ${counts.down} down, ${counts.flat} flat, ${counts.new} new. Top movers: ${top || '—'}.`, payload);
     },
   );
 
@@ -462,7 +454,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
       const top3 = tr.items.slice(0, 3).map((a, i) => `${i + 1}. ${a.name} (${a.points} pts)`).join(', ');
-      return shape(rf, `Artist leaderboard: ${all.length} scored. Top: ${top3 || '—'}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
+      return emit(rf, `Artist leaderboard: ${all.length} scored. Top: ${top3 || '—'}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
     },
   );
 
@@ -507,7 +499,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
       const top3 = tr.items.slice(0, 3).map((t, i) => `${i + 1}. "${t.name}" (${t.points} pts)`).join(', ');
-      return shape(rf, `Track leaderboard: ${all.length} scored. Top: ${top3 || '—'}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
+      return emit(rf, `Track leaderboard: ${all.length} scored. Top: ${top3 || '—'}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
     },
   );
 
@@ -552,7 +544,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
       const movers = tr.items.filter((r) => r.status === 'surging' || r.status === 'climbing').slice(0, 3).map((r) => r.name).join(', ');
-      return shape(rf, `Artist velocity: ${rows.length} classified — ${Object.entries(counts).map(([k, v]) => `${k}×${v}`).join(', ')}. Rising: ${movers || '—'}.`, payload);
+      return emit(rf, `Artist velocity: ${rows.length} classified — ${Object.entries(counts).map(([k, v]) => `${k}×${v}`).join(', ')}. Rising: ${movers || '—'}.`, payload);
     },
   );
 
@@ -587,7 +579,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
       const heaviest = tr.items.slice(0, 3).map((r) => `"${r.name}"×${r.plays}`).join(', ');
-      return shape(rf, `Rotation over ${totalPlays} plays / ${rows.length} unique tracks: heavy ${dist.heavy}, regular ${dist.regular}, light ${dist.light}. Most rotated: ${heaviest || '—'}.`, payload);
+      return emit(rf, `Rotation over ${totalPlays} plays / ${rows.length} unique tracks: heavy ${dist.heavy}, regular ${dist.regular}, light ${dist.light}. Most rotated: ${heaviest || '—'}.`, payload);
     },
   );
 
@@ -629,7 +621,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         fresh_play_share: pct(freshPlays, walk.items.length),
         fresh_tracks: freshTracks.slice(0, 20),
       };
-      return shape(rf, `Discovery: ${freshTracks.length}/${uniq.size} unique tracks (${pct(freshPlays, walk.items.length)}% of plays) were outside your ${args.time_range} top ${top.length}.`, payload);
+      return emit(rf, `Discovery: ${freshTracks.length}/${uniq.size} unique tracks (${pct(freshPlays, walk.items.length)}% of plays) were outside your ${args.time_range} top ${top.length}.`, payload);
     },
   );
 
@@ -679,7 +671,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const quietNote = quiet === null
         ? `No single quietest hour: ${quietestTied.length} hours tie at ${quietestPlays} play(s).`
         : `Quietest ${quiet} (${quietestPlays} plays).`;
-      return shape(rf, `Listening clock: peak ${peak?.[0] ?? '—'} with ${peak?.[1] ?? 0} plays. Dayparts — ${DAYPARTS.map((d) => `${d} ${dayparts[d] ?? 0}`).join(', ')}. ${quietNote}`, payload);
+      return emit(rf, `Listening clock: peak ${peak?.[0] ?? '—'} with ${peak?.[1] ?? 0} plays. Dayparts — ${DAYPARTS.map((d) => `${d} ${dayparts[d] ?? 0}`).join(', ')}. ${quietNote}`, payload);
     },
   );
 
@@ -712,7 +704,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         weekdays: rows,
         busiest_weekday: busiest?.weekday ?? null,
       };
-      return shape(rf, `Weekday report: busiest ${busiest?.weekday ?? '—'} (${busiest?.plays ?? 0} plays). ${rows.map((r) => `${r.weekday} ${r.plays}`).join(', ')}.`, payload);
+      return emit(rf, `Weekday report: busiest ${busiest?.weekday ?? '—'} (${busiest?.plays ?? 0} plays). ${rows.map((r) => `${r.weekday} ${r.plays}`).join(', ')}.`, payload);
     },
   );
 
@@ -751,7 +743,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         binges: rows.slice(0, 20),
       };
       const names = rows.slice(0, 3).map((r) => `${r.name} (${r.plays} plays, ${r.share}%)`).join(', ');
-      return shape(rf, rows.length === 0 ? `No artist reached ${args.threshold ?? 5} plays — no binges detected.` : `Binges (≥${args.threshold ?? 5} plays): ${rows.length} artist(s). Top: ${names}.`, payload);
+      return emit(rf, rows.length === 0 ? `No artist reached ${args.threshold ?? 5} plays — no binges detected.` : `Binges (≥${args.threshold ?? 5} plays): ${rows.length} artist(s). Top: ${names}.`, payload);
     },
   );
 
@@ -795,7 +787,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         items: tr.items,
         pagination: paginationInfo({ total: tr.total, returned: tr.returned }),
       };
-      return shape(rf, `Repeats: ${rows.length} track(s) heard ≥2× account for ${pct(repeatPlays, totalPlays)}% of plays; ${backToBack} immediate back-to-back replay(s).`, payload);
+      return emit(rf, `Repeats: ${rows.length} track(s) heard ≥2× account for ${pct(repeatPlays, totalPlays)}% of plays; ${backToBack} immediate back-to-back replay(s).`, payload);
     },
   );
 
@@ -839,7 +831,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         current_streak_alive: currentAlive,
         current_streak_length: currentAlive ? streaks[streaks.length - 1].length : 0,
       };
-      return shape(rf, `Streaks: ${streaks.length} run(s) over ${dates.length} active days; longest ${longest.length} day(s) (${longest.start} → ${longest.end}); current streak ${currentAlive ? `alive at ${streaks[streaks.length - 1].length} day(s)` : 'broken'}.`, payload);
+      return emit(rf, `Streaks: ${streaks.length} run(s) over ${dates.length} active days; longest ${longest.length} day(s) (${longest.start} → ${longest.end}); current streak ${currentAlive ? `alive at ${streaks[streaks.length - 1].length} day(s)` : 'broken'}.`, payload);
     },
   );
 
@@ -919,7 +911,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         const more = unresolvedIds.length > 10 ? ', …' : '';
         prose += ` ${unresolvedIds.length} ${unresolvedIds.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`;
       }
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -958,7 +950,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         note: 'Heuristic segmentation: daypart (local time) × whether the track is in your top-tracks window. Not an acoustic mood analysis.',
       };
       const topBucket = rows[0];
-      return shape(rf, `Mood buckets: dominant ${topBucket?.bucket ?? '—'} (${topBucket?.plays ?? 0} plays, ${topBucket?.share ?? 0}%).`, payload);
+      return emit(rf, `Mood buckets: dominant ${topBucket?.bucket ?? '—'} (${topBucket?.plays ?? 0} plays, ${topBucket?.share ?? 0}%).`, payload);
     },
   );
 
@@ -1008,7 +1000,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       };
       const nameHint = st.find((a) => a.id === artistId)?.name ?? mt.find((a) => a.id === artistId)?.name ?? artistId;
       const ranks = payload.top_ranks;
-      return shape(rf, `Deep dive ${nameHint}: ${matches.length} recent play(s) across ${trackPlays.size} track(s); top ranks — short ${ranks.short_term ?? '—'}, medium ${ranks.medium_term ?? '—'}, long ${ranks.long_term ?? '—'}.`, payload);
+      return emit(rf, `Deep dive ${nameHint}: ${matches.length} recent play(s) across ${trackPlays.size} track(s); top ranks — short ${ranks.short_term ?? '—'}, medium ${ranks.medium_term ?? '—'}, long ${ranks.long_term ?? '—'}.`, payload);
     },
   );
 
@@ -1048,7 +1040,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         active_cells: activeCells,
         total_cells: WEEKDAYS.length * 24,
       };
-      return shape(rf, `Heatmap: ${activeCells}/168 active cells; peak ${peak ? `${peak.weekday} ${peak.hour} (${peak.plays} plays)` : '—'}.`, payload);
+      return emit(rf, `Heatmap: ${activeCells}/168 active cells; peak ${peak ? `${peak.weekday} ${peak.hour} (${peak.plays} plays)` : '—'}.`, payload);
     },
   );
 
@@ -1097,7 +1089,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         dayparts,
         peak_hour: plays > 0 ? peak?.[0] ?? null : null,
       };
-      return shape(rf, plays === 0 ? `No plays of ${resolvedName ?? target} in the recent history window.` : `${resolvedName ?? target}: ${plays} play(s) (${pct(plays, walk.items.length)}% of history), peak hour ${peak?.[0] ?? '—'}.`, payload);
+      return emit(rf, plays === 0 ? `No plays of ${resolvedName ?? target} in the recent history window.` : `${resolvedName ?? target}: ${plays} play(s) (${pct(plays, walk.items.length)}% of history), peak hour ${peak?.[0] ?? '—'}.`, payload);
     },
   );
 
@@ -1151,7 +1143,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         max_session_plays: sizes.length === 0 ? 0 : Math.max(...sizes),
         distribution: dist,
       };
-      return shape(rf, `Sessions (gap > ${args.gap_minutes ?? 30} min): ${sessions.length} session(s), median ${median(sizes)} play(s), largest ${payload.max_session_plays} plays.`, payload);
+      return emit(rf, `Sessions (gap > ${args.gap_minutes ?? 30} min): ${sessions.length} session(s), median ${median(sizes)} play(s), largest ${payload.max_session_plays} plays.`, payload);
     },
   );
 
@@ -1190,7 +1182,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         quiet_share: pct(totalQuiet, windowMinutes),
         longest_gap: quiet[0] ?? null,
       };
-      return shape(rf, quiet.length === 0 ? `No gaps ≥ ${args.min_gap_minutes ?? 120} min — consistently active window.` : `${quiet.length} quiet gap(s) ≥ ${args.min_gap_minutes ?? 120} min (${pct(totalQuiet, windowMinutes)}% of the window); longest ${quiet[0].minutes} min.`, payload);
+      return emit(rf, quiet.length === 0 ? `No gaps ≥ ${args.min_gap_minutes ?? 120} min — consistently active window.` : `${quiet.length} quiet gap(s) ≥ ${args.min_gap_minutes ?? 120} min (${pct(totalQuiet, windowMinutes)}% of the window); longest ${quiet[0].minutes} min.`, payload);
     },
   );
 
@@ -1230,7 +1222,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         total_fresh_tracks: totalFresh,
         avg_fresh_share: rows.length === 0 ? 0 : Math.round((rows.reduce((a, r) => a + r.fresh_share, 0) / rows.length) * 10) / 10,
       };
-      return shape(rf, `Rotation: ${rows.length} active day(s), ${totalFresh} first-heard track(s) overall; average daily fresh share ${payload.avg_fresh_share}%.`, payload);
+      return emit(rf, `Rotation: ${rows.length} active day(s), ${totalFresh} first-heard track(s) overall; average daily fresh share ${payload.avg_fresh_share}%.`, payload);
     },
   );
 
@@ -1270,7 +1262,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         },
         window: { first_play: chron[0].played_at, last_play: chron[chron.length - 1].played_at },
       };
-      return shape(rf, `Consistency score: ${score}/100 (days ${payload.components.day_coverage.points}/40, hours ${payload.components.hour_spread.points}/30, weekdays ${payload.components.weekday_balance.points}/30).`, payload);
+      return emit(rf, `Consistency score: ${score}/100 (days ${payload.components.day_coverage.points}/40, hours ${payload.components.hour_spread.points}/30, weekdays ${payload.components.weekday_balance.points}/30).`, payload);
     },
   );
 
@@ -1313,7 +1305,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         favourite_recent_era: recentTop?.[0] ?? null,
         recent_skews_vs_top: skew,
       };
-      return shape(rf, `Eras: recent favourite ${recentTop?.[0] ?? '—'} (${recentTop?.[1] ?? 0} plays). Skews recent vs ${args.time_range} tops: ${skew.length > 0 ? skew.join(', ') : 'none notable'}.`, payload);
+      return emit(rf, `Eras: recent favourite ${recentTop?.[0] ?? '—'} (${recentTop?.[1] ?? 0} plays). Skews recent vs ${args.time_range} tops: ${skew.length > 0 ? skew.join(', ') : 'none notable'}.`, payload);
     },
   );
 
@@ -1372,7 +1364,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         discovery_play_share: pct(fresh, chron.length),
         recap_lines: recap,
       };
-      return shape(rf, recap.join('\n'), payload);
+      return emit(rf, recap.join('\n'), payload);
     },
   );
 
@@ -1417,7 +1409,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       };
       const first = rows[0];
       const last = rows[rows.length - 1];
-      return shape(rf, rows.length === 0 ? `Nothing at offset ${offset} (window holds ${chron.length} items).` : `History export ${page.offset}–${page.offset + page.returned} of ${chron.length}: ${first.played_at} … ${last.played_at}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
+      return emit(rf, rows.length === 0 ? `Nothing at offset ${offset} (window holds ${chron.length} items).` : `History export ${page.offset}–${page.offset + page.returned} of ${chron.length}: ${first.played_at} … ${last.played_at}.${tr.footer ? ` ${tr.footer}.` : ''}`, payload);
     },
   );
 }

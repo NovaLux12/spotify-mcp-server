@@ -33,6 +33,7 @@ import {
   chapterDetailLines,
   chapterListLine,
 } from '../audiobookview.js';
+import { formatDuration } from '../result.js';
 
 type ResourceContents = ReadResourceResult;
 
@@ -48,13 +49,6 @@ function json(uri: string, payload: unknown): ResourceContents {
 
 function wantsJson(url: URL): boolean {
   return url.searchParams.get('format') === 'json';
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = String(totalSeconds % 60).padStart(2, '0');
-  return `${minutes}:${seconds}`;
 }
 
 // Feb-2026 platform cap: artist-albums pages top out at limit=10, so we walk
@@ -234,7 +228,7 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
         lines.push('Tracks:');
         album.tracks.items.forEach((track) => {
           const trackArtists = track.artists.map((a) => a.name).join(', ');
-          lines.push(`  ${track.track_number}. "${track.name}" — ${trackArtists} (${formatDuration(track.duration_ms)})`);
+          lines.push(`  ${track.track_number}. "${track.name}" — ${trackArtists} (${formatDuration(track.duration_ms, 'rounded')})`);
         });
       }
       return text(uri, lines.join('\n'));
@@ -331,13 +325,13 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       const lines: string[] = [
         `Episode: ${episode.name}`,
         `Show: ${episode.show.name}`,
-        `Duration: ${formatDuration(episode.duration_ms)} | Released: ${episode.release_date.slice(0, 10)}`,
+        `Duration: ${formatDuration(episode.duration_ms, 'rounded')} | Released: ${episode.release_date.slice(0, 10)}`,
       ];
       if (episode.resume_point) {
         lines.push(
           episode.resume_point.fully_played
             ? 'Resume point: fully played'
-            : `Resume point: ${formatDuration(episode.resume_point.resume_position_ms)}`,
+            : `Resume point: ${formatDuration(episode.resume_point.resume_position_ms, 'rounded')}`,
         );
       }
       lines.push(`Description: ${episode.description}`);

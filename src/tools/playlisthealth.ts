@@ -18,6 +18,7 @@ import {
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { textResult, jsonText } from '../result.js';
 
 /** A snapshot row plus its live position, so a diff can report where. */
 type PositionedRow = SnapTrackRow & { position: number };
@@ -36,16 +37,6 @@ function toDiffRows(
   }
   return rows;
 }
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  const content: TextContent[] = [{ type: 'text', text }];
-  return structured ? { content, structuredContent: structured } : { content };
-}
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
 export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
   // Deliberately NOT via `getConfig()`. A config snapshot is read once at

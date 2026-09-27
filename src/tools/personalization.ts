@@ -15,12 +15,7 @@ import {
   paginationInfo,
   listStructuredContent,
 } from '../shaping.js';
-
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
+import { formatDuration } from '../result.js';
 
 export const timeRangeSchema = z
   .enum(['short_term', 'medium_term', 'long_term'])

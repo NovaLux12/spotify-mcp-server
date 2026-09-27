@@ -64,29 +64,13 @@ import type {
 } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { positionSchema } from '../positionbase.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+import { textResult, emit, type ToolResult } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
 
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
 /** #51/#52 shaping: json mode stringifies the payload; payload rides as structuredContent. */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
-
 /** `dry_run` fragment defaulting to TRUE (repo convention: previews are the default). */
 const DryRunDefault = z
   .boolean()
@@ -652,14 +636,14 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         if (rows.footer) prose.push(`(${rows.footer})`);
       }
       if (!args.target_playlist_id) {
-        return shape(rf, withPlaylistInputNote(prose.join('\n'), input), withPlaylistInputMetadata({ ...payload, target: null }, input));
+        return emit(rf, withPlaylistInputNote(prose.join('\n'), input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
         const changes = [
           `Overwrite "${args.target_playlist_id}" with ${intersected.length} common track(s)`,
           ...(rows.items.length > 0 ? rows.items.map((uri) => `  - ${uri}`) : ['  (playlist would be emptied)']),
         ];
-        return shape(rf, withPlaylistInputNote(describeDryRun('intersect', args.target_playlist_id, changes), input), withPlaylistInputMetadata({
+        return emit(rf, withPlaylistInputNote(describeDryRun('intersect', args.target_playlist_id, changes), input), withPlaylistInputMetadata({
           ...payload,
           target: args.target_playlist_id,
         }, input));
@@ -673,7 +657,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         input,
       );
       const verdict = res.verdict;
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         withPlaylistInputMetadata({
@@ -714,7 +698,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const pool = candidatesFor(results, args.type);
       const chosen = pickTarget(pool, new Set());
       if (!chosen) {
-        return shape(rf, `No ${args.type} results for "${args.query}" — nothing added.`, {
+        return emit(rf, `No ${args.type} results for "${args.query}" — nothing added.`, {
           ok: false,
           added: 0,
         });
@@ -725,7 +709,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       );
       if (isDry(args)) {
         const changes = uris.map((u, i) => `Add ${u} (search hit #${i + 1} for "${args.query}")`);
-        return shape(rf, describeDryRun('add by search', meta?.name ?? args.playlist_id, changes), {
+        return emit(rf, describeDryRun('add by search', meta?.name ?? args.playlist_id, changes), {
           ok: true,
           dry_run: true,
           uris: uris,
@@ -734,7 +718,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const res = await addUrisChunked(client, normalizePlaylistRef(args.playlist_id), uris);
       const receiptLines = receiptsLines(res.receipts);
       const proseBase = `Added ${uris.length} ${args.type}(s) to "${meta?.name ?? args.playlist_id}" (top hits for "${args.query}").`;
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         {
@@ -818,11 +802,11 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       ]
         .filter(Boolean)
         .join('\n');
-      if (isDry(args)) return shape(args.response_format, `[dry run] ${prose}`, { ...payload, dry_run: true });
+      if (isDry(args)) return emit(args.response_format, `[dry run] ${prose}`, { ...payload, dry_run: true });
       const res = await atomicReplace(client, p.id, keptUris);
       const receiptLines = receiptsLines(res.receipts);
       const proseBase = `${prose}\nSnapshot ID: ${res.snapshot_id ?? 'n/a'}`;
-      return shape(
+      return emit(
         args.response_format,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         {
@@ -894,7 +878,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const add = await addUrisChunked(client, created, dealt);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Dealt ${dealt.length} random ${shelf} into new playlist ${created}.`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(add.receipts, dealt.length),
         playlist: created,
         name,
@@ -965,7 +949,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const add = await addUrisChunked(client, created, uris);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Created "${args.name}" (${created}) with ${uris.length} sliced item(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(add.receipts, uris.length),
         source: p.id,
         playlist: created,
@@ -1081,7 +1065,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         failed === 0
           ? `Renamed ${renamed} playlist(s).`
           : `Renamed ${renamed} playlist(s), ${failed} failed (see structuredContent.failures).`;
-      return shape(rf, prose, { ok: failed === 0, renamed, failed, renames, failures });
+      return emit(rf, prose, { ok: failed === 0, renamed, failed, renames, failures });
     },
   );
 
@@ -1152,7 +1136,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const res = await atomicReplace(client, p.id, kept.map((r) => r.uri));
       const receiptLines = receiptsLines(res.receipts);
       const proseBase = `Kept ${kept.length}, dropped ${dropped.length} from ${p.id}.`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...res.verdict,
         playlist: p.id,
         kept: kept.length,
@@ -1192,7 +1176,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const res = await atomicReplace(client, p.id, kept.map((r) => r.uri));
       const receiptLines = receiptsLines(res.receipts);
       const proseBase = `Stripped ${removed.length} ${strip}; ${kept.length} item(s) remain in ${p.id}.`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...res.verdict,
         playlist: p.id,
         stripped: removed.length,
@@ -1256,7 +1240,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const res = await atomicReplace(client, p.id, ordered.map((r) => r.uri));
       const receiptLines = receiptsLines(res.receipts);
       const proseBase = `Moved ${matched.length} matched item(s) to the top of ${p.id}.`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...res.verdict,
         playlist: p.id,
         moved: matched.length,
@@ -1378,7 +1362,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       }
       const receiptLines = receiptsLines(receipts);
       const proseBase = `Removed ${positions.length} occurrence(s) from ${p.id}.`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...payload,
         ...writeVerdict(receipts, positions.length),
         dry_run: false,
@@ -1444,8 +1428,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         grade,
         suggestions,
       };
-      if (args.response_format === 'json') return shape(rf, '', payload);
-      return shape(
+      if (args.response_format === 'json') return emit(rf, '', payload);
+      return emit(
         rf,
         [
           `"${meta.name ?? id}" staleness: ${grade.toUpperCase()}`,
@@ -1519,7 +1503,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         top_artists: ranked.slice(0, topN).map((r) => ({ name: r.name, tracks: r.tracks, share: Number(r.share.toFixed(3)) })),
         repeat_offenders: offenders.map((r) => ({ name: r.name, tracks: r.tracks })),
       };
-      if (args.response_format === 'json') return shape(rf, '', payload);
+      if (args.response_format === 'json') return emit(rf, '', payload);
       const lines = [
         `"${p.name ?? p.id}" artist heat:`,
         `  ${trackCount} track(s), ${ranked.length} distinct artist(s) counting ${args.include_featured ? 'every credit' : 'primary credits only'}; top share ${(100 * (ranked[0]?.share ?? 0)).toFixed(1)}%; HHI ${hhi.toFixed(4)}.`,
@@ -1527,7 +1511,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ...ranked.slice(0, topN).map((r) => `    • ${r.name}: ${r.tracks} track(s) (${(100 * r.share).toFixed(1)}%)`),
       ];
       if (offenders.length) lines.push(`  Repeat offenders (≥3): ${offenders.map((r) => `${r.name} (${r.tracks})`).join(', ')}`);
-      return shape(rf, lines.join('\n'), payload);
+      return emit(rf, lines.join('\n'), payload);
     },
   );
 
@@ -1589,8 +1573,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         median_track_age_years: medianAge,
         verdict,
       };
-      if (args.response_format === 'json') return shape(rf, '', payload);
-      return shape(
+      if (args.response_format === 'json') return emit(rf, '', payload);
+      return emit(
         rf,
         [
           `"${p.name ?? p.id}" era profile: ${verdict}`,
@@ -1643,8 +1627,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         threshold,
         pairs,
       };
-      if (args.response_format === 'json') return shape(rf, '', withPlaylistInputMetadata(payload, input));
-      return shape(
+      if (args.response_format === 'json') return emit(rf, '', withPlaylistInputMetadata(payload, input));
+      return emit(
         rf,
         withPlaylistInputNote(
           [
@@ -1713,8 +1697,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         saved_count: rows.length,
         tracks: view.items,
       };
-      if (args.response_format === 'json') return shape(rf, '', payload);
-      return shape(
+      if (args.response_format === 'json') return emit(rf, '', payload);
+      return emit(
         rf,
         [
           `Saved tracks by ${artistName ?? artistId}: ${rows.length}`,
@@ -1792,7 +1776,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         out.shelves = { ...(out.shelves as object), albums: { added: added.length, removed: removed.length, added_uris: added, removed_uris: removed } };
         prose.push(`  Albums: +${added.length} / −${removed.length}`);
       }
-      return shape(rf, prose.filter(Boolean).join('\n'), out);
+      return emit(rf, prose.filter(Boolean).join('\n'), out);
     },
   );
 
@@ -1857,7 +1841,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
           view.footer ? `(${view.footer})` : '',
           albumCap === null ? '' : `Album expansion read at most ${albumCap} tracks per album, capped again at the ${cap}-URI export limit.`,
         ];
-        return shape(args.response_format, lines.filter(Boolean).join('\n'), plan);
+        return emit(args.response_format, lines.filter(Boolean).join('\n'), plan);
       }
       const created = await createPlaylist(client, name, args.public ?? false, 'Liked Songs export via library_to_playlist');
       const add = await addUrisChunked(client, created, uris);
@@ -1875,7 +1859,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         `Exported ${uris.length} playable saved ${from} items (${order}) to new playlist "${name}" (${created}).`
         + `\n${batchSummary(uris.length, uris)}`
         + (receiptLines ? `\n${receiptLines}` : '');
-      return rf === 'json' ? shape(args.response_format, '', committed) : textResult(text, committed);
+      return rf === 'json' ? emit(args.response_format, '', committed) : textResult(text, committed);
     },
   );
 
@@ -1977,7 +1961,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const add = await addUrisChunked(client, created, mix);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Created "${name}" (${created}) with ${mix.length} tracks from ${pickedArtists.length} followed artist(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(add.receipts, mix.length),
         playlist: created,
         artists: pickedArtists.map((a) => a.name),

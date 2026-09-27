@@ -28,7 +28,9 @@ import {
   receiptMissMessage,
   type Receipt,
 } from '../receipts.js';
-import { DryRun, ResponseFormat, LIBRARY_WRITE_CHUNK } from '../shaping.js';
+import { DryRun, ResponseFormat } from '../shaping.js';
+import { chunk, capFor } from '../chunk.js';
+import { textResult, type ToolResult } from '../result.js';
 
 /**
  * Undo is opt-OUT of preview (#627): the schema itself advertises the safe
@@ -39,27 +41,11 @@ const UndoDryRun = DryRun.default(true).describe(
   'Preview only, and the default: pass dry_run: false to execute the rollback.',
 );
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, s?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) };
-}
-
-/** Spotify write caps: 100 items per playlist request; `/me/library` uses the
- * canonical `LIBRARY_WRITE_CHUNK` (40) from shaping.ts. */
-const PLAYLIST_ITEMS_CHUNK = 100;
-
 function reversibleKind(kind: string): boolean {
   return kind === 'playlist_items' || kind === 'library';
 }
 
 /** Split into fixed-size chunks for the API's per-request caps. */
-function chunk<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
-  return out;
-}
-
 /** Human-readable target for the confirmation prompt. */
 function undoTarget(receipt: Receipt): string {
   if (receipt.kind === 'library') return 'your library';
@@ -224,7 +210,7 @@ async function invertReceipt(
         // rows the previous chunks already deleted.
         const ordered = [...rows!].sort((a, b) => a.position - b.position);
         let removedSoFar = 0;
-        for (const part of chunk(ordered, PLAYLIST_ITEMS_CHUNK)) {
+        for (const part of chunk(ordered, 'playlist_writes')) {
           attemptedRequests++;
           const res = await client.delete<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
             tracks: part.map((p) => ({ uri: p.uri, positions: [p.position - removedSoFar] })),
@@ -246,14 +232,14 @@ async function invertReceipt(
         // split when it exceeds the API's per-request cap.
         const ordered = [...rows].sort((a, b) => a.position - b.position);
         const created: Array<{ uri: string; position: number }> = [];
-        // Spotify caps one playlist write at `PLAYLIST_ITEMS_CHUNK` uris. A run
+        // Spotify caps one playlist write at `playlist_writes` (100) uris. A run
         // longer than that — reachable because `remove_from_playlist` caps
         // `uris` ENTRIES, not the `positions` inside one entry — must be split:
         // an oversized request is rejected and the rollback restores nothing.
         // Sub-request k resumes at the index the earlier ones already filled.
         for (const run of consecutiveRuns(ordered)) {
-          for (const [k, part] of chunk(run, PLAYLIST_ITEMS_CHUNK).entries()) {
-            const at = run[0]!.position + k * PLAYLIST_ITEMS_CHUNK;
+          for (const [k, part] of chunk(run, 'playlist_writes').entries()) {
+            const at = run[0]!.position + k * capFor('playlist_writes');
             attemptedRequests++;
             const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, {
               uris: part.map((p) => p.uri),
@@ -271,7 +257,7 @@ async function invertReceipt(
       } else {
         // A removal with no recorded positions: re-add and append, which is
         // the strongest guarantee the receipt supports.
-        for (const part of chunk(uris, PLAYLIST_ITEMS_CHUNK)) {
+        for (const part of chunk(uris, 'playlist_writes')) {
           attemptedRequests++;
           const res = await client.post<{ snapshot_id?: string }>(`/playlists/${encId}/items`, { uris: part });
           snapshotId = res?.snapshot_id ?? snapshotId;
@@ -287,7 +273,7 @@ async function invertReceipt(
       // branch could only ever produce a 404/410 — and the field is gone with
       // the tools. `/me/library` is now the only library write in the server,
       // for the mutator and for its inverse alike.
-      for (const part of chunk(uris, LIBRARY_WRITE_CHUNK)) {
+      for (const part of chunk(uris, 'library_writes')) {
         // `LIBRARY_WRITE_CHUNK` is the documented 40-uri cap; URLSearchParams
         // keeps caller-supplied URIs from reshaping the query (#624).
         const qs = new URLSearchParams({ uris: part.join(',') }).toString();

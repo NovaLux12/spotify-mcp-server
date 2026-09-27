@@ -28,12 +28,7 @@ import { walkFollowedArtists } from '../tools/following.js';
 // #603: the device row renderer is the one get_devices uses, so the resource
 // and the tool cannot drift on the #855 volume guard.
 import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
-
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
+import { formatDuration } from '../result.js';
 
 type RenderableItem = {
   type?: string;

@@ -31,18 +31,9 @@ import type {
   SpotifyTrack,
   SpotifyEpisode,
 } from '../types/spotify.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  const content: TextContent[] = [{ type: 'text', text }];
-  return structured ? { content, structuredContent: structured } : { content };
-}
+import { textResult, jsonText } from '../result.js';
 
 /** Raw-JSON rendering for response_format='json' (#51); shared by all three tools. */
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
 // Hard cap for fetch-all pagination loops (#55), same as playlists.ts.
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 const PlaylistWalkFields = {

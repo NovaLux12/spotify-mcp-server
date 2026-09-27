@@ -30,15 +30,7 @@ import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from 
 import { addToQueueBatch } from './queueops.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { collectShowRadarEpisodes } from './showradar.js';
-
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
+import { emit, type ToolResult } from '../result.js';
 
 export function playbackExtFile(env: NodeJS.ProcessEnv = process.env): string {
   return storePath('playback-extensions', env);
@@ -115,7 +107,7 @@ export async function loadPlaybackExt(env: NodeJS.ProcessEnv = process.env): Pro
  * reading the JSON can miss it.
  */
 function respond(fmt: string | undefined, store: PlaybackExtStore, echo: Record<string, unknown>, text: string): ToolResult {
-  if (!store.load_error) return emit(fmt, echo, text);
+  if (!store.load_error) return emit(fmt, text, echo);
   const disclosed = { ...echo, load_error: store.load_error, preserved_as: store.preserved_as ?? null };
   if (fmt === 'json') {
     return { content: [{ type: 'text', text: JSON.stringify(disclosed, null, 2) }], structuredContent: disclosed };

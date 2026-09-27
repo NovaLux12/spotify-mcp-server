@@ -37,20 +37,12 @@ import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { resolvePlaylistId, walkTruncationNotice } from './playlists.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
+import { textResult } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 
-type ToolOut = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolOut {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolOut {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
 function cap(args: { max_results?: number }): number {
   return resolveMaxResults(args.max_results);
 }

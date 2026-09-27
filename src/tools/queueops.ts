@@ -14,18 +14,7 @@ import { PlaybackDryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from 
 import { graceful403Message, isRemovedEndpointFailure } from '../gating.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
-
-function mutationResult(format: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
-  if (format === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
+import { textResult, emit } from '../result.js';
 
 interface QueueFailure {
   uri: string;
@@ -259,7 +248,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       const { queued, failed } = await addToQueueBatch(client, uris, args.device_id as string | undefined);
       const failureSummary = formatQueueFailures(failed);
       const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failureSummary ? ` — ${failureSummary}` : ''}${note ? `\n${note}` : ''}`;
-      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed, dominant_cause: dominantQueueFailureReason(failed) ?? null, ...sourceDisclosure }, text);
+      return emit(args.response_format as string | undefined, text, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed, dominant_cause: dominantQueueFailureReason(failed) ?? null, ...sourceDisclosure });
     },
   );
 
@@ -367,7 +356,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         : `Appended ${added} items from queue to playlist ${playlistId}.`;
       const text = receiptLines ? `${prose}\n${receiptLines}` : prose;
 
-      return mutationResult(args.response_format as string | undefined, {
+      return emit(args.response_format as string | undefined, text, {
         ...writeVerdict(receipts, added),
         playlist_id: playlistId,
         playlist_url: playlistUrl,
@@ -376,7 +365,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
         uris: collected,
         is_new: isNew,
         receipts: receiptRecords(receipts),
-      }, text);
+      });
     },
   );
 
@@ -403,7 +392,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       const { queued, failed } = await addToQueueBatch(client, uriList, args.device_id as string | undefined);
       const failureSummary = formatQueueFailures(failed);
       const text = `Queued ${queued}/${uriList.length} tracks${failureSummary ? ` — ${failureSummary}` : ''}`;
-      return mutationResult(args.response_format as string | undefined, { ok: true, queued, failed, total: uriList.length, dominant_cause: dominantQueueFailureReason(failed) ?? null }, text);
+      return emit(args.response_format as string | undefined, text, { ok: true, queued, failed, total: uriList.length, dominant_cause: dominantQueueFailureReason(failed) ?? null });
     },
   );
 }
