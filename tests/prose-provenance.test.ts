@@ -772,7 +772,10 @@ describe('git provenance readings (#1440)', () => {
       const refusals = proseSyncRefusals(prov);
       assert.equal(refusals.hard.length, 0, 'a detached checkout is a situation, not a defect');
       assert.ok(
-        refusals.soft.some((line) => /detached/.test(line)),
+        // `prose-manifest.mjs` is untyped JavaScript (see the import above), so
+        // `soft` arrives as `any` and this callback parameter needs saying. The
+        // annotation is the claim under test: every refusal is a rendered line.
+        refusals.soft.some((line: string) => /detached/.test(line)),
         `the detached reason is missing from the refusal:\n${refusals.soft.join('\n')}`,
       );
       assert.deepEqual(proseSyncRefusals(prov, { allowStale: 'checking out a tag on purpose' }).soft, []);
