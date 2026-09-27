@@ -30,7 +30,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
-import { confirmViaElicitation } from './confirm.js';
+import { confirmViaElicitation, requiredConfirmationRefusal } from './confirm.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
@@ -1161,17 +1161,20 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
         confirmLabel: 'Restore snapshot',
       });
 
-      if (verdict === 'error') {
-        throw new Error('Elicitation failed — refusing to restore without confirmation');
-      }
-      if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-        throw new Error('Elicitation unavailable — refusing to restore without confirmation');
-      }
-      if (verdict === 'declined') {
+      // #1237: the shared fail-closed guard. The hand-rolled branches this
+      // replaced threw on 'error' and on an unpromptable host, so two of the
+      // three ways this gate says no arrived as an exception. This tool's
+      // response_format shaping is bespoke (a rich `cancelled` plan summary
+      // rather than the one-line textResult the other gated writes use), so
+      // the guard's payload is merged onto it instead of replacing it: the
+      // `reason` discriminator and the documented ok/cancelled pair ride
+      // alongside the plan summary a host already parses.
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) {
         return shapeResult(
           rf,
           buildProse(args.backup_path, plan, 'cancelled', null, maxItems),
-          buildPayload(args.backup_path, plan, 'cancelled', null),
+          { ...buildPayload(args.backup_path, plan, 'cancelled', null), ...refusal.payload },
         );
       }
 

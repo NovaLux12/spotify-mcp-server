@@ -25,6 +25,17 @@ import { registerPlaylistTools, walkTruncationNotice } from '../src/tools/playli
 import { registerFollowingTools } from '../src/tools/following.js';
 import { registerPlaylistFollowTools } from '../src/tools/playlistfollow.js';
 import { registerRestoreTools } from '../src/tools/restore.js';
+import { REMOVE_ELICIT_THRESHOLD, REPLACE_ELICIT_THRESHOLD } from '../src/tools/confirm.js';
+
+/**
+ * Sentinel for "build the harness with no elicitation at all".
+ *
+ * The harness decides between an unpromptable host and a promptable one by
+ * whether `elicitResult` is `undefined`, so `undefined` is already spoken for
+ * and cannot double as a third table entry. A unique symbol keeps the three
+ * cases distinct without inventing a second harness parameter.
+ */
+const OMIT = Symbol('omit-elicit');
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -2517,28 +2528,45 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
     assert.match(textOf(out), /Removed 10 item\(s\)/);
   });
 
-  it('remove_from_playlist unsupported confirmation refuses before any DELETE', async () => {
-    const h = harness(() => ({ snapshot_id: 'snap1' }));
-    const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:u${i}`);
-    await assert.rejects(
-      h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris }),
-      /Elicitation unavailable/,
-    );
-    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 0);
-  });
-
-  it('remove_from_playlist transport error refuses before any DELETE', async () => {
-    const h = harness(
-      () => ({ snapshot_id: 'snap1' }),
-      registerPlaylistTools,
-      new Error('elicitation transport failed'),
-    );
-    const uris = Array.from({ length: 10 }, (_, i) => `spotify:track:e${i}`);
-    await assert.rejects(
-      h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris }),
-      /Elicitation failed/,
-    );
-    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length, 0);
+  // #1237: remove_from_playlist used to hand-roll the refusal, and did it
+  // inconsistently within this one tool — a decline returned a structured
+  // refusal while 'error' and 'unsupported' threw. The two old tests below
+  // that behaviour (assert.rejects on /Elicitation unavailable/ and
+  // /Elicitation failed/) asserted exactly the shape the fix removed, so they
+  // are REPLACED by this three-verdict table rather than deleted. The
+  // "no DELETE" half is kept and strengthened, since that is the safety part.
+  //
+  // Note the expected reasons are literals, not recomputed from the tool
+  // under test: `undefined` for declined is the contract's *absent* field,
+  // and asserting `reason === undefined` would pass for any tool that never
+  // sets it — including one that throws before building a payload at all.
+  it('remove_from_playlist returns one refusal shape for all three refusal verdicts, and never DELETEs', async () => {
+    const uris = (tag: string) => Array.from({ length: 10 }, (_, i) => `spotify:track:${tag}${i}`);
+    for (const [label, elicit, reason] of [
+      ['declined', { action: 'decline' }, undefined],
+      ['error', new Error('elicitation transport failed'), 'elicitation_failed'],
+      // Omitting the elicit arg leaves the stub server with no `.server`, so
+      // elicitHost() finds no elicitInput and the verdict is 'unsupported'.
+      ['unsupported', OMIT, 'confirmation_unavailable'],
+    ] as const) {
+      const h = elicit === OMIT
+        ? harness(() => ({ snapshot_id: 'snap1' }))
+        : harness(() => ({ snapshot_id: 'snap1' }), registerPlaylistTools, elicit);
+      const out = await h.invoke('remove_from_playlist', { playlist_id: 'pl1', uris: uris(label) });
+      assert.equal(
+        wireCalls(h.client.calls).filter((c) => c.method === 'DELETE').length,
+        0,
+        `${label}: must not DELETE`,
+      );
+      const sc = out.structuredContent as Record<string, unknown>;
+      assert.equal(sc.ok, false, label);
+      assert.equal(sc.cancelled, true, label);
+      if (reason === undefined) {
+        assert.equal('reason' in sc, false, `${label}: reason must be absent, not undefined`);
+      } else {
+        assert.equal(sc.reason, reason, label);
+      }
+    }
   });
 
   it('remove_from_playlist explicit automation bypass still DELETEs', async () => {
@@ -2708,34 +2736,42 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
   });
 
   it('restore accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
+    // #1237: restore_library_snapshot now routes its verdict through
+    // requiredConfirmationRefusal, so 'error' and 'unsupported' RETURN a
+    // refusal result. The two assert.rejects calls this test previously made
+    // for those verdicts asserted the very shape the fix removed, so they are
+    // replaced by the refusal contract; the zero-PUT half is kept and is the
+    // safety part. restore keeps its bespoke `cancelled` plan-summary shaping,
+    // so the reason rides alongside status:'cancelled' rather than replacing
+    // it — asserted below so a future flattening of the payload is caught.
     await withSnapshotFile(async (path) => {
-      for (const [label, result, shouldWrite] of [
-        ['accepted', accept, true],
-        ['declined', { action: 'decline' }, false],
-        ['error', new Error('transport failed'), false],
+      for (const [label, result, shouldWrite, reason] of [
+        ['accepted', accept, true, undefined],
+        ['declined', { action: 'decline' }, false, undefined],
+        ['error', new Error('transport failed'), false, 'elicitation_failed'],
       ] as const) {
         const h = harness(restoreResponder, registerRestoreTools, result);
-        if (label === 'error') {
-          await assert.rejects(
-            h.invoke('restore_library_snapshot', restoreArgs(path)),
-            /Elicitation failed/,
-          );
-        } else {
-          await h.invoke('restore_library_snapshot', restoreArgs(path));
-        }
+        const out = await h.invoke('restore_library_snapshot', restoreArgs(path));
         assert.equal(
           h.client.calls.filter((c) => c.method === 'PUT').length,
           shouldWrite ? 1 : 0,
           label,
         );
+        if (shouldWrite) continue;
+        assert.equal(out.structuredContent?.status, 'cancelled', label);
+        assert.equal(out.structuredContent?.ok, false, label);
+        assert.equal(out.structuredContent?.cancelled, true, label);
+        if (reason === undefined) assert.equal('reason' in out.structuredContent!, false, label);
+        else assert.equal(out.structuredContent?.reason, reason, label);
       }
 
       const unsupported = harness(restoreResponder, registerRestoreTools);
-      await assert.rejects(
-        unsupported.invoke('restore_library_snapshot', restoreArgs(path)),
-        /Elicitation unavailable/,
-      );
+      const refused = await unsupported.invoke('restore_library_snapshot', restoreArgs(path));
       assert.equal(unsupported.client.calls.filter((c) => c.method === 'PUT').length, 0);
+      assert.equal(refused.structuredContent?.reason, 'confirmation_unavailable');
+      assert.equal(refused.structuredContent?.ok, false);
+      assert.equal(refused.structuredContent?.cancelled, true);
+      assert.equal(refused.structuredContent?.status, 'cancelled');
 
       const previous = process.env.SPOTIFY_MCP_CONFIRM;
       process.env.SPOTIFY_MCP_CONFIRM = 'never';
@@ -2997,5 +3033,130 @@ describe('canonical playlist set-operation contracts', () => {
       wireCalls(h.client.calls).filter((call) => call.method !== 'GET').length,
       0,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1237 — the remaining sites route through requiredConfirmationRefusal
+// ---------------------------------------------------------------------------
+//
+// remove_from_playlist and restore_library_snapshot are covered inside the
+// blocks above. These two close out the five registerPlaylistTools sites.
+//
+// The point of every table below is the SAME thing: a host must be able to
+// branch on a parsed `reason` for all three refusal verdicts, and none of the
+// three may reach the wire. `reason` is asserted as a literal, never
+// recomputed from the helper under test.
+
+/** Build a harness for one of the three verdict states. */
+function verdictHarness(
+  responder: Responder,
+  elicit: unknown,
+): ReturnType<typeof harness> {
+  return elicit === OMIT
+    ? harness(responder)
+    : harness(responder, registerPlaylistTools, elicit);
+}
+
+describe('#1237 update_playlist and replace_playlist_items refuse in one shape', () => {
+  it('update_playlist refuses all three verdicts with the shared payload and no PUT', async () => {
+    // The visibility gate reads the current state first, so the responder must
+    // report a private playlist — otherwise `increasing` is empty, the gate is
+    // never entered, and every row of the table below would pass vacuously.
+    // That is the "assertion inside a conditional that never fires" trap.
+    const responder: Responder = (path) =>
+      path === '/playlists/pl1' ? { id: 'pl1', public: false, collaborative: false } : { snapshot_id: 'snap1' };
+    for (const [label, elicit, reason] of [
+      ['declined', { action: 'decline' }, undefined],
+      ['error', new Error('transport failed'), 'elicitation_failed'],
+      ['unsupported', OMIT, 'confirmation_unavailable'],
+    ] as const) {
+      const h = verdictHarness(responder, elicit);
+      const out = await h.invoke('update_playlist', { id: 'pl1', public: true });
+      assert.equal(
+        wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length,
+        0,
+        `${label}: must not PUT`,
+      );
+      const sc = out.structuredContent as Record<string, unknown>;
+      assert.equal(sc.ok, false, label);
+      assert.equal(sc.cancelled, true, label);
+      if (reason === undefined) assert.equal('reason' in sc, false, label);
+      else assert.equal(sc.reason, reason, label);
+    }
+  });
+
+  it('update_playlist PUTs once the prompt is accepted', async () => {
+    const responder: Responder = (path) =>
+      path === '/playlists/pl1' ? { id: 'pl1', public: false, collaborative: false } : { snapshot_id: 'snap1' };
+    const h = verdictHarness(responder, accept);
+    await h.invoke('update_playlist', { id: 'pl1', public: true });
+    assert.equal(wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length, 1);
+  });
+
+  it('replace_playlist_items refuses all three verdicts with the shared payload and no write', async () => {
+    const uris = (tag: string) =>
+      Array.from({ length: REPLACE_ELICIT_THRESHOLD }, (_, i) => `spotify:track:${tag}${i}`);
+    for (const [label, elicit, reason] of [
+      ['declined', { action: 'decline' }, undefined],
+      ['error', new Error('transport failed'), 'elicitation_failed'],
+      ['unsupported', OMIT, 'confirmation_unavailable'],
+    ] as const) {
+      const h = verdictHarness(() => ({ snapshot_id: 'snap1' }), elicit);
+      const out = await h.invoke('replace_playlist_items', { playlist_id: 'pl1', uris: uris(label) });
+      assert.equal(
+        wireCalls(h.client.calls).filter((c) => c.method === 'PUT' || c.method === 'POST').length,
+        0,
+        `${label}: must not write`,
+      );
+      const sc = out.structuredContent as Record<string, unknown>;
+      assert.equal(sc.ok, false, label);
+      assert.equal(sc.cancelled, true, label);
+      if (reason === undefined) assert.equal('reason' in sc, false, label);
+      else assert.equal(sc.reason, reason, label);
+    }
+  });
+
+  it('replace_playlist_items writes once the prompt is accepted', async () => {
+    const uris = Array.from({ length: REPLACE_ELICIT_THRESHOLD }, (_, i) => `spotify:track:ok${i}`);
+    const h = verdictHarness(() => ({ snapshot_id: 'snap1' }), accept);
+    await h.invoke('replace_playlist_items', { playlist_id: 'pl1', uris });
+    assert.equal(
+      wireCalls(h.client.calls).filter((c) => c.method === 'PUT' || c.method === 'POST').length,
+      1,
+    );
+  });
+
+  // The PR's central claim is that the gate's *conditions* did not move — only
+  // the shape of a refusal did. This pins the boundary from both sides, using
+  // the real exported constants, so a future threshold edit fails here.
+  it('prompt conditions are unchanged: the gates still fire at the documented thresholds', async () => {
+    const responder: Responder = (path) =>
+      path === '/playlists/pl1' ? { id: 'pl1', public: false, collaborative: false } : { snapshot_id: 'snap1' };
+
+    const removeAt = async (n: number) => {
+      const h = verdictHarness(() => ({ snapshot_id: 'snap1' }), OMIT);
+      await h.invoke('remove_from_playlist', {
+        playlist_id: 'pl1',
+        uris: Array.from({ length: n }, (_, i) => `spotify:track:t${i}`),
+      });
+      return h.client.calls.some((c) => c.method === 'DELETE');
+    };
+    // One row below the threshold: no prompt, so the unpromptable host is
+    // irrelevant and the write goes through.
+    assert.equal(await removeAt(REMOVE_ELICIT_THRESHOLD - 1), true, 'below threshold must write');
+    // At the threshold: gated, and an unpromptable host is refused.
+    assert.equal(await removeAt(REMOVE_ELICIT_THRESHOLD), false, 'at threshold must refuse');
+
+    const replaceAt = async (n: number) => {
+      const h = verdictHarness(() => ({ snapshot_id: 'snap1' }), OMIT);
+      await h.invoke('replace_playlist_items', {
+        playlist_id: 'pl1',
+        uris: Array.from({ length: n }, (_, i) => `spotify:track:r${i}`),
+      });
+      return h.client.calls.some((c) => c.method === 'PUT' || c.method === 'POST');
+    };
+    assert.equal(await replaceAt(REPLACE_ELICIT_THRESHOLD - 1), true, 'below threshold must write');
+    assert.equal(await replaceAt(REPLACE_ELICIT_THRESHOLD), false, 'at threshold must refuse');
   });
 });
