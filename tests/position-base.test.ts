@@ -325,9 +325,31 @@ function harness(rows: PlaylistItemObject[]) {
       const id = decodeURIComponent(path.replace('/playlists/', ''));
       return { id, name: `Playlist ${id}`, collaborative: false, public: false } as T;
     },
+    // This one stub serves BOTH read paths: `swarm4_playlists` walks with
+    // `getAllPagesWithTruncation` so the truncation verdict travels with the
+    // rows (#1362), while `swarm3_playlistops` still calls the bare
+    // `getAllPages`. Both are needed — dropping either one breaks the other
+    // module's tools. These fixtures are whole playlists, under the cap by
+    // construction, so the verdict is reported as complete.
     async getAllPages<T>(path: string): Promise<T[]> {
       if (path.endsWith('/items')) return rows as unknown as T[];
       return [] as unknown as T[];
+    },
+    async getAllPagesWithTruncation<T>(path: string): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
+      const items = path.endsWith('/items') ? (rows as unknown as T[]) : [];
+      return {
+        items,
+        truncated: false,
+        truncatedByCap: false,
+        reportedTotal: items.length,
+        pages: 1,
+      };
     },
     async post<T>(path: string, body?: unknown): Promise<T | null> {
       writes.push({ method: 'POST', path, body });

@@ -62,9 +62,27 @@ function harness(playlists: Record<string, PlaylistItemObject[]>) {
       const playlistId = decodeURIComponent(path.replace('/playlists/', ''));
       return { id: playlistId, name: `Playlist ${playlistId}` } as T;
     },
-    async getAllPages<T>(path: string): Promise<T[]> {
+    // #1362: `fetchAllItems` walks with `getAllPagesWithTruncation` so the
+    // verdict travels with the rows, and these fixtures are whole playlists —
+    // under the cap by construction. `reportedTotal` is the real row count, so
+    // a test that seeds an over-cap playlist here would see the refusal name a
+    // real shortfall rather than "unknown".
+    async getAllPagesWithTruncation<T>(path: string): Promise<{
+      items: T[];
+      truncated: boolean;
+      truncatedByCap: boolean;
+      reportedTotal: number | null;
+      pages: number;
+    }> {
       const playlistId = decodeURIComponent(path.replace('/playlists/', '').replace('/items', ''));
-      return (playlists[playlistId] ?? []) as T[];
+      const rows = (playlists[playlistId] ?? []) as T[];
+      return {
+        items: rows,
+        truncated: false,
+        truncatedByCap: false,
+        reportedTotal: rows.length,
+        pages: 1,
+      };
     },
     async post<T>(path: string, body?: unknown): Promise<T | null> {
       writes.push({ method: 'POST', path, body });
