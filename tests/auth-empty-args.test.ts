@@ -141,11 +141,23 @@ describe('--scopes argv grid (#617)', () => {
 });
 
 describe('scope parsing: absent is not the same as empty (#617)', () => {
-  it('resolveScopes(undefined, undefined) still returns the full default set', () => {
+  it('resolveScopes(undefined, undefined) still returns the default profile, not a wider one', () => {
     withCleanEnv(() => {
       const resolved = resolveScopes(undefined, undefined);
       assert.equal(resolved, DEFAULT_SCOPES.join(' '));
-      assert.equal(resolved.split(' ').length, 17);
+      // #700 narrowed the standing grant from 17 scopes to the 11-scope
+      // `core` profile. The regression this test guards is the one #617 was
+      // filed for — an absent value widening to everything — so the bound is
+      // asserted in the direction that catches it: an empty or absent value
+      // must never produce MORE scopes than the default.
+      assert.equal(resolved.split(' ').length, 11);
+      for (const write of ['user-library-modify', 'playlist-modify-public', 'playlist-modify-private', 'user-follow-modify', 'ugc-image-upload', 'user-read-email']) {
+        assert.equal(
+          resolved.split(' ').includes(write),
+          false,
+          `the default grant widened to include ${write}`,
+        );
+      }
     });
   });
 

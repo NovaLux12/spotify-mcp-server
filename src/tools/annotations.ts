@@ -1682,6 +1682,34 @@ export function moduleRegistrationStatus(
   // surface changes — what changes is that the next such row fails closed.
   if (!module.alwaysActive && !context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
   if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
+  // A row the manifest declares `readOnlySafe` has, by that declaration, no
+  // writes to hide — and `WRITE_SCOPE_REQUIREMENTS` is a table of WRITE
+  // requirements. Scope-filtering such a row runs the name-driven
+  // classification over a module that cannot mutate, so a tool whose name does
+  // not start with an allowlisted read verb (`whats_new`, `library_coverage_report`,
+  // `saved_albums_by_year`, `grow_playlist`) is dropped from a grant that
+  // authorises it. That is the #1005 shape — an unknown-tool error for a
+  // legitimate call — reached from the other direction. Measured on the `core`
+  // grant: 7 readOnlySafe rows are scope-blocked, and every tool in them whose
+  // name is not an allowlisted read verb is dropped — 29 of them, together the
+  // difference between a first-time user's read surface with and without this
+  // line. (The counts are deliberately not written here: a bare registry-scale
+  // figure in hand-maintained text is what scripts/check-doc-tool-counts.mjs
+  // exists to reject. tests/scope-profile.test.ts measures the surface
+  // instead.)
+  //
+  // It only became visible at the default, not at the edges: #700 narrowed the
+  // unconfigured grant to the `core` profile, so EVERY fresh auth run now
+  // scope-filters these rows, where before only a user who had hand-narrowed
+  // SPOTIFY_SCOPES saw it.
+  //
+  // Fail-open by design, and made safe by an enforced invariant rather than by
+  // trust: tests/manifest-readonly-rows.test.ts already fails if any
+  // `readOnlySafe` row registers a tool that calls client.post/put/delete/patch
+  // (or one of the commit helpers that wraps them). A row that grows a real
+  // Spotify write therefore has to lose the flag — or that test goes red —
+  // before this exemption can expose it.
+  if (module.readOnlySafe === true) return 'active';
   return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_filtered' : 'active';
 }
 

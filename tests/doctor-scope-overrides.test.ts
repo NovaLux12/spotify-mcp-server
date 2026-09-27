@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import { initConfig, DEFAULT_SCOPES } from '../src/config.js';
+import { initConfig, scopesForProfile } from '../src/config.js';
 import { registerDoctorTool } from '../src/tools/doctortool.js';
 
 interface Row {
@@ -81,9 +81,26 @@ async function tokenFile(scope: string): Promise<void> {
   initConfig({ SPOTIFY_MCP_TOKEN_FILE: file });
 }
 
-/** The server's real default grant, minus `scope`. */
+/**
+ * The MAXIMAL grant minus the scopes named, as one string.
+ *
+ * The base is the `full` profile, not `DEFAULT_SCOPES`. These tests each drop
+ * ONE requirement and assert the doctor reports exactly that one, so the
+ * baseline has to satisfy every OTHER requirement — otherwise "drop
+ * `ugc-image-upload`" is a no-op (the default grant has never carried it since
+ * #700) and the assertion passes for the wrong reason: on the pre-#700 default
+ * a `DEFAULT_SCOPES` baseline happened to work, and reusing it after the default
+ * narrowed silently turned five of these tests into assertions about the
+ * default's missing scopes rather than about the drop.
+ *
+ * `full` is the honest baseline for "a grant that can do everything, minus X":
+ * it is the pre-#700 standing grant, and no shipped tool needs a scope beyond it.
+ */
 const without = (...drop: string[]): string =>
-  DEFAULT_SCOPES.filter((s) => !drop.includes(s)).join(' ');
+  scopesForProfile('full').filter((s) => !drop.includes(s)).join(' ');
+
+/** The full grant, unaltered — the "nothing is missing" case. */
+const FULL_GRANT = scopesForProfile('full').join(' ');
 
 beforeEach(() => {
   delete process.env.SPOTIFY_MCP_TOOLSETS;
@@ -180,9 +197,9 @@ describe('#681 — ugc-image-upload is covered', () => {
   });
 
   it('does not warn when ugc-image-upload is granted', async () => {
-    await tokenFile(DEFAULT_SCOPES.join(' '));
+    await tokenFile(FULL_GRANT);
     const report = await harness()();
-    assert.equal(report.scopeRow.status, 'pass', `the default grant leaves no gap: ${report.text}`);
+    assert.equal(report.scopeRow.status, 'pass', `a grant carrying every write scope leaves no gap: ${report.text}`);
   });
 
   it('is silenced by an override that unregisters the playlists module', async () => {

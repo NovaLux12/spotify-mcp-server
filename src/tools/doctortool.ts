@@ -30,8 +30,9 @@ import {
   resolveToolOverrides,
   resolveToolsets,
 } from '../toolsets.js';
-import { moduleBlockedByScopes } from '../scopefilter.js';
+import { moduleBlockedByScopes, WRITE_SCOPE_REQUIREMENTS } from '../scopefilter.js';
 import { derivedAnalyticsEnabled } from '../derivedanalytics.js';
+import { scopeProfileFor } from '../config.js';
 import { historyWriteStatus, historyLedgerStats } from '../history.js';
 import { BRANDING_NOTICE } from '../branding.js';
 
@@ -400,6 +401,28 @@ const READONLY_SCOPE_ROW: DoctorRow = {
 };
 
 /**
+ * Which named scope profile a grant matches (#700).
+ *
+ * A `null` label is a NORMAL answer, not a problem: a list from
+ * `SPOTIFY_SCOPES` matches no named profile, and so does a grant Spotify
+ * trimmed. That is why this is its own `info` row rather than folded into the
+ * verdict — a grant with no matching profile is not a worse grant, and a
+ * `warn` here would train operators to ignore the row that does matter.
+ */
+function profileRowFor(tokens: ParsedTokens): DoctorRow {
+  const scopes = typeof tokens.scope === 'string' ? tokens.scope.split(/\s+/).filter(Boolean) : [];
+  const profile = scopeProfileFor(scopes);
+  return {
+    id: 'scope_profile',
+    status: 'info',
+    summary: profile
+      ? `granted scopes match the "${profile}" profile (${scopes.length} scopes)`
+      : `granted scopes match no named profile (${scopes.length} scopes) — a hand-written SPOTIFY_SCOPES list, or a grant Spotify trimmed`,
+    detail: `granted: ${[...scopes].sort().join(', ')}`,
+  };
+}
+
+/**
  * Auth-time scopes vs the write tools the configuration actually registers.
  *
  * Two properties this row has to hold, both of which it violated before #681:
@@ -428,10 +451,12 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
   // has no answer here. Say so as its own row rather than reporting a `pass`
   // that reads as "the grant was checked and is sufficient" — which is the
   // confident-wrong-answer shape #681 is about, in the other direction.
-  if (surface.read_only) return [READONLY_SCOPE_ROW];
+  if (surface.read_only) return [profileRowFor(tokens), READONLY_SCOPE_ROW];
 
   const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
   const grantedList = [...granted].sort().join(', ');
+
+  const profileRow = profileRowFor(tokens);
 
   const gaps: string[] = [];
   const skipped: string[] = [];
@@ -457,6 +482,7 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
 
   if (gaps.length === 0) {
     return [
+      profileRow,
       {
         id: 'scopes',
         status: 'pass',
@@ -466,6 +492,7 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
     ];
   }
   return [
+    profileRow,
     {
       id: 'scopes',
       status: 'warn',
@@ -494,31 +521,38 @@ function requiredScopesFor(req: WriteRequirement, granted: Set<string>): string[
   return (allOf ?? []).filter((scope) => !granted.has(scope));
 }
 
-/** Modules hidden by scope, keyed by the same scope-owner passed in index.ts. */
-const SCOPE_OWNER_BY_MODULE: Record<string, string> = {
-  playback: 'playback',
-  queueops: 'playback',
-  playbackext: 'playback',
-  playbackintel: 'playback',
-  exhaust2playback: 'playback',
-  swarm3playback: 'playback',
-  playlists: 'playlists',
-  exhaust2playlists: 'playlists',
-  exhaust2extra: 'playlists',
-  playlisthealth: 'playlists',
-  playlistbatch: 'playlists',
-  playlistmisc: 'playlists',
-  swarm3playlistops: 'playlists',
-  swarm3snapshots: 'playlists',
-  swarm4playlists: 'playlists',
-  library: 'library',
-  exhaust2misc: 'library',
-  libraryanalytics: 'library',
-  portability: 'library',
-  episodemgmt: 'library',
-  swarm3library: 'library',
-  following: 'following',
-};
+/**
+ * Registration key -> the scope owners its manifest rows declare, DERIVED from
+ * `REGISTRAR_MANIFEST` rather than written out here.
+ *
+ * This was a hand-maintained `Record`, and it drifted in both directions:
+ *
+ *   - it listed `libraryanalytics` and `swarm3library`, which the manifest
+ *     marks `readOnlySafe` and which `moduleRegistrationStatus` therefore
+ *     exempts from the scope filter since #700 — so the doctor named two
+ *     modules as scope-hidden that are on the tool list;
+ *   - it omitted `playlistmisc` and `tastecomposites`, which the gate does
+ *     gate, so those two never appeared in `hidden_by_scopes` at all.
+ *
+ * A doctor that disagrees with the gate is worse than no doctor, and this one
+ * is read as ground truth about what a token can reach. Deriving it makes
+ * disagreement impossible, and `readOnlySafe` rows are skipped for exactly the
+ * reason the gate skips them: `WRITE_SCOPE_REQUIREMENTS` is a table of WRITE
+ * requirements, and a row the manifest declares cannot mutate has none to be
+ * missing.
+ */
+// Lazy: annotations.ts imports this module, so reading REGISTRAR_MANIFEST at
+// module scope would read it while it is still initialising (TDZ).
+function scopeOwnersFor(registrationKey: string): ReadonlySet<string> {
+  const owners = new Set<string>();
+  for (const module of REGISTRAR_MANIFEST) {
+    if (module.registrationKey !== registrationKey) continue;
+    if (module.readOnlySafe === true) continue;
+    const scopeKey = module.scopeKey ?? module.registrationKey;
+    if (WRITE_SCOPE_REQUIREMENTS[scopeKey]) owners.add(scopeKey);
+  }
+  return owners;
+}
 
 // Modules that ignore `SPOTIFY_MCP_TOOLSETS` and the scope filter. `receipts`
 // joined them in #688: `verify_receipt` reads an in-process map, so it needs
@@ -590,10 +624,9 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
   const granted = new Set(
     typeof tokens?.scope === 'string' ? tokens.scope.split(/\s+/).filter(Boolean) : [],
   );
-  const hiddenByScopes = activeModules.filter((key) => {
-    const scopeOwner = SCOPE_OWNER_BY_MODULE[key];
-    return scopeOwner !== undefined && moduleBlockedByScopes(scopeOwner, granted);
-  });
+  const hiddenByScopes = activeModules.filter((key) =>
+    [...scopeOwnersFor(key)].some((owner) => moduleBlockedByScopes(owner, granted)),
+  );
   const readOnly = readOnlyEnabled();
   const scopeHidden = new Set(hiddenByScopes);
   const readOnlyHidden = readOnly ? readOnlyHiddenModules() : new Set<string>();

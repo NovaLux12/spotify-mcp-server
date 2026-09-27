@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
-import { initConfig, DEFAULT_SCOPES } from '../src/config.js';
+import { initConfig, DEFAULT_SCOPES, scopesForProfile } from '../src/config.js';
 import { registerDoctorTool } from '../src/tools/doctortool.js';
 
 // ---------------------------------------------------------------------------
@@ -235,16 +235,66 @@ describe('spotify_doctor', () => {
   });
 
   it('full grant scope → scopes pass row', async () => {
-    // The grant the server actually asks for by default, read from config
-    // rather than retyped. The hand-written list this replaced was missing
-    // `ugc-image-upload`, so it stopped being a full grant the moment #681 made
-    // the check cover `upload_playlist_cover` — and the test then failed for
-    // the right reason, which is the argument for sourcing it.
-    await writeTokenFile({ ...VALID_TOKENS(), scope: DEFAULT_SCOPES.join(' ') });
+    // The `full` profile, read from config rather than retyped. The hand-
+    // written list this replaced was missing `ugc-image-upload`, so it stopped
+    // being a full grant the moment #681 made the check cover
+    // `upload_playlist_cover` — and the test then failed for the right reason,
+    // which is the argument for sourcing it.
+    //
+    // This used to read `DEFAULT_SCOPES`, on the theory that the default grant
+    // covered everything. #700 narrowed the default to `core`, which
+    // deliberately does NOT cover the playlist and library writes — so a `pass`
+    // here is now a claim about the opt-in profile, and the test says so.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: scopesForProfile('full').join(' ') });
     const { invoke } = harness();
     const res = await invoke();
     const row = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
-    assert.equal(row?.status, 'pass', `unexpected gap on the default grant: ${row?.summary} — ${row?.detail}`);
+    assert.equal(row?.status, 'pass', `unexpected gap on the full grant: ${row?.summary} — ${row?.detail}`);
+  });
+
+  it('the new default grant names exactly the write groups it withholds', async () => {
+    // The companion to the row above, and the assertion #700's change actually
+    // needs: a `core` token is NOT a deficient token, so the report must be
+    // specific about what is missing rather than collapsing to one verdict.
+    // Before #700 the default WAS a full grant and this case could not arise.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: DEFAULT_SCOPES.join(' ') });
+    const { invoke } = harness();
+    const res = await invoke();
+    const rows = res.structuredContent?.rows ?? [];
+    const scopes = rows.find((r) => r.id === 'scopes');
+    assert.equal(scopes?.status, 'warn', `the default grant reported no gap: ${scopes?.detail}`);
+    for (const group of ['playlist mutations', 'library mutations']) {
+      assert.match(scopes!.detail ?? '', new RegExp(group), `the ${group} gap is not named`);
+    }
+    // Playback is in the `core` profile, so it must NOT be reported missing.
+    assert.doesNotMatch(scopes!.detail ?? '', /playback control/);
+  });
+
+  it('reports which named profile the token matches (#700)', async () => {
+    for (const [profile, expected] of [
+      ['full', /match the "full" profile/],
+      ['core', /match the "core" profile/],
+    ] as const) {
+      await writeTokenFile({ ...VALID_TOKENS(), scope: scopesForProfile(profile).join(' ') });
+      const { invoke } = harness();
+      const res = await invoke();
+      const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
+      assert.ok(row, `no scope_profile row for a ${profile} token`);
+      assert.match(row.summary, expected);
+    }
+  });
+
+  it('says so when a grant matches no profile, without calling it a fault', async () => {
+    // A hand-written SPOTIFY_SCOPES list is a supported configuration, so
+    // "no named profile" is an `info`, never a `warn`/`fail` — a row that
+    // trains operators to ignore warnings is worse than no row.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private' });
+    const { invoke } = harness();
+    const res = await invoke();
+    const row = res.structuredContent?.rows?.find((r) => r.id === 'scope_profile');
+    assert.ok(row, 'no scope_profile row');
+    assert.equal(row.status, 'info');
+    assert.match(row.summary, /match no named profile/);
   });
 
   it('pre-upgrade token without scope field → scopes-unknown warn', async () => {

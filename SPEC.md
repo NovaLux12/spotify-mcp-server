@@ -149,30 +149,42 @@ Spotify Web API (api.spotify.com)
 
 Steps 2–4 are bounded by `SPOTIFY_AUTH_TIMEOUT_MS` (default `300000`). On expiry the listener is closed, the port released, and the failure names the redirect, the port and the elapsed bound. A listener that could not bind fails earlier and differently: the message names `EADDRINUSE`, the port, and the default redirect, because the common cause is a previous auth run that is still holding the port.
 
-### OAuth scopes requested
+### OAuth scope profiles
+
+The scopes `auth` asks for are chosen by a **profile**, not written out ad hoc. `SPOTIFY_MCP_SCOPE_PROFILE` (or `auth --scope-profile <name>`) selects one; an explicit `SPOTIFY_SCOPES` / `auth --scopes` list overrides it, and may itself name a profile (`--scopes full`). The default is **`core`**.
+
+| Profile | Scopes | What it unlocks |
+| --- | --- | --- |
+| `read` | 10 read scopes | Browsing only. Nothing in it can change Spotify state. |
+| **`core`** (default) | `read` + `user-modify-playback-state` | The above plus playback control. |
+| `write` | `core` + `user-library-modify`, `playlist-modify-public`, `playlist-modify-private`, `user-follow-modify`, `ugc-image-upload` | The full write tool surface. |
+| `full` | `write` + `user-read-email` | The maximal 17-scope grant this server shipped before #700. |
+
+Default `core` requests these 11 scopes:
 
 ```
 user-read-private
-user-read-email
 user-read-playback-state
-user-modify-playback-state
 user-read-currently-playing
 user-read-recently-played
 user-read-playback-position
 user-top-read
 user-library-read
-user-library-modify
 user-follow-read
-user-follow-modify
 playlist-read-private
 playlist-read-collaborative
-playlist-modify-public
-playlist-modify-private
-ugc-image-upload
+user-modify-playback-state
 ```
 
-> Note: `streaming` is **not** included — that scope is for the browser-based Spotify Web Playback SDK, not the Web API. Playback control via the Web API requires `user-modify-playback-state` (already included above).
-> Note: `ugc-image-upload` IS requested by default (needed for `upload_playlist_cover`), but Spotify additionally requires enabling it on the developer-dashboard app — otherwise uploads fail with 403.
+Before #700 an unconfigured `auth` run requested all 17, so a user who only wanted read-only browsing consented to library, playlist, follow and cover-upload writes, and to disclosing the account email. That is the "request only the minimum, never preemptively" rule (AGENTS.md §1, Spotify Developer Terms Sec. V.3) stated but never enforced. `auth` now prints the requested scopes grouped with a one-line rationale **before** it opens the browser, and marks every non-read group, so a group can still be declined at the point where declining is free.
+
+**What a profile does and does not promise.** A profile decides what the consent screen *asks for*. What a granted token can then *see* is decided separately, per manifest ROW, by the scope gate (`scopeKey` / `WRITE_SCOPE_REQUIREMENTS` in `src/scopefilter.ts`). The unit is the row, not the tool — see #1005, #1009, #1017. So no profile here claims "this one tool needs exactly this one scope": that is not expressible in this architecture, and a profile implying it would be the same defect #1005 shipped. A row whose `readOnlySafe` flag is set is never scope-filtered, because `WRITE_SCOPE_REQUIREMENTS` is a table of *write* requirements and such a row has no writes to withhold.
+
+A grant that lacks a write scope therefore does not 403 on those tools — the row registers with its write half removed, so the caller gets an unknown-tool error rather than a tool that fails at the API. `spotify_doctor` reports the profile a token matches and the granted-vs-required scopes per module, including the modules the grant is withholding.
+
+> Note: `streaming` and `app-remote-control` are in **no** profile — both are for the browser Web Playback SDK and the WebSocket control API respectively, neither of which the Web API wrapper uses. They remain accepted by `SPOTIFY_SCOPES` / `--scopes`.
+> Note: `ugc-image-upload` is needed by `upload_playlist_cover` but is **not** in the default profile; it requires the `write` profile or above, and Spotify additionally requires enabling it on the developer-dashboard app — otherwise uploads fail with 403.
+> Note: `user-read-email` is in the `full` profile only. **No shipped tool reads it**; it was in the standing grant for a capability this server never calls.
 
 ### PKCE implementation notes
 

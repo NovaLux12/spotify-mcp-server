@@ -316,6 +316,7 @@ ${BRANDING_NOTICE}
 Usage:
   spotify-mcp                          Start the MCP server over stdio (this is the default)
   spotify-mcp auth [--profile <name>]  Run the OAuth PKCE flow and save tokens
+                        [--scope-profile <name>]
                         [--scopes <list>]
   spotify-mcp doctor                   Check config, token state, and live API access (#62)
                         [--profile <name>]
@@ -328,9 +329,15 @@ Usage:
   auth --profile <name> is the CLI form of SPOTIFY_MCP_PROFILE and selects
   ~/.spotify-mcp/tokens.<name>.json. It applies to the whole invocation and
   not just to auth: the server, doctor and logout all act on the named
-  account. auth --scopes <list> overrides SPOTIFY_SCOPES for that run; both
-  reject an empty value rather than silently falling back to the default token
-  file and the full 17-scope grant.
+  account.
+
+  auth asks the consent screen for a scope PROFILE, not a hand-written list:
+  read | core | write | full. The default is core — reads plus playback
+  control, and no library, playlist, follow or cover-upload write. Use
+  --scope-profile <name> (or SPOTIFY_MCP_SCOPE_PROFILE) to pick another, and
+  --scopes <list> to name scopes one by one. auth prints what it is about to
+  ask for before it opens the browser. --scopes and --scope-profile reject an
+  empty or unknown value rather than silently falling back to a wider grant.
 
   logout erases every local store it can find and names each path it removed.
   Spotify publishes no token-revocation API, so the token must still be revoked

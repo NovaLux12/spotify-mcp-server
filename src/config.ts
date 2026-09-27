@@ -143,9 +143,10 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
  * as a crash unrelated to the edit that caused it, which is how a one-line
  * vocabulary change reads as a config bug.
  *
- * Both lists are now derived from ONE array, so there is nothing to keep in
- * step: the defaults are a subset, and the known set is the defaults plus the
- * opt-ins. `src/auth.ts` imports both — it no longer holds a copy.
+ * Everything below is derived from ONE group table, so there is nothing left to
+ * keep in step: the profiles are compositions of groups, the default grant is
+ * one profile, and the known set is every group. `src/auth.ts` imports these —
+ * it holds no copy of any of them.
  *
  * Order is the order the consent screen shows, and it is meaningful only in
  * that sense. `KNOWN_SPOTIFY_SCOPES` is a Set, so nothing depends on its order.
@@ -154,53 +155,303 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
  * a named error at config load, so a scope missing here cannot be requested at
  * all until this file changes.
  */
-const SCOPE_VOCABULARY = {
+/**
+ * Scope GROUPS — the unit a scope is declared in, and the unit the consent
+ * screen is explained in.
+ *
+ * A group is the smallest thing that can be described in one line to a human
+ * deciding whether to approve it, and it is what lets every profile below be
+ * DERIVED rather than restated. Writing the four profiles out by hand is the
+ * #618 bug again one level up: four lists held equal only by a comment, and
+ * `read` quietly losing a scope that `full` kept is a default grant that
+ * contradicts its own name.
+ *
+ * `read` groups are safe to hold permanently — they cannot change anything.
+ * `write` groups are the ones a user has to opt into deliberately (AGENTS.md
+ * §1: request the minimum, never preemptively), and they are the reason
+ * `auth` must not ask for them by default (#700).
+ */
+const SCOPE_GROUPS = {
+  profile: {
+    rationale: 'read your own profile and top artists',
+    read: true,
+    scopes: ['user-read-private', 'user-top-read'],
+  },
+  playbackRead: {
+    rationale: 'read what is playing, what played, and where the playhead is',
+    read: true,
+    scopes: [
+      'user-read-playback-state',
+      'user-read-currently-playing',
+      'user-read-recently-played',
+      'user-read-playback-position',
+    ],
+  },
+  libraryRead: {
+    rationale: 'read your saved tracks, albums, shows and podcasts',
+    read: true,
+    scopes: ['user-library-read'],
+  },
+  playlistRead: {
+    rationale: 'read your private and collaborative playlists',
+    read: true,
+    scopes: ['playlist-read-private', 'playlist-read-collaborative'],
+  },
+  followRead: {
+    rationale: 'read the artists you follow',
+    read: true,
+    scopes: ['user-follow-read'],
+  },
+  playbackControl: {
+    rationale: 'control playback on your devices',
+    read: false,
+    scopes: ['user-modify-playback-state'],
+  },
+  libraryWrite: {
+    rationale: 'add to and remove from your library',
+    read: false,
+    scopes: ['user-library-modify'],
+  },
+  playlistWrite: {
+    rationale: 'create and edit your playlists',
+    read: false,
+    scopes: ['playlist-modify-public', 'playlist-modify-private'],
+  },
+  followWrite: {
+    rationale: 'follow and unfollow artists',
+    read: false,
+    scopes: ['user-follow-modify'],
+  },
+  upload: {
+    rationale: 'upload playlist cover images',
+    read: false,
+    scopes: ['ugc-image-upload'],
+  },
   /**
-   * Requested when SPOTIFY_SCOPES is unset (17 scopes). The consent prompt
-   * shows exactly this set, so adding a scope here widens what every user is
-   * asked to approve — which is why `ugc-image-upload` is present (the cover
-   * upload tool needs it) and `streaming` is not (it is for the browser Web
-   * Playback SDK, not the Web API).
+   * Not a read and not a write: it exposes the account's email address, and
+   * NO shipped tool reads it. It used to sit in the standing 17-scope grant,
+   * which meant every user consented to disclose their email for a capability
+   * this server never calls (#700, issue step 3). It stays requestable via
+   * `SPOTIFY_SCOPES` / the `full` profile in case a fork needs it.
    */
-  default: [
-    'user-read-private',
-    'user-read-email',
-    'user-read-playback-state',
-    'user-modify-playback-state',
-    'user-read-currently-playing',
-    'user-read-recently-played',
-    'user-read-playback-position',
-    'user-top-read',
-    'user-library-read',
-    'user-library-modify',
-    'user-follow-read',
-    'ugc-image-upload',
-    'user-follow-modify',
-    'playlist-read-private',
-    'playlist-read-collaborative',
-    'playlist-modify-public',
-    'playlist-modify-private',
-  ],
+  email: {
+    rationale: 'read your account email address (no shipped tool needs this)',
+    read: false,
+    scopes: ['user-read-email'],
+  },
   /**
-   * Accepted in SPOTIFY_SCOPES and `auth --scopes`, never requested by
-   * default. Both are legitimate Web API scopes that most operators do not
-   * want in the standing grant, so they are opt-in rather than excluded.
+   * Accepted in SPOTIFY_SCOPES and `auth --scopes`, in NO profile. Both are
+   * legitimate Web API scopes that this server never requests: `streaming` is
+   * for the browser Web Playback SDK, and `app-remote-control` is for the
+   * WebSocket control API, neither of which the Web API wrapper uses.
    */
-  optIn: ['app-remote-control', 'streaming'],
-} as const satisfies Record<string, readonly string[]>;
+  optIn: {
+    rationale: 'not used by the Web API (streaming / remote control)',
+    read: false,
+    scopes: ['app-remote-control', 'streaming'],
+  },
+} as const satisfies Record<string, { rationale: string; read: boolean; scopes: readonly string[] }>;
+
+type ScopeGroupName = keyof typeof SCOPE_GROUPS;
+
+/** Flatten groups in declaration order — the order the consent screen shows. */
+function scopesOf(groups: readonly ScopeGroupName[]): readonly KnownScope[] {
+  const out: KnownScope[] = [];
+  for (const name of groups) {
+    for (const scope of SCOPE_GROUPS[name].scopes) {
+      if (!out.includes(scope as KnownScope)) out.push(scope as KnownScope);
+    }
+  }
+  return out;
+}
+
+/**
+ * The scope PROFILES, derived from the groups above.
+ *
+ * `read`  — reads only. Nothing a grant here can do changes Spotify state.
+ * `core`  — `read` plus playback control. THE DEFAULT for an unconfigured run:
+ *           playback control is the one mutating scope whose absence hides
+ *           read tools (the whole `playback` registration key is gated on it),
+ *           so leaving it out of the default would cost a first-time user the
+ *           ordinary "what's playing" surface to protect against an agent that
+ *           can be talked into pressing pause.
+ * `write` — `core` plus the library / playlist / follow writes and cover upload.
+ * `full`  — `write` plus `user-read-email`, i.e. the maximal 17-scope grant
+ *           this server shipped before #700.
+ *
+ * Nothing here can be *per tool*: the registration gate works in manifest ROWS
+ * (see `scopeKey` in src/tools/annotations.ts and #1005/#1009/#1017), so the
+ * finest thing a profile can honestly claim is "these rows' read halves stay
+ * reachable". Anything finer would be a claim the architecture cannot keep.
+ */
+const SCOPE_PROFILES = {
+  read: scopesOf([
+    'profile',
+    'playbackRead',
+    'libraryRead',
+    'playlistRead',
+    'followRead',
+  ]),
+  core: scopesOf([
+    'profile',
+    'playbackRead',
+    'libraryRead',
+    'playlistRead',
+    'followRead',
+    'playbackControl',
+  ]),
+  write: scopesOf([
+    'profile',
+    'playbackRead',
+    'libraryRead',
+    'playlistRead',
+    'followRead',
+    'playbackControl',
+    'libraryWrite',
+    'playlistWrite',
+    'followWrite',
+    'upload',
+  ]),
+  full: scopesOf([
+    'profile',
+    'playbackRead',
+    'libraryRead',
+    'playlistRead',
+    'followRead',
+    'playbackControl',
+    'libraryWrite',
+    'playlistWrite',
+    'followWrite',
+    'upload',
+    'email',
+  ]),
+} as const;
+
+export type ScopeProfileName = keyof typeof SCOPE_PROFILES;
 
 export type KnownScope =
-  | (typeof SCOPE_VOCABULARY.default)[number]
-  | (typeof SCOPE_VOCABULARY.optIn)[number];
+  | (typeof SCOPE_GROUPS)[ScopeGroupName]['scopes'][number]
+  | 'app-remote-control'
+  | 'streaming';
 
-/** Default scopes when SPOTIFY_SCOPES is unset — the standing consent grant. */
-export const DEFAULT_SCOPES: readonly KnownScope[] = SCOPE_VOCABULARY.default;
+/** Every profile name, in ascending order of what it grants. */
+export const SCOPE_PROFILE_NAMES: readonly ScopeProfileName[] = [
+  'read',
+  'core',
+  'write',
+  'full',
+];
+
+/**
+ * The profile an unconfigured `auth` run requests (#700).
+ *
+ * `core`, not `full`: the standing grant is what every user is consented to
+ * before they have expressed an intent, and Terms Sec. V.3 / Policy Sec.
+ * I.1.a both say to request only what is needed to operate. `write` is one
+ * flag away for anyone who wants the write tools.
+ */
+export const DEFAULT_SCOPE_PROFILE: ScopeProfileName = 'core';
+
+/** The scopes a named profile requests, in consent-screen order. */
+export function scopesForProfile(name: ScopeProfileName): readonly KnownScope[] {
+  return SCOPE_PROFILES[name];
+}
+
+/** Narrow an arbitrary string to a profile name. */
+export function isKnownScopeProfile(candidate: string): candidate is ScopeProfileName {
+  return (SCOPE_PROFILE_NAMES as readonly string[]).includes(candidate);
+}
+
+/**
+ * Parse a `SPOTIFY_MCP_SCOPE_PROFILE` value: null when unset, the name when
+ * known, and a named error when it is neither. A variable that is set but
+ * empty is an error rather than a fall-through to the default, for the same
+ * reason `parseScopes` treats `SPOTIFY_SCOPES=" "` as one (#617): silently
+ * substituting the default would ask a user who asked for `read` to approve
+ * playback control.
+ */
+export function parseScopeProfile(
+  raw: string | undefined,
+  label = 'SPOTIFY_MCP_SCOPE_PROFILE',
+): ScopeProfileName | null {
+  if (raw === undefined) return null;
+  if (raw.trim() === '') {
+    throw new Error(
+      `${label} was given but was empty — name a profile (${SCOPE_PROFILE_NAMES.join(', ')}), or unset it to use the default.`,
+    );
+  }
+  if (!isKnownScopeProfile(raw)) {
+    throw new Error(
+      `Unknown scope profile "${raw}" in ${label}. Known profiles: ${SCOPE_PROFILE_NAMES.join(', ')}.`,
+    );
+  }
+  return raw;
+}
+
+/**
+ * Which profile a granted scope string corresponds to, or null when it matches
+ * none — a hand-written `SPOTIFY_SCOPES` list, or a grant Spotify trimmed.
+ *
+ * Used only to LABEL a grant in the doctor report. A null here is normal and
+ * must never be an error: the label is a convenience, and the per-module
+ * granted-vs-required detail below it is the part that has to be right.
+ */
+export function scopeProfileFor(scopes: readonly string[]): ScopeProfileName | null {
+  const held = new Set(scopes);
+  if (held.size === 0) return null;
+  for (const name of [...SCOPE_PROFILE_NAMES].reverse()) {
+    const profile = SCOPE_PROFILES[name];
+    if (profile.length === held.size && profile.every((s) => held.has(s))) return name;
+  }
+  return null;
+}
+
+/**
+ * The groups a scope set covers, each with the one-line rationale the auth
+ * flow prints before it opens the browser (#700 step 4). Printing the reason
+ * next to the scope is what lets a user decline a group and re-run rather than
+ * approving a wall of identifiers they cannot check.
+ */
+export function scopeGroupsFor(scopes: readonly string[]): Array<{
+  group: string;
+  rationale: string;
+  read: boolean;
+  scopes: readonly string[];
+}> {
+  const held = new Set(scopes);
+  const out: Array<{ group: string; rationale: string; read: boolean; scopes: readonly string[] }> = [];
+  for (const [name, def] of Object.entries(SCOPE_GROUPS) as Array<
+    [ScopeGroupName, (typeof SCOPE_GROUPS)[ScopeGroupName]]
+  >) {
+    if (name === 'optIn') continue;
+    const covered = def.scopes.filter((s) => held.has(s));
+    if (covered.length > 0) {
+      out.push({ group: name, rationale: def.rationale, read: def.read, scopes: covered });
+    }
+  }
+  return out;
+}
+
+/** Whether a scope can change Spotify state, per the group table above. */
+export function isReadScope(scope: string): boolean {
+  const group = groupOf(scope as KnownScope);
+  return group === undefined ? false : SCOPE_GROUPS[group].read;
+}
+
+function groupOf(scope: KnownScope): ScopeGroupName | undefined {
+  for (const name of Object.keys(SCOPE_GROUPS) as ScopeGroupName[]) {
+    if ((SCOPE_GROUPS[name].scopes as readonly string[]).includes(scope)) return name;
+  }
+  return undefined;
+}
+
+/** Default scopes when no override is set — the `core` profile. */
+export const DEFAULT_SCOPES: readonly KnownScope[] = SCOPE_PROFILES[DEFAULT_SCOPE_PROFILE];
 
 /** Every scope SPOTIFY_SCOPES / `auth --scopes` will accept (#221). */
-export const KNOWN_SPOTIFY_SCOPES: ReadonlySet<KnownScope> = new Set<KnownScope>([
-  ...SCOPE_VOCABULARY.default,
-  ...SCOPE_VOCABULARY.optIn,
-]);
+export const KNOWN_SPOTIFY_SCOPES: ReadonlySet<KnownScope> = new Set<KnownScope>(
+  scopesOf(Object.keys(SCOPE_GROUPS) as ScopeGroupName[]),
+);
 
 /**
  * Narrow an arbitrary string to the vocabulary. The parsers receive whatever
@@ -860,6 +1111,10 @@ export function resolveMarket(
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConfig {
   // SPOTIFY_SCOPES validation — let parseScopes throw with the offending scope named.
   const scopes = parseScopes(env.SPOTIFY_SCOPES);
+  // A typo'd profile name must fail at startup, not silently at the consent
+  // screen: `SPOTIFY_MCP_SCOPE_PROFILE=wrte` used to mean nothing at all, and
+  // the user found out at the moment they most wanted a working auth.
+  parseScopeProfile(env.SPOTIFY_MCP_SCOPE_PROFILE);
   const fanout = resolveFanoutConcurrency(env);
   return {
     maxItems: positiveInt(env.SPOTIFY_MCP_MAX_ITEMS, DEFAULT_MAX_ITEMS),
@@ -1052,7 +1307,13 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
   },
   {
     name: 'SPOTIFY_SCOPES',
-    summary: `Space/comma-separated OAuth scopes to request instead of the ${DEFAULT_SCOPES.length} defaults. An unknown scope fails startup.`,
+    summary: `Space/comma-separated OAuth scopes to request instead of the "${DEFAULT_SCOPE_PROFILE}" profile (${DEFAULT_SCOPES.length} scopes). A profile name is also accepted here. An unknown scope fails startup.`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_SCOPE_PROFILE',
+    summary: `Which scope profile "auth" requests: ${SCOPE_PROFILE_NAMES.join(' | ')}. Default "${DEFAULT_SCOPE_PROFILE}" — reads plus playback control, and NO library / playlist / follow writes. Raise it to "write" to get the mutation tools at the consent screen. Ignored when SPOTIFY_SCOPES or --scopes names an explicit list.`,
     default: null,
     inHelp: true,
   },
