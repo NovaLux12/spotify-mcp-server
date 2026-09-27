@@ -3141,7 +3141,6 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/searchhistory.ts',
   'src/tools/showradar.ts',
   'src/tools/smart.ts',
-  'src/tools/statsfm_taste.ts',
   // #726. Verified prose-safe on all five return paths — the plan, the applied
   // summary, the read-only refusal, the confirmation refusal, and the no-op all
   // attach `structuredContent` — so an output schema would not break a prose-only
