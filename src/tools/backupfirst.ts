@@ -10,11 +10,7 @@ import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir, nextBackupSeq, collectSnapshot } from './backup.js';
 import { ResponseFormat } from '../shaping.js';
-
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-function textResult(text: string, s?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(s ? { structuredContent: s } : {}) };
-}
+import { textResult } from '../result.js';
 
 class BackupFirstError extends Error {
   constructor() {

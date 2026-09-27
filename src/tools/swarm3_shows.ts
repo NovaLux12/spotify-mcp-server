@@ -45,6 +45,7 @@ import type {
   SpotifyShowFull,
   SpotifyShowSimple,
 } from '../types/spotify.js';
+import { emit } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -53,16 +54,7 @@ type ToolResult = { content: TextContent[]; structuredContent?: Record<string, u
 // Shared shaping helpers (mirrors exhaust2_playlists.ts)
 // ---------------------------------------------------------------------------
 
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
 /** json mode stringifies the payload; payload always rides as structuredContent. */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
-
 /** `dry_run` fragment defaulting to TRUE (repo convention: previews are the default). */
 const DryRunDefault = z
   .boolean()
@@ -441,7 +433,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ...lines.map((l) => `  • ${l.name} — ${l.publisher} · ${l.total_episodes ?? '?'} eps · saved ${l.saved_at?.slice(0, 10) ?? '?'}`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         total: rows.length,
         returned: view.returned,
@@ -478,8 +470,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         media_type: show.media_type ?? null,
         uri: show.uri,
       };
-      if (rf === 'json') return shape(rf, '', payload);
-      return shape(rf, [
+      if (rf === 'json') return emit(rf, '', payload);
+      return emit(rf, [
         `"${show.name}" (${show.id})`,
         // #639: the `Publisher:` line is dropped rather than filled with a
         // stand-in, so nothing on this card asserts a publisher nobody read.
@@ -523,7 +515,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ...rows.map((r) => `  • ${r.releaseDate || '?'} · ${r.durationMs != null ? msToClock(r.durationMs) : '?'} · ${r.name}`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         show_id: args.show_id,
         episodes: rows,
@@ -559,7 +551,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         `  Released ${row.releaseDate || '?'} · ${row.durationMs != null ? msToClock(row.durationMs) : '?'} · ${row.fullyPlayed === true ? 'fully played' : row.fullyPlayed === false ? 'partially played' : 'play state unknown'}`,
         `  ${cleanText(ep.description).slice(0, 300) || '(no description)'}`,
       ].join('\n');
-      return shape(rf, prose, { ok: true, episode: row, description: cleanText(ep.description) });
+      return emit(rf, prose, { ok: true, episode: row, description: cleanText(ep.description) });
     },
   );
 
@@ -585,7 +577,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const { groups: byPubRaw, reported, missing } = facetGroups(withShow, (r) => r.show?.publisher);
       if (byPubRaw.size === 0) {
         const reason = facetUnavailableReason('publisher', 'show');
-        return shape(
+        return emit(
           rf,
           `Publisher census across ${withShow.length} saved show(s): unavailable. ${reason}`,
           {
@@ -619,7 +611,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           ? [`  (${facetCoverageNote(reported, withShow.length, 'saved show')} carries no publisher because Spotify removed the field; they are excluded, not filed under a placeholder publisher.)`]
           : []),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         saved_shows: rows.length,
         // #639: coverage, so the per-publisher show counts are checkable
@@ -674,7 +666,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ...view.items.map((s) => `  • ${s.name} — last release ${s.latest_release ?? 'never'}${s.days_since_latest != null ? ` (${s.days_since_latest}d ago)` : ''} · ${s.publisher}`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         lookback_days: lookback,
         shows_checked: checked,
@@ -729,7 +721,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         view.footer ? `(${view.footer})` : '',
         'Plan only — nothing was unfollowed. Pass these IDs to remove_saved_shows to commit.',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         dry_run: true,
         threshold_days: threshold,
@@ -754,7 +746,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const ids = args.show_ids;
       if (isDry(args)) {
         const changes = ids.map((id) => `Save show ${id} to your library`);
-        return shape(args.response_format, describeDryRun('subscribe to shows', `${ids.length} show(s)`, changes), {
+        return emit(args.response_format, describeDryRun('subscribe to shows', `${ids.length} show(s)`, changes), {
           ok: true,
           dry_run: true,
           show_ids: ids,
@@ -765,7 +757,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       // changes; `PUT /me/library` is the documented replacement and takes
       // `spotify:show:` URIs in one request whatever the type mix.
       await client.put(`/me/library?uris=${ids.map((id) => `spotify:show:${id}`).join(',')}`);
-      return shape(args.response_format, `Saved ${ids.length} show(s) to your library.\n${batchSummary(ids.length, ids)}`, {
+      return emit(args.response_format, `Saved ${ids.length} show(s) to your library.\n${batchSummary(ids.length, ids)}`, {
         ok: true,
         dry_run: false,
         saved: ids.length,
@@ -789,7 +781,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const name = show?.name ?? args.show_id;
       const publisher = publisherOf(show);
       if (isDry(args)) {
-        return shape(args.response_format, describeDryRun('unsubscribe from show', `"${name}" (${args.show_id})`, [
+        return emit(args.response_format, describeDryRun('unsubscribe from show', `"${name}" (${args.show_id})`, [
           // #639: omit the parenthetical rather than print a stand-in
           // publisher in a confirmation an operator is about to act on.
           `Remove "${name}"${publisher ? ` (${publisher})` : ''} from your saved shows`,
@@ -803,7 +795,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       }
       // #638: `DELETE /me/shows` was removed; see subscribe_to_show.
       await client.delete(`/me/library?uris=spotify:show:${encodeURIComponent(args.show_id)}`);
-      return shape(args.response_format, `Removed "${name}"${publisher ? ` (${publisher})` : ''} from your saved shows.`, {
+      return emit(args.response_format, `Removed "${name}"${publisher ? ` (${publisher})` : ''} from your saved shows.`, {
         ok: true,
         dry_run: false,
         show_id: args.show_id,
@@ -840,7 +832,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       if (isDry(args)) {
         const changes = removable.map((id) => `Remove saved show ${id}`)
           .concat(notSaved.map((id) => `SKIP ${id} (not in your saved shows)`));
-        return shape(args.response_format, describeDryRun('remove saved shows', `${ids.length} id(s) given`, changes), {
+        return emit(args.response_format, describeDryRun('remove saved shows', `${ids.length} id(s) given`, changes), {
           ok: true,
           dry_run: true,
           removable: removable,
@@ -855,7 +847,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         // here, and a future input-cap raise would need a chunk loop.
         await client.delete(`/me/library?uris=${removable.map((id) => `spotify:show:${id}`).join(',')}`);
       }
-      return shape(args.response_format,
+      return emit(args.response_format,
         `Removed ${removable.length} saved show(s); skipped ${notSaved.length} not-saved id(s).\n${batchSummary(removable.length, removable)}`,
         {
           ok: true,
@@ -892,8 +884,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         resume_position_ms: ep.resume_point?.resume_position_ms ?? null,
         uri: ep.uri,
       };
-      if (rf === 'json') return shape(rf, '', payload);
-      return shape(rf, [
+      if (rf === 'json') return emit(rf, '', payload);
+      return emit(rf, [
         `"${row.name}" (${row.showName})`,
         `  Released ${row.releaseDate || '?'} · ${row.durationMs != null ? msToClock(row.durationMs) : '?'} · ${ep.explicit ? 'explicit' : 'clean'}`,
         row.fullyPlayed != null
@@ -925,7 +917,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         `${savedCount} of ${ids.length} episode(s) saved in your library:`,
         ...results.map((r) => `  ${r.saved ? '✓' : '✗'} ${r.episode_id}`),
       ].join('\n');
-      return shape(args.response_format, prose, {
+      return emit(args.response_format, prose, {
         ok: true,
         results,
         saved_count: savedCount,
@@ -951,7 +943,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           const m = meta.get(id);
           return `Save episode ${id}${m ? ` "${m.name}" (${m.show?.name ?? '?'})` : ''}`;
         });
-        return shape(args.response_format, describeDryRun('save episodes', `${ids.length} episode(s)`, changes), {
+        return emit(args.response_format, describeDryRun('save episodes', `${ids.length} episode(s)`, changes), {
           ok: true,
           dry_run: true,
           episode_ids: ids,
@@ -960,7 +952,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       }
       // #638: `PUT /me/episodes` was removed; see subscribe_to_show.
       await client.put(`/me/library?uris=${ids.map((id) => `spotify:episode:${id}`).join(',')}`);
-      return shape(args.response_format, `Saved ${ids.length} episode(s) to your library.\n${batchSummary(ids.length, ids)}`, {
+      return emit(args.response_format, `Saved ${ids.length} episode(s) to your library.\n${batchSummary(ids.length, ids)}`, {
         ok: true,
         dry_run: false,
         saved: ids.length,
@@ -994,7 +986,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       if (isDry(args)) {
         const changes = removable.map((id) => `Remove saved episode ${id}`)
           .concat(notSaved.map((id) => `SKIP ${id} (not saved in your library)`));
-        return shape(args.response_format, describeDryRun('remove saved episodes', `${ids.length} id(s) given`, changes), {
+        return emit(args.response_format, describeDryRun('remove saved episodes', `${ids.length} id(s) given`, changes), {
           ok: true,
           dry_run: true,
           removable,
@@ -1006,7 +998,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         // #638: `DELETE /me/episodes` was removed; see subscribe_to_show.
         await client.delete(`/me/library?uris=${removable.map((id) => `spotify:episode:${id}`).join(',')}`);
       }
-      return shape(args.response_format,
+      return emit(args.response_format,
         `Removed ${removable.length} saved episode(s); skipped ${notSaved.length} not-saved id(s).\n${batchSummary(removable.length, removable)}`,
         {
           ok: true,
@@ -1052,7 +1044,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           return `  • ${r.name ?? r.episode_id} (${r.show ?? '?'}): ${state}`;
         }),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         dry_run: true,
         plan_only: true,
@@ -1096,7 +1088,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ...view.items.map((r) => `  • ${r.releaseDate || '?'} · ${r.showName} — ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         since,
         shows_checked: checked,
@@ -1151,7 +1143,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         }),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         shows_checked: checked,
         calendar: view.items,
@@ -1197,8 +1189,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         longest_episode: longest ? { name: longest.name, duration_ms: longest.durationMs, release_date: longest.releaseDate } : null,
         shortest_episode: shortest ? { name: shortest.name, duration_ms: shortest.durationMs, release_date: shortest.releaseDate } : null,
       };
-      if (rf === 'json') return shape(rf, '', payload);
-      return shape(rf, [
+      if (rf === 'json') return emit(rf, '', payload);
+      return emit(rf, [
         `Runtime report over ${rows.length} episode(s):`,
         `  Total ${msToClock(total)} · avg ${durations.length ? msToClock(Math.round(total / durations.length)) : '?'} · median ${median(durations) != null ? msToClock(median(durations)!) : '?'} · range ${sorted[0] != null ? msToClock(sorted[0]) : '?'}–${sorted[sorted.length - 1] != null ? msToClock(sorted[sorted.length - 1]!) : '?'}`,
         longest ? `  Longest: "${longest.name}" (${msToClock(longest.durationMs ?? 0)})` : '',
@@ -1265,7 +1257,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const showsScanned = checked - failedShows.length;
       if (byPub.size === 0) {
         const reason = facetUnavailableReason('publisher', 'show');
-        return shape(
+        return emit(
           rf,
           `Publisher portfolio — shows_checked: ${checked} of ${shows.length}: unavailable. ${reason}`,
           {
@@ -1308,7 +1300,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           ? `  (${withoutPublisher} checked show(s) carry no publisher because Spotify removed the field; they are excluded, not filed under a placeholder publisher.)`
           : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         saved_shows: shows.length,
         shows_total: shows.length,
@@ -1357,7 +1349,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ...view.items.map((r) => `  • ${r.releaseDate || '?'} — ${r.showName}: ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         shows_checked: checked,
         total_episodes: feed.length,
@@ -1405,7 +1397,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         `  Planned block runtime: ${msToClock(plannedMs)}`,
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         dry_run: true,
         shows_checked: checked,
@@ -1502,7 +1494,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         scanNote,
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         query: args.query,
         search_limit: pageLimit,
@@ -1557,7 +1549,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         ranked.length === 0 ? '  (no credit patterns found in descriptions)' : '',
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         show_id: args.show_id,
         episodes_mined: eps.length,
@@ -1646,7 +1638,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           : '',
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ok: true,
         since,
         shows_checked: checked,

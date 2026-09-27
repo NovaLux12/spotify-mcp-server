@@ -211,14 +211,22 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'is_local',
   'is_playable',
   'item_count',
-  // #1388: playlist_balance discloses the coverage of a split it performed on
-  // a bounded walk, and its description names both halves so a host can tell a
-  // partial split from a whole one before it reads any prose. `items_read` is
-  // what the walk returned, `items_total` the source playlist's own size — the
-  // split of the two is the disclosure, and `items_total` is `null` when
-  // Spotify's count was not readable. Keys the call reports about its own
-  // result, like `rows_read` on `merge_playlists` and `truncated_by_cap` above.
-  'items_read', 'items_total',
+  // #1388, RENAMED by #1423: playlist_balance discloses the coverage of a split
+  // it performed on a bounded walk, and its description names both halves so a
+  // host can tell a partial split from a whole one before it reads any prose.
+  // It shipped `items_read` / `items_total`; both were unreleased, and #1423
+  // moved it onto the repo-wide pair below, so one name means "rows a bounded
+  // walk returned" everywhere.
+  // `items_read` stays allowlisted for exactly one tool: `listening_streaks`,
+  // whose `items_read` counts listening-history entries rather than collection
+  // rows and shipped in v2.1.0. A new appearance of this name in a description
+  // is the thing to look at.
+  'items_read',
+  // #1423: the canonical bounded-read pair, named by playlist_balance's
+  // description after the rename. Both are keys a call reports about its own
+  // result, on the same reasoning as `truncated_by_cap` above — a caller reads
+  // them, they do not route a second call.
+  'rows_read', 'reported_total',
   'library_requests',
   'new_entry',
   'oldest_created',

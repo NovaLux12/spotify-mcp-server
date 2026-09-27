@@ -25,7 +25,7 @@
  * (clone the LIVE playlist, not a local backup) — different mechanics, no clash.
  */
 import { z } from 'zod';
-import { capFor } from '../chunk.js';
+import { capFor, chunk } from '../chunk.js';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -58,22 +58,16 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
+import { emit } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
+;
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
 
 /** #51/#52 shaping: json mode stringifies the payload; payload rides as structuredContent. */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
-}
-
 /** Field aliases used throughout this slice (same fragments, local names). */
 const ResponseFormatArgName = ResponseFormat;
 const MaxResultsArgName = MaxResults;
@@ -545,7 +539,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         items: ordered.length,
         planned_order_uris: ordered.map((r) => r.uri).filter(Boolean),
       };
-      return shape(rf, [
+      return emit(rf, [
         `[plan] Sort "${p.name ?? p.id}" by ${payload.sort_by} ${payload.direction} — read-only, nothing changed.`,
         `  ${ordered.length} item(s); commit with sort_playlist_apply.`,
         ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
@@ -576,7 +570,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const uris = ordered.map((r) => r.uri).filter(Boolean);
       const view = truncateItems(uris, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('sort', p.name ?? p.id, [
+        return emit(rf, describeDryRun('sort', p.name ?? p.id, [
           `Rewrite in ${args.sort_by ?? 'name'} ${args.direction ?? 'asc'} order (${uris.length} track(s)):`,
           ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -597,7 +591,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Snapshot ID: ${res.snapshot_id ?? 'n/a'}`,
         receiptLines,
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...res.verdict,
         dry_run: false,
         playlist: p.id,
@@ -630,7 +624,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const reversed = [...uris].reverse();
       const view = truncateItems(reversed, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('reverse', p.name ?? p.id, [
+        return emit(rf, describeDryRun('reverse', p.name ?? p.id, [
           `Would reverse all ${reversed.length} item(s); new first item:`,
           ...view.items.slice(0, 10).map((u, i) => `  ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -647,7 +641,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Snapshot ID: ${res.snapshot_id ?? 'n/a'}`,
         receiptsLines(res.receipts),
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...res.verdict,
         dry_run: false,
         playlist: p.id,
@@ -685,7 +679,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const rotated = [...uris.slice(k), ...uris.slice(0, k)];
       const view = truncateItems(rotated, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('rotate', p.name ?? p.id, [
+        return emit(rf, describeDryRun('rotate', p.name ?? p.id, [
           `Rotate by ${n} (effective ${k}): new order starts with #${k + 1} "${rows[k].name}".`,
           ...view.items.slice(0, 10).map((u, i) => `  ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -702,7 +696,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Snapshot ID: ${res.snapshot_id ?? 'n/a'}`,
         receiptsLines(res.receipts),
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...res.verdict,
         dry_run: false,
         playlist: p.id,
@@ -770,12 +764,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       if (!args.target_playlist_id) {
         lines.push('', ...view.items.map((u, i) => `  ${i + 1}. ${u}`));
         if (view.footer) lines.push(`(${view.footer})`);
-        return shape(rf, withPlaylistInputNote(`[plan] ${lines.join('\n')} — read-only, nothing changed.`, input), withPlaylistInputMetadata({ ...payload, target: null }, input));
+        return emit(rf, withPlaylistInputNote(`[plan] ${lines.join('\n')} — read-only, nothing changed.`, input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
         lines.push('', ...view.items.map((u, i) => `  ${i + 1}. ${u}`));
         if (view.footer) lines.push(`(${view.footer})`);
-        return shape(rf, withPlaylistInputNote(describeDryRun('interleave', args.target_playlist_id, lines.slice(1)), input), withPlaylistInputMetadata({ ...payload, target: args.target_playlist_id }, input));
+        return emit(rf, withPlaylistInputNote(describeDryRun('interleave', args.target_playlist_id, lines.slice(1)), input), withPlaylistInputMetadata({ ...payload, target: args.target_playlist_id }, input));
       }
       const targetId = normalizePlaylistRef(args.target_playlist_id);
       const res = await atomicReplace(client, targetId, out);
@@ -784,7 +778,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Interleaved ${loaded.length} playlists into ${targetId} (${out.length} item(s), ${res.requests} request(s)).`,
         input,
       );
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         withPlaylistInputMetadata({
@@ -827,7 +821,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const name = args.name ?? `Merged ${new Date().toISOString().slice(0, 10)}`;
       const view = truncateItems(merged, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, withPlaylistInputNote(describeDryRun('merge', `new playlist "${name}"`, [
+        return emit(rf, withPlaylistInputNote(describeDryRun('merge', `new playlist "${name}"`, [
           `Concatenate ${loaded.length} playlists (${raw.length} entries) → ${merged.length} after dedupe=${args.dedupe ?? 'first'}:`,
           ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s)`),
           '',
@@ -842,7 +836,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Merged ${loaded.length} playlists into new playlist "${name}" (${created}): ${merged.length} track(s), ${add.requests} add request(s).`,
         input,
       );
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         withPlaylistInputMetadata({
@@ -893,14 +887,14 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         remaining: diff.length,
       };
       if (!args.target_playlist_id) {
-        return shape(rf, withPlaylistInputNote([
+        return emit(rf, withPlaylistInputNote([
           `[plan] Difference "${base.name ?? base.id}" minus ${subs.length} playlist(s): ${diff.length} of ${baseSeq.length} survive (read-only).`,
           ...view.items.map((u) => `  ✓ ${u}`),
           view.footer ? `(${view.footer})` : '',
         ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata({ ...payload, target: null }, input));
       }
       if (isDry(args)) {
-        return shape(rf, withPlaylistInputNote(describeDryRun('difference', args.target_playlist_id, [
+        return emit(rf, withPlaylistInputNote(describeDryRun('difference', args.target_playlist_id, [
           `Overwrite with the ${diff.length} surviving track(s):`,
           ...view.items.map((u) => `  - ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -913,7 +907,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Wrote the difference (${diff.length} track(s)) to ${targetId} in ${res.requests} request(s).`,
         input,
       );
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         withPlaylistInputMetadata({
@@ -966,7 +960,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         intersection_count: common.length,
         common_tracks: common,
       };
-      return shape(rf, withPlaylistInputNote([
+      return emit(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
         ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
         ...(common.length > 0 ? ['', 'Common:', ...view.items.map((c, i) => `  ${i + 1}. ${c.name} (${c.uri}) — present in ${c.in_playlists.length}/${loaded.length} sources`)] : []),
@@ -1005,7 +999,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         union_count: union.length,
         union_uris: union,
       };
-      return shape(rf, withPlaylistInputNote([
+      return emit(rf, withPlaylistInputNote([
         `Union preview of ${loaded.length} playlists: ${union.length} distinct track(s) (read-only).`,
         ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
         '',
@@ -1050,7 +1044,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const uris = sliced.map((r) => r.uri);
       const view = truncateItems(uris, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('extract range', `new playlist "${args.name}"`, [
+        return emit(rf, describeDryRun('extract range', `new playlist "${args.name}"`, [
           `Copy items [${from},${to}) of ${total} → ${uris.length} playable item(s) into "${args.name}":`,
           ...view.items.map((u, i) => `  pos ${from + i + 1} → ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -1060,7 +1054,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const add = await addUrisChunked(client, created, uris);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Extracted [${from},${to}) (${uris.length} item(s)) from "${p.name ?? p.id}" into new playlist "${args.name}" (${created}), ${add.requests} add request(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(add.receipts, uris.length),
         dry_run: false,
         source: p.id,
@@ -1104,7 +1098,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const doomed = rows.slice(from, to).filter((r) => r.uri);
       const keptCount = total - doomed.length;
       if (isDry(args)) {
-        return shape(rf, describeDryRun('remove range', p.name ?? p.id, [
+        return emit(rf, describeDryRun('remove range', p.name ?? p.id, [
           `Would delete items [${from},${to}) — ${doomed.length} of ${total} item(s), ${keptCount} remain:`,
           ...doomed.slice(0, 10).map((r) => `  - pos ${r.position + 1}: ${r.uri} "${r.name}"`),
         ]), { ok: true, dry_run: true, playlist: p.id, range: [from, to], removals: doomed.length, remaining: keptCount });
@@ -1134,7 +1128,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Pre-write backup: ${backupFile}`,
         receiptsLines(receipts),
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...writeVerdict(receipts, doomed.length),
         dry_run: false,
         playlist: p.id,
@@ -1185,7 +1179,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         keep_first_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(1) })),
         keep_last_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(0, -1) })),
       };
-      return shape(rf, [
+      return emit(rf, [
         `"${p.name ?? p.id}" duplicates: ${groups.length} group(s), ${excess} excess cop(ies).`,
         ...view.items.map((g, i) => `  ${i + 1}. ${g.uri} at positions ${g.positions.map((p) => p + 1).join(', ')}`),
         view.footer ? `(${view.footer})` : '',
@@ -1216,7 +1210,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const deduped = keep === 'first' ? [...new Set(uris)] : dedupeSequence(uris, 'last');
       const removed = uris.length - deduped.length;
       if (isDry(args)) {
-        return shape(rf, describeDryRun('dedupe', p.name ?? p.id, [
+        return emit(rf, describeDryRun('dedupe', p.name ?? p.id, [
           `Would remove ${removed} duplicate occurrence(s), keeping ${keep} — ${deduped.length} of ${uris.length} remain.`,
         ]), { ok: true, dry_run: true, playlist: p.id, keep, removed, remaining: deduped.length });
       }
@@ -1232,7 +1226,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Snapshot ID: ${res.snapshot_id ?? 'n/a'}`,
         receiptLines,
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...res.verdict,
         dry_run: false,
         playlist: p.id,
@@ -1282,7 +1276,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const sizes = parts.map((part) => `${part.name}: ${part.uris.length}`).join(', ');
       if (isDry(args)) {
-        return shape(rf, describeDryRun('split by count', p.name ?? p.id, [
+        return emit(rf, describeDryRun('split by count', p.name ?? p.id, [
           `Would create ${n} playlist(s) → ${sizes}.`,
         ]), { ok: true, dry_run: true, parts: parts.map((part) => ({ name: part.name, count: part.uris.length, uris: part.uris })) });
       }
@@ -1298,7 +1292,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const receiptLines = receiptsLines(allReceipts);
       const proseBase = `Split "${p.name ?? p.id}" into ${n} playlist(s) → ${sizes} (${requests} add request(s)).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(allReceipts, parts.reduce((s, part) => s + part.uris.length, 0)),
         dry_run: false,
         source: p.id,
@@ -1350,7 +1344,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       if (bucket.length > 0) parts.push({ name: `${prefix} ${parts.length + 1}`, uris: bucket, runtimeMs: runtime });
       const sizes = parts.map((part) => `${part.name}: ${part.uris.length} (${msToClock(part.runtimeMs)})`).join(', ');
       if (isDry(args)) {
-        return shape(rf, describeDryRun('split by duration', p.name ?? p.id, [
+        return emit(rf, describeDryRun('split by duration', p.name ?? p.id, [
           `Would create ${parts.length} part(s) of ≈${args.target_minutes} min → ${sizes}.`,
         ]), { ok: true, dry_run: true, parts: parts.map((part) => ({ name: part.name, count: part.uris.length, runtime_ms: part.runtimeMs, uris: part.uris })) });
       }
@@ -1366,7 +1360,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const receiptLines = receiptsLines(allReceipts);
       const proseBase = `Split "${p.name ?? p.id}" into ${parts.length} runtime block(s) → ${sizes} (${requests} add request(s)).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(allReceipts, parts.reduce((s, part) => s + part.uris.length, 0)),
         dry_run: false,
         source: p.id,
@@ -1427,13 +1421,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
         view.footer ? `(${view.footer})` : '',
       ];
-      if (!args.name) return shape(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
-      if (isDry(args)) return shape(rf, describeDryRun('era filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
+      if (!args.name) return emit(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
+      if (isDry(args)) return emit(rf, describeDryRun('era filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
       const created = await createPlaylist(client, args.name, args.public ?? false, `Era ${fromY}–${toY} from ${p.name ?? p.id}`);
       const add = await addUrisChunked(client, created, uris);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Wrote ${uris.length} era-matching track(s) to new playlist "${args.name}" (${created}), ${add.requests} add request(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...payload,
         ...writeVerdict(add.receipts, uris.length),
         target: created,
@@ -1490,13 +1484,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
         view.footer ? `(${view.footer})` : '',
       ];
-      if (!args.name) return shape(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
-      if (isDry(args)) return shape(rf, describeDryRun('artist filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
+      if (!args.name) return emit(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
+      if (isDry(args)) return emit(rf, describeDryRun('artist filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
       const created = await createPlaylist(client, args.name, args.public ?? false, `Artist filter from ${p.name ?? p.id}`);
       const add = await addUrisChunked(client, created, uris);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Wrote ${uris.length} artist-matching track(s) to new playlist "${args.name}" (${created}), ${add.requests} add request(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...payload,
         ...writeVerdict(add.receipts, uris.length),
         target: created,
@@ -1551,13 +1545,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
         view.footer ? `(${view.footer})` : '',
       ];
-      if (!args.name) return shape(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
-      if (isDry(args)) return shape(rf, describeDryRun('duration filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
+      if (!args.name) return emit(rf, `[report] ${lines.join('\n')} — read-only.`, { ...payload, target: null });
+      if (isDry(args)) return emit(rf, describeDryRun('duration filter', `new playlist "${args.name}"`, lines.slice(1)), payload);
       const created = await createPlaylist(client, args.name, args.public ?? false, `Duration ${min}s–${args.max_seconds ?? '∞'}s from ${p.name ?? p.id}`);
       const add = await addUrisChunked(client, created, uris);
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Wrote ${uris.length} duration-matching track(s) to new playlist "${args.name}" (${created}), ${add.requests} add request(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...payload,
         ...writeVerdict(add.receipts, uris.length),
         target: created,
@@ -1591,7 +1585,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         picked.map((r) => `${r.name} — ${r.artistNames.join(', ')}`),
         resolveMaxResults(args.max_results, getConfig().maxItems),
       );
-      return shape(rf, [
+      return emit(rf, [
         `Sampled ${picked.length} of ${rows.length} track(s) from "${p.name ?? p.id}"${args.seed != null ? ` (seed ${args.seed})` : ' (unseeded)'}:`,
         ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
         view.footer ? `(${view.footer})` : '',
@@ -1651,7 +1645,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         chapters,
         contributors: Object.fromEntries([...contributors.entries()].sort((a, b) => b[1] - a[1])),
       };
-      return shape(rf, [
+      return emit(rf, [
         `"${p.name ?? p.id}" — ${rows.length} item(s), ${tracks.length} track(s), runtime ${msToClock(runtimeMs)}:`,
         '  Chapters (by add-month):',
         ...chapterView.items.map((c, i) => `    ${i + 1}. ${c.month}: positions ${c.positions[0]}–${c.positions[1]} (${c.count} item(s))`),
@@ -1709,7 +1703,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         contributors: Object.fromEntries([...contributors.entries()].sort((a, b) => b[1] - a[1])),
         verdict,
       };
-      return shape(rf, [
+      return emit(rf, [
         `Edit journal for "${p.name ?? p.id}" — ${batches.length} add-batch(es), ${rows.length} item(s). Verdict: ${verdict}.`,
         ...batchView.items.map((b, i) => `  ${i + 1}. ${b.date}: +${b.added} (positions ${b.first_position}+) by ${b.by.join(', ')}`),
         batchView.footer ? `  (${batchView.footer})` : '',
@@ -1767,7 +1761,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         resolveMaxResults(args.max_results, getConfig().maxItems),
       );
       if (isDry(args)) {
-        return shape(rf, describeDryRun('move tracks', `${src.name ?? src.id} → ${dst.name ?? dst.id}`, [
+        return emit(rf, describeDryRun('move tracks', `${src.name ?? src.id} → ${dst.name ?? dst.id}`, [
           `Would move ${moving.length} track(s):`,
           ...view.items.map((line, i) => `  ${i + 1}. ${line}`),
           view.footer ? `(${view.footer})` : '',
@@ -1804,7 +1798,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         `Pre-write backup: ${backupFile}`,
         receiptsLines(allReceipts),
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...verdict,
         dry_run: false,
         source: src.id,
@@ -1899,7 +1893,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           moves_truncated: moveView.truncated,
         };
       if (isDry(args)) {
-        return shape(rf, withPlaylistInputNote(describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
+        return emit(rf, withPlaylistInputNote(describeDryRun('balance', `${buckets.length} playlists by ${metric}`, [
           `Total ${metric}: ${metric === 'count' ? String(total) : msToClock(total)}; target per playlist: ${metric === 'count' ? String(target) : msToClock(target)}.`,
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
@@ -1975,7 +1969,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       );
       // Each move has two ends: the track must be gone from the donor and
       // present in the receiver, so the verdict counts both rows (#879).
-      return shape(
+      return emit(
         rf,
         receiptLines ? `${proseBase}\n${receiptLines}` : proseBase,
         withPlaylistInputMetadata({
@@ -2024,7 +2018,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const name = args.name ?? `${meta.name ?? args.playlist_id} (copy)`;
       const view = truncateItems(uris, resolveMaxResults(args.max_results, getConfig().maxItems));
       if (isDry(args)) {
-        return shape(rf, describeDryRun('clone', `new playlist "${name}"`, [
+        return emit(rf, describeDryRun('clone', `new playlist "${name}"`, [
           `Would create "${name}" with all ${uris.length} item(s) from "${meta.name ?? args.playlist_id}":`,
           ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
           view.footer ? `(${view.footer})` : '',
@@ -2039,7 +2033,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const add = uris.length > 0 ? await addUrisChunked(client, created, uris) : { requests: 0, receipts: [] };
       const receiptLines = receiptsLines(add.receipts);
       const proseBase = `Cloned "${meta.name ?? args.playlist_id}" → new playlist "${name}" (${created}) with ${uris.length} item(s), ${add.requests} add request(s).`;
-      return shape(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
+      return emit(rf, receiptLines ? `${proseBase}\n${receiptLines}` : proseBase, {
         ...writeVerdict(add.receipts, uris.length),
         dry_run: false,
         source: meta.id ?? null,

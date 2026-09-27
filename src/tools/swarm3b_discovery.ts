@@ -53,6 +53,7 @@ import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
 import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchAlbumsPerId, type PerIdUnresolved } from './catalog.js';
+import { emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + plumbing
@@ -79,17 +80,7 @@ const IncludeGroups = z
   .optional()
   .describe('Comma-separated album groups: album,single,appears_on,compilation. Default: album,single');
 
-type ToolOut = {
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-};
-
-function emit(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolOut {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
-}
+;
 
 /** m:ss duration formatting for prose rows; h:mm:ss once an hour or more. */
 function fmtDur(ms: number): string {

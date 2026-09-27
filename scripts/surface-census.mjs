@@ -618,6 +618,11 @@ if (proseReportIndex >= 0) {
     errors: report.errors,
     currentCount: report.currentCount,
     pinnedCount: report.pinnedCount,
+    // Which way round the two counts differ. `errors` above already says which
+    // paragraphs are gone; this says which are new, and that "new" is not a
+    // finding. Without it a reader is left to subtract the totals, and the
+    // sign of that subtraction is exactly the guess #1460 was about.
+    coverage: report.coverage,
     files: report.files,
     // Which tree the pin was generated from, and whether this checkout can
     // still confirm it. A reader who is told "verified" can trust the pin; one

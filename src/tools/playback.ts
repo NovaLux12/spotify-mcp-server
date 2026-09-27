@@ -40,6 +40,7 @@ import { MARKET_CODE } from '../markets.js';
 // #603: the device row renderer is shared with the spotify://player/devices
 // resource so the two surfaces cannot drift on the #855 volume guard.
 import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
+import { emit, formatDuration, formatDurationOrUnknown, type EmitOptions } from '../result.js';
 
 // #595: these parameters used to advertise a default that resolved from the
 // account country, and Spotify's February 2026 changes removed `country`
@@ -48,11 +49,6 @@ import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
 const requestMarket = (marketArg: string | undefined): string | undefined =>
   marketArg ?? getConfig().market ?? undefined;
 
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
 // GET /me/player/currently-playing (subset we display)
 interface CurrentlyPlayingResponse {
   item: SpotifyTrack | SpotifyEpisode | null;
@@ -74,10 +70,6 @@ type RenderableItem = {
   album?: { name?: string; images?: Array<{ url?: string }> };
   show?: { name?: string };
 };
-
-function formatDurationOrUnknown(ms: number | null | undefined): string {
-  return typeof ms === 'number' && Number.isFinite(ms) ? formatDuration(ms) : 'unknown';
-}
 
 function formatItem(item: RenderableItem): string {
   const name = item.name ?? 'Untitled';
@@ -143,25 +135,13 @@ const additionalTypesSchema = z
   .describe("Item types to include in the response. Default: ['track', 'episode']");
 
 /**
- * Emit a mutation result: `json` mode returns a machine-readable echo of what
- * was done (#51/#58); otherwise the human text is returned unchanged.
+ * The two ways this module's mutation results have always differed from the
+ * house `emit`: the `json` body is compact (no indent), and the prose body
+ * does not also carry the echo as `structuredContent` (#51/#58). Both are
+ * contract, not drift, so both are named parameters on the shared helper
+ * rather than a fork — see `src/result.ts`.
  */
-function mutationResult(
-  format: string | undefined,
-  echo: Record<string, unknown>,
-  text: string,
-): {
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-} {
-  if (format === 'json') {
-    return {
-      content: [{ type: 'text', text: JSON.stringify(echo) }],
-      structuredContent: echo,
-    };
-  }
-  return { content: [{ type: 'text', text }] };
-}
+const MUTATION_EMIT: EmitOptions = { jsonIndent: 0, proseCarriesPayload: false };
 
 interface HandoffStep {
   method: 'PUT';
@@ -435,7 +415,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         : '/me/player/play';
       await client.put(path, { uris: [match.uri] });
 
-      return mutationResult(args.response_format, { action: 'play', uri: match.uri }, `Now playing: ${detail}`);
+      return emit(args.response_format, `Now playing: ${detail}`, { action: 'play', uri: match.uri }, MUTATION_EMIT);
     },
   );
 
@@ -534,10 +514,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       await client.put(path, Object.keys(body).length > 0 ? body : undefined);
       // #58: echo the batch so the agent has an audit trail of what was queued.
       const summary = args.uris ? `\n${batchSummary(args.uris.length, args.uris)}` : '';
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'play', ...body },
         `Playback started.${summary}`,
+        { action: 'play', ...body }, MUTATION_EMIT
       );
     },
   );
@@ -561,10 +541,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         ? `/me/player/pause?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/pause';
       await client.put(path);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'pause', device_id: args.device_id },
         'Playback paused.',
+        { action: 'pause', device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -593,10 +573,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         ? `/me/player/next?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/next';
       await client.post(path);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'skip_next', device_id: args.device_id },
         'Skipped to next track.',
+        { action: 'skip_next', device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -623,10 +603,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         ? `/me/player/previous?device_id=${encodeURIComponent(args.device_id)}`
         : '/me/player/previous';
       await client.post(path);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'skip_previous', device_id: args.device_id },
         'Skipped to previous track.',
+        { action: 'skip_previous', device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -650,10 +630,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params = new URLSearchParams({ position_ms: String(args.position_ms) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/seek?${params}`);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'seek', position_ms: args.position_ms, device_id: args.device_id },
         `Seeked to ${formatDuration(args.position_ms)}.`,
+        { action: 'seek', position_ms: args.position_ms, device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -677,10 +657,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params = new URLSearchParams({ volume_percent: String(args.volume_percent) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/volume?${params}`);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'set_volume', volume_percent: args.volume_percent, device_id: args.device_id },
         `Volume set to ${args.volume_percent}%.`,
+        { action: 'set_volume', volume_percent: args.volume_percent, device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -704,10 +684,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params = new URLSearchParams({ state: String(args.state) });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/shuffle?${params}`);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'set_shuffle', state: args.state, device_id: args.device_id },
         `Shuffle ${args.state ? 'on' : 'off'}.`,
+        { action: 'set_shuffle', state: args.state, device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -731,10 +711,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params = new URLSearchParams({ state: args.state });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.put(`/me/player/repeat?${params}`);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'set_repeat', state: args.state, device_id: args.device_id },
         `Repeat set to ${args.state}.`,
+        { action: 'set_repeat', state: args.state, device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -940,10 +920,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const params = new URLSearchParams({ uri: args.uri });
       if (args.device_id) params.set('device_id', args.device_id);
       await client.post(`/me/player/queue?${params}`);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'add_to_queue', uri: args.uri, device_id: args.device_id },
         `Added ${args.uri} to queue.`,
+        { action: 'add_to_queue', uri: args.uri, device_id: args.device_id }, MUTATION_EMIT
       );
     },
   );
@@ -1023,10 +1003,10 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       const body: Record<string, unknown> = { device_ids: [args.device_id] };
       if (args.play !== undefined) body.play = args.play;
       await client.put('/me/player', body);
-      return mutationResult(
+      return emit(
         args.response_format,
-        { action: 'transfer_playback', device_ids: [args.device_id], play: args.play },
         `Playback transferred to device ${args.device_id}.`,
+        { action: 'transfer_playback', device_ids: [args.device_id], play: args.play }, MUTATION_EMIT
       );
     },
   );
@@ -1086,19 +1066,19 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         await client.put(step.path, step.body);
       }
 
-      return mutationResult(
+      return emit(
         args.response_format,
+        `Handed off to device ${args.device_id}` +
+          (plan.willResume && plan.progress !== null ? ` at ${formatDuration(plan.progress)}` : '') +
+          (args.volume !== undefined ? ` (volume ${args.volume})` : '') +
+          '.',
         {
           action: 'handoff',
           device_id: args.device_id,
           resumed_at_ms: plan.willResume ? plan.progress : null,
           was_playing: plan.wasPlaying,
           volume: args.volume,
-        },
-        `Handed off to device ${args.device_id}` +
-          (plan.willResume && plan.progress !== null ? ` at ${formatDuration(plan.progress)}` : '') +
-          (args.volume !== undefined ? ` (volume ${args.volume})` : '') +
-          '.',
+        }, MUTATION_EMIT
       );
     },
   );

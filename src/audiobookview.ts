@@ -26,6 +26,7 @@
  */
 import type { SpotifyAudiobookFull, SpotifyChapterFull, SpotifyChapterSimple } from './types/spotify.js';
 import { publisherAttribution } from './removed.js';
+import { formatDuration } from './result.js';
 
 /** Market restriction note, shared by the tool descriptions and the resources. */
 export const AUDIOBOOK_MARKET_NOTE =
@@ -36,12 +37,6 @@ export const AUDIOBOOK_MARKET_NOTE =
  * chapters; #787 requires the card to say how much of the book that is.
  */
 export const EMBEDDED_CHAPTER_PREVIEW = 10;
-
-export function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
 
 /**
  * The `get_audiobook` card, as lines. Returned as lines rather than one string

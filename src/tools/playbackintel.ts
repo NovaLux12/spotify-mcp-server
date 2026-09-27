@@ -15,19 +15,8 @@ import type { PlaybackState, GetDevicesResponse, SpotifyDevice, SpotifyTrack, Sp
 import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';
+import { textResult, emit, formatDuration } from '../result.js';
 
-type ToolResult = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-function textResult(text: string, structured?: Record<string, unknown>): ToolResult {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-function emit(fmt: string | undefined, echo: Record<string, unknown>, text: string): ToolResult {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
-function formatDuration(ms: number): string {
-  const m = Math.floor(ms / 60000); const s = Math.floor((ms % 60000) / 1000);
-  return `${m}:${String(s).padStart(2, '0')}`;
-}
 function formatItem(it: any): string {
   if (!it) return '—';
   if ('artists' in it) return `"${it.name}" by ${(it.artists??[]).map((a:any)=>a.name).join(', ')}`;
@@ -163,14 +152,14 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const volumeNote = volumeError
         ? ` — volume ${args.volume}% was NOT applied: ${volumeError}`
         : (args.volume !== undefined ? ` @ ${args.volume}%` : '');
-      return emit(args.response_format as string, {
+      return emit(args.response_format as string, `Playing ${label} on "${deviceName}" (${deviceId})${shuffleNote}${volumeNote}.`, {
         ok: shuffleError === undefined && volumeError === undefined,
         resolved_device_id: deviceId,
         device_name: deviceName,
         playBody,
         ...(args.shuffle !== undefined ? { shuffle_state: args.shuffle, shuffle_applied: shuffleError === undefined, ...(shuffleError ? { shuffle_error: shuffleError } : {}) } : {}),
         ...(args.volume !== undefined ? { volume_percent: args.volume, volume_applied: volumeError === undefined, ...(volumeError ? { volume_error: volumeError } : {}) } : {}),
-      }, `Playing ${label} on "${deviceName}" (${deviceId})${shuffleNote}${volumeNote}.`);
+      });
     });
 
   // 273 queue_next — insert-next with honest tail disclosure
@@ -190,7 +179,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       if (args.device_id) params.set('device_id', args.device_id as string);
       await client.post(`/me/player/queue?${params}`);
       const disclosure = 'Note: Spotify queue API is tail-only — item was appended at the tail. For true "play next" semantics, create a temporary playlist with the desired order and start playback from it.';
-      return emit(args.response_format as string, { ok:true, uri, insertion:'tail', workaround:'tail-only API; use temp playlist for true next', disclosure }, `Queued ${uri} at tail. ${disclosure}`);
+      return emit(args.response_format as string, `Queued ${uri} at tail. ${disclosure}`, { ok:true, uri, insertion:'tail', workaround:'tail-only API; use temp playlist for true next', disclosure });
     });
 
   // 274 describe_queue — REMOVED by #847. Its answer is `get_queue` with
@@ -288,7 +277,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const qs = args.device_id ? `?device_id=${encodeURIComponent(args.device_id as string)}` : '';
       if (args.dry_run) return { content:[{type:'text', text: describeDryRun('play_at', (args.context_uri ?? (args.uris as string[])?.[0]) as string, [`Play at ${formatDuration(ms)} (${ms}ms) — body ${JSON.stringify(body)}`])}], structuredContent:{ ok:true, dry_run:true, position_ms: ms, body } };
       await client.put(`/me/player/play${qs}`, body);
-      return emit(args.response_format as string, { ok:true, position_ms: ms, position_formatted: formatDuration(ms), body }, `Playing at ${formatDuration(ms)} (${ms}ms).`);
+      return emit(args.response_format as string, `Playing at ${formatDuration(ms)} (${ms}ms).`, { ok:true, position_ms: ms, position_formatted: formatDuration(ms), body });
     });
 
   // 277 device_health
@@ -335,7 +324,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       const qs = new URLSearchParams({ position_ms: String(target) });
       if (args.device_id) qs.set('device_id', args.device_id as string);
       await client.put(`/me/player/seek?${qs}`);
-      return emit(args.response_format as string, { ok:true, from_ms: progress, delta_ms: args.delta_ms, to_ms: target, to_formatted: formatDuration(target) }, `Seeked ${args.delta_ms>=0?'+':''}${formatDuration(Math.abs(args.delta_ms as number))}: ${formatDuration(progress)} → ${formatDuration(target)}.`);
+      return emit(args.response_format as string, `Seeked ${args.delta_ms>=0?'+':''}${formatDuration(Math.abs(args.delta_ms as number))}: ${formatDuration(progress)} → ${formatDuration(target)}.`, { ok:true, from_ms: progress, delta_ms: args.delta_ms, to_ms: target, to_formatted: formatDuration(target) });
     });
 
   // 279 playback_timeline
@@ -379,7 +368,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
         const shuffleQs = args.device_id ? `?state=${args.shuffle}&device_id=${encodeURIComponent(args.device_id as string)}` : `?state=${args.shuffle}`;
         await client.put(`/me/player/shuffle${shuffleQs}`);
       }
-      return emit(args.response_format as string, { ok:true, repeat: state, shuffle: args.shuffle ?? null }, `Repeat ${state}${args.shuffle!==undefined?` + shuffle ${args.shuffle}`:''}.`);
+      return emit(args.response_format as string, `Repeat ${state}${args.shuffle!==undefined?` + shuffle ${args.shuffle}`:''}.`, { ok:true, repeat: state, shuffle: args.shuffle ?? null });
     });
 
   // 281 now_playing_history
@@ -492,7 +481,7 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
       if (args.device_id) qs.set('device_id', args.device_id as string);
       else if (player?.device?.id) qs.set('device_id', player.device.id);
       await client.put(`/me/player/volume?${qs}`);
-      return emit(args.response_format as string, { ok:true, from: cur, step: args.step, to: target }, `Volume ${cur} → ${target} (step ${args.step>0?'+':''}${args.step}).`);
+      return emit(args.response_format as string, `Volume ${cur} → ${target} (step ${args.step>0?'+':''}${args.step}).`, { ok:true, from: cur, step: args.step, to: target });
     });
 
   // market_availability — per-entity multi-market check

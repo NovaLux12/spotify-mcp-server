@@ -27,14 +27,7 @@ import type {
   SpotifyPaged,
   SpotifyTrack,
 } from '../types/spotify.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
+import { textResult } from '../result.js';
 
 const SOURCE_SCHEMA = z
   .enum(['top_tracks', 'recently_played', 'saved_tracks'])

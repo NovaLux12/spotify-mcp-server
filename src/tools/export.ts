@@ -43,17 +43,7 @@ import type {
   SpotifyTrack,
   SpotifyEpisode,
 } from '../types/spotify.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
-
-/** Raw-JSON rendering for response_format='json' (#51). */
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
+import { textResult, jsonText } from '../result.js';
 
 interface ExportRow {
   uri: string;
