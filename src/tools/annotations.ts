@@ -1346,7 +1346,21 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // (+292 B) and 23283 B -> 23781 B for #1297 (+498 B), and the two overlap
   // on the same three tools rather than adding, so the merged figure is not
   // their sum. MEASURED with `npm run count:tools` on 2026-09-27.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 28623], { readOnlySafe: true }),
+  // #730: `statsfm_recent_streams` gained a `range` parameter — the named
+  // stream-window buckets (`today`/`week`/`month`/`year`/`lifetime`). No tool
+  // was added, so the count is unchanged at 30; the delta is one parameter's
+  // schema and the tool description. The 24631 B is MEASURED on this tree with
+  // `node scripts/surface-census.mjs`, reading `perModule` and
+  // `perModuleSchemaBytes` (24073 B -> 24631 B, +558 B), not taken from a
+  // branch side and not computed by hand. Note the census's `schemaBudgets`
+  // block echoes the manifest baseline rather than the measurement, so it is
+  // not the field to read here.
+  //
+  // The `range` parameter is deliberately NOT shared with the ranking tools'
+  // `statsfmRangeSchema`: this one is resolved locally, while that one is
+  // forwarded verbatim to a stats.fm query parameter that answers
+  // `400 invalid range` for `year` and every other bucket value.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 24631], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.
