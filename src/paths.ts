@@ -373,9 +373,11 @@ function decideInputPath(
   return { path: real, bytes: stats.size, maxBytes };
 }
 
-/** `~` expansion + absolutising, shared so both entry points agree. */
 /**
  * Expand a caller-supplied path against the PROCESS home and cwd.
+ *
+ * `~` expansion and absolutising, shared so both entry points agree on what a
+ * caller-supplied path means.
  *
  * ## Why this `homedir()` is not one of ours (#711)
  *

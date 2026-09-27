@@ -137,7 +137,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 460 |
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 1088 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
-| `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 613 |
+| `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 615 |
 | `src/positionbase.ts` | One vocabulary for playlist position bases (#883). (0 registered tools) | 131 |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 406 |
