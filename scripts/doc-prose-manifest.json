@@ -287,7 +287,7 @@
         "label": "3. Commands"
       },
       {
-        "hash": "b732e60fd0ecdc0a",
+        "hash": "1f0a28a0a144b2d2",
         "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
       },
       {
@@ -475,11 +475,27 @@
         "label": "tsconfig.json includes only src, so npx tsc --noEmit has…"
       },
       {
-        "hash": "9d960a9928182a98",
+        "hash": "bb4537c936f124ef",
         "label": "It is a budget, not a zero gate. The count is large and …"
       },
       {
-        "hash": "68712fb2c507feaa",
+        "hash": "60fa4a9bcbf3a80b",
+        "label": "The baseline is a measurement of this tree, in both dire…"
+      },
+      {
+        "hash": "ac399165f6e6a965",
+        "label": "So: fix errors in the test, then --write. A PR that lowe…"
+      },
+      {
+        "hash": "38d4d452febb5bcc",
+        "label": "15. Narrowing the class of drift that is caught is not t…"
+      },
+      {
+        "hash": "42f952c1bb63ef7b",
+        "label": "--write reclaims; it does not widen. Re-baselining downw…"
+      },
+      {
+        "hash": "fcf32bbe22351d1d",
         "label": "The baseline is a measurement of the tree as rebased ont…"
       },
       {
@@ -487,19 +503,23 @@
         "label": "--baseline <path> and --project <path> point the gate at…"
       },
       {
-        "hash": "2bd95e0fa1b24e53",
-        "label": "Two things make it trustworthy, and both are asserted in…"
+        "hash": "b017ca0baeb2e0eb",
+        "label": "Three things make it trustworthy, and all are asserted i…"
       },
       {
-        "hash": "5d758ad22d015352",
+        "hash": "70212ec4e36c8920",
         "label": "It fails closed. tsc reports a bad path or an unreadable…"
       },
       {
-        "hash": "d460feba5e100e15",
-        "label": "It is proven to fail. Lowering the baseline, introducing…"
+        "hash": "47cf5c58792a00d6",
+        "label": "It is proven to fail in the direction it did not have. T…"
       },
       {
-        "hash": "62dcb79a42472277",
+        "hash": "713bd2f5148f0fd5",
+        "label": "The regression path still works. Lowering the baseline, …"
+      },
+      {
+        "hash": "67b14bb52c6988b0",
         "label": "Do not silence a new error with @ts-nocheck, a blanket a…"
       },
       {
@@ -1941,6 +1961,10 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
+        "hash": "fc4b618d2a1068a2",
+        "label": "maxresults is a DISPLAY cap and never a work cap (#886).…"
+      },
+      {
         "hash": "34c07ec51904b462",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
@@ -2451,6 +2475,30 @@
       {
         "hash": "4a90caf30509314f",
         "label": "Rate limiting still degrades, it does not abort. The fan…"
+      },
+      {
+        "hash": "50aa29e2bca42724",
+        "label": "libraryhygiene shares the walk instead of re-reading it …"
+      },
+      {
+        "hash": "f0c1e29cfc1a2df4",
+        "label": "libraryhygiene is the one tool on the list above whose p…"
+      },
+      {
+        "hash": "d5183e912d070346",
+        "label": "The read is a fallback, not the expectation. An album is…"
+      },
+      {
+        "hash": "0b45350100cd9d6a",
+        "label": "A zero-request run is complete, and says so. albumlookup…"
+      },
+      {
+        "hash": "cd53895b92867cdb",
+        "label": "The dry-run figure is an upper bound, and is labelled on…"
+      },
+      {
+        "hash": "f4454a7eabaceaa1",
+        "label": "Nothing else moved. Per-id shape, PERIDFANOUTWIDTH, the …"
       },
       {
         "hash": "35a0ae57e7d49edf",
@@ -3719,6 +3767,34 @@
       {
         "hash": "ab62052951deebeb",
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
+      },
+      {
+        "hash": "2b7d39b060ce4430",
+        "label": "What an entity-id parameter accepts (#914)"
+      },
+      {
+        "hash": "798f1391f0052e90",
+        "label": "Every entity-id parameter in the tool surface — playlist…"
+      },
+      {
+        "hash": "113c45a252910233",
+        "label": "The normaliser is tolerant, not strict, and the differen…"
+      },
+      {
+        "hash": "3e06dfdbd6af135b",
+        "label": "| | spotifyId(kind) (strict) | spotifyRef(schema, kind) …"
+      },
+      {
+        "hash": "af506a8bca5e6802",
+        "label": "So a malformed id is still Spotify's 404 and not a schem…"
+      },
+      {
+        "hash": "fbe4831b679168bd",
+        "label": "A parameter that is genuinely not a Spotify entity refer…"
+      },
+      {
+        "hash": "f3c22972ce32dd76",
+        "label": "tests/schema.refs.test.ts is the guarantee, in both dire…"
       },
       {
         "hash": "01c495efa531b454",
@@ -5376,6 +5452,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "2bd95e0fa1b24e53",
+      "label": "Two things make it trustworthy, and both are asserted in…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "4cba6f94f8fa9fa3",
       "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
       "date": "2026-09-27",
@@ -5394,6 +5477,27 @@
       "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
       "date": "2026-09-27",
       "reason": "reworded by #1476, and this time verified lossless: the AGENTS.md check:doc-tool-names row now also describes the two value checks that script runs, the SPEC.md response_format bullet corrects 'concile' to the 'concise' a live schema declares, and the Response byte cap paragraph corrects a 620,000B ceiling against a live 611,000. Each was diffed character-by-character against main and differs only by those corrections — the two emitOnce sentences #1472 added are present, which the earlier merge-forward on this same branch dropped. An earlier retirement record for these two SPEC.md paragraphs said 'reworded' when sentences had in fact been deleted; that record was the reason the deletion passed review, and is why this one names the verification."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "5d758ad22d015352",
+      "label": "It fails closed. tsc reports a bad path or an unreadable…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "62dcb79a42472277",
+      "label": "Do not silence a new error with @ts-nocheck, a blanket a…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "68712fb2c507feaa",
+      "label": "The baseline is a measurement of the tree as rebased ont…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
     },
     {
       "file": "AGENTS.md",
@@ -5432,10 +5536,31 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "9d960a9928182a98",
+      "label": "It is a budget, not a zero gate. The count is large and …",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "b732e60fd0ecdc0a",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "bcdcf13ed135d33e",
       "label": "git checkout --ours ARCHITECTURE.md # during a rebase, \"…",
       "date": "2026-09-27",
       "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "d460feba5e100e15",
+      "label": "It is proven to fail. Lowering the baseline, introducing…",
+      "date": "2026-09-27",
+      "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
     },
     {
       "file": "ARCHITECTURE.md",
@@ -5810,9 +5935,9 @@
     }
   ],
   "provenance": {
-    "head": "a5db461b29e539274d5745bad97732870b1cd20d",
-    "base": "b3a21944cbbfcee58a0834437b18f73bba509a19",
-    "upstream": "b3a21944cbbfcee58a0834437b18f73bba509a19",
+    "head": "51ee16d8ab7095f24fb341c92aad20e4d1de606d",
+    "base": "ec1d561a8cdc4751e2f2963c22e43a895fee1005",
+    "upstream": "ec1d561a8cdc4751e2f2963c22e43a895fee1005",
     "behind": false
   }
 }

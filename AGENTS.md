@@ -315,7 +315,7 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 | `npm run count:tools -- --write` | Refreshes the generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument the finalized registry does not have, or states a constraint or a live constant the registry contradicts (#929, #1476). CI runs this. |
-| `npm run check:tests-typecheck` | Typechecks `tests/` and fails only on an INCREASE over `tsconfig.tests-baseline.json`, in total or in any single file (#1408). CI runs this. `--write` refreshes the baseline. |
+| `npm run check:tests-typecheck` | Typechecks `tests/` and compares every file against `tsconfig.tests-baseline.json`, in **both** directions — above it is a regression, below it is stale slack (#1408, #1478). CI runs this. `--write` reclaims a lowered count; raising one takes `--allow-increase "<reason>"`. |
 | `node scripts/check-doc-tool-counts.mjs` | Fails if a registry-scale tool count (100+, measured) appears in a hand-written `src/` comment or in document prose. Has no npm script — `tests/doc-figures.test.ts` drives it, so CI runs it. `--census-file <path>` reuses a census; `--root <dir>` points it at a copy of the tree. |
 | `node scripts/check-release-history.mjs` | Fails if a release tag has no `CHANGELOG.md` section, a section has no tag, or `package.json` is ahead of the changelog. CI runs this, and CI first runs `git fetch --tags` — `actions/checkout` fetches no tags at the default depth, and the gate exits non-zero rather than comparing an empty list. |
 | `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
@@ -603,20 +603,47 @@ does not accept, or references a variable out of scope runs and passes.
 
 It is a **budget, not a zero gate**. The count is large and fixing it is a
 mechanical change across ~100 files, so the gate compares against
-`tsconfig.tests-baseline.json` and fails only on an **increase** — in the total
-or in any single file, so the count cannot be held flat by fixing one file and
-breaking another. A file with no baseline entry is an automatic failure, so a
-new test cannot arrive carrying errors. `--write` refreshes the baseline; the
-diff is the record of what changed.
+`tsconfig.tests-baseline.json` — in the total and in every single file, so the
+count cannot be held flat by fixing one file and breaking another. A file with
+no baseline entry is an automatic failure, so a new test cannot arrive carrying
+errors.
+
+**The baseline is a measurement of this tree, in both directions (#1478).**
+Above it is a regression; below it is slack, and slack fails too. This is the
+half the gate used to be missing, and it is not a cosmetic one: a comparison
+that only fired on an increase meant an allowance outlived the errors it
+allowed, and the slack accumulated silently. On `main` it had reached three
+entries totalling five errors for files that typechecked clean — the exact
+"5 to give back" the gate printed while exiting 0. Nobody could spend those
+five honestly, because `--write` refreshes every entry, so taking them meant
+taking them in files you had not fixed.
+
+So: **fix errors in the test, then `--write`.** A PR that lowers a file's error
+count has to re-baseline, and its own diff is the record of what changed. The
+narrower rule — failing only on entries that have reached *zero* — reclaims
+those five and leaves every partially-improved file's slack in place, so a gate
+built on it still reports a 19-error ceiling as current when the file carries
+15. Narrowing the class of drift that is caught is not the same as closing it.
+
+**`--write` reclaims; it does not widen.** Re-baselining downwards needs no
+ceremony. Raising a ceiling — the total, or any one file's — is refused, because
+AGENTS.md says to fix the errors rather than widen the budget and a `--write`
+that raised one silently would be a one-command escape from the very budget it
+maintains. If the increase is real, it takes `--allow-increase "<reason>"`, and
+the reason, the date and the delta are recorded in the baseline. (Same shape as
+`--prose-sync --retire "<reason>"` in §3: a change nobody named is a change
+nobody reviews, so it has to be a dated, reasoned act rather than a side
+effect.)
 
 The baseline is a measurement of the tree **as rebased onto the current
 `origin/main`**, not of whatever the count was when the gate was written. If
-`main` moves and lands test changes of its own, the gate will report those as
-regressions even though your branch touched none of those files — check
-`git diff --name-only origin/main...HEAD -- tests/` before concluding you
-introduced them, and re-`--write` if the drift is `main`'s. Attribute the delta
-per file before widening anything: a rebase that lands on a newer `main` is
-routinely a net *decrease* against the new base, not an increase.
+`main` moves and lands test changes of its own, the gate will report the drift
+— in whichever direction it fell — even though your branch touched none of
+those files. Check `git diff --name-only origin/main...HEAD -- tests/` before
+concluding you introduced it, and re-`--write` if the drift is `main`'s.
+Attribute the delta per file before doing anything else: a rebase that lands on
+a newer `main` is routinely a net *decrease* against the new base, and a
+decrease now needs the same `--write` an increase does.
 
 `--baseline <path>` and `--project <path>` point the gate at another config and
 another baseline. The guard test needs them: node:test runs sibling `describe`
@@ -625,23 +652,31 @@ checked-in baseline would race the sibling asserting the real tree is accepted,
 and a passing run could leave the real baseline silently rewritten. Scratch
 baselines in `mkdtemp`, never the checked-in file.
 
-Two things make it trustworthy, and both are asserted in
+Three things make it trustworthy, and all are asserted in
 `tests/tests-typecheck-budget-gate.test.ts`:
 
 - **It fails closed.** `tsc` reports a bad path or an unreadable config as a
   run-level error (`TS5058`, `TS2688`) with *no* `file(line,col)` prefix. A
   parser that only matches per-file diagnostics reads that as "zero errors" and
   the gate reports a comfortable pass having measured nothing. Run-level errors
-  are collected separately and exit non-zero.
-- **It is proven to fail.** Lowering the baseline, introducing a real type
-  error, and pointing the gate at an unreadable project each assert a non-zero
-  exit — against the real CLI, not a reimplementation of it.
+  are collected separately and exit non-zero, as does a baseline that will not
+  parse.
+- **It is proven to fail in the direction it did not have.** The stale-entry
+  assertions — a file that is now clean, a file that improved but is not, a
+  ceiling naming a file the tree no longer measures — each drive the real CLI
+  and assert a non-zero exit, with an exact-match baseline asserted green beside
+  them so "exits non-zero" cannot be satisfied by a gate that fails for any
+  reason at all.
+- **The regression path still works.** Lowering the baseline, a real type
+  error, and an unreadable project each still assert a non-zero exit — against
+  the real CLI, not a reimplementation of it. Widening the rule must not have
+  cost the gate the direction it already had.
 
 Do not silence a new error with `@ts-nocheck`, a blanket `any`, or by widening
 the baseline. The remaining errors are mostly `FakeClient`-shaped test doubles
 drifting from `SpotifyClient`, and they are worth fixing at the source
 signature. When the count reaches 0, this budget is replaced by `tests/**/*`
-joining the main typecheck. Related: #585.
+joining the main typecheck. Related: #585, #1478.
 
 ### The doc-name gate
 
