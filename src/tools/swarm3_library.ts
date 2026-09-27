@@ -34,6 +34,9 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  asRecord,
+  readNumber,
+  readString,
   DryRunScan as ShapedDryRunScan,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
@@ -105,13 +108,14 @@ interface AlbumRef {
 interface TrackRow {
   id: string | null;
   name: string;
-  uri: string;
-  duration_ms: number;
+  /** null when the payload carried no readable URI — never an empty one (#1202). */
+  uri: string | null;
+  duration_ms: number | null;
   explicit: boolean;
   is_local: boolean;
   is_playable: boolean | null;
   restriction_reason: string | null;
-  added_at: string;
+  added_at: string | null;
   artists: ArtistRef[];
   album: AlbumRef;
 }
@@ -119,12 +123,13 @@ interface TrackRow {
 interface AlbumRow {
   id: string | null;
   name: string;
-  uri: string;
+  /** null when the payload carried no readable URI — never an empty one (#1202). */
+  uri: string | null;
   album_type: string;
   release_date: string | null;
-  total_tracks: number;
+  total_tracks: number | null;
   label: string | null;
-  added_at: string;
+  added_at: string | null;
   artists: ArtistRef[];
 }
 
@@ -132,53 +137,71 @@ interface RecentlyPlayedShell {
   items?: Array<{ track?: { id?: string } | null } | null>;
 }
 
-function artistRefs(raw: unknown): ArtistRef[] {
-  const arr = (raw as { artists?: unknown })?.artists;
+/**
+ * `{ id, name }` off whatever `artists` array a payload carries, read through
+ * the boundary helpers (#1202). An artist with no readable name is listed with
+ * `'(unknown)'` — which reads as the placeholder it is, unlike a fabricated id
+ * or URI, and a row whose `artists` is not an array yields no artists at all
+ * rather than one invented from the object.
+ */
+function artistRefs(source: unknown): ArtistRef[] {
+  const arr = asRecord(source)?.artists;
   if (!Array.isArray(arr)) return [];
   const out: ArtistRef[] = [];
   for (const a of arr) {
-    const one = a as { id?: string; name?: string };
-    out.push({ id: typeof one?.id === 'string' ? one.id : null, name: typeof one?.name === 'string' ? one.name : '(unknown)' });
+    out.push({ id: readString(a, 'id') ?? null, name: readString(a, 'name') ?? '(unknown)' });
   }
   return out;
 }
 
+/**
+ * A saved track, read field by field (#1202).
+ *
+ * Two things changed and both were lies the cast was carrying. The row arrived
+ * as `(item?.track ?? {}) as unknown as Record<string, unknown>`: the `?? {}`
+ * invented a track for a row Spotify returned without one, and the cast then
+ * declared the invented object to be whatever the reader wanted. And an
+ * unreadable `uri` became `''` — a URI no request ever returned, published
+ * straight into `structuredContent`, where a host that tries to act on it gets
+ * a Spotify 404 and no explanation. An absent field is now `null`, which the
+ * prose says out loud and a host can filter on.
+ */
 function toTrackRow(item: SavedTrackItem): TrackRow {
-  const t = (item?.track ?? {}) as unknown as Record<string, unknown>;
-  const album = (t.album ?? {}) as Record<string, unknown>;
-  const restrictions = t.restrictions as { reason?: string } | undefined;
+  const t = asRecord(item?.track) ?? {};
+  const album = asRecord(t.album) ?? {};
   return {
-    id: typeof t.id === 'string' ? t.id : null,
-    name: typeof t.name === 'string' ? t.name : '(unknown)',
-    uri: typeof t.uri === 'string' ? t.uri : '',
-    duration_ms: typeof t.duration_ms === 'number' ? t.duration_ms : 0,
+    id: readString(t, 'id') ?? null,
+    name: readString(t, 'name') ?? '(unknown)',
+    uri: readString(t, 'uri') ?? null,
+    duration_ms: readNumber(t, 'duration_ms') ?? null,
     explicit: t.explicit === true,
     is_local: t.is_local === true,
     is_playable: typeof t.is_playable === 'boolean' ? t.is_playable : null,
-    restriction_reason: restrictions?.reason ?? null,
-    added_at: typeof item?.added_at === 'string' ? item.added_at : '',
+    restriction_reason: readString(t, 'restrictions.reason') ?? null,
+    added_at: readString(item, 'added_at') ?? null,
     artists: artistRefs(t),
     album: {
-      id: typeof album.id === 'string' ? album.id : null,
-      name: typeof album.name === 'string' ? album.name : '(unknown)',
-      release_date: typeof album.release_date === 'string' ? album.release_date : null,
-      album_type: typeof album.album_type === 'string' ? album.album_type : null,
-      label: typeof album.label === 'string' ? album.label : null,
+      id: readString(album, 'id') ?? null,
+      name: readString(album, 'name') ?? '(unknown)',
+      release_date: readString(album, 'release_date') ?? null,
+      album_type: readString(album, 'album_type') ?? null,
+      label: readString(album, 'label') ?? null,
     },
   };
 }
 
+/** A saved album, read the same way as `toTrackRow` — including the honest `uri`. */
 function toAlbumRow(item: SavedAlbumItem): AlbumRow {
-  const a = (item?.album ?? {}) as unknown as Record<string, unknown>;
+  const a = asRecord(item?.album) ?? {};
   return {
-    id: typeof a.id === 'string' ? a.id : null,
-    name: typeof a.name === 'string' ? a.name : '(unknown)',
-    uri: typeof a.uri === 'string' ? a.uri : '',
-    album_type: typeof a.album_type === 'string' ? a.album_type : '(unknown)',
-    release_date: typeof a.release_date === 'string' ? a.release_date : null,
-    total_tracks: typeof a.total_tracks === 'number' ? a.total_tracks : 0,
-    label: typeof a.label === 'string' ? a.label : null,
-    added_at: typeof item?.added_at === 'string' ? item.added_at : '',
+    id: readString(a, 'id') ?? null,
+    name: readString(a, 'name') ?? '(unknown)',
+    uri: readString(a, 'uri') ?? null,
+    album_type: readString(a, 'album_type') ?? '(unknown)',
+    release_date: readString(a, 'release_date') ?? null,
+    total_tracks: readNumber(a, 'total_tracks') ?? null,
+    label: readString(a, 'label') ?? null,
+    added_at: readString(item, 'added_at') ?? null,
     artists: artistRefs(a),
   };
 }
@@ -240,7 +263,7 @@ function decadeOf(date: string | null): string | null {
   return `${Math.floor(y / 10) * 10}s`;
 }
 
-function monthKeyOf(addedAt: string): string | null {
+function monthKeyOf(addedAt: string | null): string | null {
   if (!addedAt) return null;
   const m = /^(\d{4})-(\d{2})/.exec(addedAt);
   return m ? `${m[1]}-${m[2]}` : null;
@@ -642,7 +665,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         else buckets[6][1]++;
         const y = new Date(t).getUTCFullYear();
         perYear.set(String(y), (perYear.get(String(y)) ?? 0) + 1);
-        if (!oldest || t < Date.parse(oldest.added_at)) oldest = { added_at: tr.added_at, name: tr.name };
+        if (tr.added_at !== null && (!oldest || t < Date.parse(oldest.added_at))) oldest = { added_at: tr.added_at, name: tr.name };
       }
       const yearEntries = [...perYear.entries()].sort((a, b) => a[0].localeCompare(b[0]));
       const lines = [
@@ -679,8 +702,11 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const now = new Date();
       const mmdd = `${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
+      // A row with no readable `added_at` cannot be on this day, and must not be
+      // sorted into the list on an empty string — `''` is before every real date
+      // (#803's shape), so the filter is on the readable value, not on a default.
       const hits = tracks
-        .filter((tr) => tr.added_at.slice(5, 10) === mmdd)
+        .filter((tr): tr is TrackRow & { added_at: string } => tr.added_at?.slice(5, 10) === mmdd)
         .sort((a, b) => a.added_at.localeCompare(b.added_at));
       const byYear = tally(hits, (tr) => tr.added_at.slice(0, 4));
       const t = truncateItems(hits, maxResults);
@@ -757,7 +783,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
-      interface Version { album: string; album_id: string | null; added_at: string; uri: string }
+      interface Version { album: string; album_id: string | null; added_at: string | null; uri: string | null }
       const groups = new Map<string, { name: string; artist: string; versions: Version[]; albumIds: Set<string> }>();
       for (const tr of tracks) {
         if (tr.is_local) continue;
@@ -776,7 +802,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         `Duplicate saved versions: ${dupes.length} song(s) saved from 2+ distinct albums (${tracks.length} saved track(s) walked).`,
         ...t.items.flatMap((g) => [
           `  • "${g.name}" — ${g.artist} (${g.versions.length} versions):`,
-          ...g.versions.map((v) => `      - ${v.album} [added ${v.added_at.slice(0, 10)}] ${v.uri}`),
+          ...g.versions.map((v) => `      - ${v.album} [added ${v.added_at?.slice(0, 10) ?? '(unknown)'}] ${v.uri ?? '(no uri read)'}`),
         ]),
         ...(t.footer ? [`(${t.footer})`] : []),
         ...(dupes.length === 0 ? ['No duplicate saved versions found — clean.'] : []),
@@ -824,7 +850,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         `Album edition lint: ${lints.length} record(s) saved across multiple editions (${albums.length} saved album(s) walked).`,
         ...t.items.flatMap((g) => [
           `  • "${g.canonical}" — ${g.artist} (${g.editions.length} editions):`,
-          ...g.editions.map((e) => `      - ${e.name} [${e.album_type}, ${e.release_date ?? '?'}] ${e.uri}`),
+          ...g.editions.map((e) => `      - ${e.name} [${e.album_type}, ${e.release_date ?? '?'}] ${e.uri ?? '(no uri read)'}`),
         ]),
         ...(t.footer ? [`(${t.footer})`] : []),
         ...(lints.length === 0 ? ['No cross-edition duplicates found — clean.'] : []),
@@ -881,7 +907,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const lines = [
         `Saved tracks not in the recently-played window (${playedIds.size} distinct recently-played id(s), window ≈ last 50 plays): ${t.total} of ${tracks.length}.`,
         'Caveat: recently-played only reaches back a short play window — absence here means "not played recently", NOT "never played since you saved it".',
-        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} [saved ${tr.added_at.slice(0, 10)}]`),
+        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} [saved ${tr.added_at?.slice(0, 10) ?? '(unknown)'}]`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
       const payload: Record<string, unknown> = {
@@ -1182,9 +1208,14 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
       const runtime = new Map<string, { ms: number; tracks: number }>();
       let noDate = { ms: 0, tracks: 0 };
+      // A track whose `duration_ms` could not be read contributes NO runtime.
+      // Summing it as 0 — which is what `?? 0` did here — is a total that reads
+      // as measured and is not, and it is the #803 shape one aggregate over:
+      // a number nobody read, published as if it were (#1202).
+      let unmeasured = 0;
       for (const tr of tracks) {
-        const d = decadeOf(tr.album.release_date);
-        const slot = d ?? null;
+        if (tr.duration_ms === null) { unmeasured++; continue; }
+        const slot = decadeOf(tr.album.release_date) ?? null;
         if (slot === null) { noDate.ms += tr.duration_ms; noDate.tracks++; continue; }
         const cur = runtime.get(slot) ?? { ms: 0, tracks: 0 };
         cur.ms += tr.duration_ms;
@@ -1197,6 +1228,9 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const totalMs = entries.reduce((a, e) => a + e.ms, 0) + noDate.ms;
       const lines = [
         `Saved runtime by release era: ${msToClock(totalMs)} total across ${tracks.length} track(s).`,
+        ...(unmeasured > 0
+          ? [`(${unmeasured} saved track(s) carried no readable duration_ms and are excluded from this total — it is not the runtime of all ${tracks.length} row(s).)`]
+          : []),
         ...entries.map((e) => `  ${e.decade.padEnd(8)} ${msToClock(e.ms).padStart(10)}  (${e.tracks} track(s), avg ${msToClock(e.tracks === 0 ? 0 : e.ms / e.tracks)})`),
         ...(noDate.tracks > 0 ? [`  (unknown) ${msToClock(noDate.ms).padStart(10)}  (${noDate.tracks} track(s), no release_date)`] : []),
       ];
@@ -1204,6 +1238,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         total_runtime_ms: totalMs,
         eras: entries.map((e) => ({ decade: e.decade, runtime_ms: e.ms, tracks: e.tracks })),
         unknown_era: noDate,
+        tracks_without_readable_duration: unmeasured,
         scan_cap: walkCap(scan_cap),
       };
       return shapeResult(rf, lines.join('\n'), payload);
@@ -1223,10 +1258,18 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
-      const sorted = [...tracks].sort((a, b) => b.duration_ms - a.duration_ms);
+      // Ranking a track whose `duration_ms` was never read is a comparison
+      // against nothing, and `?? 0` made those rows rank as if they were real
+      // zero-length tracks. They are excluded and counted instead (#1202).
+      const ranked = tracks.filter((tr): tr is TrackRow & { duration_ms: number } => tr.duration_ms !== null);
+      const unranked = tracks.length - ranked.length;
+      const sorted = [...ranked].sort((a, b) => b.duration_ms - a.duration_ms);
       const t = truncateItems(sorted, maxResults);
       const lines = [
         `Longest saved tracks (of ${tracks.length}):`,
+        ...(unranked > 0
+          ? [`(${unranked} saved track(s) carried no readable duration_ms and are excluded from this ranking.)`]
+          : []),
         ...t.items.map((tr, i) => `  ${String(i + 1).padStart(2)}. ${msToClock(tr.duration_ms)}  ${tr.name} — ${artistNames(tr)} [${tr.album.name}]`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
@@ -1236,6 +1279,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
           paginationInfo({ total: t.total, returned: t.returned }),
         ),
         truncated: t.truncated,
+        tracks_without_readable_duration: unranked,
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },
@@ -1254,10 +1298,18 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const rf = response_format;
       const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
-      const sorted = [...tracks].sort((a, b) => a.duration_ms - b.duration_ms);
+      // Ranking a track whose `duration_ms` was never read is a comparison
+      // against nothing, and `?? 0` made those rows rank as if they were real
+      // zero-length tracks. They are excluded and counted instead (#1202).
+      const ranked = tracks.filter((tr): tr is TrackRow & { duration_ms: number } => tr.duration_ms !== null);
+      const unranked = tracks.length - ranked.length;
+      const sorted = [...ranked].sort((a, b) => a.duration_ms - b.duration_ms);
       const t = truncateItems(sorted, maxResults);
       const lines = [
         `Shortest saved tracks (of ${tracks.length}):`,
+        ...(unranked > 0
+          ? [`(${unranked} saved track(s) carried no readable duration_ms and are excluded from this ranking.)`]
+          : []),
         ...t.items.map((tr, i) => `  ${String(i + 1).padStart(2)}. ${msToClock(tr.duration_ms)}  ${tr.name} — ${artistNames(tr)} [${tr.album.name}]`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
@@ -1267,6 +1319,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
           paginationInfo({ total: t.total, returned: t.returned }),
         ),
         truncated: t.truncated,
+        tracks_without_readable_duration: unranked,
       };
       return shapeResult(rf, lines.join('\n'), payload);
     },
@@ -1470,7 +1523,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const lines = [
         `Local-file census: ${locals.length}/${tracks.length} saved track(s) flagged is_local.`,
         ...(locals.length > 0 ? ['Note: local files are device-bound and usually unplayable elsewhere.'] : []),
-        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} ${tr.uri}`),
+        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} ${tr.uri ?? '(no uri read)'}`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ];
       const payload: Record<string, unknown> = {
@@ -1505,7 +1558,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const lines = [
         `Unplayable saved tracks: ${unplayable.length}/${tracks.length}.`,
         ...sortedTally(byReason).map(([reason, n]) => `  • ${reason}: ${n}`),
-        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} [${tr.restriction_reason ?? 'is_playable=false'}] ${tr.uri}`),
+        ...t.items.map((tr) => `  • ${tr.name} — ${artistNames(tr)} [${tr.restriction_reason ?? 'is_playable=false'}] ${tr.uri ?? '(no uri read)'}`),
         ...(t.footer ? [`(${t.footer})`] : []),
         ...(unplayable.length === 0 ? ['No unplayable saved tracks detected in the walked window.'] : []),
       ];
@@ -1551,7 +1604,12 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         loadSavedAlbums(client, cap),
       ]);
 
-      const totalMs = tracks.reduce((a, tr) => a + tr.duration_ms, 0);
+      // Only rows whose `duration_ms` was actually read contribute runtime,
+      // era totals, and the longest/shortest rows. Counting an unreadable one
+      // as 0 would make every one of these figures read as measured (#1202).
+      const measured = tracks.filter((tr): tr is TrackRow & { duration_ms: number } => tr.duration_ms !== null);
+      const unmeasured = tracks.length - measured.length;
+      const totalMs = measured.reduce((a, tr) => a + tr.duration_ms, 0);
       const explicitTracks = tracks.filter((tr) => tr.explicit);
       const locals = tracks.filter((tr) => tr.is_local);
       const unplayable = tracks.filter((tr) => tr.is_playable === false || tr.restriction_reason !== null);
@@ -1565,7 +1623,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const busiest = [...perMonth.entries()].sort((a, b) => b[1] - a[1])[0] ?? null;
 
       const eraRuntime = new Map<string, number>();
-      for (const tr of tracks) {
+      for (const tr of measured) {
         const d = decadeOf(tr.album.release_date);
         if (d) eraRuntime.set(d, (eraRuntime.get(d) ?? 0) + tr.duration_ms);
       }
@@ -1593,12 +1651,12 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       const editionLintGroups = [...editionGroups.values()].filter((s) => s.size >= 2).length;
 
       const lens = tracks.map((tr) => tr.name.length);
-      const longestTrack = [...tracks].sort((a, b) => b.duration_ms - a.duration_ms)[0] ?? null;
-      const shortestTrack = [...tracks].sort((a, b) => a.duration_ms - b.duration_ms)[0] ?? null;
+      const longestTrack = [...measured].sort((a, b) => b.duration_ms - a.duration_ms)[0] ?? null;
+      const shortestTrack = [...measured].sort((a, b) => a.duration_ms - b.duration_ms)[0] ?? null;
 
       const lines = [
         `LIBRARY VALUE SUMMARY — ${tracks.length} saved track(s) across ${albums.length} saved album(s) (scan_cap=${cap}).`,
-        `Total runtime: ${msToClock(totalMs)}; mean title length ${lens.length === 0 ? 0 : (lens.reduce((a, b) => a + b, 0) / lens.length).toFixed(1)} chars.`,
+        `Total runtime: ${msToClock(totalMs)} across ${measured.length} of ${tracks.length} saved track(s) with a readable duration_ms; mean title length ${lens.length === 0 ? 0 : (lens.reduce((a, b) => a + b, 0) / lens.length).toFixed(1)} chars.`,
         `Content flags: explicit ${(explicitTracks.length / Math.max(1, tracks.length) * 100).toFixed(1)}% (${explicitTracks.length}), local files ${locals.length}, unplayable ${unplayable.length}.`,
         `Collabs: ${(collabs.length / Math.max(1, tracks.length) * 100).toFixed(1)}% multi-artist; featuring-in-title ${(feats.length / Math.max(1, tracks.length) * 100).toFixed(1)}%.`,
         `Top artists: ${topArtists.map(([a, n]) => `${a} (${n})`).join(', ') || '—'}.`,
@@ -1616,6 +1674,9 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
         total_saved_tracks: tracks.length,
         total_saved_albums: albums.length,
         total_runtime_ms: totalMs,
+        // How many walked rows the runtime above did NOT cover, so a reader can
+        // tell a measured total from a partial one (#1202).
+        tracks_without_readable_duration: unmeasured,
         explicit: { count: explicitTracks.length, ratio: tracks.length === 0 ? 0 : explicitTracks.length / tracks.length },
         local_files: locals.length,
         unplayable: unplayable.length,

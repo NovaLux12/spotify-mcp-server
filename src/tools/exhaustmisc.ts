@@ -24,6 +24,9 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  playlistRowItem,
+  playlistRowUris,
+  playlistItemTrackUris,
   describeDryRun,
   batchSummary,
   withPlaylistInputMetadata,
@@ -65,6 +68,23 @@ function playlistItemKind(item: Record<string, unknown>): Exclude<PlaylistItemKi
   if (item.show !== undefined) return 'episode';
   if (Array.isArray(item.artists) || item.album !== undefined) return 'track';
   return null;
+}
+
+/** Names on an item's `artists`; a row whose artist carries no name yields none. */
+function itemArtistNames(item: Record<string, unknown> | null): string[] {
+  if (item === null || !Array.isArray(item.artists)) return [];
+  const names: string[] = [];
+  for (const artist of item.artists) {
+    const name = readString(artist, 'name');
+    if (name !== undefined) names.push(name);
+  }
+  return names;
+}
+
+/** `album.name` for a track row, `show.name` for an episode row; neither is undefined-shaped. */
+function itemParentName(item: Record<string, unknown> | null): string | undefined {
+  if (item === null) return undefined;
+  return readString(item.album, 'name') ?? readString(item.show, 'name');
 }
 
 // ---------------------------------------------------------------------------
@@ -110,8 +130,15 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       // Rows that identify as neither shape, counted rather than assigned.
       let unclassified = 0;
       const matched = all.filter((row) => {
-        const item = row.item as unknown as Record<string, unknown> | null;
-        if (!item) return false;
+        const item = playlistRowItem(row);
+        if (item === null) {
+          // A row that CARRIES something which is not an object — a bare URI
+          // string, a number, an array — identifies nothing. The cast used to
+          // call it a record, read `undefined` off every field of it, and drop
+          // it with nothing counted. It is counted here instead (#1202).
+          if (row.item !== undefined && row.item !== null) unclassified += 1;
+          return false;
+        }
         if (kind !== 'any') {
           const rowKind = playlistItemKind(item);
           if (rowKind === null) {
@@ -120,14 +147,11 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
           }
           if (rowKind !== kind) return false;
         }
-        const name = typeof item.name === 'string' ? item.name.toLowerCase() : '';
+        const name = readString(item, 'name')?.toLowerCase() ?? '';
         if (name.includes(q)) return true;
-        const artists = (item as { artists?: Array<{ name: string }> }).artists;
-        if (Array.isArray(artists) && artists.some((a) => a.name.toLowerCase().includes(q))) return true;
-        const album = (item as { album?: { name: string } }).album;
-        if (album && typeof album.name === 'string' && album.name.toLowerCase().includes(q)) return true;
-        const show = (item as { show?: { name: string } }).show;
-        if (show && typeof show.name === 'string' && show.name.toLowerCase().includes(q)) return true;
+        if (itemArtistNames(item).some((a) => a.toLowerCase().includes(q))) return true;
+        const parent = itemParentName(item)?.toLowerCase();
+        if (parent !== undefined && parent.includes(q)) return true;
         return false;
       });
       const t = truncateItems(matched, cap(args));
@@ -138,17 +162,16 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       ];
       for (let i = 0; i < t.items.length; i++) {
         const row = t.items[i];
-        const item = row.item as unknown as Record<string, unknown> | null;
-        const name = item && typeof item.name === 'string' ? (item.name as string) : 'unknown';
-        const uri = item && typeof item.uri === 'string' ? (item.uri as string) : '';
+        const item = playlistRowItem(row);
+        const name = readString(item, 'name') ?? 'unknown';
+        const uri = readString(item, 'uri') ?? '(no uri read)';
         // The kind is spelled out per row because a mixed playlist is exactly
         // the case where "which of these are episodes" is the question.
         const rowKind = item ? (playlistItemKind(item) ?? 'unknown') : 'unavailable';
-        const artists = item ? (item as { artists?: Array<{ name: string }> }).artists : undefined;
-        const show = item ? (item as { show?: { name: string } }).show : undefined;
-        const by = Array.isArray(artists) && artists.length > 0
-          ? artists.map((a) => a.name).join(', ')
-          : (show && typeof show.name === 'string' ? show.name : '');
+        const artistNames = itemArtistNames(item);
+        const by = artistNames.length > 0
+          ? artistNames.join(', ')
+          : (readString(item, 'show.name') ?? '');
         lines.push(`  ${i + 1}. [${rowKind}] ${name}${by ? ` — ${by}` : ''} — ${uri}`);
       }
       if (t.footer) lines.push(`(${t.footer})`);
@@ -156,7 +179,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       if (unclassified > 0) {
         lines.push(`(${unclassified} item(s) matched neither shape and were excluded; they are counted as items_of_unknown_kind.)`);
       }
-      const structured: Record<string, unknown> = listStructuredContent(t.items as unknown as Record<string, unknown>[], pagination, {
+      const structured: Record<string, unknown> = listStructuredContent(t.items, pagination, {
         playlist_id: playlistRef,
         query: args.query,
         kind,
@@ -311,9 +334,8 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '50' });
           for (const row of items) {
-            const track = row.item as unknown as Record<string, unknown> | null;
-            const uri = track && typeof track.uri === 'string' ? (track.uri as string) : null;
-            if (uri) playlistUris.add(uri);
+            const uri = readString(playlistRowItem(row), 'uri');
+            if (uri !== undefined) playlistUris.add(uri);
           }
         } catch {
           failedPlaylistWalks.push(pl.id);
@@ -370,10 +392,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const dryRun = args.dry_run ?? true;
       const dedupe = args.dedupe ?? true;
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '50' });
-      const trackUris = items
-        .map((row) => (row.item as unknown as Record<string, unknown> | null))
-        .filter((t): t is Record<string, unknown> => t !== null && typeof t.uri === 'string' && (t.uri as string).startsWith('spotify:track:'))
-        .map((t) => t.uri as string);
+      const trackUris = playlistItemTrackUris(items);
       const ids = trackUris.map((u) => u.split(':').pop()!);
       let toSave = ids;
       let skipped = 0;
@@ -469,7 +488,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         followerReported++;
       }
       const structured: Record<string, unknown> = listStructuredContent(
-        t.items as unknown as Record<string, unknown>[],
+        t.items,
         pagination,
         {
           total_playlists: all.length,
@@ -562,10 +581,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const meta = await client.get<{ name: string; id: string }>(`/playlists/${encId}`);
       const namePrefix = args.name_prefix ?? meta?.name ?? args.playlist_id;
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '50' });
-      const uris = items
-        .map((row) => (row.item as unknown as Record<string, unknown> | null))
-        .filter((t): t is Record<string, unknown> => t !== null && typeof t.uri === 'string')
-        .map((t) => t.uri as string);
+      const uris = playlistRowUris(items);
       const chunkSize = Math.ceil(uris.length / args.parts);
       const chunks: string[][] = [];
       for (let i = 0; i < args.parts; i++) chunks.push(uris.slice(i * chunkSize, (i + 1) * chunkSize));
@@ -633,12 +649,13 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pid)}/items`, { limit: '50' });
           for (const row of items) {
-            const track = row.item as unknown as Record<string, unknown> | null;
-            const uri = track && typeof track.uri === 'string' ? (track.uri as string) : null;
-            if (!uri) continue;
+            const track = playlistRowItem(row);
+            const uri = readString(track, 'uri');
+            if (uri === undefined) continue;
             if (!uriToPlaylists.has(uri)) uriToPlaylists.set(uri, new Set());
             uriToPlaylists.get(uri)!.add(pid);
-            if (!uriToName.has(uri) && track !== null && typeof (track as Record<string, unknown>).name === 'string') uriToName.set(uri, (track as Record<string, unknown>).name as string);
+            const name = readString(track, 'name');
+            if (!uriToName.has(uri) && name !== undefined) uriToName.set(uri, name);
           }
         } catch { /* skip inaccessible */ }
       }
@@ -649,7 +666,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const t = truncateItems(dupes, cap(args));
       const pagination = paginationInfo({ total: dupes.length, returned: t.items.length });
       const structured = withPlaylistInputMetadata(listStructuredContent(
-        t.items as unknown as Record<string, unknown>[],
+        t.items,
         pagination,
         { playlist_ids: input.values, duplicate_count: dupes.length },
       ), input);
@@ -674,10 +691,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       const rf = args.response_format as ResponseFormatValue | undefined;
       const dryRun = args.dry_run ?? true;
       const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(args.playlist_id)}/items`, { limit: '50' });
-      const trackUris = items
-        .map((row) => (row.item as unknown as Record<string, unknown> | null))
-        .filter((t): t is Record<string, unknown> => t !== null && typeof t.uri === 'string' && (t.uri as string).startsWith('spotify:track:'))
-        .map((t) => t.uri as string);
+      const trackUris = playlistItemTrackUris(items);
       const ids = trackUris.map((u) => u.split(':').pop()!);
       // Check which are actually saved — via /me/library/contains, the ungated
       // unified drop-in for the documented /me/tracks/contains, which 403s on

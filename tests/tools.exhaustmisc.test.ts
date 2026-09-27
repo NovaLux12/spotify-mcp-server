@@ -88,6 +88,50 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.ok(names.includes('remove_from_library_by_playlist'));
   });
 
+  // #1202: `row.item` was read through
+  // `row.item as unknown as Record<string, unknown> | null`. A row whose `item`
+  // is a bare URI string is a real thing the wire can carry, and the cast
+  // declared it to be a record — from which `item.name` and `item.artists` read
+  // as `undefined` with nothing objecting. `asRecord` refuses it, so the row
+  // takes the path the payload supports.
+  it('search_within_playlist refuses a row whose item is a bare string, and counts it', async () => {
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const rows = [
+      { added_at: '2024-01-01', item: 'spotify:track:legacy1' },
+      { added_at: '2024-01-02', item: { uri: 'spotify:track:2', name: 'Hello', artists: [{ name: 'Adele' }], album: { name: '25' } } },
+    ];
+    registerExhaustMiscTools(server, makeClient({
+      getAllPagesWithTruncation: mock.fn(async () => ({
+        items: rows, truncated: false, truncatedByCap: false, reportedTotal: rows.length,
+      })),
+    }));
+    const res = await handler()({ playlist_id: 'pl1', query: 'hello', response_format: 'concise', kind: 'any', max_results: 50 });
+    const payload = res.structuredContent as { matched: number; scanned_items: number; items_of_unknown_kind?: number };
+    assert.equal(payload.scanned_items, 2, 'the string row was scanned');
+    assert.equal(payload.matched, 1, 'a bare string is not a searchable track object');
+    assert.equal(payload.items_of_unknown_kind, 1, 'and it is counted, not silently dropped');
+  });
+
+  // The old read was `(item as { artists?: Array<{ name: string }> }).artists`
+  // then `a.name.toLowerCase()` — a TypeError the moment an artist carried no
+  // name, so a malformed row crashed the whole search rather than matching
+  // less. The query here deliberately misses the item NAME, so the artist read
+  // is actually reached.
+  it('search_within_playlist survives an artist entry with no name', async () => {
+    const { server, handler } = serverCapturing('search_within_playlist');
+    const rows = [
+      { added_at: '2024-01-01', item: { uri: 'spotify:track:1', name: 'Nameless Artist', artists: [{ id: 'ar-1' }], album: { name: '25' } } },
+      { added_at: '2024-01-02', item: { uri: 'spotify:track:2', name: 'Also Nothing', artists: [{ name: 'Adele' }], album: { name: '25' } } },
+    ];
+    registerExhaustMiscTools(server, makeClient({
+      getAllPagesWithTruncation: mock.fn(async () => ({
+        items: rows, truncated: false, truncatedByCap: false, reportedTotal: rows.length,
+      })),
+    }));
+    const res = await handler()({ playlist_id: 'pl1', query: 'adele', response_format: 'concise', kind: 'any', max_results: 50 });
+    assert.equal((res.structuredContent as { matched: number }).matched, 1, 'the nameless-artist row matches nothing and does not throw');
+  });
+
   it('search_within_playlist filters by query', async () => {
     const { server, handler } = serverCapturing('search_within_playlist');
     const client = makeClient({

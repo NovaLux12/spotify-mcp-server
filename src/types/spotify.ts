@@ -295,8 +295,23 @@ export interface SpotifyItemsPage<T> {
 }
 
 // Recently played item
+/**
+ * `track` is `SpotifyTrackWithReleaseDate`, not `SpotifyTrack` (#1202).
+ *
+ * A `/me/player/recently-played` row carries a FULL track object, and a full
+ * track object's album is wider than `SpotifyAlbumSimple` claims — it has
+ * `release_date`. Two readers needed that date (`analytics.ts` and
+ * `swarm3_analytics.ts`, which bucket listening history by decade) and each
+ * had to reach it through `r.track as unknown as SpotifyTrackWithReleaseDate`.
+ *
+ * That cast is the `AGENTS.md` §6 failure in its purest form: the compiler was
+ * told a shape it never saw, so a field Spotify stops sending would arrive as
+ * `undefined` with nothing objecting. The widen belongs on the type the row
+ * actually has, in the one file that owns the shared shapes — not on a
+ * boundary that then has to assert the gap shut again.
+ */
 export interface RecentlyPlayedItem {
-  track: SpotifyTrack;
+  track: SpotifyTrackWithReleaseDate;
   played_at: string; // ISO 8601
   context: { type: string; uri: string } | null;
 }
@@ -394,10 +409,18 @@ export interface UserProfile {
 // Playlist item (from GET /playlists/{id}/items)
 // One row of GET /playlists/{id}/items. Feb 2026 renamed the nested playable
 // from `track` to `item` (rows for episodes use episode objects here too).
-export interface PlaylistItemObject {
+//
+// A `type` and not an `interface` (#1202), deliberately. `listStructuredContent`
+// takes `Record<string, unknown>[]`, and an interface has no implicit index
+// signature — so every caller passing `PlaylistItemObject[]` straight through
+// had to `as unknown as Record<string, unknown>[]` to get there. A `type` alias
+// of an object literal type IS assignable to `Record<string, unknown>`, which
+// closes the gap without a cast standing where the check was. `structuredContent`
+// in src/shaping.ts documents the same rule for the single-object side.
+export type PlaylistItemObject = {
   added_at: string;
   item?: SpotifyTrack | SpotifyEpisode | null;
-}
+};
 
 // Playlist items page (GET /playlists/{id}/items) — structurally identical to
 // SpotifyPaged<PlaylistItemObject>, so it is an alias and not a third copy of

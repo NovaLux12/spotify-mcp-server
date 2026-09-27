@@ -245,7 +245,7 @@ function playCounts(items: RecentlyPlayedItem[]): {
   const byTrack = new Map<string, { name: string; artists: string; plays: number; last: string }>();
   const byArtist = new Map<string, { name: string; plays: number; tracks: Set<string>; first: string; last: string }>();
   for (const r of items) {
-    const t = r.track as unknown as SpotifyTrackWithReleaseDate;
+    const t = r.track;
     const tr = byTrack.get(t.id) ?? { name: t.name, artists: trackArtists(t), plays: 0, last: r.played_at };
     tr.plays += 1;
     if (r.played_at > tr.last) tr.last = r.played_at;
@@ -1283,7 +1283,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       ]);
       if (walk.items.length === 0 && top.length === 0) return empty(rf, 'No listening data available.');
       const recentEras: Record<string, number> = {};
-      for (const r of walk.items) bump(recentEras, swarm3DecadeOf((r.track as unknown as SpotifyTrackWithReleaseDate).album?.release_date));
+      for (const r of walk.items) bump(recentEras, swarm3DecadeOf(r.track.album?.release_date));
       const topEras: Record<string, number> = {};
       for (const t of top) bump(topEras, swarm3DecadeOf(t.album?.release_date));
       const decades = [...new Set([...Object.keys(recentEras), ...Object.keys(topEras)])].sort();
@@ -1388,7 +1388,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const remainder = chron.slice(offset);
       const tr = truncateItems(remainder, maxResults);
       const rows = tr.items.map((r) => {
-        const t = r.track as unknown as SpotifyTrackWithReleaseDate;
+        const t = r.track;
         return {
           played_at: r.played_at,
           track_id: r.track.id,

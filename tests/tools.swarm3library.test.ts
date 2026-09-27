@@ -951,8 +951,90 @@ describe('swarm3_library: library_value_summary (#761)', () => {
     assert.deepEqual(payload.shortest_track, { name: 'Cinder', duration_ms: 180_000 });
     assert.equal(payload.scan_cap, 200);
     assert.match(text, /LIBRARY VALUE SUMMARY — 6 saved track\(s\) across 5 saved album\(s\) \(scan_cap=200\)/);
-    assert.match(text, /Total runtime: 20:45;/);
+    // The runtime line now says how many of the walked rows it actually
+    // measured (#1202). A total over 6 of 6 is the same number as before; the
+    // count is what makes the total honest when it is not 6 of 6.
+    assert.match(text, /Total runtime: 20:45 across 6 of 6 saved track\(s\) with a readable duration_ms;/);
     assert.match(text, /Hygiene: 1 duplicate-version group\(s\), 1 cross-edition album group\(s\)\./);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. A value the payload did not carry is unanswered, not guessed (#1202)
+// ---------------------------------------------------------------------------
+
+/**
+ * A saved row whose `track` contradicts every type the shared shapes declare:
+ * no `uri`, no `duration_ms`, an artist with no `name`, an album that is an
+ * empty object, and a save with no `added_at` at all.
+ *
+ * The cast this replaced read `(item?.track ?? {}) as unknown as Record<string,
+ * unknown>` and then defaulted every missing field — `uri: ''`, `duration_ms:
+ * 0`, `added_at: ''`. Those are the three guesses `AGENTS.md` §6 is about: a URI
+ * no request returned, a runtime nobody measured, and a date that sorts before
+ * every real one. Each assertion below is a value the pre-fix source published
+ * and this one does not.
+ */
+const UNREADABLE_ROW = {
+  // `added_at` is ABSENT here, not `''`. An empty string is a readable string
+  // and this reader passes it through honestly; the bug being pinned is the
+  // unreadable field being replaced by one, which needs the field to be absent.
+  track: { id: 'tr-bare', name: 'Bare', is_local: true, artists: [{ id: 'ar-anon' }], album: {} },
+} as unknown as SavedTrack;
+
+const UNREADABLE: Library = {
+  '/me/tracks': [...TRACKS, UNREADABLE_ROW],
+  '/me/albums': ALBUMS,
+  '/me/playlists': [],
+  '/me/player/recently-played': { items: [] },
+};
+
+describe('swarm3_library: unreadable values are disclosed, not defaulted (#1202)', () => {
+  it('an unreadable duration is excluded from the ranking and counted, not ranked as 0:00', async () => {
+    const h = harness(UNREADABLE);
+    const { payload, text } = await h.invoke('longest_saved_tracks', SCAN);
+
+    assert.equal(payload.tracks_without_readable_duration, 1);
+    const rows = payload.items as unknown as Array<{ name: string; duration_ms: number }>;
+    assert.equal(rows.length, 6, 'the row with no readable duration is not ranked');
+    assert.ok(
+      rows.every((r) => r.duration_ms > 0),
+      'no row is published as a zero-length track',
+    );
+    assert.match(text, /1 saved track\(s\) carried no readable duration_ms and are excluded from this ranking\./);
+  });
+
+  it('the runtime total says how many walked rows it actually measured', async () => {
+    const h = harness(UNREADABLE);
+    const { payload, text } = await h.invoke('library_value_summary', SCAN);
+
+    assert.equal(payload.tracks_without_readable_duration, 1);
+    // 1_245_000 is the six readable rows only. Before the fix the unreadable row
+    // was summed in as 0, producing the same number with no way to tell that a
+    // row had gone unmeasured.
+    assert.equal(payload.total_runtime_ms, 1_245_000);
+    assert.match(text, /Total runtime: 20:45 across 6 of 7 saved track\(s\) with a readable duration_ms;/);
+  });
+
+  it('saved_runtime_by_era drops the unmeasured row from the total and names the exclusion', async () => {
+    const h = harness(UNREADABLE);
+    const { payload, text } = await h.invoke('saved_runtime_by_era', SCAN);
+
+    assert.equal(payload.tracks_without_readable_duration, 1);
+    assert.equal(payload.total_runtime_ms, 1_245_000);
+    assert.match(text, /1 saved track\(s\) carried no readable duration_ms and are excluded from this total/);
+  });
+
+  it('an unreadable uri is null, never an empty string a host would call', async () => {
+    const h = harness(UNREADABLE);
+    const { payload } = await h.invoke('is_local_census', SCAN);
+
+    const rows = payload.items as unknown as Array<{ name: string; uri: string | null; added_at: string | null }>;
+    const bare = rows.find((r) => r.name === 'Bare');
+    assert.ok(bare, 'the local row with no readable uri is still listed');
+    assert.equal(bare.uri, null, 'an unreadable uri is null — `""` is a URI no request returned');
+    assert.notEqual(bare.uri, '');
+    assert.equal(bare.added_at, null, 'an unreadable added_at is null, not the empty string that sorts first');
   });
 });
 

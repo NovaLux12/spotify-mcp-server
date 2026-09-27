@@ -163,6 +163,27 @@ describe('queueops', () => {
     assert.equal(h.posts.length, 2);
     assert.match(out.content[0].text, /Queued 2/);
   });
+  // #1202: the walk read `(r: any) => r.item ?? r.track`, which declares a row
+  // type and then throws it away with `any`. `??` only falls through on
+  // null/undefined, so a row whose `item` is present but EMPTY short-circuits
+  // the `track` fallback, reads `uri: undefined` off `{}`, and is dropped by
+  // `.filter(Boolean)` with nothing counted. The row below is the shape that
+  // loses a track: the object exists, the legacy field still holds the data.
+  it('queue_playlist falls back to the legacy `track` field when `item` carries no uri', async () => {
+    const h = harness({
+      playlistItems: [
+        { item: {}, track: track('legacy1') },
+        { item: null, track: track('legacy2') },
+        { item: track('a3') },
+      ],
+    });
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:playlist:pl1', mode: 'append' });
+    // The queue POST carries its single URI in the query string.
+    const uris = h.posts.map((p) => decodeURIComponent(p.split('uri=')[1] ?? '')).filter(Boolean);
+    assert.deepEqual(uris, ['spotify:track:legacy1', 'spotify:track:legacy2', 'spotify:track:a3']);
+    assert.equal(h.posts.length, 3, 'no row is silently dropped for lacking a readable uri');
+    assert.match(out.content[0].text, /Queued 3/);
+  });
   it('queue_playlist reports each failed URI with an actionable reason', async () => {
     const h = harness({
       playlistItems: [
