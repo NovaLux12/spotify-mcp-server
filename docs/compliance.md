@@ -38,20 +38,37 @@ entire point of the project. It ships no mark.
 
 ## What "the mark" means here, concretely
 
-In any file under `assets/` or any source file under `src/`:
+Each rule below names the surface it applies to, because the guard's scopes
+differ: the colour and geometry rules read both `assets/` and `src/`, the
+wordmark rule reads `assets/` only, and the `User-Agent` rule reads `src/` only.
+A `Spotify` literal in prose inside `src/` is required by Rule 2, so the
+wordmark rule deliberately does not look there.
 
-| Prohibited | Why |
-|---|---|
-| `#1DB954` / `#1ED760` (Spotify Green, any casing or notation) | Named outright as a restricted brand element. |
-| The circle, or the waves arcs, redrawn / recoloured / partial | Modification; no exceptions. |
-| `Spotify`, `stats.fm` or `Last.fm` set as artwork — a rendered `<text>` node, or a bar-chart or dot-chain glyph standing in for a wordmark | Wordmark reproduction. |
-| A vendored copy of any official logo file | This is an MIT repository; the mark is not ours to sublicense. |
+| Prohibited | Where | Why |
+|---|---|---|
+| `#1DB954` / `#1ED760` (Spotify Green, any casing or notation, including the `rgb(29,185,84)` spelling) | `assets/` and `src/` | Named outright as a restricted brand element. |
+| The circle, or the waves arcs, redrawn / recoloured / partial | `assets/` and `src/` | Modification; no exceptions. |
+| `Spotify`, `stats.fm`, `Last.fm` or `Discogs` set as artwork — a rendered `<text>` node | `assets/` only | Wordmark reproduction. |
+| A vendored copy of any official logo file | `assets/` is where one would land; the guard pins two specific paths | This is an MIT repository; the mark is not ours to sublicense. `assets/logo.svg` and `assets/attribution-strip.svg` are named in the test and must not come back. |
 
 `tests/third-party-marks-guard.test.ts` enforces this by scanning the source
 tree. It is a source scan rather than a behavioural assertion because a mark
 has no runtime behaviour to assert on — the defect is a literal in a file, and
 a behavioural test can only cover the files its author happened to think to
 load.
+
+Two limits of the scan are worth stating rather than leaving for someone to
+discover. The wordmark rule matches a service name as a text literal; it has no
+geometry rule, so a hand-drawn substitute that spells no name — a bar chart or a
+dot chain standing in for a wordmark — passes. And the waves rule matches three
+stacked single-curve paths in one `<g>`, which is the Spotify waves specifically,
+not a general "resembles the mark" test. Neither gap is a licence: the rules
+above stand on their own, and the guard is a backstop rather than the policy.
+
+`assets/` does not currently exist in this tree, and the guard tolerates that —
+`filesUnder` returns an empty list for a missing directory. Every assets-scoped
+rule above therefore matches zero files today, and would start matching the
+moment an `assets/` directory appears.
 
 ## Visual attribution: reference it, do not redraw it
 

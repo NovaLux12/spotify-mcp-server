@@ -2,13 +2,13 @@
 
 SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
-Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`, whose identity-free entries live in memory for the current server process and are not sent to stats.fm or persisted. Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
+Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`: its entries are identity-free, never sent to stats.fm, and persisted to a local sidecar at `~/.spotify-mcp/taste-feedback.json` (`SPOTIFY_MCP_DATA_DIR` overrides the directory) — see [Local state](#local-state). Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
 
 ## Setup
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
 2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import. `statsfm_streams_stats` reports aggregate totals for the history visible to stats.fm, and `statsfm_recaps` provides per-calendar-year views; neither proves import completeness.
-3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. User-scoped endpoint tools take it as required `user_id`; network-backed taste tools take it as required `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works.
+3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. Most user-scoped endpoint tools take it as a required `user_id`; the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take it as a required `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works. Which one a given tool takes is a property of its schema, not of its name — the `taste_*` wave-2 composites below take `statsfm_user`, and `taste_shift_report` / `taste_checkpoint` read Spotify's own top lists and take no identity argument at all.
 
 There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). User-scoped calls pass identity explicitly on every call; there is no `STATSFM_USER_ID` setting. Catalog searches and catalog-entity lookups do not require an identity argument.
 
@@ -72,13 +72,21 @@ Typical flow: `statsfm_streams_stats` (how much history is visible?) → `statsf
 | `statsfm_taste_recommendations` | `taste_recommendations` | Bridge-mode candidates with evidence and risk notes. |
 | `statsfm_record_feedback` | `record_feedback` | Local-only taste verdicts; it never contacts stats.fm. |
 
-`statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the current process-local entries. It accepts no `user_id` or `statsfm_user` because it never makes a network call. For example:
+`statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the stored entries. It accepts no `user_id` or `statsfm_user` because it never makes a network call. For example:
 
 ```json
 { "tool": "statsfm_record_feedback", "action": "record", "subject_type": "track", "subject": "Anchor Song", "rating": "love" }
 ```
 
-Use the registered `record_feedback` alias for the same call. Entries survive neither a server restart nor a move to another process; they are not uploaded to stats.fm.
+Use the registered `record_feedback` alias for the same call.
+
+### Local state
+
+Recorded verdicts are **written to disk**, not held in process memory. They live in `~/.spotify-mcp/taste-feedback.json`, overridable with `SPOTIFY_MCP_DATA_DIR`, and they survive a server restart. The store is bounded on three axes and eviction is oldest-first: a record count (`SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES`, default 500), a byte size (`SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES`, default 1 MiB), and per-field maxima. Every record is timestamped and keeps its `subject_type`, `subject`, `rating` and optional `note`, and the number of evicted verdicts is reported rather than silently applied.
+
+A verdict is not uploaded to stats.fm and never leaves the machine through this tool. `taste_to_playlist` does not read this store; it builds its picks from the stats.fm API.
+
+To remove the store, delete the file. It is **not** erased by `spotify-mcp logout` — see [PRIVACY.md](../PRIVACY.md) for the full local-store table.
 
 ## Ranges
 

@@ -2,11 +2,13 @@
 
 ## Supported versions
 
-Only the latest published 1.30.x line receives security fixes. The current
-package metadata is 1.30.1; older release lines, including the former 1.0.x
-line, are unsupported. Upgrade to the latest 1.30.x release before reporting a
-problem. This is a rolling policy: when a newer minor line is published, this
-section should be updated with that line rather than retaining a stale table.
+Only the current release line receives security fixes; every earlier line,
+including the whole 1.x series, is unsupported. Read the current version from
+the `version` field in `package.json`, or ask `npm view @novalux12/spotify-mcp
+version` — this page deliberately carries no hard-coded version, because a
+stale one would tell a reader on a supported release that they are
+unsupported. Upgrade to the latest published release before reporting a
+problem.
 
 ## Reporting a vulnerability
 

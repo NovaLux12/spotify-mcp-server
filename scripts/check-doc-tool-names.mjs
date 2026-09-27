@@ -184,6 +184,12 @@ const parameterAllowlist = new Set([
   'album_requests', 'artist_requests', 'track_unresolved', 'album_unresolved',
   'artist_unresolved', 'album_lookups', 'request_mode', 'fanout_width',
   'estimated_album_requests', 'batch_requests', 'batch_size',
+  // The third `ReceiptKind` member (src/receipts.ts), named by
+  // docs/cookbook.md's undo section to say which receipts `undo_mutation`
+  // refuses. It is a value the `kind` field of a receipt takes, not a tool
+  // and not a parameter a caller sends. The other two kinds need no entry only
+  // because no scanned doc happens to backtick them.
+  'playlist_meta',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);

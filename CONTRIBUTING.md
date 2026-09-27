@@ -31,20 +31,28 @@ For browserless hosts, see the headless (`SPOTIFY_HEADLESS=1`) instructions in t
 
 Tokens are stored mode-600 at `~/.spotify-mcp/tokens.json` and refreshed automatically. Never commit tokens or `.env`.
 
-## Scope policy: non-deprecated endpoints only
+## Scope policy: no new wrappers for removed or gated endpoints
 
-This server deliberately wraps **only Spotify Web API endpoints that are available to standard developer apps**. Do not add tools for deprecated/removed endpoints; they fail at runtime for new apps. The blocked set:
+Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026) removed a batch of operations, and a further set is denied at the app-registration level. Neither is a reason to break a caller, so the surface splits into two classes. Know which one you are adding.
 
-- Recommendations
-- Related artists
-- Audio features / audio analysis
-- Genre seeds (recommendation seeds)
-- Featured playlists
-- Browse categories
-- New releases
-- Lyrics
+**No shipped tool calls these paths.** Do not add one:
 
-When adding a tool, verify the endpoint against the official [Spotify Web API reference](https://developer.spotify.com/documentation/web-api/reference) rather than guessing paths or field names. Prefer the current unified endpoints (e.g. `/playlists/{id}/items`, `/me/library`) over their deprecated predecessors.
+- `/recommendations` and `/recommendations/available-genre-seeds`
+- `/artists/{id}/related-artists`
+- `/audio-features/{id}` and `/audio-analysis/{id}`
+- `/browse/featured-playlists`
+- `/me/apps`, `/me/chapters`
+- The `/playlists/{id}/tracks` family — use `/playlists/{id}/items`
+
+These are absent from the registry because absence is the honest answer: there is no request to make and no 403 to explain.
+
+**A tool calls it and explains the 403.** `GATED_FAMILIES` in [`src/gating.ts`](src/gating.ts) is the authoritative list — `/browse/categories*`, `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` profile reads, the per-type `/me/{type}/contains` checks, `/playlists/{id}/followers/contains`, and the `Get Several` batch paths. Their wrappers stay registered, read a documented replacement where one exists, and return a plain-English explanation rather than crashing. The census's `checkGatedEndpointTruth` holds the classifier and the docs to that array, and the README table is generated from it.
+
+Two families in the array — `browse-new-releases` and `playlist-followers-contains` — have no live call site left, because the tools that used them moved to replacements. Their patterns are retained so a future caller stays covered by the 403 contract rather than silently losing it. An entry in the array is a runtime classifier, not a claim that a tool calls it.
+
+So "removed" and "gated" are different answers with different code shapes. Check which class an endpoint is in before writing a handler, and check it in the source of truth rather than from memory: the OpenAPI schema still publishes many removed paths as `deprecated: true`, so the schema alone will not tell you, and neither will the changelog alone.
+
+When adding a tool, verify the endpoint against the official [Spotify Web API reference](https://developer.spotify.com/documentation/web-api/reference) rather than guessing paths or field names — a wrong query parameter name is a 400, not a doc nit. Prefer the current unified endpoints (e.g. `/playlists/{id}/items`, `/me/library`) over their deprecated predecessors. Note that `GET /search` accepts a `limit` of at most 10, defaulting to 5.
 
 ## Brand marks, wordmarks, and attribution
 
@@ -61,14 +69,20 @@ in any file under `assets/` or any source file under `src/`:
 - No Spotify circle or waves glyph, redrawn, recoloured, rotated, or partial.
   Recomposing the mark out of circles and curves is a modification, and the
   guidelines allow no exceptions for it.
-- No third-party wordmark set as artwork: no rendered `Spotify`, `stats.fm` or
-  `Last.fm` text, and no bar-chart or dot-chain glyph standing in for one.
+- No third-party wordmark set as artwork: no rendered `Spotify`, `stats.fm`,
+  `Last.fm` or `Discogs` text, and no bar-chart or dot-chain glyph standing in
+  for one. The guard applies this one to `assets/` only, because naming a
+  service in prose under `src/` is required by the rule below.
 - No vendored logo file. Do not commit Spotify's or anyone else's official
   asset into this MIT-licensed repository.
 
-The same applies to the `User-Agent` this server sends: it carries this
-project's own name and a contact URL, and no third-party product token. Do not
-add one.
+The same applies to the one `User-Agent` this server sets. It goes only to
+stats.fm, from `src/lib/statsfm-client.ts`: `spotify-mcp
+(+https://github.com/NovaLux12/spotify-mcp-server)`, this project's own name
+plus a contact URL, and no third-party product token. Requests to
+`api.spotify.com` set no `User-Agent` at all — only `Authorization`,
+`Content-Type` and `If-None-Match` — so if you add one there, it must carry
+this project's name and no third-party token either.
 
 `tests/third-party-marks-guard.test.ts` fails the build if any of the above
 returns. It is a source scan, so it sees new files without being edited.
@@ -112,6 +126,7 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`.
 - **Tool contract changes need SPEC.md updates.** If you change what a tool accepts or returns (inputs, outputs, endpoint mapping, pagination behavior), update the matching section of [SPEC.md](SPEC.md).
 - **Changelog is automated.** Release notes/version bumps are handled by release automation from Conventional Commit messages — do not edit CHANGELOG entries manually.
 - **Tool surface growth is budgeted.** Registration order, per-module schema baselines, and ceilings are defined by the shared manifest in `src/tools/annotations.ts`; see [schema budgets](docs/schema-budgets.md). Do not raise a ceiling without updating its measured baseline and documenting the host-payload impact in that page or the PR rationale.
+- **Two doc gates run in CI and have no local command of their own.** `npm run check:docs-counts` and `npm run check:doc-tool-names` must both pass. `check:docs-counts` fails when a generated block is stale, so after anything that changes the registry, run `npm run build && npm run count:tools -- --write` and commit what it rewrites — `--check` reads the working tree, so an uncommitted regeneration looks green locally and red in CI. `check:doc-tool-names` fails when a doc names a tool or argument the registry does not have.
 - Keep PRs focused: one logical change per PR. Update the PR template checklist before submitting.
 
 ## Releasing
@@ -154,25 +169,47 @@ run on the latest `main` push before creating a tag manually.
 
 ### 2. Publish the tag
 
-`release.yml` creates the tag, and **that tag push starts `publish.yml`** — the
-`publish-npm` job runs on its own. Do not dispatch it manually.
+`release.yml` creates the tag and then **dispatches `publish.yml` itself**:
 
-This section previously instructed a manual
-`gh workflow run publish.yml --ref "$TAG"` on the grounds that a
-`GITHUB_TOKEN`-created tag does not trigger a workflow. **That is wrong for
-this repo.** The manual dispatch races the tag-push run, and npm versions are
-immutable, so the second attempt fails on a version that already exists. It
-caused a double publish on 2026-09-25.
+```bash
+gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
+```
+
+The dispatch is not a workaround, it is the mechanism. release-please creates
+the tag with the repository's `GITHUB_TOKEN`, and a tag pushed with
+`GITHUB_TOKEN` does not start a push-triggered workflow — so `publish.yml`
+would otherwise never run. Both workflow files say so in their own header
+comments.
+
+`publish.yml` still carries a `push: tags: ["v*"]` trigger, and it does fire
+when the tag is created by something other than `GITHUB_TOKEN`. So a tag can
+start a publish run twice over: once from that push trigger, once from the
+release workflow's dispatch. That is the race to avoid, and it is why a
+maintainer must not add a *third* run for a tag the release workflow has
+already dispatched. `concurrency` groups both under `publish-<tag>` with
+`cancel-in-progress: false`, so the loser queues rather than cancels, and the
+npm step skips a version that is already present rather than failing on it.
+
+This section previously said the opposite in two directions at once — that the
+tag push alone starts the workflow, and that a manual dispatch is therefore
+wrong. The tag push is not sufficient, and the dispatch is exactly what the
+release workflow performs. The two errors cancelled out into a runbook that
+told a maintainer to do nothing and then, when no run appeared, to stop.
 
 To watch the run the tag started:
 
 ```bash
 RUN_ID="$(gh run list --workflow publish.yml --limit 20 \
-  --json databaseId,headBranch,status,conclusion,url \
+  --json databaseId,headBranch,event,status,conclusion,url \
   --jq "map(select(.headBranch == \"${TAG}\")) | .[0].databaseId")"
 test -n "$RUN_ID"
 gh run watch "$RUN_ID" --exit-status
 ```
+
+`headBranch` carries the tag for both trigger types, so the same selector finds
+a `workflow_dispatch` run and a tag-push run. If more than one run exists for
+the tag, read `.event` before watching one — `gh run list --json
+databaseId,event,conclusion,createdAt` shows which is which.
 
 **If `publish-mcp-registry` fails with `version 'X.Y.Z' was not found`, that is
 an npm propagation race, not a broken artifact.** npm takes minutes to serve a
@@ -198,13 +235,16 @@ suite. `pull_request_target` runs the Labeler, which typechecks nothing and runs
 no tests, while `pull_request` runs CI. A per-commit "one failure, one success"
 pairing is the two workflows, not a flaky test.
 
-The `Publish` workflow checks out the tagged commit, runs `npm ci`,
-`npx tsc --noEmit`, `npm test`, and `npm run build`, publishes
-`@novalux12/spotify-mcp` with provenance (trusted publishing/OIDC or the
-configured `NPM_TOKEN` fallback), and then publishes `server.json` to the
-official MCP Registry using GitHub OIDC. A rerun is safe after a partial
-failure: the npm job skips a version that is already present and the registry
-job can be retried.
+The `Publish` workflow checks out the tagged commit, refuses to proceed unless
+`package.json` and both `server.json` version fields match the tag, runs
+`npm ci`, `npx tsc --noEmit`, and `npm test` (which builds first, so the
+compiled `dist/` is what gets tested), then packs the tarball and asserts its
+`dist/index.js` still starts with the `#!/usr/bin/env node` shebang before
+publishing `@novalux12/spotify-mcp` with provenance (trusted publishing/OIDC or
+the configured `NPM_TOKEN` fallback). A second job then syncs `server.json`'s
+version from the tag and publishes it to the official MCP Registry using GitHub
+OIDC. A rerun is safe after a partial failure: the npm job skips a version that
+is already present and the registry job can be retried.
 
 
 ### 3. Verify the published artifacts
@@ -228,7 +268,7 @@ curl --fail --silent --show-error \
        and ._meta["io.modelcontextprotocol.registry/official"].isLatest == true'
 ```
 
-Expected results are the exact version (for example, `1.30.1`), `true` for
+Expected results are the exact tag version `$VERSION`, `true` for
 the `server.json` check, and `true` for the Registry check. Also inspect the
 workflow URL printed by `gh run view "$RUN_ID"` if any verification fails.
 

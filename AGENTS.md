@@ -360,12 +360,23 @@ the changelog.**
   footer in the commit body — e.g. `feat(registry)!: v2 contract spine`. That
   is what produces a major.
 
-Merging the release PR with CI green creates the `vX.Y.Z` tag, and **that tag
-push does start `publish.yml`** — the `publish-npm` job runs on its own. Do not
-dispatch it manually. A manual `gh workflow run publish.yml --ref vX.Y.Z` races
-the tag-push run, and npm versions are immutable, so the second attempt fails
-on a version that already exists. This instruction previously said the
-opposite; following it caused a double publish on 2026-09-25.
+Merging the release PR with CI green creates the `vX.Y.Z` tag, and `release.yml`
+then **dispatches `publish.yml` itself** with
+`gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" -f
+tag="$RELEASE_TAG"`. That dispatch is the mechanism, not a workaround:
+release-please creates the tag with the repository's `GITHUB_TOKEN`, and a tag
+pushed with `GITHUB_TOKEN` does not start a push-triggered workflow, so without
+the dispatch nothing would publish. **Do not dispatch it manually a second
+time** — a manual `gh workflow run publish.yml --ref vX.Y.Z` races the run the
+release workflow already started, and npm versions are immutable, so the second
+attempt fails on a version that already exists. That is what caused the double
+publish on 2026-09-25. `publish.yml` keeps a `push: tags: ["v*"]` trigger for
+tags created by something other than `GITHUB_TOKEN`, and both trigger types land
+in the `publish-<tag>` concurrency group with `cancel-in-progress: false`. The
+previous wording here said the opposite — that the tag push alone starts the
+workflow and a dispatch is therefore wrong — which is right as advice and wrong
+as mechanism, and it left a maintainer with no run to watch and no dispatch to
+make. See CONTRIBUTING.md §2 for the full runbook.
 
 `publish-mcp-registry` runs after `publish-npm` and validates that npm actually
 serves the new version. **npm propagation is not instantaneous**, so that job
