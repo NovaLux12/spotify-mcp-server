@@ -2119,6 +2119,14 @@ type ErrorKind =
   // cancellation reported as `unavailable` (408-shaped) would have the host
   // re-issue the very request it just cancelled.
   | 'cancelled'
+  // #687: the tool returned a payload its OWN declared `outputSchema` refuses.
+  // Its own kind because every neighbouring class points the host at its input
+  // or tells it to retry, and neither is true: nothing the caller sent is at
+  // fault, and the failure is deterministic, so a retry fails identically. The
+  // fix is in this server — see the `output validation failed` arm of
+  // `publicFailure`, which claims this class before the input-validation arm
+  // below it can match the word "required" in the message.
+  | 'output_contract'
   | 'internal';
 
 interface ErrorFields {
@@ -2291,6 +2299,7 @@ function defaultReason(kind: ErrorKind): string {
     case 'unknown_tool': return 'tool_not_registered';
     case 'unknown_param': return 'parameter_not_accepted';
     case 'cancelled': return 'cancelled_by_caller';
+    case 'output_contract': return 'structured_content_failed_declared_output_schema';
     case 'internal': return 'internal_error';
   }
 }
@@ -2531,6 +2540,25 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
       reason: defaultReason('conflict'),
       fix: 'Re-read the playlist and re-run to review the new destructive impact.',
       text: `${tool} refused to write because the playlist changed since it was read; re-read it and re-run to review the new destructive impact.`,
+    };
+  }
+  // #687: the tool's own declared `outputSchema` refused the payload the tool
+  // returned. Claimed HERE, above the input-validation arm, and that placement is
+  // the whole point rather than a style choice: the two messages
+  // `validateOutput` throws differ only by a trailing clause, and the longer one
+  // ends `... structured content is required`. The unanchored `required` in the
+  // arm below would match it and report a server-side defect as the caller
+  // having sent bad arguments — the AGENTS.md §6 shape, a check matching the
+  // wrong thing. With only the shorter message it fell through to `internal`,
+  // whose advice to "retry once" is equally wrong for a deterministic defect.
+  // So the class is named rather than left to which of two strings a function
+  // happened to build.
+  if (/^output validation failed\b/.test(lower)) {
+    return {
+      kind: 'output_contract',
+      reason: defaultReason('output_contract'),
+      fix: 'This is a server-side defect and is deterministic; retrying will not change it.',
+      text: `${tool} returned a payload that does not match its declared output schema; this is a server-side defect and retrying will not change it.`,
     };
   }
   if (/^(?:invalid (?:(?:playable )?(?:spotify )?(?:reference|uris?)|spotify track\/episode uri|playlist reference)|(?:no resolvable|no valid).*uris?\b)|invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {

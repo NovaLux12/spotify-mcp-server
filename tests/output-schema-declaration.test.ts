@@ -601,18 +601,25 @@ describe('#687 the refusal is real, not inferred', () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       const result = await client.callTool({ name: 'probe_prose_only', arguments: {} });
-      // The refusal arrives as a typed validation envelope — the pinned SDK
+      // The refusal arrives as a typed envelope — the pinned SDK
       // validates `structuredContent` against the declared schema on the
       // CLIENT side, so a caller never receives the prose at all. Asserting
       // the SHAPE and not merely "something went wrong" is what distinguishes
       // "refused for the declared reason" from "failed for an unrelated
       // reason and happened to look like an error".
+      //
+      // The kind is `output_contract`, NOT `validation` (#687). The refusal is
+      // the SERVER's payload failing the SERVER's own declaration: nothing the
+      // caller sent is at fault. Reporting it as `validation` would tell a host
+      // to fix arguments that were already correct — and the pair of tests in
+      // this block is what holds that line, because the two arms of
+      // `validateOutput` used to be classified differently (see below).
       const structured = (result as { structuredContent?: { error?: { tool?: string; kind?: string; reason?: string } } }).structuredContent;
       const error = structured?.error;
       assert.ok(error, `the declared-schema prose-only call must be refused; got ${JSON.stringify(result)}`);
       assert.equal(error.tool, 'probe_prose_only');
-      assert.equal(error.kind, 'validation');
-      assert.equal(error.reason, 'validation_failed');
+      assert.equal(error.kind, 'output_contract');
+      assert.equal(error.reason, 'structured_content_failed_declared_output_schema');
       assert.equal(
         (result as { isError?: boolean }).isError,
         true,
@@ -621,6 +628,74 @@ describe('#687 the refusal is real, not inferred', () => {
     } finally {
       await client.close();
       await server.close();
+    }
+  });
+
+  it('both arms of the refusal classify the same way', async () => {
+    // The regression this pins, measured rather than reasoned about. `validateOutput`
+    // throws two messages that differ only by a trailing clause:
+    //
+    //     Output validation failed for X                          (wrong-typed field)
+    //     Output validation failed for X: structured content is required   (no payload)
+    //
+    // The unanchored `required` in the input-validation arm of `publicFailure`
+    // matched the second and not the first, so the SAME server-side defect was
+    // reported to the caller as `validation` ("received invalid arguments; pass
+    // values that match the tool schema") on one arm and as `internal` on the
+    // other. A host that acted on the first — changing arguments that were
+    // already correct — would have failed identically forever.
+    //
+    // Asserting the two arms AGREE is what makes this a gate. Asserting only the
+    // expected kind of one arm would have stayed green through the bug.
+    const classify = async (name: string, handler: () => unknown) => {
+      const server = new McpServer({ name: 'arm-probe', version: '0.0.0' });
+      server.registerTool(name, { description: 'probe', inputSchema: {}, outputSchema: ListOutput }, handler as never);
+      installToolErrorBoundary(server);
+      const client = new Client({ name: 'arm-client', version: '0.0.0' });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+      try {
+        const result = (await client.callTool({ name, arguments: {} })) as {
+          structuredContent?: { error?: { kind?: string; reason?: string; fix?: string } };
+        };
+        return result.structuredContent?.error;
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    };
+
+    // Arm 1: a payload that violates the declared schema — `truncated` is a
+    // string where the family declares a boolean.
+    const wrongType = await classify('probe_wrong_type', async () => ({
+      content: [{ type: 'text', text: 'ok' }],
+      structuredContent: { items: [], truncated: 'yes' },
+    }));
+    // Arm 2: no payload at all.
+    const noPayload = await classify('probe_no_structured', async () => ({
+      content: [{ type: 'text', text: 'just prose' }],
+    }));
+
+    assert.equal(wrongType?.kind, 'output_contract');
+    assert.equal(noPayload?.kind, 'output_contract', 'the two arms of one defect must not classify differently');
+    assert.equal(noPayload?.reason, wrongType?.reason);
+    // Neither may hand the host the two pieces of advice that are wrong here:
+    // the `validation` arm's "fix your input", and the `internal` arm's "retry
+    // once". Both are compared as the exact strings the boundary uses, rather
+    // than by matching the word "retry" — the honest fix string has to be able
+    // to SAY that retrying will not help, and a regex broad enough to catch the
+    // wrong advice would also catch the right one.
+    for (const arm of [wrongType, noPayload]) {
+      assert.notEqual(
+        arm?.fix,
+        'Pass values that match the tool schema.',
+        'a server-side defect must not be reported as bad input',
+      );
+      assert.notEqual(
+        arm?.fix,
+        'Retry once; if the failure persists, inspect protected server diagnostics.',
+        'a deterministic server-side defect must not be reported as worth retrying',
+      );
     }
   });
 
