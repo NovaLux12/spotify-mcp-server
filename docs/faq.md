@@ -112,9 +112,10 @@ receipts, scenes, genre tags and the other sidecars keep resolving to their own
 directories, `~/.spotify-mcp/` unless their own variable is set.
 
 Options: `--dry-run` lists what would go and removes nothing, `--keep-backups`
-leaves the `backups/` library in place, and `--profile <name>` targets a named
-profile's token file. In a script with no terminal, logout refuses to erase
-unless `SPOTIFY_MCP_CONFIRM=never` is set.
+leaves the `backups/` library in place, `--profile <name>` targets a named
+profile's token file, and `--purge-data` asks for the erasure explicitly
+(it is what logout does anyway). In a script with no terminal, logout refuses to
+erase unless `SPOTIFY_MCP_CONFIRM=never` is set.
 
 ## stats.fm questions
 

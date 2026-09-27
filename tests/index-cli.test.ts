@@ -156,7 +156,7 @@ describe('#657 index.ts: --help', () => {
     // `includes('--keep-backups')` also matches `--keep-backups-and-more`, and
     // a renamed flag would sail through an unanchored check.
     const { stdout } = await cli(['--help']);
-    for (const flag of ['--dry-run', '--keep-backups', '--profile', '--scopes']) {
+    for (const flag of ['--dry-run', '--keep-backups', '--profile', '--purge-data', '--scopes']) {
       assert.match(stdout, new RegExp(`${flag}\\b`), `help must document \`${flag}\``);
     }
   });

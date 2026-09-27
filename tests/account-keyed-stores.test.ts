@@ -554,7 +554,18 @@ describe('logout covers every account\'s store, not just the active one', () => 
       // account's ledger is listed, and every other account's ledger is
       // orphaned on disk while logout reports success — the failure #1300
       // found for the persisted read cache.
-      assert.deepEqual(covered(stores, 'mutations'), ['mutations.jsonl', 'mutations.work.jsonl']);
+      //
+      // Each ledger appears TWICE, with and without the rotated generation,
+      // because rotation moves the live file to `mutations.jsonl.1` and starts
+      // a fresh one: the archive is the OLDER half of the same trail, so
+      // logout has to name it or it erases half the record and reports a clean
+      // sweep (#703).
+      assert.deepEqual(covered(stores, 'mutations'), [
+        'mutations.jsonl',
+        'mutations.jsonl.1',
+        'mutations.work.jsonl',
+        'mutations.work.jsonl.1',
+      ]);
       assert.deepEqual(covered(stores, 'receipts'), ['receipts.jsonl', 'receipts.work.jsonl']);
     } finally {
       box.restore();

@@ -57,7 +57,7 @@ import { promisify } from 'node:util';
 import { accountsFile } from './accounts.js';
 import { cachePendingPath, cachePendingPaths, cachePersistPath, cachePersistPaths } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
-import { historyFilePath, historyFilePaths } from './history.js';
+import { historyFilePath, historyLedgerPaths } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
 import { receiptsFilePath, receiptsFilePaths } from './receipts.js';
 import { artistWatchlistPath } from './tools/artistwatch.js';
@@ -189,8 +189,14 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     // reported the default account's file as the active account's mutation
     // history. `expand` masked it by always winning, but the answer was wrong
     // and the store no longer tolerates an unnamed account.
+    //
+    // `expand` names the rotated generation beside each live ledger too
+    // (#703). Rotation moves the live file to `mutations.jsonl.1` and starts a
+    // fresh one, so the archive is the OLDER half of the same audit trail —
+    // erasing the live file alone would report a clean sweep and leave half
+    // the trail on disk, which is the outcome this command exists to prevent.
     resolve: (env) => historyFilePath(env, resolveTokenFile(env)),
-    expand: (env) => historyFilePaths(env),
+    expand: (env) => historyLedgerPaths(env),
   },
   {
     id: 'receipts',
@@ -867,6 +873,8 @@ export interface LogoutOptions {
   dryRun: boolean;
   keepBackups: boolean;
   profile?: string;
+  /** `--purge-data`: requested explicitly. Erasure is unconditional, so this records the ask. */
+  purgeData?: boolean;
 }
 
 export class LogoutUsageError extends Error {}
@@ -881,6 +889,13 @@ export function parseLogoutArgs(argv: string[]): LogoutOptions {
     const arg = argv[i];
     if (arg === '--dry-run') opts.dryRun = true;
     else if (arg === '--keep-backups') opts.keepBackups = true;
+    // `--purge-data` is the AC's spelling of what logout already does: it
+    // erases every local store unless a narrower flag says otherwise. It is
+    // accepted, and recorded, so a script that asks for erasure explicitly
+    // does not have to know that erasure is unconditional (#703). It changes
+    // no decision below; `--keep-backups` and `--profile` still narrow the
+    // sweep, and this flag does not widen it.
+    else if (arg === '--purge-data') opts.purgeData = true;
     else if (arg === '--profile') {
       const value = argv[i + 1];
       if (value === undefined || value.startsWith('--')) {
@@ -907,6 +922,8 @@ itself must be revoked by hand — logout prints the address.
 
 Options:
   --dry-run          List what would be erased; erase nothing
+  --purge-data       Erase the local stores (the default; accepted so a script
+                     can ask for it explicitly)
   --keep-backups     Leave the backups/ library in place
   --profile <name>   Act on a named profile (as with \`auth --profile\`)`;
 
