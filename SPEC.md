@@ -2075,18 +2075,22 @@ A fixed resource that reads a paged endpoint accepts its window in the URI. The 
 
 Each parameterised resource registers three entries, not one: the bare URI, a form-style template naming the parameters (`{?format,time_range,limit,offset}`), and a `{+qs}` catch-all.
 
-**The `{+qs}` catch-all is what routes the read; the `{?…}` template advertises it.** The MCP SDK's `UriTemplate` compiles a form-style expression to a *conjunctive, ordered* regex, which is stricter than RFC 6570:
+**Expansion is the host's job, so the server's job is to match a pattern against a concrete URI.** `resources/templates/list` returns template strings; `resources/read` takes a concrete `uri`, and nothing in a read request can carry the braces. That makes the server's obligation precise: match the concrete URI a conforming host built from the template it was advertised.
+
+**The SDK's own matcher did not meet that obligation, so the server supplies one (#1401).** The MCP SDK's `UriTemplate` compiles a form-style expression to a *conjunctive, ordered* regex, which is stricter than RFC 6570:
 
 ```
 spotify://me/top/tracks{?format,time_range,limit,offset}
   →  ^spotify://me/top/tracks\?format=([^&]+)&time_range=([^&]+)&limit=([^&]+)&offset=([^&]+)$
 ```
 
-Every named parameter must be present, and in declaration order. RFC 6570 would expand the expression with whatever is present; this implementation requires the whole set. So `spotify://me/top/tracks?time_range=short_term&limit=5` matches **neither** that template **nor** the bare URI, and a resource registered without a catch-all is unreachable. `{+qs}` compiles to `(.+)` and matches.
+Every named parameter must be present, and in declaration order. RFC 6570 §3.2.8 says the opposite: a form-style expression expands with *whatever variables are defined*, joined by `&` in declaration order, and with none defined it expands to the empty string. The SDK therefore disagrees with its own expander — `expand({time_range:'short_term', limit:'5'})` returns `spotify://me/top/tracks?time_range=short_term&limit=5`, and `match()` of that same string returns `null`.
 
-The `{?…}` template is still registered and still earns its place: it is what `resources/templates/list` advertises, and its description is where the parameter set is documented for a host reading the listing. `tests/resources-603.test.ts` pins the SDK behaviour directly, so an SDK that relaxes this to true RFC 6570 turns that test red rather than making the difference quietly.
+Before #1401 the server routed around this by depending on the `{+qs}` twin, so every advertised `{?…}` entry was decorative: a host that expanded the template correctly landed on the catch-all, not on the entry it was told to build a URI from. `src/resources/uritemplate.ts` (`Rfc6570UriTemplate`, a `UriTemplate` subclass) now compiles these templates the way RFC 6570 expands them, and every `{?…}` and `{+qs}` template in `src/resources/` is registered with it. `toString()` is unchanged, so `resources/templates/list` still advertises the same strings.
 
-**Pre-existing, not introduced here.** `spotify://me/saved/tracks` advertised `{?format,offset,limit}` and has only ever routed through its own `{+qs}` twin, for the same reason. Its advertised template was already decorative before #603.
+**The `{+qs}` twin is the catch-all for query strings this server does not model** — a typo, an undeclared parameter, a parameter sent in an order the template does not expand to. It also has to *not* match a path difference, and the SDK's `(.+)` could not do that: `spotify://me/saved/tracks{+qs}` matched `spotify://me/saved/tracksX`, and the server served saved tracks for a URI that names no such resource. The corrected matcher requires a real `?`, so that URI is now rejected.
+
+A read of the advertised `uriTemplate` string itself also resolves, to the unparameterised default, rather than failing with "resource not found" against a URI the server published. `tests/resources-uri-template-matching.test.ts` covers all of this, including the general property that every registered template matches the URI the SDK's own expander produces from it — so the next template that gets this wrong is caught here rather than by a host. `tests/resources-603.test.ts` still pins the SDK's stricter behaviour, so an SDK that relaxes it to true RFC 6570 turns that test red rather than making the override's reason disappear quietly.
 
 
 | Resource | Parameters | Upstream endpoint |

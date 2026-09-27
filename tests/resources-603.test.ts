@@ -813,20 +813,22 @@ test('an unrecognised query parameter still routes, via the {+qs} catch-all (#60
   assert.match(prose.text, /Top tracks/);
 });
 
-test('the {+qs} catch-all is the routing mechanism, not a belt-and-braces twin (#603)', async () => {
-  // This pins an SDK behaviour the whole design rests on, and it is stricter
-  // than RFC 6570. `UriTemplate.match` compiles `{?a,b,c}` to a CONJUNCTIVE,
-  // ORDERED regex:
+test('the SDK matcher is stricter than RFC 6570, which is why the server uses its own (#1401)', async () => {
+  // This pins the SDK behaviour that `Rfc6570UriTemplate` exists to correct.
+  // `UriTemplate.match` compiles `{?a,b,c}` to a CONJUNCTIVE, ORDERED regex:
   //
   //   ^spotify://me/top/tracks\?format=([^&]+)&time_range=([^&]+)&limit=([^&]+)&offset=([^&]+)$
   //
   // so every named parameter must be present AND in declaration order. A
   // realistic read — `?time_range=short_term&limit=5` — matches neither that
-  // template nor the bare URI. `{+qs}` compiles to `(.+)` and is the only
-  // thing that routes it. If a future SDK relaxes this to true RFC 6570, this
-  // test goes red and says so, rather than the difference going unnoticed.
-  // The SDK's own ResourceTemplate wraps the same UriTemplate, so this probes
-  // the matcher the server actually routes with, through its public export.
+  // template nor the bare URI. `#1401` stopped routing around that by relying
+  // on the `{+qs}` twin, and instead registers the templates with a matcher
+  // that follows RFC 6570; see `tests/resources-uri-template-matching.test.ts`
+  // for what the server routes with, and for the over-matching `{+qs}` had.
+  //
+  // The assertion below is about the SDK, not about this server: it keeps
+  // failing if a future SDK relaxes this to true RFC 6570, so the reason the
+  // override exists is checked rather than assumed.
   const matcher = (tpl: string, uri: string): unknown =>
     new ResourceTemplate(tpl, { list: undefined }).uriTemplate.match(uri);
 
@@ -836,8 +838,8 @@ test('the {+qs} catch-all is the routing mechanism, not a belt-and-braces twin (
 
   assert.ok(matcher('spotify://me/top/tracks{+qs}', 'spotify://me/top/tracks?time_range=short_term&limit=5'));
 
-  // Consequence for the pre-existing saved-tracks registration, which
-  // advertises `{?format,offset,limit}` and relies on its own `{+qs}` twin:
+  // And the saved-tracks template, likewise, rejects the partial query the SDK
+  // cannot express.
   assert.equal(matcher('spotify://me/saved/tracks{?format,offset,limit}', 'spotify://me/saved/tracks?offset=4&limit=2'), null);
   assert.ok(matcher('spotify://me/saved/tracks{+qs}', 'spotify://me/saved/tracks?offset=4&limit=2'));
 });

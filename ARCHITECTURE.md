@@ -147,8 +147,9 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 1014 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 257 |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | 279 |
-| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1240 |
-| `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 458 |
+| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1250 |
+| `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 463 |
+| `src/resources/uritemplate.ts` | RFC 6570-conformant matching for the URI templates this server advertises (#1401). (0 registered tools) | 216 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 80 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 1964 |
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 272 |

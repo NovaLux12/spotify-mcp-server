@@ -3549,24 +3549,32 @@
         "label": "Each parameterised resource registers three entries, not…"
       },
       {
-        "hash": "db38a05132a6a5e3",
-        "label": "The {+qs} catch-all is what routes the read; the {?…} te…"
+        "hash": "0c44ce16df872864",
+        "label": "Expansion is the host's job, so the server's job is to m…"
+      },
+      {
+        "hash": "427c8f5ccf60d641",
+        "label": "The SDK's own matcher did not meet that obligation, so t…"
       },
       {
         "hash": "2afbbe36e8c64f1d",
         "label": "spotify://me/top/tracks{?format,timerange,limit,offset} …"
       },
       {
-        "hash": "86de2eeed5d4b2aa",
+        "hash": "ae426fb11efa31fe",
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "f6c48865c9488f32",
-        "label": "The {?…} template is still registered and still earns it…"
+        "hash": "32f6226ccd12e7a5",
+        "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "d2eaf7ac231c23e4",
-        "label": "Pre-existing, not introduced here. spotify://me/saved/tr…"
+        "hash": "fd63592042568bb1",
+        "label": "The {+qs} twin is the catch-all for query strings this s…"
+      },
+      {
+        "hash": "dba777829aa263b2",
+        "label": "A read of the advertised uriTemplate string itself also …"
       },
       {
         "hash": "882adcaf3fea8221",
@@ -5092,6 +5100,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "86de2eeed5d4b2aa",
+      "label": "Every named parameter must be present, and in declaratio…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "b1e3950f484ccc49",
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
@@ -5103,6 +5118,13 @@
       "label": "Not a migration: no call that succeeded before fails now…",
       "date": "2026-09-27",
       "reason": "reworded to stop hand-copying the swarm4playlists manifest baseline into prose; the generated schema-budget-table in docs/schema-budgets.md is authoritative and any sibling module change moves the number again"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "d2eaf7ac231c23e4",
+      "label": "Pre-existing, not introduced here. spotify://me/saved/tr…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
     },
     {
       "file": "SPEC.md",
@@ -5120,6 +5142,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "db38a05132a6a5e3",
+      "label": "The {+qs} catch-all is what routes the read; the {?…} te…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "e3ad71b5cfba881d",
       "label": "Returns: per group: track label, occurrence count and ki…",
       "date": "2026-09-27",
@@ -5131,6 +5160,13 @@
       "label": "findduplicatesinplaylist Find duplicate tracks in a play…",
       "date": "2026-09-27",
       "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f6c48865c9488f32",
+      "label": "The {?…} template is still registered and still earns it…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
     },
     {
       "file": "SPEC.md",
