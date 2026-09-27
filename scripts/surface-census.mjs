@@ -370,6 +370,28 @@ if (proseOverrideIndex >= 0) {
  * scope — `src/toolsets.ts` carries a `// BEGIN:generated` block, but pinning
  * source code as though it were documentation is not the same hazard and would
  * make the pin unkeepable.
+ *
+ * ## The exclusion above is not an ungated block (#1438)
+ *
+ * This `.md` filter was read, correctly from the prose half and incorrectly
+ * from the staleness half, as meaning `src/toolsets.ts` has no gate on it. It
+ * does not, and the two halves are separate mechanisms:
+ *
+ *  - **This one** reconciles `scripts/doc-prose-manifest.json` against the
+ *    documents. It answers "was hand-written prose lost to a whole-file
+ *    conflict resolution", and `src/toolsets.ts` is a source module, so
+ *    pinning it would be unkeepable — the exact wording above, and still true.
+ *  - **Staleness** is `checkDocumentation()`'s per-block loop over the `blocks`
+ *    array, which is extension-agnostic. `src/toolsets.ts` is a `blocks` entry,
+ *    so a figure in it that falls out of step with the registry is reported as
+ *    `src/toolsets.ts: generated surface-census block is stale`, on a plain
+ *    `--check` and in CI.
+ *
+ * The exclusion is enumerated and asserted rather than left implicit:
+ * `EXPECTED_FILES` in `tests/doc-prose-integrity.test.ts` pins this list, and
+ * `EXPECTED_FILES` in `tests/generated-block-tree-guard.test.ts` pins
+ * `src/toolsets.ts` as a claimed generated block. A second file joining either
+ * side without a decision goes red on both tests instead of passing by default.
  */
 function proseDocuments(roots = markerScanRoots) {
   const files = [...new Set(scanGeneratedMarkers(roots)
@@ -471,6 +493,30 @@ const censusFileIndex = args.indexOf('--census-file');
 if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
   throw new Error('--census-file requires a JSON file');
 }
+
+/**
+ * `--no-prose` scopes `--check` to the generated blocks (#1436).
+ *
+ * `checkDocumentation()` reconciles two different things, and a caller only
+ * sometimes wants both. The generated blocks are the census's own output and
+ * are stale the moment the registry moves. The prose reconciliation is a
+ * comparison against `scripts/doc-prose-manifest.json` — a hand-maintained
+ * documentation artifact, written by `--prose-sync` and owned by
+ * `tests/doc-prose-integrity.test.ts`.
+ *
+ * A test asserting the *architecture* (which modules register, which keys
+ * exist, that the module map is current) went red while that manifest was
+ * mid-edit, and the reflex on a red you cannot explain is to re-run it or relax
+ * it — so the coupling is worth removing rather than documenting. The test's
+ * input set should be no wider than the thing it checks.
+ *
+ * Declared here, beside the other `args` reads, for the same reason the marker
+ * sets are module-scope: `checkDocumentation()` runs at import time and reaches
+ * this through the call at the bottom of the file. `--check` without this flag
+ * is byte-for-byte what it was before.
+ */
+const checkProse = !args.includes('--no-prose');
+
 const { GATED_FAMILIES, GATED_PATH_PATTERNS, isGatedPath } = await import('../src/gating.ts');
 /**
  * Extra directories whose `.ts` files join the gated-endpoint scan (#1278).
@@ -1944,7 +1990,12 @@ function checkDocumentation(blocks) {
   // whole-file conflict resolution deletes it with nothing downstream able to
   // restore or report it. Runs next to the tree pass for the same reason: it is
   // a reconciliation against a checked-in expectation, not a formatting rule.
-  errors.push(...proseDrift(readProseManifest(), proseDocumentsUnderTest()).errors);
+  //
+  // Skipped by `--no-prose` (#1436), which is the whole reason that flag
+  // exists: `scripts/doc-prose-manifest.json` is a documentation artifact, and
+  // a caller asserting the *architecture* must not go red because somebody
+  // reworded ARCHITECTURE.md. See `checkProse` at the flag's declaration.
+  if (checkProse) errors.push(...proseDrift(readProseManifest(), proseDocumentsUnderTest()).errors);
   for (const [file, name, body] of blocks) {
     if (tree.phantoms.has(`${file}:${name}`)) continue;
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
