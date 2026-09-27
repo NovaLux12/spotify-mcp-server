@@ -655,6 +655,69 @@ export function retiredInputMessage(retired: readonly string[], canonical: strin
   return `${subject}; use ${canonical} instead.`;
 }
 
+/**
+ * The release that withdrew `max_results` as a walk cap from two tools (#886).
+ *
+ * A second constant rather than a reuse of the playlist one, because that one
+ * is named for what it governs and borrowing it would make the name a lie. The
+ * value is not free to differ: `tests/max-results-contract.test.ts` asserts the
+ * two agree, so "removed in v3.0" is one promise stated in two tables and
+ * cannot drift into a third version.
+ */
+export const RETIRED_WALK_CAP_INPUTS_REMOVED_IN = 'v3.0';
+
+/** One tool's withdrawn walk-cap name, and what replaced it. */
+export type WalkCapRetirement = { retired: string; canonical: string };
+
+/**
+ * The tools that published `max_results` as a WORK cap and no longer do (#886).
+ *
+ * Both were durable-write tools: `take_playlist_snapshot` walked playlist
+ * items and `backup_library` walked per category, and each wrote the capped
+ * result to a file. A caller's reflex — lower `max_results` to keep a response
+ * small — therefore truncated a **snapshot or backup on disk** while the
+ * response looked normal. The caps now carry their own names.
+ *
+ * A separate table from `RETIRED_PLAYLIST_INPUTS` because the replacement is
+ * per-tool here, not derived from a `kind`: both tools retired the same name
+ * and each has a different successor, which the playlist shape cannot express.
+ */
+export const RETIRED_WALK_CAP_INPUTS: Readonly<Record<string, WalkCapRetirement>> = Object.freeze({
+  take_playlist_snapshot: { retired: 'max_results', canonical: 'item_cap' },
+  backup_library: { retired: 'max_results', canonical: 'walk_cap' },
+});
+
+/**
+ * The retired walk cap on one call, or `undefined` when it carries none.
+ *
+ * `undefined` for an unlisted tool as well as for a listed tool that did not
+ * send the name, so a caller cannot tell the two apart by accident and neither
+ * can invent a retirement for a tool this table says nothing about.
+ */
+export function retiredWalkCapOnCall(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+): WalkCapRetirement | undefined {
+  if (!Object.hasOwn(RETIRED_WALK_CAP_INPUTS, tool)) return undefined;
+  const config = RETIRED_WALK_CAP_INPUTS[tool];
+  if (!config) return undefined;
+  return args[config.retired] === undefined ? undefined : config;
+}
+
+/**
+ * The refusal text for a call still sending a retired walk cap.
+ *
+ * It names the name the caller sent AND the name that replaced it, because the
+ * generic unknown-parameter message does neither: it tells the caller to "use
+ * only parameters advertised by the tool schema", which is a claim the server
+ * never had `max_results` — false, it published it through 2.1.2 — and leaves
+ * the caller to go re-read a schema to discover what to send instead.
+ */
+export function retiredWalkCapMessage(retirement: WalkCapRetirement): string {
+  return `${retirement.retired} was removed as a walk cap in ${RETIRED_WALK_CAP_INPUTS_REMOVED_IN}; `
+    + `use ${retirement.canonical} instead.`;
+}
+
 /** The release that stopped REGISTERING the legacy taste_* tool names (#908). */
 export const RETIRED_TOOL_ALIASES_REMOVED_IN = 'v3.0';
 

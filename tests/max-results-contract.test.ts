@@ -30,6 +30,15 @@ import type { SpotifyClient } from '../src/client.js';
 import { registerCatalogTools } from '../src/tools/catalog.js';
 import { registerSwarm3SnapshotsTools } from '../src/tools/swarm3_snapshots.js';
 import { registerBackupTools } from '../src/tools/backup.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { installToolErrorBoundary } from '../src/tools/annotations.js';
+import {
+  RETIRED_PLAYLIST_INPUTS_REMOVED_IN,
+  RETIRED_WALK_CAP_INPUTS,
+  RETIRED_WALK_CAP_INPUTS_REMOVED_IN,
+} from '../src/shaping.js';
 
 type ToolResult = {
   content: Array<{ type: string; text: string }>;
@@ -337,4 +346,121 @@ test('#886 no walk in src/tools takes its cap from max_results', async () => {
     + 'truncates durable output. Give the walk its own named cap (see walkCap in\n'
     + 'src/shaping.ts).\n  ' + offenders.join('\n  '),
   );
+});
+
+// ------------------------------------------- 4. the withdrawal, not a typo
+
+/**
+ * What a 2.x caller actually receives.
+ *
+ * The behavioural tests above call handlers directly, which cannot see this at
+ * all: zod strips an undeclared key before a handler runs, so a direct call
+ * with a retired `max_results` simply ignores it. The refusal is made at the
+ * request boundary, so proving it needs a real `callTool` — the same reason
+ * `tests/schema.playlist-params.test.ts` builds an in-memory client.
+ *
+ * The kind is the point. Left to the generic unknown-parameter path, the reply
+ * is `unknown_param` / `parameter_not_accepted` and "use only parameters
+ * advertised by the tool schema" — a claim the server never had `max_results`.
+ * It did: 2.1.2 published it on both tools, SPEC.md documented it, and its own
+ * description said it was the walk cap. A caller upgrading is following a
+ * contract, not mistyping, so AGENTS §5 puts it in the `retired_input` class
+ * with the playlist spellings, and the refusal has to name what to send
+ * instead. Two tools retired the SAME name for DIFFERENT successors, so naming
+ * the replacement is not a formality — a generic message sends the caller back
+ * to the schema to work out which of `item_cap` / `walk_cap` they wanted.
+ */
+describe('#886 the retired walk caps are refused as retired, not as unknown', () => {
+  async function boundary() {
+    const calls: string[] = [];
+    const client = {
+      get: async (path: string) => { calls.push(path); return { items: [], total: 0 }; },
+      getAllPages: async (path: string) => { calls.push(path); return []; },
+    } as unknown as SpotifyClient;
+    const server = new McpServer({ name: 'max-results-contract', version: '0.0.0' });
+    registerSwarm3SnapshotsTools(server, client);
+    registerBackupTools(server, client);
+    installToolErrorBoundary(server);
+    const caller = new Client({ name: 'contract-client', version: '0.0.0' });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await Promise.all([caller.connect(ct), server.connect(st)]);
+    return {
+      calls,
+      invoke: async (name: string, args: Record<string, unknown>) =>
+        (await caller.callTool({ name, arguments: args })) as unknown as {
+          isError?: boolean;
+          content: Array<{ text: string }>;
+          structuredContent?: { error?: { kind?: string; reason?: string } };
+        },
+    };
+  }
+
+  const CASES: Array<[string, string, string]> = [
+    ['take_playlist_snapshot', 'item_cap', 'playlist'],
+    ['backup_library', 'walk_cap', 'notes'],
+  ];
+
+  for (const [tool, canonical, extraKey] of CASES) {
+    it(`${tool} refuses a retired max_results by naming ${canonical}`, async () => {
+      const h = await boundary();
+      const args: Record<string, unknown> = { max_results: 5 };
+      if (extraKey === 'playlist') args.playlist = '4uLU6hMCjMI75M1A2tKUQC';
+      else args.notes = 'x';
+      const result = await h.invoke(tool, args);
+      const message = result.content.map((c) => c.text).join(' ');
+
+      assert.equal(result.isError, true, `${tool} accepted a retired max_results`);
+      assert.ok(message.includes('max_results'), `refusal did not name what was sent: ${message}`);
+      assert.ok(message.includes(canonical), `refusal did not name ${canonical}: ${message}`);
+      // The literal, not a regex built from the constant the message is built
+      // from: a string a caller greps for must not be derived from its own
+      // source, or it cannot fail however the release is re-dated.
+      assert.match(message, /removed as a walk cap in v3\.0/, `refusal did not state the release: ${message}`);
+      assert.equal(
+        result.structuredContent?.error?.kind,
+        'validation',
+        `${tool} refusal was not a typed validation error`,
+      );
+      assert.equal(
+        result.structuredContent?.error?.reason,
+        'retired_input',
+        `${tool} refusal fell through to the unknown-parameter path`,
+      );
+      assert.deepEqual(h.calls, [], `${tool} reached Spotify before refusing a retired input`);
+    });
+  }
+
+  it('never claims the server never had the name', async () => {
+    const h = await boundary();
+    const result = await h.invoke('take_playlist_snapshot', {
+      playlist: '4uLU6hMCjMI75M1A2tKUQC',
+      max_results: 5,
+    });
+    const message = result.content.map((c) => c.text).join(' ');
+    assert.doesNotMatch(
+      message,
+      /does not accept parameter|only parameters advertised/,
+      'the generic unknown-parameter text asserts the server never had max_results, which is false',
+    );
+  });
+
+  it('leaves a call that omits it entirely alone', async () => {
+    const h = await boundary();
+    const result = await h.invoke('take_playlist_snapshot', {
+      playlist: '4uLU6hMCjMI75M1A2tKUQC',
+      dry_run: true,
+    });
+    assert.notEqual(result.structuredContent?.error?.reason, 'retired_input', 'a clean call was refused');
+  });
+
+  it('promises one removal release across both retirement tables', () => {
+    // Two named constants so neither table has to lie about what it governs,
+    // and one asserted value so they cannot drift into two different promises.
+    assert.equal(RETIRED_WALK_CAP_INPUTS_REMOVED_IN, RETIRED_PLAYLIST_INPUTS_REMOVED_IN);
+  });
+
+  it('records a distinct successor per tool, not one shared name', () => {
+    const canonicals = new Set(Object.values(RETIRED_WALK_CAP_INPUTS).map((r) => r.canonical));
+    assert.equal(canonicals.size, Object.keys(RETIRED_WALK_CAP_INPUTS).length);
+  });
 });

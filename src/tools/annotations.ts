@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -2844,6 +2844,36 @@ function retiredInputResult(tool: string, requested: string, args: Readonly<Reco
 }
 
 /**
+ * The refusal for a call still sending `max_results` to a tool that withdrew it
+ * as a walk cap (#886), or `undefined` when this call is not one.
+ *
+ * This exists because the generic unknown-parameter path gets the KIND wrong
+ * for a name the server published. `unknown_param` reads "we never had that
+ * name" and tells the caller to use only what the schema advertises — but
+ * `max_results` was on `take_playlist_snapshot` and `backup_library` through
+ * 2.1.2, SPEC.md documented it, and its description told callers it was the
+ * walk cap. A caller upgrading is following a contract, not mistyping, so AGENTS
+ * §5 puts a withdrawn name in the same class as the retired playlist spellings:
+ * `validation` / `retired_input`, naming both the retired field and its
+ * replacement.
+ *
+ * It names the replacement because the alternative leaves the caller to
+ * re-read a schema to discover that `item_cap` and `walk_cap` are what they
+ * want, which is the work this refusal exists to do.
+ */
+function retiredWalkCapResult(tool: string, args: Readonly<Record<string, unknown>>) {
+  const retirement = retiredWalkCapOnCall(tool, args);
+  if (!retirement) return undefined;
+  return errorResult(tool, {
+    kind: 'validation',
+    reason: 'retired_input',
+    fix: `Remove ${safeIdentifier(retirement.retired)} and pass ${retirement.canonical} instead.`,
+    text: `${tool} rejected ${safeIdentifier(retirement.retired)}: ${retiredWalkCapMessage(retirement)}`,
+    param: retirement.retired,
+  }, `retired walk cap ${JSON.stringify(retirement.retired)}`);
+}
+
+/**
  * The canonical tool name a retired legacy alias should dispatch to, or
  * `undefined` when this call is not one (#908).
  *
@@ -3369,6 +3399,12 @@ export function installToolErrorBoundary(server: McpServer): number {
     // stats.fm request, naming both fields.
     const identityConflict = statsfmIdentityConflict(tool, shape, args);
     if (identityConflict) return identityConflict;
+    // #886: same reasoning as the playlist retirement above, for the walk caps
+    // withdrawn from `take_playlist_snapshot` and `backup_library`. Ahead of
+    // the unknown-parameter fallback for the same reason: the two claims are
+    // different, and only one of them is true.
+    const walkCap = retiredWalkCapResult(tool, args);
+    if (walkCap) return walkCap;
     const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
     if (unknown) return unknownParamResult(tool, unknown, knownParams);
 
