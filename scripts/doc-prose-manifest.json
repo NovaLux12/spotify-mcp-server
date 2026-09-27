@@ -2129,6 +2129,58 @@
         "label": "A 404 means \"not available in this market\"; a 429 or tra…"
       },
       {
+        "hash": "08ccf5fcd0d60b2b",
+        "label": "The one playback-position record (#846)"
+      },
+      {
+        "hash": "d52a519e537911c7",
+        "label": "Three sidecars each persisted \"where was I listening\" in…"
+      },
+      {
+        "hash": "9522e13ba63ac0f9",
+        "label": "There is now one record shape, in the playback-extension…"
+      },
+      {
+        "hash": "2954d67eef1a2568",
+        "label": "| Field | Notes | |---|---| | id | Canonical id. The too…"
+      },
+      {
+        "hash": "cc215eb437f38b5b",
+        "label": "legacy is the losslessness contract: two of the three le…"
+      },
+      {
+        "hash": "7f195872ae9a6712",
+        "label": "Tools. captureplaybackposition and checkpointplayback ar…"
+      },
+      {
+        "hash": "0ea6371a77a2084c",
+        "label": "The reads work before the migration too. A legacy bookma…"
+      },
+      {
+        "hash": "f0a5823c45b14d3c",
+        "label": "migrateplaybackpositions is the one-time, idempotent imp…"
+      },
+      {
+        "hash": "9cfdaff5c7a8bc7b",
+        "label": "Idempotent by origin + originid provenance, not by a mar…"
+      },
+      {
+        "hash": "da2b757bca7d1332",
+        "label": "Refuses rather than partially applies. A legacy sidecar …"
+      },
+      {
+        "hash": "c4e4291b2ca38826",
+        "label": "A missing store is the first-run case, not a fault. A si…"
+      },
+      {
+        "hash": "b23cbb88cc04d32b",
+        "label": "Legacy bookmark files are renamed to .migrated, never un…"
+      },
+      {
+        "hash": "9b535f4b07a8a55c",
+        "label": "Breaking (v3): captureplaybackposition returns { bookmar…"
+      },
+      {
         "hash": "c22fd82314f73994",
         "label": "5.2 Search"
       },
@@ -5636,8 +5688,8 @@
     }
   ],
   "provenance": {
-    "head": "079ba9eb52fc29a1a5eda211e68aeb7f95acc1b9",
-    "upstream": "079ba9eb52fc29a1a5eda211e68aeb7f95acc1b9",
+    "head": "6a340a35a9aa5e273efd392609ca7aaed429ee32",
+    "upstream": "6a340a35a9aa5e273efd392609ca7aaed429ee32",
     "behind": false
   }
 }
