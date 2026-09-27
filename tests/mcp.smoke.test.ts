@@ -74,10 +74,11 @@ const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_
 
 // Mirrors the `ErrorKind` union in src/tools/annotations.ts, which is not
 // exported. A classification added there must be added here too, or this
-// guard reports a false failure.
+// guard reports a false failure. `not_modified` (#601) was already missing from
+// this mirror and `cancelled` (#676) was added alongside it.
 const KNOWN_ERROR_KINDS = [
-  'auth', 'forbidden', 'not_found', 'rate_limited', 'unavailable',
-  'conflict', 'validation', 'unknown_tool', 'unknown_param', 'internal',
+  'auth', 'forbidden', 'not_found', 'not_modified', 'rate_limited', 'unavailable',
+  'conflict', 'validation', 'unknown_tool', 'unknown_param', 'cancelled', 'internal',
 ] as const;
 
 interface JsonRpcResponse {

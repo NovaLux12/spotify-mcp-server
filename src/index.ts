@@ -20,6 +20,7 @@ import { createRequire } from 'node:module';
 import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
 import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
+import { installCancellationContextBoundary } from './cancellation.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
@@ -36,6 +37,14 @@ async function startMcpServer(): Promise<void> {
   // (#728): both wrap the SDK's tool/registerTool, and progress wraps
   // truncation at call time so any long walks triggered by shaping also see
   // the caller's progress token.
+  // Per-request cancellation context (#676): the SDK hands every handler an
+  // `extra.signal` that it aborts on `notifications/cancelled`, and this
+  // boundary is the single place that signal enters the server. Installed
+  // alongside the progress context because it wraps `tool`/`registerTool` the
+  // same way and both only read `extra` and delegate — order between the three
+  // wrappers is not load-bearing, but it is listed first because cancellation
+  // is the one a caller is waiting on.
+  installCancellationContextBoundary(server);
   installProgressContextBoundary(server);
   installTruncationBoundary(server);
 
