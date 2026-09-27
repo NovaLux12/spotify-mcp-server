@@ -300,17 +300,16 @@ function boundedPlaylistArray(min: number, max: number, reason: string) {
 }
 
 /** Canonical ordered collection with an operation-specific cardinality. */
-function playlistListFields({ min = 2, max = 10, limitReason }: PlaylistListLimits) {
+export function playlistListFields({ min = 2, max = 10, limitReason }: PlaylistListLimits) {
   return {
     playlists: boundedPlaylistArray(min, max, limitReason)
       .optional()
-      .describe(`Canonical ordered playlists (${min}–${max}), or provide the complete documented legacy alias accepted by this tool`),
+      .describe(`Canonical ordered playlists (${min}–${max})`),
   } as const;
 }
 
 export const PlaylistId = PlaylistRef;
 
-/** Canonical plural input; exactly one canonical/legacy collection is required. */
 /**
  * The canonical 2–10 playlist list. Every tool that spreads this reads each
  * listed playlist in full, which is why it carries {@link PAGED_WALK_LIST_REASON}
@@ -318,10 +317,10 @@ export const PlaylistId = PlaylistRef;
  */
 export const PlaylistListFields = playlistListFields({ limitReason: PAGED_WALK_LIST_REASON });
 
-/** Canonical A-then-B pair; provide both fields or one complete documented legacy pair. */
+/** Canonical A-then-B pair; both fields are required together. */
 export const PlaylistPairFields = {
-  playlist_a: PlaylistRef.optional().describe('Canonical A playlist; provide with playlist_b or one complete documented legacy pair'),
-  playlist_b: PlaylistRef.optional().describe('Canonical B playlist; provide with playlist_a or one complete documented legacy pair'),
+  playlist_a: PlaylistRef.optional().describe('Canonical A playlist; provide with playlist_b'),
+  playlist_b: PlaylistRef.optional().describe('Canonical B playlist; provide with playlist_a'),
 } as const;
 
 /** Shared mutation target: an existing playlist or a new playlist name. */
@@ -342,59 +341,100 @@ type PlaylistPairSide =
 
 type PlaylistPairAlias = readonly [PlaylistPairSide, PlaylistPairSide];
 
-/** Legacy aliases are supported through v2.0 and removed in v2.1. */
-export function legacyPlaylistListFields<const A extends PlaylistListAlias>(
-  aliases: readonly A[],
-  limits: PlaylistListLimits,
-): Record<A, z.ZodOptional<BoundedPlaylistArray>> {
-  const schema = boundedPlaylistArray(limits.min ?? 2, limits.max ?? 10, limits.limitReason)
-    .describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide this complete alias or canonical playlists.');
-  const out = {} as Record<A, z.ZodOptional<BoundedPlaylistArray>>;
-  for (const name of aliases) out[name] = schema.optional();
-  return out;
-}
-
-
-type PairAliasFields<P extends PlaylistPairSide> = {
-  [K in P]: z.ZodOptional<typeof PlaylistRef>;
-};
-
-/** Legacy pair aliases are supported through v2.0 and removed in v2.1. */
-export function legacyPlaylistPairFields<const P extends PlaylistPairSide>(
-  aliases: readonly (readonly [P, P])[],
-): PairAliasFields<P> {
-  return Object.fromEntries(aliases.flatMap(([a, b]) => [
-    [a, PlaylistRef.optional().describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide a complete pair or canonical playlist_a/playlist_b.')],
-    [b, PlaylistRef.optional().describe('Deprecated one-release alias supported through v2.0; removed in v2.1. Provide a complete pair or canonical playlist_a/playlist_b.')],
-  ])) as PairAliasFields<P>;
-}
-
-/** Canonical and legacy list spellings share one cardinality contract. */
-export function playlistListInputFields<const A extends PlaylistListAlias>(
-  aliases: readonly A[],
-  limits: PlaylistListLimits,
-) {
-  return {
-    ...playlistListFields(limits),
-    ...legacyPlaylistListFields(aliases, limits),
-  };
-}
-
-interface PlaylistInputResolution {
-  /** Canonical, normalized values in caller-supplied order. */
-  values: string[];
-  /** Legacy input names actually present on the call. */
-  deprecatedInputs: string[];
-  /** One-line migration note, or null for canonical-only calls. */
-  deprecationNote: string | null;
-}
+/**
+ * The release that removed the legacy playlist input spellings (#1287).
+ *
+ * AGENTS.md §5 promised "supported through 2.0, removed in 2.1"; 2.1 shipped
+ * with the aliases still in the registry, so 2.1.2 was serving them along with
+ * a `deprecation_note` promising a removal that had not been scheduled. The
+ * next release from this branch is 3.0.0, and that is the release the removal
+ * actually lands in — the version is named here once so the refusal text, the
+ * SPEC table and the census cannot drift into three different promises again.
+ */
+export const RETIRED_PLAYLIST_INPUTS_REMOVED_IN = 'v3.0';
 
 type PlaylistInputConfig =
   | { kind: 'list'; aliases: readonly PlaylistListAlias[] }
   | { kind: 'pair'; aliases: readonly PlaylistPairAlias[] };
 
-function orderedEqual(left: readonly string[], right: readonly string[]): boolean {
-  return left.length === right.length && left.every((value, index) => value === right[index]);
+/**
+ * Per-tool retirement record for the removed playlist input spellings (#1287).
+ *
+ * This is the ONE place the retired names are declared. It replaced the
+ * `legacyPlaylistListFields` / `legacyPlaylistPairFields` builders, which
+ * existed only to add the names to a tool's advertised `inputSchema`; the
+ * fields are gone from the schema, so nothing needs to BUILD a field here. What
+ * a caller still needs is a refusal that names what it sent and what to send
+ * instead, and a table is the only way to produce that without leaving a second
+ * hand-maintained list somewhere.
+ *
+ * Each tool declares exactly one alias pair or one alias list, which is the same
+ * per-tool rule the aliases had while they were accepted: a caller cannot infer
+ * one tool's spelling from another's.
+ */
+export const RETIRED_PLAYLIST_INPUTS: Readonly<Record<string, PlaylistInputConfig>> = Object.freeze({
+  check_playlist_following: { kind: 'list', aliases: ['playlist_ids'] },
+  compare_playlist_covers: { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] },
+  playlist_difference_plan: { kind: 'list', aliases: ['subtract_playlist_ids'] },
+  playlist_diff: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
+  playlist_intersect: { kind: 'list', aliases: ['source_playlist_ids'] },
+  playlist_intersection: { kind: 'list', aliases: ['playlist_ids'] },
+  playlist_overlap_matrix: { kind: 'list', aliases: ['playlist_ids'] },
+  playlist_pair_check: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
+  playlist_subtract: { kind: 'list', aliases: ['subtract_playlist_ids'] },
+  playlist_symmetric_difference: { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] },
+  playlist_union: { kind: 'list', aliases: ['source_playlist_ids'] },
+  playlist_union_preview: { kind: 'list', aliases: ['playlist_ids'] },
+  balance_playlist_pairs: { kind: 'list', aliases: ['playlist_ids'] },
+  diff_playlists: { kind: 'pair', aliases: [['a', 'b']] },
+  find_duplicate_tracks_across_playlists: { kind: 'list', aliases: ['playlist_ids'] },
+  interleave_playlists_plan: { kind: 'list', aliases: ['playlist_ids'] },
+  merge_playlists: { kind: 'list', aliases: ['sources'] },
+  merge_playlists_plan: { kind: 'list', aliases: ['playlist_ids'] },
+});
+
+/** Every retired spelling, for the doc-name gate and the census assertions. */
+export const RETIRED_PLAYLIST_INPUT_NAMES: readonly string[] = Object.freeze(
+  [...new Set(Object.values(RETIRED_PLAYLIST_INPUTS).flatMap((config) => config.aliases.flat()))].sort(),
+);
+
+/** The canonical spelling(s) that replaced a tool's retired names. */
+function canonicalFor(kind: PlaylistInputConfig['kind']): string {
+  return kind === 'list' ? 'playlists' : 'playlist_a/playlist_b';
+}
+
+/** The retired names present on one call, paired with their replacement. */
+export function retiredInputsOnCall(
+  args: Readonly<Record<string, unknown>>,
+  config: PlaylistInputConfig,
+): { retired: string[]; canonical: string } {
+  const retired = (config.kind === 'list' ? config.aliases : config.aliases.flat())
+    .filter((name) => args[name] !== undefined);
+  return { retired, canonical: canonicalFor(config.kind) };
+}
+
+/**
+ * The refusal text for a call carrying a retired spelling.
+ *
+ * It names every retired name the caller actually sent and the canonical
+ * replacement, because "unknown_param, did you mean X" is a different claim
+ * from "you used a name we removed on purpose", and a caller migrating off a
+ * deprecation notice is owed the second one.
+ */
+export function retiredInputMessage(retired: readonly string[], canonical: string): string {
+  const subject = retired.length === 1
+    ? `${retired[0]} was removed in ${RETIRED_PLAYLIST_INPUTS_REMOVED_IN}`
+    : `${retired.join(' and ')} were removed in ${RETIRED_PLAYLIST_INPUTS_REMOVED_IN}`;
+  return `${subject}; use ${canonical} instead.`;
+}
+
+interface PlaylistInputResolution {
+  /** Canonical, normalized values in caller-supplied order. */
+  values: string[];
+  /** Deprecated input names actually present on the call. */
+  deprecatedInputs: string[];
+  /** One-line migration note, or null for a call with no deprecated input. */
+  deprecationNote: string | null;
 }
 
 function normalizeResolvedPlaylistValue(value: unknown): string {
@@ -406,49 +446,37 @@ function normalizeInputList(value: unknown, name: string): string[] {
   return value.map(normalizeResolvedPlaylistValue);
 }
 
-function resolution(values: string[], deprecatedInputs: string[], canonical: string): PlaylistInputResolution {
-  if (deprecatedInputs.length === 0) {
-    return { values, deprecatedInputs: [], deprecationNote: null };
-  }
-  return {
-    values,
-    deprecatedInputs: [...deprecatedInputs],
-    deprecationNote: `Deprecated input${deprecatedInputs.length === 1 ? '' : 's'} ${deprecatedInputs.join(', ')}; use ${canonical}. Alias support ends with v2.1 (removed in 2.1).`,
-  };
-}
-
 /**
- * Resolve one canonical playlist collection or A/B pair, accepting only the
- * declared one-release aliases. Matching aliases remain observable; missing,
- * incomplete, differently ordered, or conflicting values fail before I/O.
+ * Resolve one canonical playlist collection or A/B pair.
+ *
+ * The retired spellings are no longer accepted, so this no longer compares a
+ * canonical value against an alias: a call carrying a retired name is refused
+ * by name, before any Spotify request, and the message names the canonical
+ * replacement. `config.aliases` is therefore a RETIREMENT record rather than an
+ * acceptance set — see {@link RETIRED_PLAYLIST_INPUTS}.
+ *
+ * The tool error boundary refuses the same call first, at the protocol layer,
+ * so a handler reached through the server never sees one. This check is the
+ * second line for a handler invoked directly, and it is what a test drives.
  */
 export function resolvePlaylistInput(
   args: Readonly<Record<string, unknown>>,
   config: PlaylistInputConfig,
 ): PlaylistInputResolution {
+  const { retired, canonical } = retiredInputsOnCall(args, config);
+  if (retired.length > 0) {
+    throw new Error(retiredInputMessage(retired, canonical));
+  }
+
   if (config.kind === 'list') {
-    const canonical = args.playlists === undefined ? undefined : normalizeInputList(args.playlists, 'playlists');
-    const deprecatedInputs: string[] = [];
-    let selected = canonical;
-    let selectedName = 'playlists';
-
-    for (const alias of config.aliases) {
-      if (args[alias] === undefined) continue;
-      deprecatedInputs.push(alias);
-      const candidate = normalizeInputList(args[alias], alias);
-      if (selected === undefined) {
-        selected = candidate;
-        selectedName = alias;
-      } else if (!orderedEqual(selected, candidate)) {
-        throw new Error(`Conflicting playlist inputs ${selectedName} and ${alias}: values must match in the same order.`);
-      }
+    if (args.playlists === undefined) {
+      throw new Error('Missing required playlist input playlists');
     }
-
-    if (selected === undefined) {
-      const legacy = config.aliases.length > 0 ? ` (legacy aliases: ${config.aliases.join(', ')})` : '';
-      throw new Error(`Missing required playlist input playlists${legacy}`);
-    }
-    return resolution(selected, deprecatedInputs, 'playlists');
+    return {
+      values: normalizeInputList(args.playlists, 'playlists'),
+      deprecatedInputs: [],
+      deprecationNote: null,
+    };
   }
 
   const canonicalA = args.playlist_a === undefined ? undefined : normalizeResolvedPlaylistValue(args.playlist_a);
@@ -456,36 +484,10 @@ export function resolvePlaylistInput(
   if ((canonicalA === undefined) !== (canonicalB === undefined)) {
     throw new Error('Missing playlist pair: playlist_a and playlist_b must be provided together');
   }
-
-  let selectedA = canonicalA;
-  let selectedB = canonicalB;
-  let selectedNames: readonly string[] = ['playlist_a', 'playlist_b'];
-  const deprecatedInputs: string[] = [];
-
-  for (const [aliasA, aliasB] of config.aliases) {
-    const hasA = args[aliasA] !== undefined;
-    const hasB = args[aliasB] !== undefined;
-    if (!hasA && !hasB) continue;
-    deprecatedInputs.push(aliasA, aliasB);
-    if (hasA !== hasB) {
-      throw new Error(`Incomplete deprecated playlist pair ${aliasA} and ${aliasB}: both values are required`);
-    }
-    const candidateA = normalizeResolvedPlaylistValue(args[aliasA]);
-    const candidateB = normalizeResolvedPlaylistValue(args[aliasB]);
-    if (selectedA === undefined || selectedB === undefined) {
-      selectedA = candidateA;
-      selectedB = candidateB;
-      selectedNames = [aliasA, aliasB];
-    } else if (selectedA !== candidateA || selectedB !== candidateB) {
-      throw new Error(`Conflicting playlist inputs ${selectedNames[0]} and ${aliasA} (or ${selectedNames[1]} and ${aliasB}): A/B values must match.`);
-    }
+  if (canonicalA === undefined || canonicalB === undefined) {
+    throw new Error('Missing required playlist pair playlist_a and playlist_b');
   }
-
-  if (selectedA === undefined || selectedB === undefined) {
-    const legacy = config.aliases.length > 0 ? ` (legacy aliases: ${config.aliases.flat().join(', ')})` : '';
-    throw new Error(`Missing required playlist pair playlist_a and playlist_b${legacy}`);
-  }
-  return resolution([selectedA, selectedB], deprecatedInputs, 'playlist_a/playlist_b');
+  return { values: [canonicalA, canonicalB], deprecatedInputs: [], deprecationNote: null };
 }
 
 /**
@@ -515,7 +517,16 @@ export function resolveDeprecatedToolName(alias: string, canonical: string): Pla
   return Object.freeze({
     values: [],
     deprecatedInputs: [alias],
-    deprecationNote: `Deprecated tool name ${alias}; use ${canonical}. Alias support ends with v2.1 (removed in 2.1).`,
+    // No version is promised here. This note USED to say "Alias support ends
+    // with v2.1 (removed in 2.1)" while the alias was still registered — the
+    // same notice-and-code disagreement #1287 was filed for, on the tool-name
+    // half of the deprecation. #1287 removes the INPUT aliases only; these two
+    // names are still served, so the note states what is true today (deprecated,
+    // here is the canonical name) and does not date a removal that no release
+    // has scheduled. Retiring them is a separate change with its own steps in
+    // AGENTS.md §5, and it must land the way this one did: the notice and the
+    // code in the same commit.
+    deprecationNote: `Deprecated tool name ${alias}; use ${canonical}.`,
   });
 }
 

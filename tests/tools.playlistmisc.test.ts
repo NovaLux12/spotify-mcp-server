@@ -437,7 +437,12 @@ describe('#1099 the pin_playlist/unpin_playlist names were a lie', () => {
       const tool = h.registered.find((t) => t.name === alias);
       assert.ok(tool, `${alias} must stay callable for one release (AGENTS.md §5)`);
       assert.match(tool.description, new RegExp(`DEPRECATED.*${canonical}`), `${alias} must name its replacement`);
-      assert.match(tool.description, /2\.1/, `${alias} must say when it goes away`);
+      // #1287 removed the legacy playlist INPUT aliases. The tool-NAME aliases
+      // are a separate deprecation and are still registered, so their notice
+      // must not date a removal no release has scheduled — that mismatch is the
+      // bug this issue was filed for. Retiring these names is its own change
+      // with its own AGENTS.md §5 steps.
+      assert.doesNotMatch(tool.description, /removed in 2\.1/, `${alias} still promises the 2.1 removal that never happened`);
     }
     // And "still work" is behavioural, not just a registration row.
     const out = await h.invoke('pin_playlist', { playlist_id: 'pl1', dry_run: false });

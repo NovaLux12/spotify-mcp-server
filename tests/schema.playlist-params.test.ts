@@ -7,6 +7,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { SpotifyClient } from '../src/client.js';
+import { installToolErrorBoundary } from '../src/tools/annotations.js';
 import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.js';
 import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
 import { registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
@@ -27,38 +28,48 @@ type ToolResponse = {
   structuredContent?: Record<string, unknown>;
 };
 
+/**
+ * #1287: `retired` is a RETIREMENT record, not an acceptance set. Each entry
+ * names the spellings this tool published under a deprecation notice and no
+ * longer accepts; the tool's schema must declare none of them, and a call
+ * carrying one must be refused by name before any Spotify request. `overlap_
+ * playlists` is here with an empty list because it was always canonical-only —
+ * it is in the set/diff family, and its schema text used to promise an alias it
+ * never had, which is the same doc/code disagreement this issue is about.
+ */
 type ToolContract =
-  | { kind: 'list'; aliases: readonly string[] }
-  | { kind: 'pair'; aliases: readonly (readonly [string, string])[] };
+  | { kind: 'list'; retired: readonly string[] }
+  | { kind: 'pair'; retired: readonly (readonly [string, string])[] };
 
 const TOOL_CONTRACT = {
-  merge_playlists: { kind: 'list', aliases: ['sources'] },
-  diff_playlists: { kind: 'pair', aliases: [['a', 'b']] },
-  overlap_playlists: { kind: 'list', aliases: [] },
-  check_playlist_following: { kind: 'list', aliases: ['playlist_ids'] },
-  compare_playlist_covers: { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] },
-  playlist_union: { kind: 'list', aliases: ['source_playlist_ids'] },
-  playlist_subtract: { kind: 'list', aliases: ['subtract_playlist_ids'] },
-  playlist_symmetric_difference: { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] },
-  playlist_intersect: { kind: 'list', aliases: ['source_playlist_ids'] },
-  playlist_overlap_matrix: { kind: 'list', aliases: ['playlist_ids'] },
-  merge_playlists_plan: { kind: 'list', aliases: ['playlist_ids'] },
-  playlist_difference_plan: { kind: 'list', aliases: ['subtract_playlist_ids'] },
-  interleave_playlists_plan: { kind: 'list', aliases: ['playlist_ids'] },
-  playlist_intersection: { kind: 'list', aliases: ['playlist_ids'] },
-  playlist_union_preview: { kind: 'list', aliases: ['playlist_ids'] },
-  find_duplicate_tracks_across_playlists: { kind: 'list', aliases: ['playlist_ids'] },
-  balance_playlist_pairs: { kind: 'list', aliases: ['playlist_ids'] },
-  playlist_diff: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
-  playlist_pair_check: { kind: 'pair', aliases: [['playlist_a_id', 'playlist_b_id']] },
+  merge_playlists: { kind: 'list', retired: ['sources'] },
+  diff_playlists: { kind: 'pair', retired: [['a', 'b']] },
+  overlap_playlists: { kind: 'list', retired: [] },
+  check_playlist_following: { kind: 'list', retired: ['playlist_ids'] },
+  compare_playlist_covers: { kind: 'pair', retired: [['playlist_id_a', 'playlist_id_b']] },
+  playlist_union: { kind: 'list', retired: ['source_playlist_ids'] },
+  playlist_subtract: { kind: 'list', retired: ['subtract_playlist_ids'] },
+  playlist_symmetric_difference: { kind: 'pair', retired: [['playlist_id_a', 'playlist_id_b']] },
+  playlist_intersect: { kind: 'list', retired: ['source_playlist_ids'] },
+  playlist_overlap_matrix: { kind: 'list', retired: ['playlist_ids'] },
+  merge_playlists_plan: { kind: 'list', retired: ['playlist_ids'] },
+  playlist_difference_plan: { kind: 'list', retired: ['subtract_playlist_ids'] },
+  interleave_playlists_plan: { kind: 'list', retired: ['playlist_ids'] },
+  playlist_intersection: { kind: 'list', retired: ['playlist_ids'] },
+  playlist_union_preview: { kind: 'list', retired: ['playlist_ids'] },
+  find_duplicate_tracks_across_playlists: { kind: 'list', retired: ['playlist_ids'] },
+  balance_playlist_pairs: { kind: 'list', retired: ['playlist_ids'] },
+  playlist_diff: { kind: 'pair', retired: [['playlist_a_id', 'playlist_b_id']] },
+  playlist_pair_check: { kind: 'pair', retired: [['playlist_a_id', 'playlist_b_id']] },
 } satisfies Record<string, ToolContract>;
 
 type ToolName = keyof typeof TOOL_CONTRACT;
 
 type CallCase = {
   canonical: Record<string, unknown>;
-  alias: Record<string, unknown>;
-  aliasNames: string[];
+  /** A call built entirely from the retired spellings — must be refused. */
+  retired: Record<string, unknown>;
+  retiredNames: string[];
 };
 
 const PLAYLIST_1 = '1111111111111111111111';
@@ -69,98 +80,98 @@ const OTHER_PLAYLIST = '4444444444444444444444';
 const CALL_CASES: Record<ToolName, CallCase> = {
   merge_playlists: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], new_name: 'Merged', dry_run: true },
-    alias: { sources: [PLAYLIST_1, PLAYLIST_2], new_name: 'Merged', dry_run: true },
-    aliasNames: ['sources'],
+    retired: { sources: [PLAYLIST_1, PLAYLIST_2], new_name: 'Merged', dry_run: true },
+    retiredNames: ['sources'],
   },
   diff_playlists: {
     canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
-    alias: { a: PLAYLIST_1, b: PLAYLIST_2 },
-    aliasNames: ['a', 'b'],
+    retired: { a: PLAYLIST_1, b: PLAYLIST_2 },
+    retiredNames: ['a', 'b'],
   },
   overlap_playlists: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: [],
+    retired: { playlists: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: [],
   },
   check_playlist_following: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: ['playlist_ids'],
   },
   compare_playlist_covers: {
     canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
-    alias: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
-    aliasNames: ['playlist_id_a', 'playlist_id_b'],
+    retired: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
+    retiredNames: ['playlist_id_a', 'playlist_id_b'],
   },
   playlist_union: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], target_name: 'Union', dry_run: true },
-    alias: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], target_name: 'Union', dry_run: true },
-    aliasNames: ['source_playlist_ids'],
+    retired: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], target_name: 'Union', dry_run: true },
+    retiredNames: ['source_playlist_ids'],
   },
   playlist_subtract: {
     canonical: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_2, OTHER_PLAYLIST], dry_run: true },
-    alias: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2, OTHER_PLAYLIST], dry_run: true },
-    aliasNames: ['subtract_playlist_ids'],
+    retired: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2, OTHER_PLAYLIST], dry_run: true },
+    retiredNames: ['subtract_playlist_ids'],
   },
   playlist_symmetric_difference: {
     canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
-    alias: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
-    aliasNames: ['playlist_id_a', 'playlist_id_b'],
+    retired: { playlist_id_a: PLAYLIST_1, playlist_id_b: PLAYLIST_2 },
+    retiredNames: ['playlist_id_a', 'playlist_id_b'],
   },
   playlist_intersect: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    alias: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    aliasNames: ['source_playlist_ids'],
+    retired: { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    retiredNames: ['source_playlist_ids'],
   },
   playlist_overlap_matrix: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: ['playlist_ids'],
   },
   merge_playlists_plan: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    retiredNames: ['playlist_ids'],
   },
   playlist_difference_plan: {
     canonical: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    alias: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    aliasNames: ['subtract_playlist_ids'],
+    retired: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    retiredNames: ['subtract_playlist_ids'],
   },
   interleave_playlists_plan: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    retiredNames: ['playlist_ids'],
   },
   playlist_intersection: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: ['playlist_ids'],
   },
   playlist_union_preview: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: ['playlist_ids'],
   },
   playlist_diff: {
     canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
-    alias: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
-    aliasNames: ['playlist_a_id', 'playlist_b_id'],
+    retired: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
+    retiredNames: ['playlist_a_id', 'playlist_b_id'],
   },
   playlist_pair_check: {
     canonical: { playlist_a: PLAYLIST_1, playlist_b: PLAYLIST_2 },
-    alias: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
-    aliasNames: ['playlist_a_id', 'playlist_b_id'],
+    retired: { playlist_a_id: PLAYLIST_1, playlist_b_id: PLAYLIST_2 },
+    retiredNames: ['playlist_a_id', 'playlist_b_id'],
   },
   find_duplicate_tracks_across_playlists: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2] },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2] },
+    retiredNames: ['playlist_ids'],
   },
   balance_playlist_pairs: {
     canonical: { playlists: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    alias: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
-    aliasNames: ['playlist_ids'],
+    retired: { playlist_ids: [PLAYLIST_1, PLAYLIST_2], dry_run: true },
+    retiredNames: ['playlist_ids'],
   },
 };
 
@@ -233,6 +244,12 @@ async function makeHarness(): Promise<PlaylistHarness> {
   registerExhaustMiscTools(server, client);
   registerSwarm3PlaylistopsTools(server, client);
   registerSwarm4PlaylistsTools(server, client);
+  // The production boundary, not just the registrars. Zod strips an unknown
+  // key before the handler runs, so a retired spelling is INVISIBLE to
+  // `resolvePlaylistInput` on this path — the refusal has to be proven where a
+  // real call meets it, or the test would only be proving that zod dropped a
+  // field and the handler then reported a missing canonical one.
+  installToolErrorBoundary(server);
 
   const caller = new Client({ name: 'playlist-schema-client', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -360,6 +377,9 @@ async function makeUnionGateHarness(options: UnionGateOptions): Promise<UnionGat
   } as unknown as SpotifyClient;
   const server = new McpServer({ name: 'union-confirm-contract', version: '0.0.0' });
   registerPlaylistTools(server, client);
+  // No error boundary here: this harness exercises the confirmation gate, and
+  // the boundary converts a thrown guard into a typed envelope. The retirement
+  // refusal is proven against the boundary in the main harness above.
   const caller = new Client(
     { name: 'union-confirm-client', version: '0.0.0' },
     answer === null ? undefined : { capabilities: { elicitation: { form: {} } } },
@@ -393,11 +413,10 @@ function relevantSchemaFields(tool: ListedTool, contract: ToolContract): string[
   const properties = tool.inputSchema?.properties ?? {};
   if (contract.kind === 'list') {
     return Object.entries(properties)
-      .filter(([name, schema]) => schema.type === 'array' && (name.includes('playlist') || name === 'sources'))
+      .filter(([name, schema]) => schema.type === 'array' && name.includes('playlist'))
       .map(([name]) => name);
   }
-  const aliases = new Set<string>(contract.aliases.flatMap(([a, b]) => [a, b]));
-  return Object.keys(properties).filter((name) => name === 'playlist_a' || name === 'playlist_b' || aliases.has(name));
+  return Object.keys(properties).filter((name) => name === 'playlist_a' || name === 'playlist_b');
 }
 
 describe('playlist set/diff schema and resolver contract (#912)', () => {
@@ -411,13 +430,12 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     await harness.close();
   });
 
-  it('discovers every live set/diff-family tool with only canonical names and explicit aliases', () => {
+  it('advertises only canonical names — no retired spelling survives in any schema', () => {
     const discovered = harness.listed.filter((tool) => {
       const properties = tool.inputSchema?.properties ?? {};
       const hasPlaylistCollection = Object.entries(properties).some(([name, schema]) =>
-        schema.type === 'array' && (name.includes('playlist') || name === 'sources'));
-      const hasPair = ['playlist_a', 'playlist_b', 'a', 'b', 'playlist_a_id', 'playlist_b_id', 'playlist_id_a', 'playlist_id_b']
-        .some((name) => name in properties);
+        schema.type === 'array' && name.includes('playlist'));
+      const hasPair = ['playlist_a', 'playlist_b'].some((name) => name in properties);
       return hasPlaylistCollection || hasPair;
     }).map((tool) => tool.name).sort();
     assert.deepEqual(discovered, Object.keys(TOOL_CONTRACT).sort());
@@ -427,10 +445,14 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
       assert.ok(tool, `${name} must be registered`);
       const properties = tool.inputSchema?.properties ?? {};
       const actual = relevantSchemaFields(tool, contract);
-      const expected = contract.kind === 'list'
-        ? ['playlists', ...contract.aliases]
-        : ['playlist_a', 'playlist_b', ...contract.aliases.flat()];
+      const expected = contract.kind === 'list' ? ['playlists'] : ['playlist_a', 'playlist_b'];
       assert.deepEqual(actual, expected, `${name} playlist input drift`);
+      // The removal contract itself: not just "not in the filtered set" but
+      // "not a property of this tool at all", so a re-added alias under a name
+      // the filter would not have caught still fails.
+      for (const retired of contract.kind === 'list' ? contract.retired : contract.retired.flat()) {
+        assert.ok(!(retired in properties), `${name} still advertises retired input ${retired}`);
+      }
       if (contract.kind === 'list') assert.equal(properties.playlists?.type, 'array');
       else {
         assert.equal(properties.playlist_a?.type, 'string');
@@ -440,57 +462,77 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     }
   });
 
-  it('routes every legacy alias to the same wire paths and exposes deprecation', async () => {
+  it('serves every canonical call unchanged and reports no deprecation metadata', async () => {
     for (const [name, callCase] of Object.entries(CALL_CASES) as Array<[ToolName, (typeof CALL_CASES)[ToolName]]>) {
       harness.calls.length = 0;
       const canonical = await harness.invoke(name, callCase.canonical);
       assert.ok(!canonical.isError, `${name} canonical call failed: ${textOf(canonical)}`);
-      assert.equal(canonical.structuredContent?.deprecated_inputs, undefined, `${name} canonical output leaked deprecation`);
-      const canonicalPaths = [...harness.calls];
-
-      harness.calls.length = 0;
-      const legacy = await harness.invoke(name, callCase.alias);
-      assert.ok(!legacy.isError, `${name} legacy call failed: ${textOf(legacy)}`);
-      assert.deepEqual(harness.calls, canonicalPaths, `${name} alias changed Spotify paths`);
-      if (callCase.aliasNames.length > 0) {
-        assert.deepEqual(legacy.structuredContent?.deprecated_inputs, callCase.aliasNames);
-        assert.match(textOf(legacy), /Deprecated input.*use (?:playlists|playlist_a\/playlist_b)/);
-        assert.equal(typeof legacy.structuredContent?.deprecation_note, 'string');
-      }
+      // A canonical call must carry NEITHER field. #1287 removed the only input
+      // path that could produce them, so if either reappears the aliases are
+      // back or a new deprecated input was added without a contract.
+      assert.equal(canonical.structuredContent?.deprecated_inputs, undefined, `${name} canonical output leaked deprecated_inputs`);
+      assert.equal(canonical.structuredContent?.deprecation_note, undefined, `${name} canonical output leaked deprecation_note`);
+      assert.doesNotMatch(textOf(canonical), /Deprecated input/, `${name} canonical prose leaked a deprecation note`);
     }
   });
 
-  it('rejects every canonical/legacy conflict before an API call and names both inputs', async () => {
+  it('refuses every retired spelling before any Spotify request, naming the replacement', async () => {
     for (const [name, callCase] of Object.entries(CALL_CASES) as Array<[ToolName, (typeof CALL_CASES)[ToolName]]>) {
-      if (callCase.aliasNames.length === 0) continue;
+      if (callCase.retiredNames.length === 0) continue;
       const contract = TOOL_CONTRACT[name];
-      const conflictArgs = { ...callCase.canonical };
-      if (contract.kind === 'list') {
-        const alias = callCase.aliasNames[0];
-        const canonicalValues = callCase.canonical.playlists as string[];
-        conflictArgs[alias] = [...canonicalValues].reverse();
-      } else {
-        const aliasA = callCase.aliasNames[0];
-        const aliasB = callCase.aliasNames[1];
-        assert.ok(aliasA && aliasB, `${name} test case must name a complete pair alias`);
-        conflictArgs[aliasA] = callCase.canonical.playlist_a;
-        conflictArgs[aliasB] = OTHER_PLAYLIST;
+      const canonical = contract.kind === 'list' ? 'playlists' : 'playlist_a/playlist_b';
+      harness.calls.length = 0;
+      let message: string;
+      let structured: Record<string, unknown> | undefined;
+      try {
+        const result = await harness.invoke(name, callCase.retired);
+        assert.equal(result.isError, true, `${name} accepted retired input ${callCase.retiredNames.join(', ')}`);
+        message = textOf(result);
+        structured = result.structuredContent;
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
       }
+      // Both halves matter: the refusal must NAME what was sent and WHAT to
+      // send instead. An `unknown_param` with a Levenshtein hint names neither
+      // with certainty, and claims the server never had the name — which is
+      // false, it published it until v3.0.
+      for (const retired of callCase.retiredNames) {
+        assert.ok(message.includes(retired), `${name} refusal did not name ${retired}: ${message}`);
+      }
+      assert.ok(message.includes(canonical), `${name} refusal did not name ${canonical}: ${message}`);
+      // The LITERAL version, never `new RegExp(RETIRED_PLAYLIST_INPUTS_REMOVED_IN)`:
+      // a regex built from the same constant the message is built from cannot
+      // fail, however the release is re-dated. "removed in v3.0" is the one
+      // string a caller greps for when they are still sending the old name, so
+      // the wrong version here is a real defect, not a cosmetic one.
+      assert.match(message, /removed in v3\.0/, `${name} refusal did not state the removal version`);
+      if (structured) {
+        assert.equal(structured.error?.kind, 'validation', `${name} refusal was not a typed validation error`);
+        assert.equal(structured.error?.reason, 'retired_input', `${name} refusal reason was not retired_input`);
+      }
+      assert.deepEqual(harness.calls, [], `${name} reached Spotify before refusing a retired input`);
+    }
+  });
+
+  it('still refuses a missing or half-supplied canonical input by naming the field', async () => {
+    // Removing an alias must not have turned a missing canonical value into a
+    // silent no-op: these are the same refusals the alias path used to make.
+    for (const [name, args] of [
+      ['playlist_union', { target_playlist_id: TARGET_PLAYLIST }],
+      ['compare_playlist_covers', { playlist_a: PLAYLIST_1 }],
+      ['diff_playlists', { playlist_a: PLAYLIST_1 }],
+    ] as Array<[string, Record<string, unknown>]>) {
       harness.calls.length = 0;
       let message: string;
       try {
-        const result = await harness.invoke(name, conflictArgs);
-        assert.equal(result.isError, true, `${name} conflict unexpectedly succeeded`);
+        const result = await harness.invoke(name, args);
+        assert.equal(result.isError, true, `${name} accepted an incomplete canonical input`);
         message = textOf(result);
       } catch (error) {
         message = error instanceof Error ? error.message : String(error);
       }
-      // Word-boundary the alias: `playlist_a.*a/` is satisfied by the literal
-      // `playlist_a` itself, so an implementation that never names the
-      // conflicting alias would still pass.
-      if (contract.kind === 'list') assert.match(message, new RegExp(`playlists.*\\b${callCase.aliasNames[0]}\\b`));
-      else assert.match(message, new RegExp(`playlist_a.*\\b${callCase.aliasNames[0]}\\b`));
-      assert.deepEqual(harness.calls, [], `${name} resolved a conflict before rejecting`);
+      assert.match(message, /playlist/, `${name} refusal did not name the playlist input: ${message}`);
+      assert.deepEqual(harness.calls, [], `${name} reached Spotify before refusing an incomplete input`);
     }
   });
 
@@ -508,16 +550,13 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
 
   it('confirms existing-target replacement and refuses declined or transport-error prompts without writes', async () => {
     const cases = [
-      { label: 'confirmed', answer: { action: 'accept' as const, confirm: true }, useAlias: false, writes: 1 },
-      { label: 'declined', answer: { action: 'decline' as const }, useAlias: true, writes: 0 },
-      { label: 'transport-error', answer: new Error('elicitation transport failed'), useAlias: false, writes: 0 },
+      { label: 'confirmed', answer: { action: 'accept' as const, confirm: true }, writes: 1 },
+      { label: 'declined', answer: { action: 'decline' as const }, writes: 0 },
+      { label: 'transport-error', answer: new Error('elicitation transport failed'), writes: 0 },
     ] as const;
     for (const testCase of cases) {
       const gate = await makeUnionGateHarness({ answer: testCase.answer });
-      const source = testCase.useAlias
-        ? { source_playlist_ids: [PLAYLIST_1, PLAYLIST_2] }
-        : { playlists: [PLAYLIST_1, PLAYLIST_2] };
-      const result = await gate.invoke('playlist_union', { ...source, target_playlist_id: TARGET_PLAYLIST });
+      const result = await gate.invoke('playlist_union', { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST });
       const writes = gate.calls.filter((call) => call.startsWith('PUT ') || call.startsWith('POST '));
       assert.equal(writes.length, testCase.writes, `${testCase.label} write count`);
       if (testCase.label === 'confirmed') assert.equal(result.structuredContent?.ok, true);
@@ -525,10 +564,8 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
         assert.equal(result.structuredContent?.ok, false);
         assert.equal(result.structuredContent?.cancelled, true);
         if (testCase.label === 'transport-error') assert.equal(result.structuredContent?.reason, 'elicitation_failed');
-        if (testCase.useAlias) {
-          assert.deepEqual(result.structuredContent?.deprecated_inputs, ['source_playlist_ids']);
-          assert.match(textOf(result), /Deprecated input source_playlist_ids/);
-        }
+        assert.equal(result.structuredContent?.deprecated_inputs, undefined, `${testCase.label} leaked deprecated_inputs`);
+        assert.equal(result.structuredContent?.deprecation_note, undefined, `${testCase.label} leaked deprecation_note`);
       }
       await gate.close();
     }
@@ -537,7 +574,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
   it('refuses destructive union but allows identical subtraction without elicitation support', async () => {
     const cases = [
       { name: 'playlist_union' as const, args: { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST }, ok: false, writes: 0, unchanged: false },
-      { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2] }, ok: true, writes: 0, unchanged: true },
+      { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_2] }, ok: true, writes: 0, unchanged: true },
     ];
     for (const testCase of cases) {
       const gate = await makeUnionGateHarness({ answer: null, toolName: testCase.name });
@@ -559,7 +596,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
   // zero writes when the playlist changed underneath them.
   for (const testCase of [
     { name: 'playlist_union' as const, args: { playlists: [PLAYLIST_1, PLAYLIST_2], target_playlist_id: TARGET_PLAYLIST }, toolName: 'playlist_union' as const },
-    { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, subtract_playlist_ids: [PLAYLIST_2] }, toolName: 'playlist_subtract' as const },
+    { name: 'playlist_subtract' as const, args: { base_playlist_id: PLAYLIST_1, playlists: [PLAYLIST_2] }, toolName: 'playlist_subtract' as const },
   ]) {
     it(`refuses to overwrite when the playlist changed mid-flight (${testCase.name})`, async () => {
       const gate = await makeUnionGateHarness({
@@ -594,7 +631,7 @@ describe('playlist set/diff schema and resolver contract (#912)', () => {
     try {
       const result = await gate.invoke('playlist_subtract', {
         base_playlist_id: PLAYLIST_1,
-        subtract_playlist_ids: [PLAYLIST_2],
+        playlists: [PLAYLIST_2],
       });
       // `removed`/`kept` are the returned row counts (bounded by max_results);
       // the `*_total` fields carry the true impact the confirmation quoted.

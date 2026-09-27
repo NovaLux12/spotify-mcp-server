@@ -26,9 +26,7 @@ import {
   TargetPlaylistFields,
   describeDryRun,
   batchSummary,
-  legacyPlaylistListFields,
-  playlistListInputFields,
-  legacyPlaylistPairFields,
+  playlistListFields,
   listStructuredContent,
   ResponseFormat,
   normalizePlaylistReference,
@@ -2011,7 +2009,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   // an order-preserving boolean array. A read that fails, or that comes back
   // without a verdict for an id, is reported as unreadable with its reason —
   // never as "not followed".
-  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists (the canonical playlists field or the deprecated playlist_ids alias). Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListInputFields(['playlist_ids'], { min: 1, max: 50, limitReason: 'follow state is read with batched GET /me/library/contains requests, not one paged walk per playlist' }), ...sharedListFields }, async (args) => {
+  server.tool('check_playlist_following', 'Check if you follow 1–50 playlists. Follow state: GET /me/library/contains?uris=spotify:playlist:<id>,… (40/req, 1–2 GETs). Unreadable state reports unknown, never not-followed.', { ...playlistListFields({ min: 1, max: 50, limitReason: 'follow state is read with batched GET /me/library/contains requests, not one paged walk per playlist' }), ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['playlist_ids'] });
     // `following` is a tri-state on purpose: null means "we could not read
     // this", which is not the same answer as false (#862).
@@ -2067,7 +2065,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // compare_playlist_covers (#286)
-  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
+  server.tool('compare_playlist_covers', 'Compare two playlists covers: URL equality, dimensions. Quota: 2 GETs.', { ...PlaylistPairFields, ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
     const [aImgs, bImgs] = await Promise.all([client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistA)}/images`), client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(playlistB)}/images`)]);
@@ -2225,7 +2223,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_union (#290)
-  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }), ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
+  server.tool('playlist_union', 'Union of 2–10 playlists into target (deduped, first-seen order). An empty union empties the target the same way subtract does. Quota: N GETs + PUT/POST; replacing an existing target also reads its current items and its playlist metadata to measure the destructive impact.', { ...PlaylistListFields, ...TargetPlaylistFields, ...PlaylistSetWalkFields, response_format: ResponseFormat, dedupe: z.boolean().default(true).describe('Drop duplicate URIs across the merged sources. Default true'), dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['source_playlist_ids'] });
     if ((args.target_playlist_id === undefined) === (args.target_name === undefined)) {
       throw new Error('Invalid arguments: provide exactly one of target_playlist_id (replace an existing playlist) or target_name (create a new playlist).');
@@ -2393,20 +2391,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: N GETs + PUT.', { base_playlist_id: PlaylistId.optional().describe('Base playlist ID, URI, or URL. Optional only for the deprecated positional form, where playlists[0] is the base.'), ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: N GETs + PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL. Required; list only the subtraction sources in playlists.'), ...playlistListFields({ min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
-    // Pre-2.0 contract: `playlists: [A, B, C]` meant "A minus B and C", i.e. the
-    // base was positional. The canonical contract names it explicitly. Both are
-    // accepted for one release so a 1.31.0 caller keeps working and is told
-    // what to change; the positional form is a migration path, not a synonym.
-    const positionalBase = args.base_playlist_id === undefined && input.values.length > 1 ? input.values[0] : undefined;
-    if (args.base_playlist_id === undefined && positionalBase === undefined) {
-      throw new Error('Invalid arguments: base_playlist_id is required (the deprecated positional form needs at least one subtraction source after the base).');
-    }
-    const basePlaylistId = normalizePlaylistReference(args.base_playlist_id ?? positionalBase!);
-    const subtractValues = positionalBase === undefined ? input.values : input.values.slice(1);
-    const positionalNote = positionalBase === undefined ? undefined
-      : 'Deprecated positional form: playlists[0] was the base. Pass it as base_playlist_id and list only the subtraction sources in playlists (removed in 2.1).';
+    // #1287: the pre-2.0 positional form (`playlists: [A, B, C]` meaning
+    // "A minus B and C") was on the same removal schedule as the alias names and
+    // has gone with them. `base_playlist_id` is now required rather than
+    // optional, so the schema itself refuses an omitted base instead of the
+    // handler guessing which playlist was meant.
+    const basePlaylistId = normalizePlaylistReference(args.base_playlist_id);
+    const subtractValues = input.values;
     if (subtractValues.some((pid) => normalizePlaylistReference(pid) === basePlaylistId)) {
       throw new Error('Invalid arguments: the subtraction sources must not include the base playlist.');
     }
@@ -2453,8 +2446,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         would_confirm: refuseNotice === null && destructive,
         would_refuse: refuseNotice !== null,
         impact,
-      }, input, positionalNote);
-      return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input, positionalNote), payload);
+      }, input);
+      return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(text, input), payload);
     }
     // Refuse before the prompt, for the reason in the union path: approving a
     // described loss still loses the rows.
@@ -2474,8 +2467,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (refusal) {
         // The refusal is the path a headless legacy caller hits first, and it is
         // exactly when the positional note matters most — so it rides along.
-        const payload = withPlaylistInputMetadata(refusal.payload, input, positionalNote);
-        return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(refusal.message, input, positionalNote), payload);
+        const payload = withPlaylistInputMetadata(refusal.payload, input);
+        return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(refusal.message, input), payload);
       }
     }
     if (!destructive && impact.identical && readWholePlaylist && unrepresentable === 0) {
@@ -2495,7 +2488,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         limit: args.limit ?? null,
         scan_cap: effectiveScanCap(args),
         source_truncated: false,
-      }, input, positionalNote);
+      }, input);
       return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote('Subtraction sources remove nothing; the playlist was not changed.', input), payload);
     }
     const latestBase = await getPlaylistRows(basePlaylistId, args);
@@ -2511,7 +2504,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const prose = write.failed_chunk_index === 0
         ? `Subtract aborted before any URI landed on playlist ${basePlaylistId}: ${write.error}. Nothing was changed.`
         : `Partial subtract on playlist ${basePlaylistId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
-      return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input, positionalNote), withPlaylistInputMetadata(write, input, positionalNote));
+      return textResult(args.response_format === 'json' ? jsonText(write) : withPlaylistInputNote(prose, input), withPlaylistInputMetadata(write, input));
     }
     const snap = write.snapshot_id;
     // #888: subtracting every track empties the base. The empty-uris PUT is
@@ -2538,17 +2531,17 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       snapshot_id: snap ?? null,
       emptied,
       ...(unconfirmed ? { reason: 'clear_unconfirmed', snapshot_read: false } : {}),
-    }, input, positionalNote);
+    }, input);
     const subtractText = emptied
       ? unconfirmed
         ? `Playlist emptied: removed ${removed}, but Spotify returned no snapshot_id, so the clear is unconfirmed — re-read the playlist before treating it as empty.`
         : `Playlist emptied: removed ${removed}`
       : `Subtract: removed ${removed}, kept ${remaining.length}`;
-    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(unconfirmed ? subtractText : withSnapshot(subtractText, snap), input, positionalNote), payload);
+    return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(unconfirmed ? subtractText : withSnapshot(subtractText, snap), input), payload);
   });
 
   // playlist_symmetric_difference (#292)
-  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 2 GETs.', { ...PlaylistPairFields, ...legacyPlaylistPairFields([['playlist_id_a', 'playlist_id_b']]), ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
+  server.tool('playlist_symmetric_difference', 'Tracks in exactly one of two playlists (XOR). Quota: 2 GETs.', { ...PlaylistPairFields, ...PlaylistPairWalkFields, ...sharedListFields }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'pair', aliases: [['playlist_id_a', 'playlist_id_b']] });
     const [playlistA, playlistB] = input.values;
     const [aUris, bUris] = await Promise.all([getAllUris(playlistA, args), getAllUris(playlistB, args)]);

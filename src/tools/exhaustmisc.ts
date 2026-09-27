@@ -17,7 +17,7 @@ import {
   MaxResults,
   DryRun,
   PAGED_WALK_LIST_REASON,
-  playlistListInputFields,
+  playlistListFields,
   resolvePlaylistInput,
   sharedListFields,
   resolveMaxResults,
@@ -615,7 +615,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'find_duplicate_tracks_across_playlists',
     'Find tracks that appear in more than one of the given playlists (cross-playlist dupes). Quota: N GETs (one per playlist).',
     {
-      ...playlistListInputFields(['playlist_ids'], { min: 2, max: 20, limitReason: PAGED_WALK_LIST_REASON }),
+      ...playlistListFields({ min: 2, max: 20, limitReason: PAGED_WALK_LIST_REASON }),
       response_format: ResponseFormat,
       max_results: MaxResults,
     },

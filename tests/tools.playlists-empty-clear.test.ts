@@ -157,7 +157,7 @@ describe('#888 — the empty-uris rewrite path', () => {
     try {
       const out = await h.invoke('playlist_subtract', {
         base_playlist_id: BASE,
-        subtract_playlist_ids: [SOURCE],
+        playlists: [SOURCE],
       });
 
       // The clear is ONE PUT of `{ uris: [] }` on /items — never the legacy
@@ -192,7 +192,7 @@ describe('#888 — the empty-uris rewrite path', () => {
       try {
         const out = await h.invoke('playlist_subtract', {
           base_playlist_id: BASE,
-          subtract_playlist_ids: [SOURCE],
+          playlists: [SOURCE],
         });
         assert.equal(out.structuredContent?.ok, false, 'an unreadable receipt must not be ok:true');
         assert.equal(out.structuredContent?.reason, 'clear_unconfirmed');
@@ -211,7 +211,7 @@ describe('#888 — the empty-uris rewrite path', () => {
     try {
       await h.invoke('playlist_subtract', {
         base_playlist_id: BASE,
-        subtract_playlist_ids: [SOURCE],
+        playlists: [SOURCE],
       });
       // A full wipe makes impact.identical false, so the destructive gate
       // must fire before the playlist is cleared.
@@ -260,7 +260,7 @@ describe('#888 — the empty-uris rewrite path', () => {
     try {
       const out = await h.invoke('playlist_subtract', {
         base_playlist_id: BASE,
-        subtract_playlist_ids: [SOURCE],
+        playlists: [SOURCE],
         dry_run: true,
       });
       assert.equal(out.structuredContent?.dry_run, true);

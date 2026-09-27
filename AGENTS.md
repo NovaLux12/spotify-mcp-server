@@ -338,11 +338,18 @@ a write tool, check that the read-only gate still hides it.
 ### Deprecating a tool input
 
 - Keep the legacy name callable for **one release**, then remove it in the
-  **next minor**. Legacy playlist input names are supported through 2.0 and
-  removed in 2.1.
+  **next minor**. The legacy playlist input names were promised for 2.0/2.1 and
+  shipped un-removed through 2.1.2 (#1287); they were withdrawn in **3.0**,
+  where the schema dropped them and a call carrying one is refused by name
+  before any Spotify request. A notice and its removal land in ONE commit — the
+  failure #1287 records is a notice that outlived the promise, and it is worse
+  than no notice because a caller plans around it.
 - Accept both only when they normalize to the same values; incomplete,
   differently ordered, or conflicting inputs fail before any Spotify request
-  and name both conflicting fields.
+  and name both conflicting fields. A **removed** name is not a conflict: refuse
+  it as its own kind (`validation` / `reason: retired_input`) naming both the
+  retired field and its replacement, rather than letting it fall through to
+  `unknown_param`, which claims the server never had the name.
 - When a legacy name was used, the result carries `deprecated_inputs` and
   `deprecation_note` in `structuredContent`, and the same one-line note in
   prose/JSON text. Canonical-only calls omit both fields. `src/shaping.ts`

@@ -2919,23 +2919,22 @@ describe('canonical playlist set-operation contracts', () => {
     assert.equal(h.client.calls.length, 0);
   });
 
-  it('accepts the deprecated positional subtract form and reports it', async () => {
+  it('refuses the retired positional subtract form and requires base_playlist_id (#1287)', async () => {
     const playlistA = '1'.repeat(22);
     const playlistB = '2'.repeat(22);
-    // Pre-2.0 contract: playlists[0] is the base and the rest are the sources.
-    // Distinct rows per playlist: if the base were also walked as a source, its
-    // own rows would land in the removal set and kept_total would be 0.
     const h = harness((path) => (path.includes(playlistA)
       ? { items: [{ item: { uri: 'spotify:track:a1' } }, { item: { uri: 'spotify:track:a2' } }], total: 2, limit: 2 }
       : { items: [{ item: { uri: 'spotify:track:b1' } }], total: 1, limit: 1 }));
-    const out = await h.invoke('playlist_subtract', { playlists: [playlistA, playlistB], dry_run: true });
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.base_playlist, playlistA, 'the base must be the first positional entry');
-    assert.deepEqual(sc.playlists, [playlistB], 'only the real sources are reported as sources');
-    assert.match(String(sc.deprecation_note), /positional/i, 'the migration must be named');
-    // The base must never be walked as a source: doing so would subtract the
+    // `base_playlist_id` is required again, so the positional form can no longer
+    // be read as "playlists[0] is the base". The schema refuses it before the
+    // handler sees a base, which is why this asserts a refusal and not a
+    // silent re-interpretation.
+    await assert.rejects(
+      () => h.invoke('playlist_subtract', { playlists: [playlistA, playlistB], dry_run: true }),
+      /base_playlist_id/,
+    );
+    // The base must never be walked as a source: that would subtract the
     // caller's own rows and offer to empty the playlist.
-    assert.ok(Number(sc.kept_total) > 0, 'the base rows must survive the subtraction');
     assert.equal(h.client.calls.filter((call) => call.method === 'PUT').length, 0);
   });
 

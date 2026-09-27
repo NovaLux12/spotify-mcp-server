@@ -39,10 +39,9 @@ import {
   PlaylistId,
   PAGED_WALK_LIST_REASON,
   PlaylistListFields,
+  playlistListFields,
   ResponseFormat,
   describeDryRun,
-  legacyPlaylistListFields,
-  playlistListInputFields,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -727,7 +726,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       + 'Quota: N GETs + 1 PUT when committing.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       strategy: z.enum(['round_robin', 'chunk']).optional().describe('round_robin = 1 track per playlist per pass; chunk = N per pass. Default round_robin'),
       chunk_size: z.number().int().min(1).max(20).optional().describe('chunk strategy: tracks per playlist per pass (1–20). Default 3'),
       target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to atomically overwrite with the interleave. Omit = read-only plan'),
@@ -810,7 +808,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'PLAN read-only. Quota: N GETs + create + chunked adds when committing.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       dedupe: z.enum(['first', 'last', 'none']).optional().describe('Dedupe across the merge: keep first or last occurrence. Default first'),
       name: z.string().optional().describe('New playlist name. Default "Merged YYYY-MM-DD"'),
       description: z.string().optional().describe('New playlist description'),
@@ -872,7 +869,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'the target. Quota: ≤7 GETs + 1 PUT when committing.',
     {
       base_playlist_id: PlaylistId.describe('Base playlist (ID, URI, or URL) whose survivors are kept'),
-      ...playlistListInputFields(['subtract_playlist_ids'], { min: 1, max: 5, limitReason: PAGED_WALK_LIST_REASON }),
+      ...playlistListFields({ min: 1, max: 5, limitReason: PAGED_WALK_LIST_REASON }),
       target_playlist_id: PlaylistId.optional().describe('Existing playlist (ID, URI, or URL) to atomically overwrite with the difference. Omit = read-only plan'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
@@ -940,7 +937,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       '(commit variants live in the set-op plan tools). Quota: N GETs.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
@@ -988,7 +984,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       + 'Quota: N GETs.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
@@ -1823,7 +1818,6 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'TRUE so it returns the move PLAN read-only. Quota: N GETs + moves when committing.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       balance_by: z.enum(['count', 'runtime']).optional().describe('Balance metric: track count or total runtime. Default count'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,

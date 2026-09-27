@@ -96,8 +96,8 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
         [PLAYLIST_B]: [track('shared')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: PLAYLIST_A,
-        playlist_b_id: PLAYLIST_B,
+        playlist_a: PLAYLIST_A,
+        playlist_b: PLAYLIST_B,
         response_format: responseFormat,
       });
 
@@ -117,8 +117,8 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
         [PLAYLIST_B]: [track('shared'), track('b-only')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: PLAYLIST_A,
-        playlist_b_id: PLAYLIST_B,
+        playlist_a: PLAYLIST_A,
+        playlist_b: PLAYLIST_B,
         response_format: responseFormat,
       });
 
@@ -135,8 +135,8 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
     it(`renders neither section when both exclusive lists are empty in ${responseFormat} mode`, async () => {
       const h = harness({ [PLAYLIST_A]: [track('shared')], [PLAYLIST_B]: [track('shared')] });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: PLAYLIST_A,
-        playlist_b_id: PLAYLIST_B,
+        playlist_a: PLAYLIST_A,
+        playlist_b: PLAYLIST_B,
         response_format: responseFormat,
       });
 
@@ -156,8 +156,8 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
         [PLAYLIST_B]: [track('shared'), track('b1')],
       });
       const result = await h.invoke('playlist_pair_check', {
-        playlist_a_id: PLAYLIST_A,
-        playlist_b_id: PLAYLIST_B,
+        playlist_a: PLAYLIST_A,
+        playlist_b: PLAYLIST_B,
         response_format: responseFormat,
         max_results: 2,
       });
