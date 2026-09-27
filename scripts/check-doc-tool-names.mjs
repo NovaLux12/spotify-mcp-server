@@ -33,6 +33,10 @@ const parameterAllowlist = new Set([
   'budget_shrunk', 'client_id', 'client_secret', 'code_challenge',
   'code_verifier', 'expires_at', 'expires_in', 'invalid_grant', 'rate_limit',
   'redirect_uri', 'refresh_token', 'registered_tools', 'requests_made',
+  // #602: the other half of the OAuth token pair, named in SPEC.md §5.13 to
+  // state the one thing the account registry never stores. An API field name
+  // a doc has to mention in order to promise its absence.
+  'access_token',
   // #581: the doctor is now one report behind two entry points, and SPEC.md
   // and the doctor skill name what each one cannot agree on. These are the
   // `DoctorSurface` structuredContent keys and the live-probe row id — a
@@ -64,6 +68,16 @@ const parameterAllowlist = new Set([
   // SPEC entry names them as the windows taste_shift_report compares, and as
   // the two halves of the `window_sizes` it returns.
   'short_term', 'long_term',
+  // #602: the account registry's own vocabulary. `account_id` and
+  // `display_name` are the two keys the acting-account echo adds to EVERY
+  // tool result; the rest are `list_accounts` / `switch_account`
+  // structuredContent keys and one registry-file key on disk. A report
+  // describing its own output, not tools and not request parameters — the
+  // same category as the `DoctorSurface` rows above.
+  'account_id', 'display_name', 'active_account_id', 'active_display_name',
+  'active_token_file', 'acting_account_id', 'acting_display_name',
+  'registry_file', 'token_file', 'identity_note', 'registration_warning',
+  'last_used',
   // StructuredContent field names, not parameters: the documented count split.
   'removed_total', 'kept_total', 'source_truncated', 'target_truncated',
   'would_confirm', 'base_read_whole', 'base_unrepresentable',

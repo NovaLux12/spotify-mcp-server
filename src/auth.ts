@@ -454,8 +454,20 @@ function corruptedTokensError(tokenFile: string): Error {
   );
 }
 
-export async function loadTokens(): Promise<TokenData> {
-  const tokenFile = getTokenFilePath();
+/**
+ * Read the token file.
+ *
+ * `tokenFile` names the file to read. Omit it and the process-wide resolver
+ * answers (#609). `SpotifyClient` always passes its own `tokenFile`, which is
+ * why that is the right default to drop: the client's field is resolved ONCE
+ * at construction, and a mid-session `switch_account` (#602) re-points it. A
+ * `loadTokens()` that silently re-resolved from the environment would read the
+ * startup account's file after a switch — the exact cross-account misread #609
+ * closed for `--profile`, arriving by a different road.
+ */
+export async function loadTokens(
+  tokenFile: string = getTokenFilePath(),
+): Promise<TokenData> {
   try {
     // The token file is a server-owned store, so the root is its own
     // directory. The checks that earn their keep here are the regular-file
@@ -485,8 +497,10 @@ const tightenedTokenDirectories = new Set<string>();
  * owner-only directory/file modes, and normalize the final inode after rename.
  * Mode bits are ignored on Windows, matching the platform's existing behavior.
  */
-export async function saveTokens(tokens: TokenData): Promise<void> {
-  const tokenFile = getTokenFilePath();
+export async function saveTokens(
+  tokens: TokenData,
+  tokenFile: string = getTokenFilePath(),
+): Promise<void> {
   const tokenDirectory = dirname(tokenFile);
   await mkdir(tokenDirectory, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') {

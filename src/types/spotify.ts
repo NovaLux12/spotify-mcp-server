@@ -381,6 +381,14 @@ export interface UserProfile {
   email?: string | null;
   country?: string;
   product?: string;
+  // #602: the account-linking key. Spotify documents it as "a public,
+  // immutable, pseudoanonymous identifier for the user's account… use this
+  // field for account linking rather than the id field, as it is stable and
+  // will not change over the lifetime of the account", which is exactly what a
+  // multi-account registry needs and `id` is not. Optional because a
+  // registration older than the field must not be coerced into a plausible
+  // value: an absent `account_id` is reported as absent, never guessed (#804).
+  account_id?: string;
 }
 
 // Playlist item (from GET /playlists/{id}/items)

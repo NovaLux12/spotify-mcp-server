@@ -15,7 +15,7 @@
 
 // BEGIN:generated surface-census
 // Production surface (generated; run `npm run count:tools -- --write` after registry changes):
-// 587 tools, 16 fixed resources, 33 resource templates, and 14 prompts.
+// 589 tools, 16 fixed resources, 33 resource templates, and 14 prompts.
 // END:generated surface-census
 
 /**
@@ -57,6 +57,7 @@
  *   taste           → tools/statsfm_taste.ts    (canonical statsfm_taste_* tools + legacy taste_* aliases: stats.fm taste intelligence, read-only, no auth)
  *                     tools/taste_composites.ts (composites, no auth; read-only except taste_to_playlist, which writes only when dry_run=false)
  *   discovery       → tools/swarm3_meta.ts      (find_tool, inspect_tool, toolset_report) — also in catalog for compat
+ *   accounts        → tools/accounts.ts         (list_accounts + switch_account) — also in core
  *   resources       → resources/index.ts        (template and standard resources)
  *   prompts         → prompts/index.ts          (workflow prompts)
  */
@@ -65,7 +66,7 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   // library read/write, following — the practical answer to the 153 KB payload
   // (#565) until the default flips in v2. Discovery tools and spotify_doctor
   // register unconditionally.
-  core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'statsfm', 'swarm3meta'],
+  core: ['search', 'playback', 'playlists', 'playlistbatch', 'playlistmisc', 'library', 'following', 'users', 'portability', 'statsfm', 'swarm3meta', 'accounts'],
   playback: ['playback', 'queueops', 'playbackext', 'playbackintel', 'exhaust2playback', 'swarm3playback'],
   playbackintel: ['playbackintel'],
   catalog: ['search', 'catalog', 'audiobooks', 'browse', 'artistwatch', 'searchhistory', 'exhaust2catalog', 'exhaust2enggating', 'swarm3discovery', 'swarm3bdiscovery', 'swarm3shows', 'swarm3refs', 'swarm3meta'],
@@ -78,6 +79,11 @@ export const TOOLSETS: Record<string, readonly string[]> = {
   discovery: ['swarm3meta'],
   resources: ['resources'],
   prompts: ['prompts'],
+  // #602. Its own set as well as membership in `core`: an operator who trims to
+  // one surface still needs to be able to ask which account the session is
+  // acting as, and a question about identity does not belong to any one of the
+  // surfaces being trimmed.
+  accounts: ['accounts'],
 } as const;
 
 /** Every registration key covered by at least one set ('all' semantics). */

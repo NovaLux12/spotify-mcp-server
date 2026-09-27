@@ -344,7 +344,14 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
     // decision to be visible, not to be routed around. The tool unlinks a file the user cannot
     // recover, so its name should say what it does.
     album: 8, apply: 4, artist: 35, check: 6, delete: 4, episode: 5, export: 10,
-    filter: 4, find: 11, get: 59, library: 8, list: 11, listening: 17,
+    // `list` 11 -> 12 for `list_accounts` (#602). The budget table exists to
+    // make this decision visible rather than to route around it, and the
+    // decision is that the multi-account listing belongs in the `list` family
+    // with the eleven reads beside it: it IS a read, it answers "what is here",
+    // and a ninth verb family for two tools would cost a host two new prefixes
+    // to learn. It is a registry listing with no Spotify request beyond one
+    // `GET /me` for the acting account.
+    filter: 4, find: 11, get: 59, library: 8, list: 12, listening: 17,
     play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
     save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
     split: 5, statsfm: 38, taste: 16, top: 6, track: 4, uri: 4,
@@ -542,6 +549,21 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // dry_run gate cannot mechanically tell a read-only scan preview from a
   // mutating tool's commit guard.
   playlist_staleness_report: { readOnlyHint: true, idempotentHint: true },
+
+  // #602: `switch_account` changes which account every subsequent call — every
+  // WRITE — acts as, and it issues no Spotify request of its own, so both name
+  // patterns miss it: `switch` is in neither MUTATING_PREFIXES nor
+  // DESTRUCTIVE_PREFIXES. Left to the name-driven fallback it would have been
+  // handed `destructiveHint: false` — telling an auto-approving host that
+  // re-pointing a session at a different library is a safe no-op. It is not one:
+  // it is the single most consequential local change this server makes, and
+  // the elicitation gate in the handler is the second half of saying so.
+  //
+  // This is a static host hint applied after registration (AGENTS.md §4). It
+  // never prompts, and it does not replace the gate: the handler still calls
+  // `requiredConfirmationRefusal` and still fails closed on every verdict but
+  // 'confirmed', with `SPOTIFY_MCP_CONFIRM=never` the only bypass.
+  switch_account: { readOnlyHint: false, destructiveHint: true },
 };
 
 /**
@@ -1152,6 +1174,21 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 8040], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 750], { alwaysActive: true, readOnlySafe: true }),
+  // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
+  // holds a write: what makes that safe is that `readOnlyToolServer` drops
+  // `switch_account` per-tool in a SPOTIFY_MCP_READONLY session (it does not
+  // start with a read verb, so the allowlist classifier withholds it) while
+  // `list_accounts` survives. Marking the module `readOnlySafe: false` instead
+  // would hide the listing too, and a read-only operator asking which account
+  // they are on is the question that gate most needs to answer.
+  // MEASURED, not estimated: the census drives the built server over stdio,
+  // reads back the real tools/list, and applies the budget's own formula to the
+  // finalized description + inputSchema of the two tools. 1644 B across
+  // 2 tools, so the derived ceiling is 3 tools / ceil(1644 * 1.1) = 1809 B —
+  // 10% headroom, unchanged, rather than a ceiling raised to make a breach
+  // pass. Host-session payload impact is +1644 B on top of the measured
+  // origin/main total, recorded in docs/schema-budgets.md.
+  manifestEntry('accounts', 'accounts', lazyModule('./accounts.js', 'registerAccountsTools'), [2, 1644], { readOnlySafe: true }),
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
