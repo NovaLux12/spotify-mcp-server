@@ -27,8 +27,16 @@
  * A write failure is counted and reported, never swallowed: a cache that
  * silently stopped persisting looks exactly like a cache that is working.
  */
-import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
-import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { chmod, mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { getTokenFile } from './auth.js';
 import { loadSidecar } from './sidecar.js';
@@ -187,6 +195,125 @@ export function cachePersistPath(env: NodeJS.ProcessEnv = process.env, opts: Cac
   return join(dir, cacheFileNameFor(tokenFile));
 }
 
+// ---------------------------------------------------------------------------
+// Pending-save marker (#1279)
+// ---------------------------------------------------------------------------
+
+/**
+ * The marker path that sits beside the cache file: `cache.json.pending`.
+ *
+ * Derived from the SAME {@link cachePersistPath} call that names the cache, so
+ * it inherits the profile suffix for free and two accounts can never share one
+ * marker. There is no second profile resolution here to drift.
+ */
+export function cachePendingPath(env: NodeJS.ProcessEnv = process.env, opts: CachePersistOptions = {}): string {
+  return `${cachePersistPath(env, opts)}.pending`;
+}
+
+/**
+ * The marker's contents: which process armed it, and for how many entries.
+ *
+ * A count rather than a payload, and a count rather than a bare flag, because
+ * the one thing an operator needs from a detected loss is SCALE — "the previous
+ * session never wrote 40 entries" reads very differently from "…never wrote
+ * one".
+ *
+ * The PID is what makes the marker safe to read at all. Without it, a marker
+ * belonging to a process that is still running — this one, or a second server
+ * sharing the same cache — reads as a dead session's loss, and the fix would
+ * manufacture exactly the false alarm it exists to raise. That is not
+ * hypothetical: two clients in one test process hit it, which is why this is
+ * checked rather than assumed.
+ */
+interface PendingMarker {
+  pid: number;
+  count: number;
+}
+
+function encodePendingMarker(marker: PendingMarker): string {
+  return JSON.stringify(marker);
+}
+
+/** Parse a marker file. Unparseable content still means a save was in flight. */
+function readPendingMarker(marker: string): PendingMarker | null {
+  if (!existsSync(marker)) return null;
+  let raw: string;
+  try {
+    raw = readFileSync(marker, 'utf8');
+  } catch {
+    // A marker we cannot read still tells us a save was in flight. Reporting
+    // the loss with an unknown size beats reporting nothing.
+    return { pid: -1, count: 0 };
+  }
+  try {
+    const parsed = JSON.parse(raw) as Partial<PendingMarker>;
+    if (typeof parsed?.pid !== 'number' || !Number.isFinite(parsed.pid)) {
+      return { pid: -1, count: 0 };
+    }
+    return { pid: parsed.pid, count: typeof parsed.count === 'number' ? parsed.count : 0 };
+  } catch {
+    return { pid: -1, count: 0 };
+  }
+}
+
+/**
+ * Whether the process that armed a marker is still running.
+ *
+ * Signal 0 performs the permission and existence checks without delivering
+ * anything. ESRCH is the answer that matters — the owner is gone, so the marker
+ * is a real loss. EPERM means it exists under another user, which is still
+ * alive, so it is treated as live. An unparseable marker carries pid -1, which
+ * no process can have, and is therefore reported rather than suppressed.
+ */
+function markerOwnerAlive(pid: number): boolean {
+  if (pid < 0) return false;
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: the process exists, we simply may not signal it.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Arm the marker for `count` pending entries.
+ *
+ * Best-effort by construction: a marker that cannot be written must not stop
+ * the save it is annotating, so every failure here is swallowed. That is the
+ * honest asymmetry — the cache write is the thing that matters, and this only
+ * describes it.
+ *
+ * Exported so the controller arms it at the one moment it means something:
+ * immediately before the debounce timer is scheduled.
+ */
+export function armPendingMarker(marker: string, count: number): void {
+  try {
+    mkdirSync(dirname(marker), { recursive: true, mode: PERSIST_DIR_MODE });
+    writeFileSync(marker, encodePendingMarker({ pid: process.pid, count }), {
+      encoding: 'utf8',
+      mode: PERSIST_FILE_MODE,
+    });
+  } catch {
+    // Best effort — see above.
+  }
+}
+
+/** Disarm the marker once the write it describes has landed. */
+async function disarmPendingMarker(marker: string): Promise<void> {
+  await unlink(marker).catch(() => {});
+}
+
+/** The synchronous disarm, for the shutdown path (see {@link savePersistedCacheSync}). */
+function disarmPendingMarkerSync(marker: string): void {
+  try {
+    unlinkSync(marker);
+  } catch {
+    // Already gone, which is the state we wanted.
+  }
+}
+
 /**
  * Whether a cache key may be persisted (#893 rule 1).
  *
@@ -264,6 +391,49 @@ export async function loadPersistedCache(
 }
 
 /**
+ * Consume a marker left by a process that died mid-save (#1279).
+ *
+ * **This does not prevent the loss. Nothing in-process can** — SIGKILL, an
+ * OOM-kill, a supervisor's hard-stop, a power loss, and a container eviction all
+ * end the process without running a line of JavaScript, so there is no callback
+ * to fire and no moment at which the pending snapshot could be written. What
+ * this does is make the loss VISIBLE on the next start instead of silent, which
+ * is the half of the problem that is actually solvable here.
+ *
+ * The distinction matters because the failure was previously indistinguishable
+ * from success: `cachePersistFailed` reads 0 for a session that never got to
+ * save, so the doctor row read like a healthy no-op. After a hard kill the next
+ * process finds this marker, and reports the loss with the size that was
+ * pending.
+ *
+ * The marker is REMOVED once a loss is reported, so one hard kill is reported
+ * once rather than on every subsequent start.
+ *
+ * A marker whose owner is STILL RUNNING is neither reported nor removed: it
+ * belongs to a live process — this one, or a second server sharing the cache —
+ * and that process's save is simply in flight, not lost. Reading it as a loss
+ * would raise a false alarm about writes that are about to land, and deleting
+ * it would blind that process to its own pending save.
+ *
+ * @returns the number of entries the dead process had pending; null when there
+ *   was no marker, or the marker belongs to a live process. A marker that
+ *   exists but cannot be parsed returns 0 — the loss is still real and still
+ *   reported, only its size is unknown, which is a different fact from "no
+ *   loss" and must not collapse into it.
+ */
+export function consumePendingMarker(
+  opts: CachePersistOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): number | null {
+  const marker = cachePendingPath(env, opts);
+  const found = readPendingMarker(marker);
+  if (found === null) return null;
+  if (markerOwnerAlive(found.pid)) return null;
+  disarmPendingMarkerSync(marker);
+  return found.count;
+}
+
+/**
  * Write the entries, honouring the allowlist and the size cap.
  *
  * **One serialization per entry, and no re-serialization of the document.**
@@ -306,6 +476,14 @@ export async function savePersistedCache(
   } catch (err) {
     await (await import('node:fs/promises')).unlink(tmp).catch(() => {});
     throw err;
+  } finally {
+    // The marker says "a save is in flight and this process may yet die". Once
+    // the write has RESOLVED — landed or thrown — the process is demonstrably
+    // alive and the outcome is already accounted for: a throw here increments
+    // `failed` on the controller, which is a different and better-explained
+    // report than "the previous process was killed". Disarming on both paths
+    // is what keeps the marker meaning exactly one thing.
+    await disarmPendingMarker(cachePendingPath(env, opts));
   }
   // Mode is re-asserted after the rename: `writeFile`'s mode only applies at
   // creation, so a file that already existed with looser permissions would
@@ -351,6 +529,12 @@ export function savePersistedCacheSync(
       // The temp file is already gone, which is the state we wanted anyway.
     }
     throw err;
+  } finally {
+    // Same rule as the async writer: the marker is cleared once this write has
+    // resolved. Here it is cleared SYNCHRONOUSLY because an `exit` listener
+    // cannot await — leaving it armed would make the next start report a loss
+    // that this very call just prevented.
+    disarmPendingMarkerSync(cachePendingPath(env, opts));
   }
   chmodSync(file, PERSIST_FILE_MODE);
   return { ...doc.stats, failed: 0 };

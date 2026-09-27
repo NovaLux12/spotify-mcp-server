@@ -202,6 +202,25 @@ describe('localStorePaths', () => {
       assert.ok(ids.has(expected), `registry is missing ${expected}`);
     }
   });
+
+  it('covers the pending-save marker the persisted cache writes (#1279)', () => {
+    // `logout` promises to erase every store this build can write. The
+    // `cache.json.pending` marker is a file this build now writes, so leaving
+    // it out would mean logout reported success while a file it created
+    // survived.
+    const box = sandbox();
+    const store = localStorePaths({ env: box.env }).find((s) => s.id === 'cache-pending-marker');
+    assert.ok(store, 'the pending-save marker is not in the logout registry');
+    assert.equal(
+      store.erasure,
+      'move',
+      'the marker is reversible local state, not a credential; it moves to the trash like every other sidecar',
+    );
+    assert.ok(
+      store.path.endsWith('.pending'),
+      `the marker path must resolve to the marker itself, not the cache file it describes (got ${store.path})`,
+    );
+  });
 });
 
 describe('store resolvers do not read ambient process state', () => {

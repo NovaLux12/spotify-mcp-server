@@ -47,6 +47,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
+import { cachePendingPath } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
 import { historyFilePath } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
@@ -228,6 +229,14 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     envVar: 'SPOTIFY_MCP_PORTABILITY_DIR',
     erasure: 'move',
     resolve: (env) => portabilityDir(env),
+  },
+  {
+    id: 'cache-pending-marker',
+    label: 'Persisted read cache: pending-save marker',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    erasure: 'move',
+    resolve: (env) => cachePendingPath(env),
   },
   {
     id: 'exports',

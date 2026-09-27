@@ -1,5 +1,5 @@
 /**
- * Child process for the #1266 exit-flush tests.
+ * Child process for the #1266 exit-flush and #1279 hard-kill tests.
  *
  * Makes ONE catalog read with persistence on, so the controller schedules a
  * debounced save, and then terminates a chosen way while that 250 ms window is
@@ -11,7 +11,8 @@
  * signal/`exit()` path actually let the write reach disk.
  *
  * Env (all supplied by the parent, all under a mkdtemp dir):
- *   SPOTIFY_MCP_PERSIST_EXIT_MODE  'exit' | 'sigterm' | 'uncaught'
+ *   SPOTIFY_MCP_PERSIST_EXIT_MODE  'exit' | 'uncaught' | a signal name
+ *                                  ('sigterm', 'sighup', 'sigquit', 'sigkill')
  *   SPOTIFY_MCP_DATA_DIR           directory for cache.json
  *   SPOTIFY_MCP_TOKEN_FILE         token file
  */
@@ -32,7 +33,9 @@ const client = new SpotifyClient();
 await client.get('/tracks/tr1', {});
 
 // Tell the parent the read is cached and the debounce is pending, so it can
-// signal inside the window rather than racing a sleep.
+// signal inside the window rather than racing a sleep. #1279 additionally needs
+// the marker to be armed before this line, which it is: `scheduleSave` writes it
+// before it arms the timer, and the read has already returned by now.
 process.stdout.write('cached\n');
 
 if (mode === 'exit') {
@@ -45,7 +48,9 @@ if (mode === 'exit') {
   // await. Node runs `exit` handlers synchronously and nothing else.
   throw new Error('deliberate uncaught throw for the #1266 exit test');
 }
-// 'sigterm': the parent sends SIGTERM 40 ms in, inside the debounce window.
+// A signal name: the parent sends it inside the debounce window. 'sigkill' is
+// included deliberately — it is the one case where NO JavaScript runs, so the
+// child dies with the write unflushed and only the marker survives.
 setTimeout(() => {
   process.stderr.write('child: no signal arrived\n');
 }, 5000);
