@@ -1410,10 +1410,26 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
   // Tool count unchanged at 10.
-  // #1318: the same deprecated alias on 10 composites. MEASURED with
-  // `npm run count:tools` on 2026-09-27: 7990 B -> 9650 B (+1660 B). Tool
-  // count unchanged at 10.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 9650], { readOnlySafe: true }),
+  // #895 + #1318: both raised this module's schema bytes, and the merged
+  // surface is their UNION, so the baseline is measured on the merged tree
+  // rather than taken from either side — #895 alone measured 8582 B and
+  // #1318 alone measured 9650 B, and neither is the number the other
+  // produces. #895 gave 4 of the 10 `max_results` so the shared row cap has a
+  // control the caller can raise; #1318 added the same deprecated `user_id`
+  // alias across all 10. MEASURED with `node scripts/surface-census.mjs` on
+  // 2026-09-27 after merging both onto current main: 10242 B, tool count
+  // unchanged at 10. The ceiling is DERIVED by `manifestEntry` (110%), so
+  // `Math.ceil(10242 * 1.1)` = 11267 B and this sits inside budget with 1025 B
+  // spare.
+  //
+  // The first measurement of the merged tree read 9924 B, which was 318 B
+  // short: the merge had dropped `...StatsfmUserInputFields` from
+  // `taste_listening_clock` while its handler still called
+  // `resolveStatsfmUserInput`. `check:doc-tool-names` caught it (the cookbook
+  // shows that tool taking `statsfm_user`); the schema was restored and the
+  // baseline re-measured. A baseline measured against a tree where a tool had
+  // lost an input is a ratchet that would have locked the loss in.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 10242], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count

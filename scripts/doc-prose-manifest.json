@@ -1877,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "d31c370da5da0cbe",
+        "hash": "6a3623334baae931",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1889,8 +1889,12 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "46c5ce02d1cbde05",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
+      },
+      {
+        "hash": "d6f6074447d29264",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -5403,6 +5407,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "46c5ce02d1cbde05",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -5466,6 +5477,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "d31c370da5da0cbe",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5515,8 +5533,8 @@
     }
   ],
   "provenance": {
-    "head": "d5fca0f6e93388bb98786e8b9438db489530ae35",
-    "upstream": "d5fca0f6e93388bb98786e8b9438db489530ae35",
+    "head": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
+    "upstream": "fd5e09163a10ee4abd99eef2a66d836e6666546a",
     "behind": false
   }
 }
