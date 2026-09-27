@@ -212,6 +212,7 @@ gates that hid modules, and the granted scopes in one call.
 - [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
 - [docs/distribution.md](docs/distribution.md) — distribution and release notes
 - [docs/faq.md](docs/faq.md) — auth, Premium, 403s, headless, tokens
+- [docs/compliance.md](docs/compliance.md) — brand marks, attribution & the outbound `User-Agent`
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & conventions
 - [CHANGELOG.md](CHANGELOG.md) — release history
 
