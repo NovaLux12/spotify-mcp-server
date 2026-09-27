@@ -143,21 +143,30 @@ async function whosOnDisk(ledger: string): Promise<string[]> {
 }
 
 /**
- * Poll until `settled()` holds, or fail with what was actually on disk.
+ * Poll until the ledger satisfies `settled`, or give up and report what is
+ * actually on it.
  *
  * The sweep is deliberately not awaited by `resolveServerScope`, so observing it
- * means waiting for it. A timeout here is the assertion failing, and the message
- * carries the rows that survived — which is the whole diagnostic.
+ * means waiting for it. A timeout here is the assertion failing, and the rows
+ * returned are what the message shows — which is the whole diagnostic.
+ *
+ * `settled` takes the rows rather than re-reading them. An earlier draft read
+ * the ledger, then asked a predicate that read it AGAIN, and returned the first
+ * read: when the sweep landed in the gap between them, the predicate saw a
+ * swept ledger, reported "settled", and the test asserted against the pre-sweep
+ * rows it had read a moment earlier. It passed when the file was slow and failed
+ * when it was fast, which is the worst possible shape for a test — it was
+ * asserting on a value that was already stale by the time it decided to stop.
+ * One read, one decision.
  */
-async function waitForSweep(ledger: string, settled: () => Promise<boolean>): Promise<string[]> {
+async function waitForSweep(ledger: string, settled: (whos: string[]) => boolean): Promise<string[]> {
   const deadline = Date.now() + SWEEP_TIMEOUT_MS;
-  let whos = await whosOnDisk(ledger);
-  while (Date.now() < deadline) {
-    if (await settled()) return whos;
+  for (;;) {
+    const whos = await whosOnDisk(ledger);
+    if (settled(whos)) return whos;
+    if (Date.now() >= deadline) return whos;
     await new Promise((resolve) => setTimeout(resolve, SWEEP_POLL_MS));
-    whos = await whosOnDisk(ledger);
   }
-  return whos;
 }
 
 before(async () => {
@@ -190,7 +199,7 @@ describe('the startup retention sweep rides the shared entry point', () => {
       // This is the production call `startMcpServer` and `openCliSession` both make.
       await resolveServerScope({ announce: false });
 
-      const after = await waitForSweep(ledger, async () => (await whosOnDisk(ledger)).length === 1);
+      const after = await waitForSweep(ledger, (whos) => whos.length === 1);
       assert.deepEqual(
         after,
         ['recent'],
@@ -214,7 +223,7 @@ describe('the startup retention sweep rides the shared entry point', () => {
 
       await resolveServerScope({ announce: false });
 
-      const after = await waitForSweep(ledger, async () => (await whosOnDisk(ledger)).length === 2);
+      const after = await waitForSweep(ledger, (whos) => whos.length === 2);
       assert.deepEqual(
         after,
         ['c', 'd'],
@@ -237,7 +246,7 @@ describe('the startup retention sweep rides the shared entry point', () => {
 
       await resolveServerScope({ announce: false });
 
-      const after = await waitForSweep(dormant, async () => (await whosOnDisk(dormant)).length === 0);
+      const after = await waitForSweep(dormant, (whos) => whos.length === 0);
       assert.deepEqual(after, [], "a dormant account's ledger must still be expired at startup");
     } finally {
       await rm(dir, { recursive: true, force: true });
