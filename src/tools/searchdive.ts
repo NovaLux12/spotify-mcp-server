@@ -6,6 +6,7 @@ import type { SpotifyClient } from '../client.js';
 import { ResponseFormat, MaxResults, resolveMaxResults, truncateItems, nextPageLine } from '../shaping.js';
 import { mapLimit } from '../concurrency.js';
 import { getConfig } from '../config.js';
+import { SPOTIFY_SEARCHABLE_KINDS, type SpotifySearchableKind } from '../refs.js';
 
 // Feb 2026: Spotify capped /search at limit=10 (400 above it), so agents can't
 // fetch more than 10 rows per type in one call. `search_deep` walks the offset
@@ -23,8 +24,7 @@ import { getConfig } from '../config.js';
  */
 const SHAPING_CAPABILITIES = { maxResults: true, offset: true } as const;
 
-const TYPES = ['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook'] as const;
-type SearchType = (typeof TYPES)[number];
+type SearchType = SpotifySearchableKind;
 
 const PAGE_LIMIT = 10;
 const HARD_CAP_PER_TYPE = 50;
@@ -173,7 +173,7 @@ export function registerSearchDeepTool(server: McpServer, client: SpotifyClient)
     {
       query: z.string().describe('Search query'),
       types: z
-        .array(z.enum(TYPES))
+        .array(z.enum(SPOTIFY_SEARCHABLE_KINDS))
         .optional()
         .describe('Content types to search. Default: ["track"]'),
       pages: z

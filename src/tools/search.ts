@@ -16,6 +16,7 @@ import {
   paginationInfo,
   nextPageLine,
 } from '../shaping.js';
+import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
 
 /** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
 export const SPOTIFY_SEARCH_MAX_LIMIT = 10;
@@ -54,7 +55,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
     {
       query: z.string().describe('Search query'),
       types: z
-        .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
+        .array(z.enum(SPOTIFY_SEARCHABLE_KINDS))
         .optional()
         .describe(
           'Content types to search, as an array. Default: ["track","artist","album"]. ' +

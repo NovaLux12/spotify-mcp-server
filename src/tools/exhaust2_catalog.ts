@@ -23,6 +23,7 @@ import {
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
+import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
 import { isGatedError } from '../gating.js';
 import type {
   SpotifyAlbumItem,
@@ -301,7 +302,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         })
         .describe('At least one field is required'),
       types: z
-        .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
+        .array(z.enum(SPOTIFY_SEARCHABLE_KINDS))
         .min(1)
         .max(3)
         .optional()
@@ -1423,7 +1424,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       // is now 1, and the excess is rejected at the schema so the caller is
       // told which parameter to fix instead of getting a one-type answer.
       types: z
-        .array(z.enum(['track', 'artist', 'album', 'playlist', 'show', 'episode', 'audiobook']))
+        .array(z.enum(SPOTIFY_SEARCHABLE_KINDS))
         .length(1)
         .optional()
         .describe("Type to search. Default: ['track']"),
@@ -1437,7 +1438,11 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       // `.length(1)` means at most one type reaches the handler, so there is no
       // longer a second requested type that could go unsearched.
       const type = args.types?.[0] ?? 'track';
-      const sectionKey = type === 'audiobook' ? 'audiobooks' : type === 'track' ? 'tracks' : type === 'artist' ? 'artists' : type === 'album' ? 'albums' : type === 'playlist' ? 'playlists' : type === 'show' ? 'shows' : 'episodes';
+      // /search nests every type's results under its plural key, and for all
+      // seven searchable kinds the plural is the singular plus "s". This used to
+      // be an 8-way ternary naming six of them; `search_deep` (searchdive.ts)
+      // already derives the same section key this way.
+      const sectionKey = `${type}s`;
       const a = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_a });
       const b = await runTypedSearch<{ uri?: string; id?: string; name?: string }>(client, sectionKey, type, { query: args.query, limit: args.limit, market: args.market_b });
       const keyOf = (x: { uri?: string; id?: string }): string => x.uri ?? x.id ?? JSON.stringify(x);
