@@ -38,6 +38,13 @@
  *    paragraph was added, which is the one direction the gate is documented to
  *    let through, and it said so with a message about a paragraph that had gone
  *    missing. #1412 spent a diagnosis on it, and #1460 is the cleanup.
+ *  - **And it is *reported*, which is where #1523 lands.** The bullet above is
+ *    about `errors` and `--check`, and both still hold. `--prose-report` is the
+ *    third thing, and it now fails on the surplus: a paragraph the pin has never
+ *    seen is prose the guard cannot watch, because no key means no later
+ *    deletion of it raises anything. Four `AGENTS.md` lessons merged that way
+ *    with the report still exiting 0. "Free" and "unreported" are different
+ *    claims, and only the first of them was ever true.
  */
 import './helpers/hermetic.js';
 
@@ -185,6 +192,7 @@ type ProseReport = {
   errors: string[];
   currentCount: number;
   pinnedCount: number;
+  unpinnedCount: number;
   coverage: { unpinned: Array<{ file: string; hash: string; label: string }>; missing: Array<{ file: string; hash: string; label: string }> };
   files: string[];
 };
@@ -368,11 +376,61 @@ describe('hand-written prose integrity (#1384)', () => {
     // is the behaviour: `errors` stays empty. That was never the part that
     // broke — `errors` always ignored additions. What broke was a caller
     // comparing the two counts, which this file did.
+    //
+    // It also stays the contract after #1523, and the two are not in tension:
+    // this asserts what `errors` and `--check` do, the next asserts what
+    // `--prose-report` does with the same tree. An unpinned paragraph is not one
+    // of the two ways a *pin* can be wrong, so it belongs in the second list.
     const source = await readFile(join(ROOT, 'README.md'), 'utf8');
     const manifest = { files: { 'README.md': describeDocument(source) } };
     const added = `${source}\nA brand-new paragraph that no pin has ever seen.\n`;
     const report = proseDrift(manifest, { 'README.md': added });
     assert.deepEqual(report.errors, [], 'adding prose must be free, or the gate punishes ordinary work');
+  });
+
+  it('fails --prose-report on prose the pin has never seen, and names it (#1523)', async () => {
+    // The report half of the test above, driven through the real CLI. The
+    // defect was never in the classifier: `proseDrift` reported the surplus
+    // correctly the whole time, in `coverage.unpinned`, with the file and the
+    // label on it. What it did not do was reach the exit code — so
+    // `--prose-report` exited 0 while naming four unpinned `AGENTS.md` lessons
+    // on `main` (#1523), the four newest entries in the file that records this
+    // repository's hard-won ones. A guard nobody can be red by is a guard whose
+    // blind spot is invisible, and a pin that has never seen a paragraph cannot
+    // report that paragraph's later deletion or reword — which is the whole
+    // reason the surplus is worth failing on.
+    //
+    // The override is the same device the deletion tests use, for the same
+    // reason: a paragraph cannot be added to the real document without leaving
+    // the working tree dirty, and a gate test must not edit the tree it guards.
+    //
+    // Both directions, one command apart. A non-zero exit on its own is
+    // satisfied by a command that always fails, and the clean half is what
+    // makes the red half evidence that *this* paragraph caused it.
+    const scratch = 'A paragraph added to a pinned document, which the pin has never seen.';
+    await withScratchDir(async (dir) => {
+      const copy = join(dir, 'AGENTS.md');
+      const source = await readFile(join(ROOT, 'AGENTS.md'), 'utf8');
+      await writeFile(copy, `${source}\n${scratch}\n`);
+
+      const withAddition = runCensus(['--prose-report', '--prose-override', `AGENTS.md=${copy}`]);
+      assert.notEqual(withAddition.status, 0, 'an unpinned paragraph must not exit 0 — that is how four lessons merged unseen');
+
+      const report = JSON.parse(withAddition.stdout) as ProseReport;
+      assert.equal(report.unpinnedCount, 1, 'one paragraph was added, so exactly one is unpinned');
+      assert.equal(
+        report.coverage.missing.length,
+        0,
+        'precondition: the paragraph is new, not lost. A run that broke both would satisfy the exit-code assertion above for the wrong reason',
+      );
+      assert.ok(
+        report.errors.some((line) => line.includes('AGENTS.md') && line.includes(proseUnitLabel(scratch))),
+        `the failure must name the file and the paragraph, not just a count:\n${report.errors.join('\n')}`,
+      );
+
+      const clean = realProseReport();
+      assert.equal(clean.status, 0, `the real tree has no unpinned prose, so the same command must exit 0:\n${clean.stdout}`);
+    });
   });
 
   it('reports a new paragraph and a lost one in different places, so neither can be read as the other (#1460)', async () => {
