@@ -2,13 +2,13 @@
 
 SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
-Stats.fm-backed calls never write to Spotify. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`, whose identity-free entries live in memory for the current server process and are not sent to stats.fm or persisted. Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
+Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`, whose identity-free entries live in memory for the current server process and are not sent to stats.fm or persisted. Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
 
 ## Setup
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
 2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import. `statsfm_streams_stats` reports aggregate totals for the history visible to stats.fm, and `statsfm_recaps` provides per-calendar-year views; neither proves import completeness.
-3. **Find your stats.fm user ID.** Open your profile page. The numeric ID in the `stats.fm/user/<id>` URL is accepted by user-scoped endpoint tools through required `user_id`; network-backed taste tools use required `statsfm_user`. These identifiers also accept a stats.fm customId or username where the API supports it.
+3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. User-scoped endpoint tools take it as required `user_id`; network-backed taste tools take it as required `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works.
 
 There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). User-scoped calls pass identity explicitly on every call; there is no `STATSFM_USER_ID` setting. Catalog searches and catalog-entity lookups do not require an identity argument.
 
@@ -33,9 +33,9 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_top_genres` | A user's genre ranking for a supported `range`. |
 | `statsfm_recent_streams` | Recent individual streams, with optional Unix-ms `after`/`before` bounds. |
 | `statsfm_now_playing` | The user's current stream, or `null` when idle. |
-| `statsfm_track_stats` | Stream totals for one track within a user's history. |
-| `statsfm_artist_stats` | Stream totals for one artist within a user's history. |
-| `statsfm_album_stats` | Stream totals for one album within a user's history. |
+| `statsfm_track_stats` | Stream totals for one track, counted over one page of the user's newest streams (`limit`) — not their whole history. |
+| `statsfm_artist_stats` | Stream totals for one artist, counted over one page of the user's newest streams (`limit`) — not their whole history. |
+| `statsfm_album_stats` | Stream totals for one album, counted over one page of the user's newest streams (`limit`) — not their whole history. |
 | `statsfm_search` | Search the stats.fm track, artist, album, playlist, or user catalog. |
 | `statsfm_recaps` | Year-in-review totals and catalog breadth for one calendar year. |
 | `statsfm_streams_stats` | Aggregate listening totals and catalog cardinality, optionally bounded by Unix-ms `after`/`before`. |
@@ -49,10 +49,10 @@ Every tool below is registered. The common `response_format` argument accepts `c
 | `statsfm_charts_tracks` | A user's all-time track chart with movement indicators. |
 | `statsfm_charts_artists` | A user's all-time artist chart with movement indicators. |
 | `statsfm_charts_albums` | A user's all-time album chart with movement indicators. |
-| `statsfm_charts_users` | A user's friends ranked by stream count. |
-| `statsfm_track_date_stats` | Stream totals for one track in a date window. |
-| `statsfm_artist_date_stats` | Stream totals for one artist in a date window. |
-| `statsfm_album_date_stats` | Stream totals for one album in a date window. |
+| `statsfm_charts_users` | One page of a user's friends — the `limit` you pass, not their whole friend list — ranked by stream count. A friend whose total cannot be read is listed as unreadable with the reason, never as zero. |
+| `statsfm_track_date_stats` | Stream totals for one track within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
+| `statsfm_artist_date_stats` | Stream totals for one artist within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
+| `statsfm_album_date_stats` | Stream totals for one album within a date window, counted over one page of that window's streams (`limit`) — not the whole window. |
 | `statsfm_friends` | A user's stats.fm friends. |
 | `statsfm_friend_count` | A user's stats.fm friend count. |
 | `statsfm_records_artists` | Artists holding a user's listening records and milestones. |
@@ -93,7 +93,8 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 
 ## Limits
 
-- Top-list tools page with `limit` / `offset`; use the tool schema's maximum rather than assuming a Spotify page size.
+- Top-list tools page with `limit` / `offset`; use the tool schema's maximum rather than assuming a Spotify page size. Check the row count you actually got back rather than assuming it equals the `limit` you asked for.
+- The per-entity `*_stats` and `*_date_stats` tools each read **one page** of `/users/{id}/streams` — stats.fm's stream list carries no total, no cursor and no `offset`, so a page is a slice, never a lifetime total. The tools disclose this rather than letting a slice read as a lifetime figure: when the page filled, `structuredContent` carries a `capped` flag plus the page size and the number of streams actually read, and the prose says the read did not cover all of them. A total without that flag is complete for the page it read, not necessarily for the profile.
 - `statsfm_recent_streams` is recency-ordered and most useful with small limits. It is a window onto recent plays, not a full export.
 - `max_results` truncation and `structuredContent` pagination behave like the server's other list tools.
 - Taste composites may require a public profile and enough imported streams; they return a useful empty result when the upstream has no data.
