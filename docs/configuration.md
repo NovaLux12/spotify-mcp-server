@@ -416,7 +416,7 @@ Two limits on that report, so it is not read as more than it is:
 
 ## Registration-gated endpoints
 
-Some Spotify Web API endpoints are denied at the app-registration level: on current app registrations they return `403 Forbidden` regardless of the OAuth scopes granted or the account's subscription tier. Verified by live probe on 2026-08-27 ([#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329)):
+Some Spotify Web API endpoints are denied at the app-registration level: on current app registrations they return `403 Forbidden` regardless of the OAuth scopes granted or the account's subscription tier. The table below records the observed runtime behaviour rather than a verdict, because the sources that describe this class do not agree: Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026) marks a batch of operations `[REMOVED]`, while the [live OpenAPI schema](https://developer.spotify.com/reference/web-api/open-api-schema.yaml) still publishes most of those same paths carrying `deprecated: true`. The README [explains the disagreement in full](../README.md#registration-gated-endpoints). The classifier that decides which family is gated is `GATED_FAMILIES` in `src/gating.ts`. The `403` rows below come from a dated edge probe (recoverable as `git show 1a53544:memory/edge-probe-2026-08-26.json`; the file itself is dropped by `.gitignore`, which is why it is named here rather than linked) reported in [#329](https://github.com/NovaLux12/spotify-mcp-server/issues/329).
 
 | Response | Endpoints |
 |---|---|
@@ -424,7 +424,7 @@ Some Spotify Web API endpoints are denied at the app-registration level: on curr
 | `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
 | `410 Gone` | `/me/apps`, `/me/chapters` |
 
-Tools wrapping these endpoints remain exposed for legacy registrations and return a plain-English 403 explanation on current registrations. The undocumented `/me/library/contains` check is not gated and powers duplicate-cleanup tooling. Batch lookup and top-tracks tools are wrapped, but registration-gated families are listed above rather than described as generally available.
+Tools wrapping these endpoints stay registered and return a plain-English 403 explanation on current registrations. They are kept for a reason that is checkable in this tree — their callers disclose the 403 rather than degrading into a wrong answer — not because they are known to work elsewhere. Whether a *grandfathered* (pre-Nov-2024) registration answers `200` on any of these paths is **unverified** (#1338, #1399): no pre-Nov-2024 client id or app age is on record here, and the one probe artefact that was once cited for it records `403` for both `/users` paths. The authoritative list of gated families is `GATED_FAMILIES` in `src/gating.ts`, which is what the [README table](../README.md#registration-gated-endpoints) is generated from. The undocumented `/me/library/contains` check is not gated and powers duplicate-cleanup tooling. Batch lookup and top-tracks tools are wrapped, but registration-gated families are listed above rather than described as generally available.
 
 ## Not used
 
