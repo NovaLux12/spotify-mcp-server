@@ -1016,6 +1016,14 @@ uses, because a guard that has only ever met the correct input has not been show
 to work. Same shape of mistake as the `withinBudget` flag and as an assertion
 computed from the fields it is checking.
 
+**The floor is arithmetic, not meaning.** The arity rule that closes the loop is
+`calls.filter(n => n <= emitter.payloadIndex)` — a count, with no analysis of
+what was actually passed — so a call site handing over a present-but-empty
+`undefined`, `null` or `{}` reads as carrying a payload. No `textOut(` call site
+in the tree has that shape, so this is a known floor rather than a live miss, and
+it is written down here so the next author reads the limit instead of
+rediscovering it the hard way.
+
 ---
 
 ## 7. Before you open a PR
