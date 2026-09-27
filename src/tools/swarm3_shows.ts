@@ -31,9 +31,11 @@ import {
   DryRun,
   MaxResults,
   ResponseFormat,
+  asRecord,
   batchSummary,
   describeDryRun,
   paginationInfo,
+  readString,
   resolveMaxResults,
   truncateItems,
 } from '../shaping.js';
@@ -261,31 +263,115 @@ function guestCandidates(description: string): string[] {
   return out;
 }
 
+/**
+ * The show a row belongs to, as far as the caller could actually read it.
+ *
+ * `SimplifiedEpisodeObject` — every row on `GET /shows/{id}/episodes` and in
+ * the `/search` `episodes` section — has no `show` member at all (#1508). The
+ * identity is not on the row; it is on the request the caller already made, or
+ * on the saved-show shelf item the walk was already iterating. So each call
+ * site passes what it genuinely knows, and a field it does not know is `null`
+ * rather than a stand-in.
+ */
+interface ShowContext {
+  id: string | null;
+  name: string | null;
+}
+
 interface EpisodeRow {
   id: string;
   uri: string;
   name: string;
-  showId: string;
-  showName: string;
+  showId: string | null;
+  showName: string | null;
   releaseDate: string;
   durationMs: number | null;
   fullyPlayed: boolean | null;
   resumePositionMs: number | null;
 }
 
-/** Flatten any episode payload into a plain row. */
-function toEpisodeRow(e: SpotifyEpisodeSimple | SpotifyEpisodeFull): EpisodeRow {
+/**
+ * The show identity a single episode payload carries, or `null`.
+ *
+ * Only `EpisodeObject` (`GET /episodes/{id}`) has a `show`, and the repo has
+ * already been bitten by assuming it is always there: `SpotifyEpisodeRow`
+ * documents `show` arriving `null` for a deleted one, and it declares that as a
+ * reason to read defensively. So the one payload that DOES carry a show is
+ * still read through `asRecord` / `readString` rather than trusted by type —
+ * the field is a claim about the wire, not a guarantee of it.
+ */
+function showContextOf(e: SpotifyEpisodeFull): ShowContext | null {
+  const rec = asRecord(e.show);
+  if (!rec) return null;
+  const id = readString(rec, 'id');
+  const name = readString(rec, 'name');
+  if (id == null && name == null) return null;
+  return { id: id ?? null, name: name ?? null };
+}
+
+/** The caller's own `show_id` argument, which identifies the show but not its name. */
+function showContextFromId(showId: string): ShowContext {
+  return { id: showId, name: null };
+}
+
+/**
+ * The show identity a saved-show shelf item already carries.
+ *
+ * `/me/shows` returns the full SimplifiedShowObject, so a walk over the shelf
+ * knows both the id it is about to request under and the name it should label
+ * that request's rows with. Nothing extra is read and nothing is defaulted —
+ * a shelf row with no show is already filtered out before this is called, and
+ * a shelf row whose name is empty reports `name: null` rather than a stand-in.
+ */
+function showContextOfSaved(item: SavedShowItem): ShowContext {
+  return { id: item.show?.id ?? null, name: item.show?.name ?? null };
+}
+
+/**
+ * Flatten any episode payload into a plain row.
+ *
+ * `show` is a REQUIRED argument on purpose. It is the whole point of #1508:
+ * when the show was read off the episode instead of off the request, every
+ * row on the simplified shape silently took a fabricated `''` /
+ * `'(unknown show)'`, and an optional parameter would let that regress
+ * silently the moment one call site forgot to pass it.
+ */
+function toEpisodeRow(
+  e: SpotifyEpisodeSimple | SpotifyEpisodeFull,
+  show: ShowContext | null,
+): EpisodeRow {
   return {
     id: e.id,
     uri: e.uri,
     name: e.name,
-    showId: e.show?.id ?? '',
-    showName: e.show?.name ?? '(unknown show)',
+    showId: show?.id ?? null,
+    showName: show?.name ?? null,
     releaseDate: e.release_date ?? '',
     durationMs: e.duration_ms ?? null,
     fullyPlayed: e.resume_point?.fully_played ?? null,
     resumePositionMs: e.resume_point?.resume_position_ms ?? null,
   };
+}
+
+/**
+ * A show label for prose: the name when something actually read one, otherwise
+ * the id the caller already holds, otherwise a stated absence.
+ *
+ * There is deliberately no `(unknown show)` branch. That string was #1508's
+ * bug — a value that could not be read, printed as if it had been — and it is
+ * indistinguishable in the text from a show genuinely named "unknown show".
+ */
+function showLabelOf(row: EpisodeRow): string {
+  if (row.showName) return row.showName;
+  if (row.showId) return `show ${row.showId}`;
+  return 'show not supplied';
+}
+
+/** Name ordering for merged rows; a row whose show name is unknown sorts last. */
+function byShowName(a: EpisodeRow, b: EpisodeRow): number {
+  if (a.showName == null) return b.showName == null ? 0 : 1;
+  if (b.showName == null) return -1;
+  return a.showName.localeCompare(b.showName);
 }
 
 /**
@@ -509,7 +595,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const items = page?.items ?? [];
       const total = page?.total ?? null;
       const view = truncateItems(items, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const rows = view.items.map(toEpisodeRow);
+      const rows = view.items.map((ep) => toEpisodeRow(ep, showContextFromId(args.show_id)));
       const prose = [
         `Episodes${total != null ? ` (${total} total)` : ''}: showing ${view.returned} from offset ${offset}.`,
         ...rows.map((r) => `  • ${r.releaseDate || '?'} · ${r.durationMs != null ? msToClock(r.durationMs) : '?'} · ${r.name}`),
@@ -544,9 +630,13 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       );
       const ep = page?.items?.[0];
       if (!ep) throw new Error(`No episodes found for show "${args.show_id}"`);
-      const row = toEpisodeRow(ep);
+      // `/shows/{id}/episodes` returns SimplifiedEpisodeObject, which carries no
+      // `show` — only the id the caller asked with is knowable here, and the
+      // show's NAME would cost a second `GET /shows/{id}` this tool's
+      // one-GET contract does not spend (#1508). The label falls back to the id.
+      const row = toEpisodeRow(ep, showContextFromId(args.show_id));
       const prose = [
-        `Latest episode of ${row.showName}:`,
+        `Latest episode of ${showLabelOf(row)}:`,
         `  ${row.name}`,
         `  Released ${row.releaseDate || '?'} · ${row.durationMs != null ? msToClock(row.durationMs) : '?'} · ${row.fullyPlayed === true ? 'fully played' : row.fullyPlayed === false ? 'partially played' : 'play state unknown'}`,
         `  ${cleanText(ep.description).slice(0, 300) || '(no description)'}`,
@@ -874,7 +964,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       if (args.market) params.market = args.market;
       const ep = await client.get<SpotifyEpisodeFull>(`/episodes/${encodeURIComponent(args.episode_id)}`, params);
       if (!ep?.id) throw new Error(`Episode "${args.episode_id}" not found`);
-      const row = toEpisodeRow(ep);
+      const row = toEpisodeRow(ep, showContextOf(ep));
       const payload: Record<string, unknown> = {
         ok: true,
         ...row,
@@ -886,7 +976,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       };
       if (rf === 'json') return emit(rf, '', payload);
       return emit(rf, [
-        `"${row.name}" (${row.showName})`,
+        `"${row.name}" (${showLabelOf(row)})`,
         `  Released ${row.releaseDate || '?'} · ${row.durationMs != null ? msToClock(row.durationMs) : '?'} · ${ep.explicit ? 'explicit' : 'clean'}`,
         row.fullyPlayed != null
           ? `  Resume: ${row.fullyPlayed ? 'fully played' : `${Math.round((ep.resume_point?.resume_position_ms ?? 0) / 60_000)} min in`}`
@@ -1078,14 +1168,14 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         const eps = await latestShowEpisodes(client, r.show.id, 20);
         for (const ep of eps) {
           const releaseKey = dateKeyNum(ep.release_date);
-          if (releaseKey != null && releaseKey >= sinceKey) fresh.push(toEpisodeRow(ep));
+          if (releaseKey != null && releaseKey >= sinceKey) fresh.push(toEpisodeRow(ep, showContextOfSaved(r)));
         }
       }
-      fresh.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || a.showName.localeCompare(b.showName));
+      fresh.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || byShowName(a, b));
       const view = truncateItems(fresh, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
         `New episodes since ${since}: ${fresh.length} across ${checked} saved show(s)${shows.length > budget ? ` (budget capped at ${budget})` : ''}.`,
-        ...view.items.map((r) => `  • ${r.releaseDate || '?'} · ${r.showName} — ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
+        ...view.items.map((r) => `  • ${r.releaseDate || '?'} · ${showLabelOf(r)} — ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
       return emit(rf, prose, {
@@ -1170,7 +1260,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         { limit: '50' },
         { maxItems: Math.min(limit, getConfig().fetchAllCap) },
       );
-      const rows = eps.map(toEpisodeRow);
+      const rows = eps.map((ep) => toEpisodeRow(ep, showContextFromId(args.show_id)));
       const durations = rows.map((r) => r.durationMs).filter((d): d is number => d != null);
       const total = durations.reduce((s, d) => s + d, 0);
       const sorted = [...durations].sort((a, b) => a - b);
@@ -1340,13 +1430,13 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         if (checked >= budget) break;
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, perShow);
-        for (const ep of eps) feed.push(toEpisodeRow(ep));
+        for (const ep of eps) feed.push(toEpisodeRow(ep, showContextOfSaved(r)));
       }
-      feed.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || a.showName.localeCompare(b.showName));
+      feed.sort((a, b) => (dateKeyNum(b.releaseDate) ?? -1) - (dateKeyNum(a.releaseDate) ?? -1) || byShowName(a, b));
       const view = truncateItems(feed, resolveMaxResults(args.max_results, getConfig().maxItems));
       const prose = [
         `Activity feed: ${feed.length} episode(s) from ${checked} show(s), newest first.`,
-        ...view.items.map((r) => `  • ${r.releaseDate || '?'} — ${r.showName}: ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
+        ...view.items.map((r) => `  • ${r.releaseDate || '?'} — ${showLabelOf(r)}: ${r.name} (${r.durationMs != null ? msToClock(r.durationMs) : '?'})`),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
       return emit(rf, prose, {
@@ -1383,7 +1473,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         checked++;
         const eps = await latestShowEpisodes(client, r.show.id, perShow);
         for (const ep of eps) {
-          const row = toEpisodeRow(ep);
+          const row = toEpisodeRow(ep, showContextOfSaved(r));
           if (row.fullyPlayed !== true) backlog.push(row);
         }
       }
@@ -1393,7 +1483,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const plannedMs = view.items.reduce((s, r) => s + (r.durationMs ?? 0), 0);
       const prose = [
         `[dry run] backlog plan — ${backlog.length} unlistened episode(s), total ${msToClock(totalMs)}, shortest-first:`,
-        ...view.items.map((r, i) => `  ${i + 1}. ${r.durationMs != null ? msToClock(r.durationMs) : '?'} · ${r.showName}: ${r.name} (${r.releaseDate || '?'})`),
+        ...view.items.map((r, i) => `  ${i + 1}. ${r.durationMs != null ? msToClock(r.durationMs) : '?'} · ${showLabelOf(r)}: ${r.name} (${r.releaseDate || '?'})`),
         `  Planned block runtime: ${msToClock(plannedMs)}`,
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
@@ -1586,7 +1676,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         const eps = await latestShowEpisodes(client, r.show.id, 20);
         for (const ep of eps) {
           const releaseKey = dateKeyNum(ep.release_date);
-          if (releaseKey != null && releaseKey >= sinceKey) newEps.push(toEpisodeRow(ep));
+          if (releaseKey != null && releaseKey >= sinceKey) newEps.push(toEpisodeRow(ep, showContextOfSaved(r)));
         }
       }
       // Library membership via /me/library/contains (50 uris per request, the
@@ -1626,7 +1716,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
             b.saved_in_library === null ? 'library state unknown' : b.saved_in_library ? 'saved' : null,
             b.play_state_label,
           ].filter(Boolean);
-          return `  ${b.unlistened ? '▶' : '·'} ${b.releaseDate || '?'} · ${b.showName}: ${b.name} [${flags.join(', ')}]`;
+          return `  ${b.unlistened ? '▶' : '·'} ${b.releaseDate || '?'} · ${showLabelOf(b)}: ${b.name} [${flags.join(', ')}]`;
         }),
         savedIds == null
           ? '(library check unavailable — /me/library/contains could not be read, so "not saved" is unconfirmed)'

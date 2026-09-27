@@ -25,13 +25,24 @@ interface Show {
   total_episodes: number;
 }
 
+/**
+ * A row shaped like a REAL `GET /shows/{id}/episodes` response (#1508).
+ *
+ * There is deliberately no `show` member. The published OpenAPI schema types
+ * that response as `PagingSimplifiedEpisodeObject` → `SimplifiedEpisodeObject`,
+ * which is `allOf: [EpisodeBase, { type: object }]` — the second member
+ * declares no properties and `EpisodeBase` has no `show`. This fixture used to
+ * hand-assemble one WITH a `show`, which is exactly why the shipped bug was
+ * invisible to the suite: a test that invents the field cannot observe the API
+ * omitting it. `show` now reaches a row only from the request the caller made
+ * or from the `/me/shows` shelf row, which is what the harness serves.
+ */
 interface Episode {
   id: string;
   name: string;
   uri: string;
   duration_ms: number;
   release_date: string;
-  show: Show;
   resume_point?: { fully_played: boolean; resume_position_ms: number };
 }
 
@@ -45,7 +56,6 @@ function show(id: string, publisher = 'Publisher'): Show {
 }
 
 function episode(
-  showItem: Show,
   id: string,
   releaseDate: string,
   resumePoint?: { fully_played: boolean; resume_position_ms: number },
@@ -56,7 +66,6 @@ function episode(
     uri: `spotify:episode:${id}`,
     duration_ms: 1_800_000,
     release_date: releaseDate,
-    show: showItem,
     ...(resumePoint ? { resume_point: resumePoint } : {}),
   };
 }
@@ -64,6 +73,14 @@ function episode(
 function harness(options: {
   shows?: Show[];
   episodesByShow?: Record<string, Episode[]>;
+  /**
+   * `GET /episodes/{id}` bodies, keyed by episode id. This is the ONE episode
+   * shape whose `show` the OpenAPI schema actually declares — `EpisodeObject`
+   * is `allOf: [EpisodeBase, …]` and adds `show` as REQUIRED — so it is the
+   * only place a show name may be read off the payload (#1508). A value of
+   * `null` models a deleted show, which `SpotifyEpisodeRow` documents.
+   */
+  episodesById?: Record<string, unknown>;
   failingShowIds?: ReadonlySet<string>;
   searchPage?: { items: Show[]; total?: number };
   savedEpisodeIds?: ReadonlySet<string>;
@@ -119,7 +136,15 @@ function harness(options: {
         return uris.map((uri) => savedEpisodeIds.has(uri.replace(/^spotify:episode:/, ''))) as T;
       }
       const match = /^\/shows\/([^/]+)\/episodes$/.exec(path);
-      if (!match) return null;
+      if (!match) {
+        const one = /^\/episodes\/([^/]+)$/.exec(path);
+        if (one) {
+          const id = decodeURIComponent(one[1]);
+          const body = options.episodesById?.[id];
+          return (body === undefined ? null : body) as T;
+        }
+        return null;
+      }
       const showId = decodeURIComponent(match[1]);
       episodeRequests.push(showId);
       if (failingShowIds.has(showId)) {
@@ -168,7 +193,7 @@ describe('swarm3 show date handling', () => {
     const h = harness({
       shows: [daily],
       episodesByShow: {
-        daily: [episode(daily, 'feb', '2026-02-01'), episode(daily, 'jan', '2026-01-31')],
+        daily: [episode('feb', '2026-02-01'), episode('jan', '2026-01-31')],
       },
     });
 
@@ -186,7 +211,7 @@ describe('swarm3 show date handling', () => {
     const h = harness({
       shows: [leapShow],
       episodesByShow: {
-        leap: [episode(leapShow, 'march', '2024-03-01'), episode(leapShow, 'february', '2024-02-28')],
+        leap: [episode('march', '2024-03-01'), episode('february', '2024-02-28')],
       },
     });
 
@@ -220,10 +245,10 @@ describe('swarm3 show date handling', () => {
       shows: [inboxShow],
       episodesByShow: {
         inbox: [
-          episode(inboxShow, 'after', '2026-09-02'),
-          episode(inboxShow, 'boundary', '2026-09-01'),
-          episode(inboxShow, 'before', '2026-08-31'),
-          episode(inboxShow, 'year-only', '2026'),
+          episode('after', '2026-09-02'),
+          episode('boundary', '2026-09-01'),
+          episode('before', '2026-08-31'),
+          episode('year-only', '2026'),
         ],
       },
     });
@@ -274,7 +299,7 @@ describe('publisher_portfolio request budget', () => {
     const gated = show('gated', 'Gated Publisher');
     const h = harness({
       shows: [good, gated],
-      episodesByShow: { good: [episode(good, 'ge', '2026-09-20')] },
+      episodesByShow: { good: [episode('ge', '2026-09-20')] },
       failingShowIds: new Set([gated.id]),
     });
 
@@ -334,7 +359,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   };
 
   it('renders a fully played, unsaved episode as played — never NEW', async () => {
-    const h = briefHarness(episode(fresh, 'finished', '2026-09-20', {
+    const h = briefHarness(episode('finished', '2026-09-20', {
       fully_played: true,
       resume_position_ms: 0,
     }));
@@ -351,7 +376,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   });
 
   it('renders a partially played episode as in progress with its offset', async () => {
-    const h = briefHarness(episode(fresh, 'partial', '2026-09-20', {
+    const h = briefHarness(episode('partial', '2026-09-20', {
       fully_played: false,
       resume_position_ms: 900_000,
     }));
@@ -365,7 +390,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   });
 
   it('renders an explicitly unstarted episode as NEW', async () => {
-    const h = briefHarness(episode(fresh, 'untouched', '2026-09-20', {
+    const h = briefHarness(episode('untouched', '2026-09-20', {
       fully_played: false,
       resume_position_ms: 0,
     }));
@@ -380,7 +405,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   });
 
   it('withholds the label with a reason when Spotify returns no resume_point', async () => {
-    const h = briefHarness(episode(fresh, 'no-resume', '2026-09-20'));
+    const h = briefHarness(episode('no-resume', '2026-09-20'));
 
     const out = await h.invoke('show_recommendation_brief', { since: '2026-09-01' });
     const payload = out.structuredContent as BriefPayload;
@@ -398,10 +423,10 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   it('withholds the label when resume_point carries no readable offset', async () => {
     // `fully_played: false` with the offset absent or null: unreadable data, not an
     // observed 0:00. A `?? 0` here would print a resume position nobody reported.
-    const absent = episode(fresh, 'no-offset', '2026-09-20', {
+    const absent = episode('no-offset', '2026-09-20', {
       fully_played: false,
     } as Episode['resume_point']);
-    const nulled = episode(fresh, 'null-offset', '2026-09-20', {
+    const nulled = episode('null-offset', '2026-09-20', {
       fully_played: false,
       resume_position_ms: null as unknown as number,
     });
@@ -425,7 +450,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
 
   it('counts a /me/library/contains call that failed after being issued', async () => {
     const h = briefHarness(
-      episode(fresh, 'unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+      episode('unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
       { containsFails: true },
     );
 
@@ -441,7 +466,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
 
   it('reports an unreadable library check as unavailable rather than as not saved', async () => {
     const h = briefHarness(
-      episode(fresh, 'unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+      episode('unstarted', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
       { containsFails: true },
     );
 
@@ -458,7 +483,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
 
   it('marks a library-saved episode saved and never unlistened', async () => {
     const h = briefHarness(
-      episode(fresh, 'kept', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+      episode('kept', '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
       { savedEpisodeIds: ['kept'] },
     );
 
@@ -478,7 +503,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
       many.map((s, i) => [
         s.id,
         Array.from({ length: 20 }, (_, j) =>
-          episode(s, `e${i + 1}-${j + 1}`, '2026-09-20', { fully_played: false, resume_position_ms: 0 })),
+          episode(`e${i + 1}-${j + 1}`, '2026-09-20', { fully_played: false, resume_position_ms: 0 })),
       ]),
     );
     const h = harness({ shows: many, episodesByShow, savedEpisodeIds: new Set<string>() });
@@ -507,7 +532,7 @@ describe('show_recommendation_brief play-state labelling (#818)', () => {
   });
 
   it('never derives episode state from the music recently-played feed', async () => {
-    const h = briefHarness(episode(fresh, 'finished', '2026-09-20', {
+    const h = briefHarness(episode('finished', '2026-09-20', {
       fully_played: true,
       resume_position_ms: 0,
     }));
@@ -770,7 +795,7 @@ describe('library check is fail-closed on a malformed /me/library/contains body 
     // narrowed the saved set and pushed un-read episodes into the queue.
     const fresh = show('s1', 'Network');
     const episodes = shortIds.map((id) =>
-      episode(fresh, id, '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
+      episode(id, '2026-09-20', { fully_played: false, resume_position_ms: 0 }),
     );
     const h = harness({
       shows: [fresh],
@@ -793,5 +818,154 @@ describe('library check is fail-closed on a malformed /me/library/contains body 
       assert.equal(row.unlistened, false, row.id);
     }
     assert.match(out.content[0].text, /library check unavailable/);
+  });
+});
+
+/**
+ * #1508 — the show identity is not on an episode row.
+ *
+ * The `Episode` fixture at the top of this file already has no `show` member,
+ * so every test below drives the real wire shape: `GET /shows/{id}/episodes`
+ * returns `PagingSimplifiedEpisodeObject`, whose items are
+ * `SimplifiedEpisodeObject` = `allOf: [EpisodeBase, { type: object }]`, and
+ * `EpisodeBase` has no `show`. The old code read `e.show?.id ?? ''` and
+ * `e.show?.name ?? '(unknown show)'` off that shape, so every value below was
+ * the fabricated fallback, permanently, with nothing to fail.
+ */
+describe('episode rows carry the show the caller asked for, not a fabricated one (#1508)', () => {
+  // `spotifyId()` validates 22 base62 characters, so the ids below are shaped
+  // like real ones rather than the short labels the other suites use.
+  const SHOW_ID = '4rOoJ6EgrbZ2Kyx2sUXZpA';
+  const EPISODE_ID = '5Xt5DXGzch68nYYamXrNxZ';
+
+  it('threads the caller show_id onto list_show_episodes rows and never claims an unknown show', async () => {
+    const h = harness({
+      episodesByShow: { [SHOW_ID]: [episode('e1', '2026-09-20'), episode('e2', '2026-09-19')] },
+    });
+
+    const out = await h.invoke('list_show_episodes', { show_id: SHOW_ID });
+    const payload = out.structuredContent as {
+      episodes: Array<{ id: string; showId: string | null; showName: string | null }>;
+    };
+
+    assert.equal(payload.episodes.length, 2);
+    for (const row of payload.episodes) {
+      assert.equal(row.showId, SHOW_ID, `${row.id}: the id the caller requested is known`);
+      // #1508: never '' and never '(unknown show)'. null is the honest answer
+      // for a field this endpoint does not carry.
+      assert.equal(row.showName, null, `${row.id}: no show name was read, so none is claimed`);
+      assert.notEqual(row.showName, '');
+      assert.notEqual(row.showName, '(unknown show)');
+    }
+  });
+
+  it('never prints "Latest episode of (unknown show):" from get_show_latest_episode', async () => {
+    const h = harness({ episodesByShow: { [SHOW_ID]: [episode('e1', '2026-09-20')] } });
+
+    const out = await h.invoke('get_show_latest_episode', { show_id: SHOW_ID });
+    const text = out.content[0].text;
+
+    assert.doesNotMatch(text, /unknown show/i, 'a value nobody read is not printed as one');
+    assert.match(text, /Latest episode of show \w+:/, 'the id the caller supplied is the honest label');
+    const payload = out.structuredContent as { episode: { showId: string | null; showName: string | null } };
+    assert.equal(payload.episode.showId, SHOW_ID);
+    assert.equal(payload.episode.showName, null);
+  });
+
+  it('labels cross-show rows with the shelf show name the walk already held', async () => {
+    const alpha = show('alpha');
+    const beta = show('beta');
+    const h = harness({
+      shows: [alpha, beta],
+      episodesByShow: {
+        alpha: [episode('a1', '2026-09-20')],
+        beta: [episode('b1', '2026-09-20')],
+      },
+    });
+
+    const out = await h.invoke('show_activity_feed', { eps_per_show: 1, max_shows: 2 });
+    const payload = out.structuredContent as {
+      episodes: Array<{ id: string; showId: string | null; showName: string | null }>;
+    };
+    const byId = new Map(payload.episodes.map((r) => [r.id, r]));
+
+    // `/me/shows` returned the full SimplifiedShowObject, so both the id and
+    // the name were already in hand — no second read, and no default.
+    assert.equal(byId.get('a1')?.showId, 'alpha');
+    assert.equal(byId.get('a1')?.showName, 'Show alpha');
+    assert.equal(byId.get('b1')?.showId, 'beta');
+    assert.equal(byId.get('b1')?.showName, 'Show beta');
+    assert.doesNotMatch(out.content[0].text, /unknown show/i);
+  });
+
+  it('labels the backlog and the new-episode inbox from the shelf, not from the episode', async () => {
+    const solo = show('solo');
+    const h = harness({
+      shows: [solo],
+      episodesByShow: { solo: [episode('s1', '2026-09-20', { fully_played: false, resume_position_ms: 0 })] },
+    });
+
+    const backlog = await h.invoke('show_backlog_plan', { eps_per_show: 1, max_shows: 1 });
+    const backlogRows = (backlog.structuredContent as { plan: Array<{ showName: string | null }> }).plan;
+    assert.deepEqual(backlogRows.map((r) => r.showName), ['Show solo']);
+    assert.doesNotMatch(backlog.content[0].text, /unknown show/i);
+
+    const inbox = await h.invoke('get_newly_released_episodes', { since: '2026-09-01', max_shows: 1 });
+    const inboxRows = (inbox.structuredContent as { episodes: Array<{ showName: string | null }> }).episodes;
+    assert.deepEqual(inboxRows.map((r) => r.showName), ['Show solo']);
+    assert.doesNotMatch(inbox.content[0].text, /unknown show/i);
+  });
+
+  it('reads the show off GET /episodes/{id}, the one shape that carries one', async () => {
+    const h = harness({
+      episodesById: {
+        [EPISODE_ID]: {
+          id: EPISODE_ID,
+          name: 'Episode e1',
+          uri: `spotify:episode:${EPISODE_ID}`,
+          duration_ms: 1_800_000,
+          release_date: '2026-09-20',
+          explicit: false,
+          description: 'desc',
+          languages: ['en'],
+          show: { id: SHOW_ID, name: 'The Real Show', uri: `spotify:show:${SHOW_ID}` },
+        },
+      },
+    });
+
+    const out = await h.invoke('get_episode_details', { episode_id: EPISODE_ID });
+    const payload = out.structuredContent as { showId: string | null; showName: string | null };
+
+    assert.equal(payload.showId, SHOW_ID);
+    assert.equal(payload.showName, 'The Real Show');
+    assert.match(out.content[0].text, /"Episode e1" \(The Real Show\)/);
+  });
+
+  it('reports a deleted show as absent rather than guessing, even on the full shape', async () => {
+    const h = harness({
+      episodesById: {
+        [EPISODE_ID]: {
+          id: EPISODE_ID,
+          name: 'Episode e1',
+          uri: `spotify:episode:${EPISODE_ID}`,
+          duration_ms: 1_800_000,
+          release_date: '2026-09-20',
+          explicit: false,
+          description: 'desc',
+          languages: ['en'],
+          // `EpisodeObject` requires `show`, but `SpotifyEpisodeRow` already
+          // documents it arriving null for a deleted one — the type is a claim
+          // about the wire, not a guarantee of it, so the read is defensive.
+          show: null,
+        },
+      },
+    });
+
+    const out = await h.invoke('get_episode_details', { episode_id: EPISODE_ID });
+    const payload = out.structuredContent as { showId: string | null; showName: string | null };
+
+    assert.equal(payload.showId, null, 'a null show is disclosed, not defaulted');
+    assert.equal(payload.showName, null);
+    assert.doesNotMatch(out.content[0].text, /unknown show/i);
   });
 });

@@ -357,7 +357,11 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
         playlist: (items) =>
           (items as SpotifyPlaylistSimple[]).map((p) => `• "${p.name}" — ${p.owner?.display_name ?? 'unknown'}`),
         show: (items) => (items as SpotifyShowSimple[]).map((s) => `• "${s.name}"`),
-        episode: (items) => (items as SpotifyEpisodeSimple[]).map((e) => `• "${e.name}" — ${e.show?.name ?? '?'}`),
+        // #1508: the `/search` `episodes` section is a PagingSimplifiedEpisodeObject,
+        // so its rows carry no `show` at all — `e.show?.name` was always `undefined`
+        // here and every row printed a '?' where a show name belonged. The show is
+        // not recoverable from the row, so the row says what it does carry.
+        episode: (items) => (items as SpotifyEpisodeSimple[]).map((e) => `• "${e.name}" (${e.release_date})`),
         audiobook: (items) => (items as SpotifyAudiobookSimple[]).map((ab) => `• "${ab.name}" — ${(ab.authors ?? []).map((a) => a.name).join(', ')}`),
       };
       let grandTotal = 0;

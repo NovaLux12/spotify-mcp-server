@@ -1058,6 +1058,8 @@ Search Spotify's catalog.
 
 **Returns:** grouped results by type. Each item includes URI, name, and type-specific fields (artist names, album name, release date, duration, etc.).
 
+The `episode` group is a `PagingSimplifiedEpisodeObject`, whose items carry no `show` member, so the show a result belongs to is **not** in the response and is not printed. Use `get_episode_details` (or `get_episode`) when a single episode's show is needed (#1508).
+
 `playlist_fill_from_search` also sends at most 10 track results per `/search` request. It requests later offsets only when the requested number of new playlist items has not yet been found, and its plan discloses the candidate count and pages searched for every query. Its pre-read of the playlist's existing items is covered by [the exhaust2 playlist-item walk contract](#exhaust2-playlist-item-walk-contract-898). It accepts `queries` as an array of at most 25 entries or as one comma-separated string bounded by the same 25, and reports `requests_read` (every paged read the call issued, including the target playlist's metadata read and existing-items walk) alongside `search_requests_read` (the `/search` pages alone).
 
 ---
@@ -1179,6 +1181,8 @@ List one podcast show's episodes newest-first from `GET /shows/{id}/episodes`.
 **Inputs:** `show_id` (string, required), `offset` (number, optional), `market` (string, optional), plus shared `response_format` and `max_results` controls. Use `offset` for the next page; `max_results` caps returned rows.
 
 **Returns:** episode name, release date, duration, URI, and pagination metadata.
+
+Each row also carries `showId` (the id the caller supplied) and `showName`. `showName` is `null` on this tool, and that is the field's real state rather than a gap: `GET /shows/{id}/episodes` returns `PagingSimplifiedEpisodeObject`, whose items are `SimplifiedEpisodeObject` — `allOf: [EpisodeBase, { type: object }]`, and `EpisodeBase` has no `show` member. A show name would cost a second `GET /shows/{id}`, so the id the caller already holds is the label and nothing is invented for the name. The tools that walk the saved-show shelf (`get_newly_released_episodes`, `show_activity_feed`, `show_backlog_plan`, `show_recommendation_brief`) do report a real `showName`, because `/me/shows` returned the full show on the shelf row they were already iterating (#1508).
 
 ---
 

@@ -461,3 +461,56 @@ test('an unwritable search-history sidecar does not fail search (#766)', async (
   const out = text(await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'] }));
   assert.match(out, /Bohemian Rhapsody/);
 });
+
+// ---------------------------------------------------------------- #1508
+
+/**
+ * The `/search` `episodes` section is a `PagingSimplifiedEpisodeObject`, whose
+ * items are `SimplifiedEpisodeObject` = `allOf: [EpisodeBase, { type: object }]`
+ * — and `EpisodeBase` has no `show` member. Only `EpisodeObject`
+ * (`GET /episodes/{id}`) adds one, and it adds it as REQUIRED.
+ *
+ * The formatter used to read `e.show.name` off a simplified row. That is not a
+ * wrong-name bug, it is a crash: an unguarded read of an absent member. The
+ * fixture below is shaped like the real response, with no `show` at all.
+ */
+test('search renders episode results shaped like the real SimplifiedEpisodeObject (#1508)', async () => {
+  const { registered } = makeHarness({
+    getResponse: () => ({
+      episodes: {
+        items: [
+          {
+            id: '5Xt5DXGzch68nYYamXrNxZ',
+            name: 'Starting Your Own Podcast',
+            uri: 'spotify:episode:5Xt5DXGzch68nYYamXrNxZ',
+            duration_ms: 1_686_230,
+            release_date: '2021-03-09',
+            description: 'A show about podcasting.',
+            explicit: false,
+            html_description: '<p>A show about podcasting.</p>',
+            href: 'https://api.spotify.com/v1/episodes/5Xt5DXGzch68nYYamXrNxZ',
+            images: [],
+            is_externally_hosted: false,
+            is_playable: true,
+            languages: ['en'],
+            release_date_precision: 'day',
+            type: 'episode',
+            audio_preview_url: null,
+            external_urls: { spotify: 'https://open.spotify.com/episode/5Xt5DXGzch68nYYamXrNxZ' },
+          },
+        ],
+        total: 1,
+      },
+    }),
+  });
+
+  const out = await invoke(findTool(registered, 'search'), { query: 'podcast', types: ['episode'] });
+  const body = text(out);
+
+  assert.match(body, /Starting Your Own Podcast/);
+  // The show is not on the row and is not recoverable from it, so nothing
+  // claims one — and the unguarded read that used to throw is gone.
+  assert.doesNotMatch(body, /undefined/);
+  assert.doesNotMatch(body, /unknown show/i);
+  assert.match(body, /spotify:episode:5Xt5DXGzch68nYYamXrNxZ/);
+});

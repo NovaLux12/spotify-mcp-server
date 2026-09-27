@@ -135,8 +135,8 @@ const KNOWN_UNTESTED: readonly {
     reason:
       'Show and episode composites, untested as a family (epic #575). Several here are WRITES — subscribe_to_show, unsubscribe_from_show, mark_episode_played_plan — so this is the highest-risk group on the list, not merely the largest.',
     tools: [
-      'episode_guest_census', 'episode_runtime_report', 'get_episode_details', 'get_show_details',
-      'get_show_latest_episode', 'list_saved_shows', 'mark_episode_played_plan', 'show_activity_feed',
+      'episode_guest_census', 'episode_runtime_report', 'get_show_details',
+      'list_saved_shows', 'mark_episode_played_plan',
       'shows_without_new_episodes', 'stale_saved_shows_plan', 'subscribe_to_show',
       'unsubscribe_from_show',
     ],
