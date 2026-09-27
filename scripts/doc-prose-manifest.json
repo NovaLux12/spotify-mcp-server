@@ -347,7 +347,7 @@
         "label": "When --prose-report exits 0, the whole-file resolution l…"
       },
       {
-        "hash": "72484ff53cac099e",
+        "hash": "462964afc50bd9cd",
         "label": "When it names a paragraph, nothing in that sequence turn…"
       },
       {
@@ -363,8 +363,8 @@
         "label": "The gate (#1384). scripts/doc-prose-manifest.json pins e…"
       },
       {
-        "hash": "e4af2718994b82ca",
-        "label": "Adding prose is free. A new tool adds a contract paragra…"
+        "hash": "a101c5ca84051ab3",
+        "label": "Adding prose is free for --check, and named by --prose-r…"
       },
       {
         "hash": "c28b86d583b5ead2",
@@ -6432,6 +6432,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "72484ff53cac099e",
+      "label": "When it names a paragraph, nothing in that sequence turn…",
+      "date": "2026-09-27",
+      "reason": "reworded two AGENTS.md prose paragraphs that this branch itself replaces, after resolving the mixed-file manifest conflict with --ours (main) during the rebase onto 3ad74650; both paragraphs are present in expanded form on this tree and neither was lost. Evidence re-derived rather than assumed: 16 bolded bullets on origin/main and 16 on this tree (no bullet lost), AGENTS.md 999 lines on origin/main vs 1013 here (additive, +14), the branch's replacement wording 'Adding prose is free for --check' present once on this tree and 0 on origin/main, and 'One reading' present once on this tree. The pin is keyed on content, so an extension hashes identically to a removal; that is the gap filed as #1527."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "8b049ed815b08ef7",
       "label": "That is enough when the only thing that differs is insid…",
       "date": "2026-09-27",
@@ -6471,6 +6478,13 @@
       "label": "It is proven to fail. Lowering the baseline, introducing…",
       "date": "2026-09-27",
       "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "e4af2718994b82ca",
+      "label": "Adding prose is free. A new tool adds a contract paragra…",
+      "date": "2026-09-27",
+      "reason": "reworded two AGENTS.md prose paragraphs that this branch itself replaces, after resolving the mixed-file manifest conflict with --ours (main) during the rebase onto 3ad74650; both paragraphs are present in expanded form on this tree and neither was lost. Evidence re-derived rather than assumed: 16 bolded bullets on origin/main and 16 on this tree (no bullet lost), AGENTS.md 999 lines on origin/main vs 1013 here (additive, +14), the branch's replacement wording 'Adding prose is free for --check' present once on this tree and 0 on origin/main, and 'One reading' present once on this tree. The pin is keyed on content, so an extension hashes identically to a removal; that is the gap filed as #1527."
     },
     {
       "file": "ARCHITECTURE.md",
@@ -6887,9 +6901,9 @@
     }
   ],
   "provenance": {
-    "head": "e383a3035424f1fb6ebc8fad4657947be5e6851a",
-    "base": "fb4dc5ed3bb394d7ee2431ceaab2d3f16db8f398",
-    "upstream": "fb4dc5ed3bb394d7ee2431ceaab2d3f16db8f398",
+    "head": "63521db53c5be90a5262fabf4006d6605fd8f47d",
+    "base": "3ad74650ccfb4da31eda2b276963844253089dc0",
+    "upstream": "3ad74650ccfb4da31eda2b276963844253089dc0",
     "behind": false
   }
 }
