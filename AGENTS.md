@@ -147,6 +147,19 @@ a 403 is met by a replacement read or a plain-English explanation), and those
 two fields are why "removed" and "registration-dependent" are not synonyms.
 Verified against the array, not this paragraph.
 
+`/users/{id}` and `/users/{id}/playlists` are the family worth naming here,
+because the obvious reading puts them in the never-call table below instead.
+There is no `/me/*` replacement for them — a tool reading an **arbitrary**
+`user_id` has nothing honest to migrate onto, since `/me` is only ever the
+caller — and the `user-profile` family still carries live call sites. What
+keeps it out of that table is not the absence of a replacement but the
+presence of callers: `get_user_profile`, `get_user_playlists_by_id` and
+`get_playlist_followers` disclose a 403 instead of degrading, and a
+grandfathered registration still answers 200, so deleting them would remove a
+path that works rather than fix one that does not. `get_user_playlists` is
+deliberately **not** in that family: despite the name it reads
+`GET /me/playlists`, which was never removed.
+
 **Never call these — no replacement, or superseded with no live call site.**
 Nothing in this table is a runtime classifier, because there is no graceful
 shape left to give the failure:
@@ -160,7 +173,6 @@ shape left to give the failure:
 | `PUT/DELETE /playlists/{id}/followers` | Replaced by `PUT/DELETE /me/library` with a `spotify:playlist:` URI (#594) — already migrated, no live call site |
 | `GET /playlists/{id}/followers/contains` | Replaced by `GET /me/library/contains` (#862) — already migrated, no live call site |
 | `POST/GET/PUT/DELETE /playlists/{id}/tracks` | Superseded by the `/items` equivalents; no shipped tool calls it (#638) |
-| `POST/GET /users/{id}/playlists`, `GET /users/{id}` | No replacement. `get_user_profile` / `get_user_playlists` / `get_user_playlists_by_id` still call them and **explain the 403** rather than degrading — that is why they are here and not deleted |
 
 A tool in this bucket is **broken, not merely degraded** — a `403`-tolerant
 wrapper will happily turn a removed endpoint into a soft, wrong answer, so
