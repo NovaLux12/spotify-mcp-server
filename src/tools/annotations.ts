@@ -1064,6 +1064,75 @@ export interface GatedSurface {
 }
 
 /**
+ * The env vars whose presence enlarges the AGGREGATE surface (#1493) — the
+ * aggregate-level counterpart of the per-module `gatedSurface` above.
+ *
+ * Derived from the manifest rather than typed here, for the same reason the
+ * per-module figures live on the entries they describe: a second hand-typed
+ * list of env vars is a list that can name a gate the manifest no longer
+ * declares, and it would fail silently — the survey would find no gated
+ * modules and report a default surface as if it were the only one.
+ *
+ * A length other than 0 or 1 is a manifest the aggregate gate cannot honestly
+ * cover, so it throws rather than picking one: two flags means two opt-in
+ * surfaces, and sizing the budget for one of them is the defect #1493 reports
+ * in a new place.
+ */
+export function aggregateGatedEnvVars(): readonly string[] {
+  const flags = [...new Set(REGISTRAR_MANIFEST.filter((entry) => entry.gatedSurface).map((entry) => entry.gatedSurface!.gatedBy))].sort();
+  assertSingleAggregateGatedFlag(flags);
+  return flags;
+}
+
+/**
+ * The invariant behind `aggregateGatedEnvVars`, split out so it is testable.
+ *
+ * The census LABELS the opted-in table from the declared flags but MEASURES it
+ * by flipping the one flag it knows (`surface-census.mjs`). A second declared
+ * flag would publish a table captioned with both while measuring only one — a
+ * figure describing an installation that does not exist. This claim used to live
+ * in four comments and no code, so a second flag would have shipped silently,
+ * and the test that "pinned" it was a `deepEqual` on a constant that reads the
+ * same whether or not the guard exists.
+ */
+export function assertSingleAggregateGatedFlag(flags: readonly string[]): void {
+  if (flags.length > 1) {
+    throw new Error(
+      `aggregateGatedEnvVars: ${flags.length} gated flags declared (${flags.join(', ')}). ` +
+        'The aggregate opt-in measurement flips exactly one known flag, so a second ' +
+        'declared flag would caption the table with a surface it never measured. ' +
+        'Teach surface-census.mjs to measure the new flag before declaring it.',
+    );
+  }
+}
+
+/**
+ * The tool-count delta the manifest's gated entries declare, summed.
+ *
+ * Exact, and unlike the byte figure it is a property of the manifest alone, so
+ * it can be asserted against a live measurement of the opted-in surface. The
+ * census does exactly that (`checkAggregateSurfaceTruth`): if a module gains or
+ * loses a gated tool without its `gatedSurface` being updated, the declared sum
+ * stops matching what the opt-in actually registers.
+ *
+ * There is deliberately no byte counterpart. Summing the per-module
+ * `schemaBytes` understates the aggregate cost of the same opt-in, because the
+ * per-module budget charges `description + inputSchema + outputSchema` while
+ * `collectAggregateSurfaceMeasurement` also charges every tool's name, title,
+ * annotations, execution and `_meta`. On this tree that gap is 1,305B across
+ * the eleven opted-in tools, so a derived byte ceiling would be short by more
+ * than a thousand bytes and would report headroom nobody actually has. The
+ * aggregate's opted-in byte count is therefore MEASURED — registered twice, once
+ * with the flag set — and never derived.
+ */
+export function declaredGatedToolDelta(): number {
+  return REGISTRAR_MANIFEST.reduce(
+    (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.toolCount - entry.baseline.toolCount : 0),
+    0,
+  );
+}
+
+/**
  * A module's registration function.
  *
  * `client` is optional because three registrars take no client at all

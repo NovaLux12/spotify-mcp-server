@@ -129,6 +129,20 @@ until it merges, the honest scope of this gate is the field list above.
 
 Headroom is **17,610B** of the 612,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
 
+The limit above is enforced at startup against whichever surface the process
+registered, so the figure that matters is the one for the surface you run.
+With `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` set, that is:
+
+| Opted-in surface (`tools/list`) | Value | Where it comes from |
+|---|---:|---|
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 604,378B | 567 tools — the same measurement, registered with the opt-in on |
+| Added by the opt-in | 9,988B | +11 tools over the default surface, measured rather than summed (see below) |
+| Headroom with the opt-in | 7,622B | 1.2% of the enforced limit — **tight** |
+
+The default surface reports 2.31× as much room — 17,610B against the opt-in's 7,622B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
+
+The byte figure is measured, not derived from the manifest. The per-module `gatedSurface` byte deltas sum to **8,683B** against a measured **9,988B**, a 1,305B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and `_meta` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares 11 and the measurement finds 11 — so it is cross-checked rather than measured twice.
+
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
 ceiling raise lands in this file as a diff you can read, not as prose that
