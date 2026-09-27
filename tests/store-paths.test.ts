@@ -663,22 +663,27 @@ describe('the registry and logout agree on what there is to erase', () => {
         + 'learn it survived: it is absent from the report, the prompt and the exit code.',
       );
       // Named, not merely gone. A store erased without appearing in the report
-      // is indistinguishable from one that was never considered.
+      // is indistinguishable from one that was never considered. The report
+      // row is `  <id> erased <how> <label> — <detail>` (see `storeLine`), so
+      // the id and the verb are asserted together: an id that merely appears
+      // elsewhere in the prose would not satisfy this.
       assert.match(
         report,
-        new RegExp(id),
+        new RegExp(`^ {2}${id} +erased +`, 'm'),
         `logout erased ${id} without naming it, so the report cannot be checked against the disk`,
       );
     }
 
     // And the erasure is the reversible one, not the credential one. Neither
     // file holds token material, so both are MOVED; if either were shredded the
-    // report would say "overwritten and unlinked" and a mistyped logout would
-    // become unrecoverable for a file that held nothing secret.
+    // report row would read "erased  <label> — overwritten and unlinked" and a
+    // mistyped logout would become unrecoverable for a file that held nothing
+    // secret. The label sits between the verb and the mechanism (`storeLine`),
+    // so the pattern has to carry it.
     assert.doesNotMatch(
       report,
-      /accounts\.json\s+Account registry\s+overwritten and unlinked/,
-      'the account registry was shredded; it holds no token material and must be moved',
+      /^ {2}(accounts|taste-feedback) +erased +(Account registry|stats\.fm taste feedback) — overwritten and unlinked/m,
+      'a store holding no token material was shredded; only the token file is',
     );
   });
 
