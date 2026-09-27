@@ -10,7 +10,9 @@ import type {
   SpotifyEpisode,
   RecentlyPlayedResponse,
   UserProfile,
+  SpotifyArtistRow,
   SpotifyArtistFull,
+  GetDevicesResponse,
   SpotifyPaged,
   SavedAlbumItem,
   SavedShowItem,
@@ -22,6 +24,9 @@ import { getConfig } from '../config.js';
 import { truncationAdvice, type TruncationCapabilities } from '../shaping.js';
 import { publisherAttribution, publisherByline } from '../removed.js';
 import { walkFollowedArtists } from '../tools/following.js';
+// #603: the device row renderer is the one get_devices uses, so the resource
+// and the tool cannot drift on the #855 volume guard.
+import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
 
 function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60000);
@@ -290,12 +295,28 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // so bare requests hit the fixed entry and `?…` requests hit the twin.
   // Both share one renderer; `wantsJson` picks prose vs raw JSON.
 
-  /** Register `render` at `uri` and at its `?format=json` template twin. */
+  /**
+   * Register `render` at `uri` and at its `?format=json` template twin.
+   *
+   * `params` is a list of `[name, doc]` pairs rather than bare names, so the
+   * bound, default and valid values of every parameter are stated once in the
+   * registry and reach all three registered entries. #883's lens applies to
+   * resources for the same reason it applies to tools: these parameters are
+   * where a natural-language request becomes a number, and this read
+   * *silently* normalises rather than failing. `?limit=999` clamps to 50 and
+   * `?time_range=all_time` falls back to `medium_term` — a caller that guessed
+   * the bound gets a shorter window than it asked for, or the wrong window
+   * entirely, and nothing in the response says the request was rewritten. The
+   * number is the only warning, and a number is not a warning. So the range,
+   * the default and the legal values of an enum are stated in the description
+   * the caller reads before building the URI.
+   */
   const registerResourcePair = (
     name: string,
     uri: string,
     description: string,
     render: (url: URL) => Promise<ResourceContents>,
+    params?: readonly (readonly [string, string])[],
   ): void => {
     const renderWithApiErrors = async (url: URL): Promise<ResourceContents> => {
       try {
@@ -309,17 +330,90 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         throw error;
       }
     };
-    server.resource(name, uri, { description, mimeType: 'text/plain' }, renderWithApiErrors);
+    // #603: when a resource takes real query parameters, BOTH the parameter
+    // set and the `?format=json` twin are named on every registered entry.
+    // Each entry is its own line in `resources/templates/list` with its own
+    // description, and a host reading the template entry sees only that one —
+    // a parameter set documented solely on the bare entry does not reach the
+    // reader who is about to build a URI with it.
+    const suffix =
+      params && params.length > 0 ? ` Parameters: ${params.map(([p, doc]) => `?${p} (${doc})`).join(', ')}.` : '';
+    const jsonNote = ' (?format=json returns raw JSON)';
+    server.resource(name, uri, { description: `${description}${suffix}`, mimeType: 'text/plain' }, renderWithApiErrors);
     server.resource(
       `${name}-query`,
-      new ResourceTemplate(`${uri}{?format}`, { list: undefined }),
+      new ResourceTemplate(
+        `${uri}${params && params.length > 0 ? `{?format,${params.map(([p]) => p).join(',')}}` : '{?format}'}`,
+        { list: undefined },
+      ),
       {
-        description: `Query-string variant of '${uri}' (?format=json returns raw JSON)`,
+        description: `Query-string variant of '${uri}'${jsonNote}${suffix}`,
         mimeType: 'text/plain',
       },
       renderWithApiErrors,
     );
+    // The `{+qs}` catch-all is what actually ROUTES a parameterised read, not
+    // the `{?…}` template above it. The MCP SDK's UriTemplate compiles
+    // `{?a,b,c}` to `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$` — every named
+    // parameter present, in declaration order — which is stricter than RFC
+    // 6570, where a form-style expression expands with whatever is present.
+    // So `…?time_range=short_term&limit=5` matches NEITHER `…{?format,
+    // time_range,limit,offset}` NOR the bare URI, and without this catch-all
+    // the resource is unreachable. `{+qs}` compiles to `(.+)` and matches.
+    //
+    // The `{?…}` template is still registered: it is what `resources/templates/
+    // list` advertises, and its description is where the parameter set is
+    // documented for a host reading the listing.
+    if (params && params.length > 0) {
+      server.resource(
+        `${name}-qs`,
+        new ResourceTemplate(`${uri}{+qs}`, { list: undefined }),
+        {
+          description: `Catch-all query variant of '${uri}'${jsonNote}${suffix}`,
+          mimeType: 'text/plain',
+        },
+        renderWithApiErrors,
+      );
+    }
   };
+
+  // --- #603: query-parameter parsing for the paged resources -----------------
+  //
+  // Bounds are the Feb-2026 OpenAPI values for these endpoints: `limit` is
+  // 0–50 (the repo's tool schemas use 1–50, and 0 is a useless page size), and
+  // `offset` is unbounded above in the schema. An unparseable or out-of-range
+  // value falls back to the API default rather than failing the read, matching
+  // how `spotify://me/saved/tracks` already behaves (#603 pattern).
+  const intParam = (url: URL, key: string, fallback: number, min: number, max: number): number => {
+    const parsed = Number.parseInt(url.searchParams.get(key) ?? '', 10);
+    if (!Number.isFinite(parsed)) return fallback;
+    return Math.min(max, Math.max(min, parsed));
+  };
+
+  /** The three windows Spotify documents for `/me/top/{type}`'s `time_range`. */
+  const TIME_RANGES = new Set(['long_term', 'medium_term', 'short_term']);
+
+  /**
+   * `time_range` is the one parameter here that is not a number, and the
+   * OpenAPI schema carries no `enum` for it — only a description naming
+   * `long_term` / `medium_term` / `short_term`. An unrecognised window is not
+   * forwarded: Spotify would answer 400 for a value it does not accept, and a
+   * resource read failing on a typo is worse than one that reads the default.
+   */
+  const timeRangeParam = (url: URL): string => {
+    const raw = url.searchParams.get('time_range');
+    return raw && TIME_RANGES.has(raw) ? raw : 'medium_term';
+  };
+
+  // #603/#883: the parameter contract, stated once. These strings are not
+  // decoration — they are the same bounds `intParam` and `timeRangeParam`
+  // enforce a few lines above, written down so a caller can read the limit
+  // instead of inferring it from a silently-clamped response. If a bound moves,
+  // move it here and the registered description follows.
+  const LIMIT_DOC = '1-50, default 20; values outside the range are clamped';
+  const OFFSET_DOC = 'zero-based, default 0';
+  const TIME_RANGE_DOC = 'long_term | medium_term | short_term, default medium_term; any other value reads medium_term';
+  const CURSOR_DOC = 'Unix epoch milliseconds';
 
   // spotify://me — current user profile
   registerResourcePair(
@@ -395,65 +489,187 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     },
   );
 
-  // spotify://me/top/tracks — top tracks (medium term)
+  // spotify://player/devices — available Spotify Connect devices (live) (#603).
+  // The gap this closes: every playback command on an OpenClaw-style host used
+  // to start with a `get_devices` tool call, costing a turn and quota to learn
+  // a fact that is ambient state. Same row renderer as the tool, so the two
+  // cannot drift on the #855 volume guard — see src/devices.ts.
+  registerResourcePair(
+    'player-devices',
+    'spotify://player/devices',
+    "Available Spotify Connect devices, with the active one flagged (live; '?format=json' returns the raw API object)",
+    async (url) => {
+      const result = await client.get<GetDevicesResponse>('/me/player/devices');
+      if (!result || result.devices.length === 0) {
+        return text('spotify://player/devices', DEVICES_EMPTY_MESSAGE);
+      }
+      if (wantsJson(url)) return json('spotify://player/devices', result);
+      const devices = result.devices;
+      const lines = ['Devices:'];
+      for (const device of devices) lines.push(deviceLine(device));
+      const active = devices.find((d) => d.is_active);
+      // #603's acceptance criterion is that this lists the same devices as
+      // get_devices including the active flag, so name the active one here
+      // rather than making a reader scan the [ACTIVE] marker.
+      lines.push(
+        active
+          ? `Active device: ${active.name} (${active.type}) — ID: ${active.id ?? 'n/a'}`
+          : 'No active device. Open Spotify on a device to make it available.',
+      );
+      return text('spotify://player/devices', lines.join('\n'));
+    },
+  );
+
+  // spotify://me/top/tracks — top tracks, windowed by query parameters (#603).
+  // The rows and the header shape are the ones get_top_tracks prints, so a
+  // host that has read one has read the other.
   registerResourcePair(
     'top-tracks',
     'spotify://me/top/tracks',
-    "User's top tracks (medium term; '?format=json' returns the raw API object)",
+    "User's top tracks ('?format=json' returns the raw API object)",
     async (url) => {
+      const timeRange = timeRangeParam(url);
+      const limit = intParam(url, 'limit', 20, 1, 50);
+      const offset = intParam(url, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
       const result = await client.get<SpotifyPaged<SpotifyTrack>>('/me/top/tracks', {
-        time_range: 'medium_term',
-        limit: '20',
+        time_range: timeRange,
+        limit: String(limit),
+        offset: String(offset),
       });
       if (!result) throw new Error('Could not retrieve top tracks');
       if (wantsJson(url)) return json('spotify://me/top/tracks', result);
-      const lines = result.items.map((track, i) => {
+      // Same defensive shape as get_top_tracks: Spotify can answer 200 with a
+      // null/undefined `items`, and reading `.length` on that crashes.
+      const items = Array.isArray(result.items) ? result.items : [];
+      const total = typeof result.total === 'number' ? result.total : items.length;
+      const uri = 'spotify://me/top/tracks';
+      if (items.length === 0) {
+        return text(uri, `No top tracks found (${timeRange}; total: ${total}).`);
+      }
+      const lines = [`Top tracks (${timeRange}; ${total} total, showing ${items.length} at offset ${offset}):`];
+      items.forEach((track, i) => {
         const artists = track.artists.map((a) => a.name).join(', ');
-        return `  ${i + 1}. "${track.name}" by ${artists} | URI: ${track.uri}`;
+        lines.push(
+          `  ${offset + i + 1}. "${track.name}" by ${artists} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`,
+        );
       });
-      return text('spotify://me/top/tracks', `Top tracks (medium term):\n${lines.join('\n')}`);
+      // Say so when rows are left: a windowed read that stops at `limit` is a
+      // page, and a page printed without its continuation reads as the whole
+      // list. This is the same failure class #718 fixed for the saved walks.
+      const hasMore = typeof result.total === 'number' ? offset + items.length < result.total : items.length === limit;
+      if (hasMore) {
+        lines.push(`... more available — re-read with ?offset=${offset + items.length} (or ?limit=50).`);
+      }
+      return text(uri, lines.join('\n'));
     },
+    [
+      ['time_range', TIME_RANGE_DOC],
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ],
   );
 
-  // spotify://me/top/artists — top artists (medium term)
+  // spotify://me/top/artists — top artists, windowed by query parameters (#603).
   registerResourcePair(
     'top-artists',
     'spotify://me/top/artists',
-    "User's top artists (medium term; '?format=json' returns the raw API object)",
+    "User's top artists ('?format=json' returns the raw API object)",
     async (url) => {
-      const result = await client.get<{ items: SpotifyArtistFull[] }>('/me/top/artists', {
-        time_range: 'medium_term',
-        limit: '20',
+      const timeRange = timeRangeParam(url);
+      const limit = intParam(url, 'limit', 20, 1, 50);
+      const offset = intParam(url, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+      const result = await client.get<SpotifyPaged<SpotifyArtistRow>>('/me/top/artists', {
+        time_range: timeRange,
+        limit: String(limit),
+        offset: String(offset),
       });
       if (!result) throw new Error('Could not retrieve top artists');
       if (wantsJson(url)) return json('spotify://me/top/artists', result);
-      const lines = result.items.map((artist, i) => {
+      const items = Array.isArray(result.items) ? result.items : [];
+      const total = typeof result.total === 'number' ? result.total : items.length;
+      const uri = 'spotify://me/top/artists';
+      if (items.length === 0) {
+        return text(uri, `No top artists found (${timeRange}; total: ${total}).`);
+      }
+      const lines = [`Top artists (${timeRange}; ${total} total, showing ${items.length} at offset ${offset}):`];
+      items.forEach((artist, i) => {
         const genres =
-          Array.isArray(artist.genres) && artist.genres.length > 0 ? artist.genres.join(', ') : 'no genres';
-        return `  ${i + 1}. ${artist.name} — ${genres} | URI: ${artist.uri}`;
+          Array.isArray(artist.genres) && artist.genres.length > 0 ? artist.genres.join(', ') : 'no genres listed';
+        lines.push(`  ${offset + i + 1}. ${artist.name} — ${genres} | URI: ${artist.uri}`);
       });
-      return text('spotify://me/top/artists', `Top artists (medium term):\n${lines.join('\n')}`);
+      const hasMore = typeof result.total === 'number' ? offset + items.length < result.total : items.length === limit;
+      if (hasMore) {
+        lines.push(`... more available — re-read with ?offset=${offset + items.length} (or ?limit=50).`);
+      }
+      return text(uri, lines.join('\n'));
     },
+    [
+      ['time_range', TIME_RANGE_DOC],
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ],
   );
 
-  // spotify://me/recently-played — last 20 played tracks
+  // spotify://me/recently-played — recently played, windowed by query parameters
+  // (#603).
+  //
+  // NO `offset`. GET /me/player/recently-played is a cursor endpoint: the
+  // OpenAPI schema gives it `limit`, `after` and `before`, and no `offset`
+  // (verified against the Feb-2026 schema). The issue's parameter list names
+  // `time_range, limit, offset` generically, but forwarding `offset` here would
+  // be sending a parameter the endpoint does not declare — Spotify rejects
+  // unknown query parameters with a 400, so a resource that advertised `?offset`
+  // would fail rather than page. `after`/`before` are Unix-ms cursors: page
+  // forward with the earliest `played_at` on the page.
   registerResourcePair(
     'recently-played',
     'spotify://me/recently-played',
-    "Last 20 recently played tracks ('?format=json' returns the raw API object)",
+    "Recently played tracks ('?format=json' returns the raw API object)",
     async (url) => {
+      const limit = intParam(url, 'limit', 20, 1, 50);
+      // `after`/`before` are unbounded cursors, not bounded page controls, so
+      // they are only forwarded when they parse as a timestamp.
+      const cursorParam = (key: string): string | undefined => {
+        const raw = url.searchParams.get(key);
+        if (raw === null) return undefined;
+        const parsed = Number.parseInt(raw, 10);
+        return Number.isFinite(parsed) && parsed >= 0 ? String(parsed) : undefined;
+      };
+      const after = cursorParam('after');
+      const before = cursorParam('before');
       const result = await client.get<RecentlyPlayedResponse>('/me/player/recently-played', {
-        limit: '20',
+        limit: String(limit),
+        ...(after ? { after } : {}),
+        ...(before ? { before } : {}),
       });
       if (!result) throw new Error('Could not retrieve recently played');
       if (wantsJson(url)) return json('spotify://me/recently-played', result);
-      const lines = result.items.map((item) => {
+      const items = Array.isArray(result.items) ? result.items : [];
+      if (items.length === 0) {
+        return text('spotify://me/recently-played', 'No recently played tracks for that window.');
+      }
+      const lines = [`Recently played (${items.length}${items.length === limit ? ', more available' : ''}):`];
+      for (const item of items) {
         const artists = item.track.artists.map((a) => a.name).join(', ');
         const playedAt = new Date(item.played_at).toLocaleString();
-        return `  • "${item.track.name}" by ${artists} — ${playedAt} | URI: ${item.track.uri}`;
-      });
-      return text('spotify://me/recently-played', `Recently played:\n${lines.join('\n')}`);
+        lines.push(`  • "${item.track.name}" by ${artists} — ${playedAt} | URI: ${item.track.uri}`);
+      }
+      // A full page means the walk stopped on the cap, not that the history
+      // ended. The next cursor is the earliest played_at on this page, and
+      // naming it is the only way a host can page a cursor endpoint.
+      if (items.length === limit) {
+        const oldest = items.reduce((min, i) => (Date.parse(i.played_at) < min ? Date.parse(i.played_at) : min), Infinity);
+        if (Number.isFinite(oldest)) {
+          lines.push(`... page further back with ?after=${oldest} (the oldest played_at on this page).`);
+        }
+      }
+      return text('spotify://me/recently-played', lines.join('\n'));
     },
+    [
+      ['limit', LIMIT_DOC],
+      ['after', `${CURSOR_DOC}; page further back`],
+      ['before', `${CURSOR_DOC}; page forward`],
+    ],
   );
 
   // spotify://me/playlists — all user playlists
@@ -510,31 +726,70 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // --- Saved library resources (#59): hosts polling these get library
   // visibility without tool calls; served through the TTL-cached catalog
   // path, capped at SPOTIFY_MCP_FETCH_ALL_CAP.
+  //
+  // #603 adds `?limit`/`?offset`. Supplying either switches the read from the
+  // capped whole-library walk to a SINGLE paged read of that window. The
+  // walk stays the default precisely because it is the reading that carries the
+  // #718 cap verdict: a one-page read is not a truncated library and must not be
+  // dressed up with a truncation footer it did not earn. The window path
+  // therefore reports the API's own `total` and a continuation hint instead.
   const registerSavedResource = <T>(
     name: string,
     uri: string,
     apiPath: string,
     label: string,
-    renderProse: (items: T[]) => string,
+    collection: string,
+    renderProse: (items: T[], header: string) => string,
   ): void => {
-    registerResourcePair(name, uri, label, async (url) => {
-      const cap = getConfig().fetchAllCap;
-      const walk = await client.getAllPagesWithTruncation<T>(
-        apiPath,
-        { limit: '50' },
-        { maxItems: cap },
-      );
-      const disclosure = walkDisclosure({
-        fetched: walk.items.length,
-        truncated: walk.truncated,
-        cappedByCap: walk.truncatedByCap,
-        reportedTotal: walk.reportedTotal,
-      });
-      if (wantsJson(url)) {
-        return cappedJson(uri, walk.items, disclosure, cap);
-      }
-      return text(uri, withCapFooter(uri, renderProse(walk.items), disclosure, cap));
-    });
+    registerResourcePair(
+      name,
+      uri,
+      label,
+      async (url) => {
+        const windowed = url.searchParams.has('limit') || url.searchParams.has('offset');
+        if (windowed) {
+          const limit = intParam(url, 'limit', 20, 1, 50);
+          const offset = intParam(url, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+          const page = await client.get<SpotifyPaged<T>>(apiPath, {
+            limit: String(limit),
+            offset: String(offset),
+          });
+          if (!page) throw new Error(`Could not retrieve ${collection.toLowerCase()}`);
+          if (wantsJson(url)) return json(uri, page);
+          const items = Array.isArray(page.items) ? page.items : [];
+          if (items.length === 0) {
+            return text(uri, `No saved items at offset ${offset}.`);
+          }
+          const total = typeof page.total === 'number' ? page.total : items.length;
+          const header = `${collection} — ${items.length} of ${total}, at offset ${offset}:`;
+          // A page is a page: report the window, and name the continuation.
+          const continuation =
+            offset + items.length < total ? `\n... more available — re-read with ?offset=${offset + items.length}` : '';
+          return text(uri, `${renderProse(items, header)}${continuation}`);
+        }
+
+        const cap = getConfig().fetchAllCap;
+        const walk = await client.getAllPagesWithTruncation<T>(
+          apiPath,
+          { limit: '50' },
+          { maxItems: cap },
+        );
+        const disclosure = walkDisclosure({
+          fetched: walk.items.length,
+          truncated: walk.truncated,
+          cappedByCap: walk.truncatedByCap,
+          reportedTotal: walk.reportedTotal,
+        });
+        if (wantsJson(url)) {
+          return cappedJson(uri, walk.items, disclosure, cap);
+        }
+        return text(uri, withCapFooter(uri, renderProse(walk.items, `${collection} (${walk.items.length}):`), disclosure, cap));
+      },
+      [
+        ['limit', LIMIT_DOC],
+        ['offset', OFFSET_DOC],
+      ],
+    );
   };
 
   // spotify://me/saved/albums
@@ -543,13 +798,14 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://me/saved/albums',
     '/me/albums',
     'Albums saved in your library',
-    (items) => {
+    'Saved albums',
+    (items, header) => {
       if (items.length === 0) return 'No saved albums.';
       const lines = items.map(({ added_at, album }) => {
         const artists = album.artists.map((a) => a.name).join(', ');
         return `  • "${album.name}" — ${artists} (${album.release_date}, ${album.total_tracks} tracks, added ${added_at.slice(0, 10)}) | ID: ${album.id}`;
       });
-      return `Saved albums (${items.length}):\n${lines.join('\n')}`;
+      return `${header}\n${lines.join('\n')}`;
     },
   );
 
@@ -559,7 +815,8 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://me/saved/shows',
     '/me/shows',
     'Podcast shows saved in your library',
-    (items) => {
+    'Saved shows',
+    (items, header) => {
       if (items.length === 0) return 'No saved shows.';
       // #639: `publisher` was removed from Show payloads in Feb 2026, and this
       // line used to fill the byline with the literal string
@@ -580,7 +837,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
             + ' February 2026, so it cannot be read. Shows that still report one are printed above.)',
         );
       }
-      return `Saved shows (${items.length}):\n${lines.join('\n')}`;
+      return `${header}\n${lines.join('\n')}`;
     },
   );
 
@@ -590,12 +847,13 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'spotify://me/saved/episodes',
     '/me/episodes',
     'Podcast episodes saved in your library',
-    (items) => {
+    'Saved episodes',
+    (items, header) => {
       if (items.length === 0) return 'No saved episodes.';
       const lines = items.map(({ added_at, episode }) =>
         `  • "${episode.name}" — ${episode.show.name} (${formatDuration(episode.duration_ms)}, released ${episode.release_date.slice(0, 10)}, added ${added_at.slice(0, 10)}) | ID: ${episode.id}`,
       );
-      return `Saved episodes (${items.length}):\n${lines.join('\n')}`;
+      return `${header}\n${lines.join('\n')}`;
     },
   );
 
@@ -634,9 +892,13 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       const footer = hasMore ? `\n... more available — re-read with ?offset=${offset + entries.length}` : '';
       return text(uri, `${header}\n${lines.join('\n')}${footer}`);
     };
-    server.resource('saved-tracks', uri, { description: "Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)", mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: "Query-string variant of 'spotify://me/saved/tracks' (?format=json, ?offset, ?limit)", mimeType: 'text/plain' }, async (u: URL) => render(u));
-    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: "Catch-all query variant of 'spotify://me/saved/tracks'", mimeType: 'text/plain' }, async (u: URL) => render(u));
+    // #603: same rule as registerResourcePair — the parameter set and the
+    // ?format=json twin are named on each entry, not only on the bare one.
+    const paramNote = ` Parameters: ?offset (${OFFSET_DOC}), ?limit (${LIMIT_DOC}).`;
+    const jsonNote = ' (?format=json returns raw JSON)';
+    server.resource('saved-tracks', uri, { description: `Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: `Query-string variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
+    server.resource('saved-tracks-qs', new ResourceTemplate(`${uri}{+qs}`, { list: undefined }), { description: `Catch-all query variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
   })();
 
   // spotify://me/followed/artists — cursor walk via /me/following
@@ -675,8 +937,35 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // spotify://me/saved/audiobooks — /me/audiobooks
   (() => {
     const uri = 'spotify://me/saved/audiobooks';
+    type AudiobookRow = { added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } };
+    const renderRows = (items: AudiobookRow[]) =>
+      items.map(({ added_at, audiobook }) => {
+        const authors = (audiobook.authors ?? []).map((a) => a.name).join(', ') || 'unknown author';
+        return `  • "${audiobook.name}" — ${authors} (added ${added_at.slice(0, 10)}) | ID: ${audiobook.id}`;
+      });
     const render = async (url: URL): Promise<ResourceContents> => {
-      type AudiobookRow = { added_at: string; audiobook: { id: string; name: string; uri: string; authors?: Array<{ name: string }> } };
+      // #603: `?limit`/`?offset` read one paged window instead of walking the
+      // whole library. Same rule as the other saved resources: the walk is the
+      // default because it is the reading that carries the #718 cap verdict, so
+      // a single page must not be presented as a truncated walk.
+      if (url.searchParams.has('limit') || url.searchParams.has('offset')) {
+        const limit = intParam(url, 'limit', 20, 1, 50);
+        const offset = intParam(url, 'offset', 0, 0, Number.MAX_SAFE_INTEGER);
+        const page = await client.get<SpotifyPaged<AudiobookRow>>('/me/audiobooks', {
+          limit: String(limit),
+          offset: String(offset),
+        });
+        if (!page) throw new Error('Could not retrieve saved audiobooks');
+        if (wantsJson(url)) return json(uri, page);
+        const items = Array.isArray(page.items) ? page.items : [];
+        if (items.length === 0) return text(uri, `No saved audiobooks at offset ${offset}.`);
+        const total = typeof page.total === 'number' ? page.total : items.length;
+        const header = `Saved audiobooks — ${items.length} of ${total}, at offset ${offset}:`;
+        const continuation =
+          offset + items.length < total ? `\n... more available — re-read with ?offset=${offset + items.length}` : '';
+        return text(uri, `${header}\n${renderRows(items).join('\n')}${continuation}`);
+      }
+
       let items: AudiobookRow[];
       let truncated: boolean;
       let truncatedByCap: boolean;
@@ -710,16 +999,15 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         return cappedJson(uri, items, disclosure, cap);
       }
       if (items.length === 0) return text(uri, 'No saved audiobooks.');
-      const lines = items.map(({ added_at, audiobook }) => {
-        const authors = (audiobook.authors ?? []).map((a) => a.name).join(', ') || 'unknown author';
-        return `  • "${audiobook.name}" — ${authors} (added ${added_at.slice(0, 10)}) | ID: ${audiobook.id}`;
-      });
       return text(
         uri,
-        withCapFooter(uri, `Saved audiobooks (${items.length}):\n${lines.join('\n')}`, disclosure, cap),
+        withCapFooter(uri, `Saved audiobooks (${items.length}):\n${renderRows(items).join('\n')}`, disclosure, cap),
       );
     };
-    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render);
+    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render, [
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ]);
   })();
 
   // spotify://playlist/{id}/tracks — templated resource (#59): hosts that

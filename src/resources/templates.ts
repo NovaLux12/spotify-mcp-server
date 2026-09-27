@@ -18,7 +18,20 @@ import type {
   SpotifyAlbumFull,
   SpotifyShowFull,
   SpotifyEpisodeFull,
+  SpotifyAudiobookFull,
+  SpotifyChapterFull,
+  SpotifyChapterSimple,
+  SpotifyPaged,
 } from '../types/spotify.js';
+// #603: the audiobook/chapter cards are the same functions the audiobook tools
+// render with, so a resource read cannot tell a reader something `get_audiobook`
+// would not.
+import {
+  AUDIOBOOK_MARKET_NOTE,
+  audiobookDetailLines,
+  chapterDetailLines,
+  chapterListLine,
+} from '../audiobookview.js';
 
 type ResourceContents = ReadResourceResult;
 
@@ -59,12 +72,12 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
    */
   /** First N saved-item IDs from a saved-library listing endpoint. */
   const savedIdSuggestions = async (
-    path: '/me/shows' | '/me/episodes',
-    unwrap: (row: { show?: { id: string }; episode?: { id: string } }) => string | undefined,
+    path: '/me/shows' | '/me/episodes' | '/me/audiobooks',
+    unwrap: (row: { show?: { id: string }; episode?: { id: string }; audiobook?: { id: string } }) => string | undefined,
     n: number,
   ): Promise<string[]> => {
     try {
-      const rows = await client.getAllPages<{ show?: { id: string }; episode?: { id: string } }>(path, {
+      const rows = await client.getAllPages<{ show?: { id: string }; episode?: { id: string }; audiobook?: { id: string } }>(path, {
         limit: '20',
       });
       return rows
@@ -76,13 +89,23 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
     }
   };
 
-  /** Register `render` at `pattern` and at its `{+qs}` query-absorbing twin. */
+  /**
+   * Register `render` at `pattern` and at its `{+qs}` query-absorbing twin.
+   *
+   * `paramNote` (#603) is appended to BOTH descriptions. The acceptance
+   * criterion is that each new resource declares its parameter set in the
+   * description, and the `{+qs}` twin is a distinct entry in
+   * `resources/templates/list` — a host reading the twin's description is
+   * reading the only description attached to that entry, so a parameter set
+   * that lives only on the bare entry does not reach them.
+   */
   const registerTemplatePair = (
     name: string,
     pattern: string,
     description: string,
     render: (rawUrl: string) => Promise<ResourceContents>,
     completeId?: () => Promise<string[]>,
+    paramNote?: string,
   ): void => {
     const templateOpts = completeId
       ? {
@@ -92,14 +115,15 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
           },
         }
       : ({ list: undefined } as const);
-    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description, mimeType: 'text/plain' }, async (uri: URL) =>
+    const suffix = paramNote ? ` ${paramNote}` : '';
+    server.resource(name, new ResourceTemplate(pattern, templateOpts), { description: `${description}${suffix}`, mimeType: 'text/plain' }, async (uri: URL) =>
       render(uri.href),
     );
     server.resource(
       `${name}-query`,
       new ResourceTemplate(`${pattern}{+qs}`, { list: undefined }),
       {
-        description: `Query-string variant of ${pattern} (?format=json returns raw JSON)`,
+        description: `Query-string variant of ${pattern}${suffix}`,
         mimeType: 'text/plain',
       },
       async (uri: URL) => render(uri.href),
@@ -317,5 +341,118 @@ export function registerTemplateResources(server: McpServer, client: SpotifyClie
       return text(uri, lines.join('\n'));
     },
     () => savedIdSuggestions('/me/episodes', (r) => r.episode?.id, 10),
+  );
+
+  // ---------------------------------------------------------------- audiobooks
+  // #603: the audiobook tool surface was complete while the resource surface
+  // had nothing, so an audiobook-first host could not get one page of a book
+  // without spending a tool call. These three close that gap.
+  //
+  // Registration order is load-bearing, for the same reason artist-albums is
+  // registered before artist: the bare audiobook pair's `{+qs}` twin compiles
+  // to `(.+)`, so `spotify://audiobook/<id>{+qs}` would otherwise swallow
+  // `spotify://audiobook/<id>/chapters`. The nested pair goes first.
+
+  // Bounded page size for the chapters list. GET /audiobooks/{id}/chapters
+  // takes limit/offset (verified against the Feb-2026 OpenAPI schema: limit
+  // 0–50, default 20; offset default 0), so one resource read is one page.
+  const CHAPTER_PAGE_LIMIT = 20;
+  const CHAPTER_PAGE_MAX = 50;
+
+  // spotify://audiobook/{id}/chapters — GET /audiobooks/{id}/chapters
+  registerTemplatePair(
+    'audiobook-chapters',
+    'spotify://audiobook/{id}/chapters',
+    `One page of an audiobook's chapters ('?format=json' returns the raw paged object).${AUDIOBOOK_MARKET_NOTE}`,
+    async (rawUrl) => {
+      const match = /spotify:\/\/audiobook\/([^/?#]+)\/chapters/.exec(rawUrl.split('?')[0] ?? '');
+      if (!match?.[1]) throw new Error(`Malformed audiobook chapters URI: ${rawUrl}`);
+      const id = match[1];
+      const url = new URL(rawUrl);
+      const uri = `spotify://audiobook/${id}/chapters`;
+      const intParam = (key: string, fallback: number): number => {
+        const v = Number.parseInt(url.searchParams.get(key) ?? '', 10);
+        return Number.isFinite(v) ? v : fallback;
+      };
+      const limit = Math.min(CHAPTER_PAGE_MAX, Math.max(1, intParam('limit', CHAPTER_PAGE_LIMIT)));
+      const offset = Math.max(0, intParam('offset', 0));
+      const market = url.searchParams.get('market') ?? undefined;
+
+      const page = await client.get<SpotifyPaged<SpotifyChapterSimple>>(
+        `/audiobooks/${id}/chapters`,
+        { limit: String(limit), offset: String(offset), ...(market ? { market } : {}) },
+      );
+      if (!page) throw new Error(`Could not retrieve chapters for audiobook ${id}`);
+
+      if (wantsJson(url)) return json(uri, page);
+      if (page.items.length === 0) {
+        return text(uri, offset === 0 ? 'No chapters found.' : `No chapters found at offset ${offset}.`);
+      }
+      const header = `Chapters for audiobook ${id} (${page.total ?? page.items.length} total, showing ${page.items.length} at offset ${offset}):`;
+      const lines = page.items.map((chapter) => chapterListLine(chapter));
+      const hasMore =
+        typeof page.total === 'number'
+          ? offset + page.items.length < page.total
+          : page.items.length === limit;
+      const footer = hasMore
+        ? `\n... more available — re-read with ?offset=${offset + page.items.length}, or use get_audiobook_chapters with fetch_all for the whole book.`
+        : '';
+      return text(uri, `${header}\n${lines.join('\n')}${footer}`);
+    },
+    undefined,
+    'Parameters: ?market (ISO 3166-1 alpha-2), ?limit (1–50, default 20), ?offset (default 0), ?format=json.',
+  );
+
+  // spotify://audiobook/{id} — GET /audiobooks/{id}; optional ?market.
+  registerTemplatePair(
+    'audiobook',
+    'spotify://audiobook/{id}',
+    "An audiobook's details including its embedded chapter preview ('?format=json' returns the raw API object)",
+    async (rawUrl) => {
+      const match = /spotify:\/\/audiobook\/([^/?#]+)$/.exec(rawUrl.split('?')[0] ?? '');
+      if (!match?.[1]) throw new Error(`Malformed audiobook URI: ${rawUrl}`);
+      const id = match[1];
+      const url = new URL(rawUrl);
+      const uri = `spotify://audiobook/${id}`;
+      const market = url.searchParams.get('market') ?? undefined;
+      const audiobook = await client.get<SpotifyAudiobookFull>(
+        `/audiobooks/${id}`,
+        market ? { market } : undefined,
+      );
+      if (!audiobook) throw new Error(`Could not retrieve audiobook ${id}`);
+      if (wantsJson(url)) return json(uri, audiobook);
+      // The same card get_audiobook prints — see src/audiobookview.ts for why
+      // the two surfaces share one renderer rather than re-reading the fields.
+      return text(uri, audiobookDetailLines(audiobook).join('\n'));
+    },
+    () => savedIdSuggestions('/me/audiobooks', (r) => r.audiobook?.id, 10),
+    'Parameters: ?market (ISO 3166-1 alpha-2), ?format=json.',
+  );
+
+  // spotify://chapter/{id} — GET /chapters/{id}; optional ?market.
+  registerTemplatePair(
+    'chapter',
+    'spotify://chapter/{id}',
+    "An audiobook chapter's details ('?format=json' returns the raw API object)",
+    async (rawUrl) => {
+      const match = /spotify:\/\/chapter\/([^/?#]+)$/.exec(rawUrl.split('?')[0] ?? '');
+      if (!match?.[1]) throw new Error(`Malformed chapter URI: ${rawUrl}`);
+      const id = match[1];
+      const url = new URL(rawUrl);
+      const uri = `spotify://chapter/${id}`;
+      const market = url.searchParams.get('market') ?? undefined;
+      const chapter = await client.get<SpotifyChapterFull>(
+        `/chapters/${id}`,
+        market ? { market } : undefined,
+      );
+      if (!chapter) throw new Error(`Could not retrieve chapter ${id}`);
+      if (wantsJson(url)) return json(uri, chapter);
+      return text(uri, chapterDetailLines(chapter).join('\n'));
+    },
+    // Chapter IDs are not enumerable from the library listing — /me/audiobooks
+    // yields audiobook ids — so this template has no suggester. An audiobook's
+    // chapter ids are reachable through spotify://audiobook/{id}/chapters.
+    undefined,
+    'Parameters: ?market (ISO 3166-1 alpha-2), ?format=json.',
   );
 }

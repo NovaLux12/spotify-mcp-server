@@ -24,6 +24,9 @@ import {
 } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { MARKET_CODE } from '../markets.js';
+// #603: the device row renderer is shared with the spotify://player/devices
+// resource so the two surfaces cannot drift on the #855 volume guard.
+import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
 
 // #595: these parameters used to advertise a default that resolved from the
 // account country, and Spotify's February 2026 changes removed `country`
@@ -792,7 +795,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
   // get_devices
   server.tool(
     'get_devices',
-    'List available Spotify Connect devices',
+    "List available Spotify Connect devices. The same rows are readable as a resource with no tool call at spotify://player/devices ('?format=json' returns the raw API object).",
     {
       response_format: ResponseFormat,
       max_results: MaxResults,
@@ -804,7 +807,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
         return {
           content: [{
             type: 'text',
-            text: 'No devices found. Open Spotify on a device to make it available.',
+            text: DEVICES_EMPTY_MESSAGE,
           }],
         };
       }
@@ -818,21 +821,9 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
 
       const shaped = truncateItems(result.devices, resolveMaxResults(args.max_results));
 
-      const lines = shaped.items.map((d) => {
-        const active = d.is_active ? ' [ACTIVE]' : '';
-        // #855: the API omits `volume_percent` on some devices (and sends null on
-        // others) — a `!== null` guard let the undefined case through and printed
-        // "volume: undefined%". A volume-capable device with no reported level is
-        // unknown, not 0% and not undefined%; a device that cannot report volume
-        // at all says nothing.
-        const reported = typeof d.volume_percent === 'number' && Number.isFinite(d.volume_percent);
-        const volume = reported
-          ? `, volume: ${d.volume_percent}%`
-          : d.supports_volume
-            ? ', volume: unknown'
-            : '';
-        return `• ${d.name} (${d.type})${active}${volume} — ID: ${d.id ?? 'n/a'}`;
-      });
+      // #603: the row renderer is shared with the spotify://player/devices
+      // resource, so the two surfaces cannot drift on the #855 volume guard.
+      const lines = shaped.items.map((d) => deviceLine(d));
       if (shaped.footer) lines.push(`(${shaped.footer})`);
 
       const pagination = paginationInfo({

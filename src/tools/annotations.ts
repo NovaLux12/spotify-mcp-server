@@ -1128,7 +1128,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
 
   manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 27222], { readOnlySafe: true }),
   manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12814]),
-  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12077]),
+  // #603: playback 12,077 -> 12,210B (+133), same 16 tools — MEASURED, not
+  // estimated: the real `tools/list` payload for this module. The get_devices
+  // description now names the spotify://player/devices resource so an agent
+  // prefers the zero-tool-call read over a call that costs a turn and quota.
+  // Re-measure with `npm run count:tools` before raising it again.
+  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12210]),
   manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [3, 2502]),
   manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1696]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),

@@ -19,7 +19,6 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
-import { publisherAttribution } from '../removed.js';
 import {
   MARKET_CODE,
   getWithMarketFallback,
@@ -29,12 +28,17 @@ import {
   withMarketSource,
   type MarketResolution,
 } from '../markets.js';
+// #603: the prose renderers live in a shared module so the audiobook resource
+// templates print exactly what these tools print.
+import {
+  AUDIOBOOK_MARKET_NOTE as MARKET_NOTE,
+  audiobookDetailLines,
+  chapterDetailLines,
+  chapterListLine,
+} from '../audiobookview.js';
 
 // Test hook, re-exported so the audiobooks suite keeps its import path.
 export { resetProfileCountryCache };
-
-const MARKET_NOTE =
-  ' Audiobooks are only available in the US, UK, Canada, Ireland, New Zealand and Australia markets.';
 
 // #595: the same bundled ISO 3166-1 check the catalog tools use, so an
 // unassigned code is rejected without a GET /markets round-trip.
@@ -43,11 +47,6 @@ const MARKET_PARAM = MARKET_CODE
   .describe(
     `ISO 3166-1 alpha-2 country code. If given, only content available in that market is returned.${MARKET_NOTE}`,
   );
-
-
-// Rows the audiobook detail card previews. Spotify embeds a fixed handful of
-// chapters; #787 requires the card to say how much of the book that is.
-const EMBEDDED_CHAPTER_PREVIEW = 10;
 
 
 // The market-gated GET and its rejection hint both live in src/markets.ts
@@ -74,11 +73,6 @@ async function walkWithMarketFallback<T>(
     throw withMarketHint(err, market.market, marketArg, AUDIOBOOK_GATED);
   }
 }
-function formatDuration(ms: number): string {
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
-}
 
 export function registerAudiobookTools(server: McpServer, client: SpotifyClient): void {
   // get_audiobook
@@ -100,45 +94,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       );
       if (!audiobook) throw new Error(`Audiobook "${args.id}" not found`);
 
-      const authors = audiobook.authors.map((a) => a.name).join(', ');
-      const narrators = audiobook.narrators.map((n) => n.name).join(', ') || 'none listed';
-      // #639: `publisher` is gone, so the fallback that used to open this line
-      // printed `Unknown publisher` on every audiobook a current registration
-      // returned. A real publisher still prints — the line is unchanged for a
-      // pre-Nov-2024 registration — and without one the line drops to the
-      // chapter count rather than opening with a parenthesis that attributes
-      // the edition to nothing.
-      const publisher = publisherAttribution(audiobook.publisher);
-      const credits = publisher
-        ? `${publisher}${audiobook.edition ? ` (${audiobook.edition})` : ''}`
-        : (audiobook.edition ?? '');
-      const lines = [
-        `"${audiobook.name}" by ${authors}, narrated by ${narrators}`,
-        credits ? `${credits} | ${audiobook.total_chapters} chapters` : `${audiobook.total_chapters} chapters`,
-        audiobook.description,
-        `Languages: ${audiobook.languages.join(', ')} | Explicit: ${audiobook.explicit ? 'yes' : 'no'}`,
-        `URI: ${audiobook.uri}`,
-      ];
-
-      // #787: the embedded chapter array is a fixed ten-row preview, not the
-      // book's chapter list. Without a count the card reads as complete, so
-      // state how much of the book it stands for.
-      if (audiobook.chapters?.items.length) {
-        lines.push('', 'Chapters:');
-        const shown = audiobook.chapters.items.slice(0, EMBEDDED_CHAPTER_PREVIEW);
-        for (const chapter of shown) {
-          lines.push(
-            `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}) | URI: ${chapter.uri}`,
-          );
-        }
-        const declared = typeof audiobook.total_chapters === 'number' ? audiobook.total_chapters : 0;
-        const chapterTotal = Math.max(declared, audiobook.chapters.items.length);
-        if (chapterTotal > shown.length) {
-          lines.push(
-            `  (${shown.length} of ${chapterTotal} chapters shown — use get_audiobook_chapters with fetch_all for the rest)`,
-          );
-        }
-      }
+      const lines = audiobookDetailLines(audiobook);
 
       return withMarketSource(renderSingle(args.response_format, audiobook as unknown as Record<string, unknown>, lines), market);
     },
@@ -231,10 +187,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
                   : 'every chapter read, cap not reached'
               }):`
             : `Chapters for audiobook (${result.total} total):`,
-          line: (chapter) => {
-            const playable = chapter.is_playable ? '' : ' [not playable]';
-            return `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}, ${chapter.release_date})${playable} | URI: ${chapter.uri}`;
-          },
+          line: (chapter) => chapterListLine(chapter),
           total: result.total,
           offset: walk ? 0 : args.offset,
           limit: walk ? result.items.length : args.limit ?? 20,
@@ -271,21 +224,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       );
       if (!chapter) throw new Error(`Chapter "${args.id}" not found`);
 
-      const lines = [
-        `Chapter ${chapter.chapter_number}: "${chapter.name}"`,
-        chapter.description,
-        `Duration: ${formatDuration(chapter.duration_ms)} | Released: ${chapter.release_date}`,
-        `Explicit: ${chapter.explicit ? 'yes' : 'no'} | Playable in given market: ${chapter.is_playable ? 'yes' : 'no'}`,
-      ];
-
-      if (chapter.resume_point) {
-        const status = chapter.resume_point.fully_played
-          ? 'Fully played'
-          : `Resume at ${formatDuration(chapter.resume_point.resume_position_ms)}`;
-        lines.push(`Resume point: ${status}`);
-      }
-
-      lines.push(`URI: ${chapter.uri}`);
+      const lines = chapterDetailLines(chapter);
 
       return withMarketSource(renderSingle(args.response_format, chapter as unknown as Record<string, unknown>, lines), market);
     },

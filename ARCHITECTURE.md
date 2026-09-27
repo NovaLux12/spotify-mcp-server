@@ -106,7 +106,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **589 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers. The tool surface is attributed to 67 files under `src/tools/`.
+The finalized default MCP registry exposes **589 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers. The tool surface is attributed to 67 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories), and LOC is the repository line count, not an estimate.
@@ -118,6 +118,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/accounts.ts` | The account registry (#602): which local accounts exist, and which one this session is acting as. (0 registered tools) | 493 |
 | `src/actingaccount.ts` | The acting-account echo (#602). (0 registered tools) | 187 |
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | 148 |
+| `src/audiobookview.ts` | The audiobook and chapter prose renderers, shared by the audiobook tools and the `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` resource templates (#603). (0 registered tools) | 119 |
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 941 |
 | `src/branding.ts` | The non-affiliation notice (#705) — the one place that owns the wording. (0 registered tools) | 63 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 513 |
@@ -129,6 +130,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 686 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
+| `src/devices.ts` | The one device line, shared by the `get_devices` tool and the `spotify://player/devices` resource (#603). (0 registered tools) | 46 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family, classified from Spotify's February 2026 changelog and its endpoint reference pages. (0 registered tools) | 416 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 484 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 330 |
@@ -142,8 +144,8 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 1007 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 257 |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | 279 |
-| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 886 |
-| `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 321 |
+| `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1174 |
+| `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 458 |
 | `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 80 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 1759 |
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 264 |
@@ -152,7 +154,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2642 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 953 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
-| `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 334 |
+| `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 273 |
 | `src/tools/backup.ts` | Library backup (#159): snapshot the entire reachable library — liked tracks, saved albums/shows/episodes/audiobooks, followed artists and every playlist (with items) — into a timestamped local JSON file plus a bounded metadata sidecar used by list_backups. (2 registered tools) | 1341 |
 | `src/tools/backup_delete.ts` | `delete_backup` — the one destructive tool in the library backup family (#1017), split out of backup.ts so the manifest can give it its own row. (1 registered tool) | 155 |
 | `src/tools/backupfirst.ts` | backup_first (#216): pre-flight snapshot for account-wide destructive tools. (1 registered tool) | 88 |
@@ -177,7 +179,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 536 |
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 771 |
 | `src/tools/personalization.ts` | Runtime module for src/tools/personalization.ts. (3 registered tools) | 285 |
-| `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 958 |
+| `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 949 |
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 696 |
 | `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 12 tools: play_on, queue_next, describe_queue, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next + triage extras: get_playback_context, volume_step, market_availability Each tool states its quota cost in words in the description. (15 registered tools) | 589 |
 | `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 454 |
