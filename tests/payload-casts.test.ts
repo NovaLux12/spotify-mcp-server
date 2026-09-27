@@ -132,7 +132,11 @@ const BASELINE: Record<string, { specificShape?: number; anyAnnotation?: number;
       'the same internal-registry read as `annotations.ts`, in a second module. One accessor would serve both.',
   },
   'src/cancellation.ts': { specificShape: 1, reason: 'Reaches a private field on the SDK server to read the in-flight request map. Not a Spotify payload.' },
-  'src/index.ts': { specificShape: 1, reason: 'Reads the server\'s own `_registeredTools` for the tool-naming policy check, before any request exists.' },
+  // `src/index.ts` held a row here for the tool-naming policy check's private
+  // registry read. That call site now goes through `registeredToolNames()` in
+  // `src/tools/annotations.ts` — the one place that reads the field — so the
+  // row is deleted rather than moved. A ratchet that gets edited upward to
+  // accommodate a move is not a ratchet.
   'src/progress.ts': { specificShape: 1, reason: 'Reaches the SDK server\'s private tool registry to attach progress notifications. Not a Spotify payload.' },
   'src/tools/doctortool.ts': { specificShape: 1, reason: 'Same private-registry read as `annotations.ts`, for the diagnostic report.' },
   'src/tools/playbackintel.ts': {

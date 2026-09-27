@@ -417,6 +417,23 @@ const parameterAllowlist = new Set([
   // and not a parameter a caller sends. The other two kinds need no entry only
   // because no scanned doc happens to backtick them.
   'playlist_meta',
+  // #606: three keys the new CLI subcommands publish, which docs/cli.md names
+  // so a reader knows what the output fields mean. None is a tool and none is
+  // a parameter a caller sends.
+  //
+  //   - `registration_key` is a field of `spotify-mcp tools --json`, read off
+  //     REGISTRAR_MANIFEST rather than off the wire. It is named in the doc
+  //     precisely to say that, so a reader does not go looking for a wire field
+  //     carrying it.
+  //   - `change_detection` is the field `spotify-mcp watch` uses to report how
+  //     it decided a poll had changed (`etag` / `mixed` / `payload-diff`). It
+  //     is a MEASUREMENT the loop reports about its own polls, which is the
+  //     whole point of naming it: a target that carries no revalidation signal
+  //     must say so rather than default to a plausible answer.
+  //   - `fetch_truncated` is a structuredContent key `export_playlist` and
+  //     `export_library_json` already publish; the CLI surfaces it verbatim so a
+  //     capped export cannot read as a complete backup.
+  'registration_key', 'change_detection', 'fetch_truncated',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
