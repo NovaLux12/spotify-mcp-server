@@ -135,8 +135,16 @@ export function describeOutcome(outcome: ChildOutcome): string {
   }
 }
 
-/** The stderr tail, so a fatal error in the child is quoted rather than dropped. */
-function stderrTail(stderr: string, limit = 2000): string {
+/**
+ * The stderr tail, so a fatal error in the child is quoted rather than dropped.
+ *
+ * Exported so a caller that reports a child's death *itself* — rather than
+ * through `assertChildRan` — quotes stderr the same way. Two definitions of
+ * "how much stderr, and what to print when there is none" is a second
+ * convention, and the drift between the two is invisible until a message
+ * arrives with a blank region a reader has to interpret.
+ */
+export function stderrTail(stderr: string, limit = 2000): string {
   const trimmed = stderr.trim();
   if (trimmed.length === 0) return '<child wrote nothing to stderr>';
   return trimmed.length > limit ? `${trimmed.slice(0, limit)}\n… (truncated)` : trimmed;
