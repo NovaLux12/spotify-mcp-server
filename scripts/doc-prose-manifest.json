@@ -807,7 +807,7 @@
         "label": "Why this one"
       },
       {
-        "hash": "1d649120bf39fea9",
+        "hash": "425e2d0a5fc2936c",
         "label": "| | | |---|---| | Complete | Playback, search, catalog, …"
       },
       {
@@ -2417,6 +2417,50 @@
         "label": "Annotations are orthogonal to this gate and do not subst…"
       },
       {
+        "hash": "246bac0ce9d16c81",
+        "label": "Purpose and provenance on stored-data writes (#708)"
+      },
+      {
+        "hash": "d89624a7685ce991",
+        "label": "Six tools write Spotify state from data this Server stor…"
+      },
+      {
+        "hash": "61816a09580ffdec",
+        "label": "| Tool | Stored source | Declared date read from | |---|…"
+      },
+      {
+        "hash": "95804dff48de5d53",
+        "label": "consentnote — one sentence: the source, the date (or the…"
+      },
+      {
+        "hash": "529dec7d0e346bca",
+        "label": "provenance — the same facts as fields: sourcekind, sourc…"
+      },
+      {
+        "hash": "4477e3da7dda3b2f",
+        "label": "Consent is a four-state value, never a boolean. A write …"
+      },
+      {
+        "hash": "17d5ddd7673876d8",
+        "label": "| consent.state | Meaning | |---|---| | confirmed | A pr…"
+      },
+      {
+        "hash": "ec3338f4afdb9bc3",
+        "label": "The state is derived from the guard's own reason, not fr…"
+      },
+      {
+        "hash": "43721e891bb42722",
+        "label": "The date is what the file declares, and nothing else. A …"
+      },
+      {
+        "hash": "4f004d1faf19ff4d",
+        "label": "Purpose is the operation, not a motive. The Server canno…"
+      },
+      {
+        "hash": "d290985413ac6ebd",
+        "label": "This changes consent content and adds no gate. Every thr…"
+      },
+      {
         "hash": "03f519abf7d643cf",
         "label": "Playlist follow family (#1099)"
       },
@@ -3629,7 +3673,7 @@
         "label": "11. Project Structure"
       },
       {
-        "hash": "7b610616c97ccf11",
+        "hash": "6911eee94b3a4f9a",
         "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …"
       },
       {
@@ -3637,8 +3681,40 @@
         "label": "12. Configuration"
       },
       {
-        "hash": "d3c12f1f3068b798",
+        "hash": "e6dd95ac2b25619c",
         "label": "Environment variables SPOTIFYCLIENTID= # required — from…"
+      },
+      {
+        "hash": "0889ea9a8ec07f29",
+        "label": "Derived listening analytics are opt-in (#695)"
+      },
+      {
+        "hash": "03c6b21b89803033",
+        "label": "Eleven tools compute a derived listening metric — an hou…"
+      },
+      {
+        "hash": "069b90aaa93bc910",
+        "label": "The default is the non-analytics path. These tools are n…"
+      },
+      {
+        "hash": "1630c04dcbaca1bb",
+        "label": "| Module | Withheld (opt-in only) | |---|---| | analytic…"
+      },
+      {
+        "hash": "4fd4d3e970a8daba",
+        "label": "With the flag set the registry is byte-for-byte what it …"
+      },
+      {
+        "hash": "46ee5b596f6cf460",
+        "label": "A value that names no boolean is OFF, and says so. The f…"
+      },
+      {
+        "hash": "a17a95bc4075b54e",
+        "label": "This gate is not the read-only gate. SPOTIFYMCPREADONLY …"
+      },
+      {
+        "hash": "02c2e1210a1ba2d3",
+        "label": "Nothing is silently zeroed. The eleven tools are absent …"
       },
       {
         "hash": "9019e8b9bef6ffe2",
@@ -3803,7 +3879,11 @@
         "label": "Risk: savescene writes to the local sidecar at /.spotify…"
       },
       {
-        "hash": "06d58c6b9c65cbe8",
+        "hash": "acc14128e3a27626",
+        "label": "Step 2 uses the ungated re-presentations on purpose. lis…"
+      },
+      {
+        "hash": "3e71391c924e9242",
         "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…"
       },
       {
@@ -3819,7 +3899,7 @@
         "label": "Risk: read-only — set SPOTIFYMCPREADONLY=1 so write-capa…"
       },
       {
-        "hash": "bc40b051aa9710e4",
+        "hash": "9837eff8a9776ecd",
         "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…"
       },
       {
@@ -4677,6 +4757,20 @@
       "reason": "rewrote the #1384 recovery recipe to cover the hand-merge case, which is not a choice of side"
     },
     {
+      "file": "docs/cookbook.md",
+      "hash": "06d58c6b9c65cbe8",
+      "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
+      "date": "2026-09-27",
+      "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "bc40b051aa9710e4",
+      "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
+      "date": "2026-09-27",
+      "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
       "file": "README.md",
       "hash": "178a37f764107949",
       "label": "| | | |---|---| | Complete | Playback, search, catalog, …",
@@ -4685,10 +4779,31 @@
     },
     {
       "file": "README.md",
+      "hash": "1d649120bf39fea9",
+      "label": "| | | |---|---| | Complete | Playback, search, catalog, …",
+      "date": "2026-09-27",
+      "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "README.md",
       "hash": "79e3a5cef3c000e9",
       "label": "### 🤖 Paste this to your agent Copy the block below int…",
       "date": "2026-09-27",
       "reason": "reworded by upstream #1402 (two README claims the tree contradicted)"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "7b610616c97ccf11",
+      "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …",
+      "date": "2026-09-27",
+      "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "d3c12f1f3068b798",
+      "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
+      "date": "2026-09-27",
+      "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
     }
   ]
 }
