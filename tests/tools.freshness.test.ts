@@ -1079,6 +1079,151 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Aggregate plan cost across BOTH kinds (#1291)
+// ---------------------------------------------------------------------------
+
+/**
+ * The subset of the planned-cost payload this block reads. The plan is published
+ * in three places (dry run, cooldown refusal, and `cost.planned` on a real
+ * call) and each carries the same two legs plus their total, so one type covers
+ * all three reads.
+ */
+interface PlanCost {
+  kind: string;
+  measured: boolean;
+  max_requests: number;
+  albums: { max_lookups: number; max_listing_pages: number; max_requests: number; listing_page_size: number } | null;
+  podcasts: { max_lookups: number; max_listing_pages: number; max_requests: number; listing_page_size: number } | null;
+}
+
+/**
+ * The whole-call plan, with BOTH kinds present, at `max_artists: 60`.
+ *
+ * Every `max_requests` assertion above this block passed `kinds: ['albums']`,
+ * so the aggregate was only ever evaluated with the podcasts term reading zero
+ * — the one value that makes the term invisible. Deleting the podcasts term
+ * from `planCallCost`'s sum left the whole suite green. The expected figures
+ * below are hand arithmetic on the two published page sizes, NOT a re-run of
+ * `planCallCost`:
+ *
+ *   albums   60 lookups ÷ 50 per follow page = 2 listing pages, + 60 = 62
+ *   podcasts 60 lookups ÷ 50 per shows page  = 2 listing pages, + 60 = 62
+ *   both kinds                                 62 + 62       = 124
+ */
+const BOTH_KINDS_ARGS = { since: '2026-08-01', max_artists: 60, kinds: ['albums', 'podcasts'] };
+
+describe('whats_new planned cost aggregates both kinds (#1291)', () => {
+  it('sums the podcasts leg into a two-kind dry run instead of reporting one leg', async () => {
+    const h = harness(() => { throw new Error('dry_run must make no API call'); });
+
+    const out = await h.invoke('whats_new', { ...BOTH_KINDS_ARGS, dry_run: true });
+    const payload = out.structuredContent as { cost: PlanCost; cost_estimate: string };
+
+    // Each leg on its own, from the page sizes the walk really uses.
+    assert.equal(payload.cost.albums?.listing_page_size, 50);
+    assert.equal(payload.cost.albums?.max_listing_pages, 2);
+    assert.equal(payload.cost.albums?.max_lookups, 60);
+    assert.equal(payload.cost.albums?.max_requests, 62);
+    assert.equal(payload.cost.podcasts?.listing_page_size, 50);
+    assert.equal(payload.cost.podcasts?.max_listing_pages, 2);
+    assert.equal(payload.cost.podcasts?.max_lookups, 60);
+    assert.equal(payload.cost.podcasts?.max_requests, 62);
+
+    // The aggregate — the assertion this issue is about. 62 + 62 = 124. With
+    // the podcasts term dropped from the sum this reads 62, which is a bound
+    // that is exactly HALF the real worst case: the caller budgets half of what
+    // the call can spend, the same understatement #679 fixed one layer down.
+    assert.equal(payload.cost.max_requests, 124);
+
+    // The total is not merely a literal that happens to pass: it is the two
+    // published legs added together, so a total that stopped tracking them
+    // fails even if the two were moved to different figures.
+    assert.equal(
+      payload.cost.max_requests,
+      (payload.cost.albums?.max_requests ?? 0) + (payload.cost.podcasts?.max_requests ?? 0),
+    );
+    // And it strictly exceeds either leg alone, so "the total is one of the
+    // legs" cannot pass for two reasons at once.
+    assert.ok(payload.cost.max_requests > payload.cost.podcasts!.max_requests);
+    assert.ok(payload.cost.max_requests > payload.cost.albums!.max_requests);
+
+    // The prose quotes the same total and names both legs, so a caller reading
+    // the estimate line — not just the JSON — is not handed the halved figure.
+    assert.match(payload.cost_estimate, /albums: .* = at most 62 requests for albums/);
+    assert.match(payload.cost_estimate, /podcasts: .* = at most 62 requests for podcasts/);
+    assert.match(textOf(out), /at most 124 requests if both kinds are walked/);
+    assert.equal(h.client.calls.length, 0, 'a dry run still issues no requests');
+  });
+
+  it('restates a two-kind bound a real walk actually fits inside', async () => {
+    const follow = followedListing(60);
+    const shows = showsListing(60);
+    const h = harness((path, params) => {
+      if (path === '/me/following') return follow(params?.after);
+      if (path === '/me/shows') return shows(params?.offset);
+      if (/^\/artists\/[^/]+\/albums$/.test(path)) {
+        return albumsOf(path.split('/')[2]!, [['alb', 'LP', '2026-08-10']]);
+      }
+      if (/^\/shows\/[^/]+\/episodes$/.test(path)) {
+        return episodesOf(path.split('/')[2]!, [['e0', 'Ep 0', '2026-08-20']]);
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+
+    const out = await h.invoke('whats_new', BOTH_KINDS_ARGS);
+    const payload = out.structuredContent as {
+      cost: { kind: string; measured: boolean; requests: number | null; planned: PlanCost };
+      scanned: CallPayload['scanned'];
+    };
+
+    assert.equal(payload.cost.kind, 'measured');
+    assert.equal(payload.scanned.artists, 60);
+    assert.equal(payload.scanned.shows, 60);
+
+    // The restated bound is the same two-leg aggregate, not one leg: 2 follow
+    // pages + 60 album reads + 2 shows pages + 60 episode reads = 124. On a
+    // real call the plan is nested under `cost.planned` — `cost` itself is the
+    // measured figure, so reading the legs off `cost` would silently compare
+    // undefined against 62 and pass for the wrong reason.
+    assert.equal(payload.cost.planned.kind, 'budget_bound');
+    assert.equal(payload.cost.planned.albums?.max_requests, 62);
+    assert.equal(payload.cost.planned.podcasts?.max_requests, 62);
+    assert.equal(payload.cost.planned.max_requests, 124);
+
+    // …and the walk fits it. This is the property the halved bound breaks: the
+    // measured cost is counted by the transport, not by the tool's own
+    // counters, so a self-consistent sum could not rescue a wrong total.
+    assert.equal(payload.cost.requests, 124);
+    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.ok(
+      payload.cost.requests! <= payload.cost.planned.max_requests,
+      `spent ${payload.cost.requests} against a planned bound of ${payload.cost.planned.max_requests}`,
+    );
+  });
+
+  it('budgets both legs on the cooldown refusal, before any walk has run', async () => {
+    const h = harness((path) => {
+      if (path === '/me/following') return followedPage(['a1'], null);
+      throw new Error(`unexpected path ${path}`);
+    });
+    h.client.setCooldown(60_000);
+
+    const out = await h.invoke('whats_new', BOTH_KINDS_ARGS);
+    const payload = out.structuredContent as { cooldown: boolean; requests_made: number; cost: PlanCost };
+
+    assert.equal(payload.cooldown, true);
+    assert.equal(payload.requests_made, 0);
+    assert.equal(payload.cost.kind, 'budget_bound');
+    // A caller reading the refusal is budgeting the call it has NOT been able
+    // to make, so the refusal's figure has to carry the podcast leg too.
+    assert.equal(payload.cost.albums?.max_requests, 62);
+    assert.equal(payload.cost.podcasts?.max_requests, 62);
+    assert.equal(payload.cost.max_requests, 124);
+    assert.equal(h.client.calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Concurrent watermark writes (#1130)
 // ---------------------------------------------------------------------------
 
