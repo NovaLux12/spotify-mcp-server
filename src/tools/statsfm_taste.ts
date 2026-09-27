@@ -17,7 +17,12 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { randomBytes } from 'node:crypto';
+import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
+import { loadSidecar } from '../sidecar.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -437,6 +442,47 @@ export function summarizeDayParting(streams: TasteStream[]): Record<DayPart, num
 
 // ---------------------------------------------------------------------------
 // Local-only feedback store (record_feedback never touches the network)
+//
+// Bounded and persisted (#905). This was a module-global array that grew for the
+// life of the process, was copied in full on every read, and then vanished at
+// restart: memory grew while the value did not. It is now a capped sidecar.
+//
+// THE CAP is three bounds, because no single one of them is sufficient.
+//
+//   1. One record. `subject` was `z.string().min(1)` with no maximum, so a
+//      single verdict could have been arbitrarily large — a count cap on its
+//      own would have let one call flush the entire ring. `note` already had a
+//      500-char maximum; `subject` now has 200, and every remaining field is an
+//      enum or an ISO timestamp. One record is therefore bounded at ~750 bytes.
+//   2. A record count — SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES, default 500.
+//      This is the bound that matters for memory and for the size of one MCP
+//      list payload; a byte cap alone bounds neither, because 500 records of
+//      1 KB each is still a 500 KB tool response.
+//   3. A byte size — SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES, default 1 MiB.
+//      Defence in depth: it is the on-disk guarantee that survives someone
+//      later raising the count or the field caps, and it is what makes "one
+//      file, N bytes" a promise the module can keep on disk.
+//
+// Eviction is oldest-first until all three hold, and the count of evicted
+// verdicts is persisted and reported — a silently shrinking store would read as
+// "the agent has no history" rather than "the cap dropped your records".
+//
+// RETENTION is a ring buffer, not a TTL. A verdict's value is that it is
+// recent, but a TTL cannot bound a store an agent fills within one session; it
+// would add a clock read to every record and every list while still leaving the
+// count unbounded. The count cap is the tighter, cheaper, deterministic bound.
+// (The mutation history keeps byte rotation instead, because an append-only log
+// of fixed small lines is the opposite shape — there the cap is enforced by
+// rotating the file, not by rewriting it.)
+//
+// A store that has been truncated or corrupted on load follows src/sidecar.ts
+// and nothing else: ENOENT reads as empty, and every other read/parse/validate
+// failure raises SidecarUnreadableError with the bytes preserved at
+// `<file>.corrupt[N]` at 0600. Rotation and eviction make a malformed file more
+// likely to appear, not less, so the write is structured so that it does not
+// create one: temp file, fsync, then rename(2). This store is ONE JSON document,
+// so a `writeFile` straight onto the path that dies mid-write would lose every
+// record rather than one line.
 // ---------------------------------------------------------------------------
 
 type FeedbackRating = 'love' | 'like' | 'mixed' | 'boring' | 'dislike';
@@ -451,35 +497,292 @@ interface FeedbackEntry {
   note: string | null;
 }
 
-const feedbackStore: FeedbackEntry[] = [];
-let feedbackSeq = 0;
+/**
+ * On-disk envelope. `recorded`/`evicted` are lifetime counters, so an agent
+ * that records 1,000 verdicts can still be told that 1,000 were recorded and
+ * 500 were dropped by the cap — rather than being shown an empty store and no
+ * explanation.
+ */
+export interface FeedbackStore {
+  entries: FeedbackEntry[];
+  recorded: number;
+  evicted: number;
+  /** Monotonic; never rewound by eviction, so an id is never reused. */
+  seq: number;
+}
 
-function recordFeedbackEntry(input: {
-  subject_type: FeedbackSubjectType;
-  subject: string;
-  rating: FeedbackRating;
-  note?: string;
-}): FeedbackEntry {
-  const entry: FeedbackEntry = {
-    id: (feedbackSeq += 1),
-    at: new Date().toISOString(),
-    subject_type: input.subject_type,
-    subject: input.subject,
-    rating: input.rating,
-    note: input.note ?? null,
+/** Longest `subject` accepted or stored — a track/artist/album/genre name. */
+export const MAX_FEEDBACK_SUBJECT_LENGTH = 200;
+/** Longest `note` accepted or stored; matches the tool's declared maximum. */
+export const MAX_FEEDBACK_NOTE_LENGTH = 500;
+
+export const DEFAULT_FEEDBACK_MAX_ENTRIES = 500;
+export const DEFAULT_FEEDBACK_MAX_BYTES = 1_048_576;
+/** One `action=list` page, so the response cannot scale with the store. */
+export const DEFAULT_FEEDBACK_LIST_LIMIT = 20;
+export const MAX_FEEDBACK_LIST_LIMIT = 500;
+
+export const FEEDBACK_FILE_MODE = 0o600;
+export const FEEDBACK_DIR_MODE = 0o700;
+
+const FEEDBACK_FILENAME = 'taste-feedback.json';
+
+const RATINGS: readonly string[] = ['love', 'like', 'mixed', 'boring', 'dislike'];
+const SUBJECT_TYPES: readonly string[] = ['track', 'artist', 'album', 'genre'];
+
+/**
+ * Where the store lives. SPOTIFY_MCP_TASTE_FEEDBACK_FILE names the file
+ * outright (the seam tests use, and the only way to keep a test run off the
+ * real one); otherwise SPOTIFY_MCP_DATA_DIR overrides the directory, matching
+ * every other sidecar in the server.
+ */
+export function tasteFeedbackFile(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.SPOTIFY_MCP_TASTE_FEEDBACK_FILE?.trim();
+  if (explicit) return explicit;
+  const dir = env.SPOTIFY_MCP_DATA_DIR?.trim();
+  return join(dir ? dir : join(homedir(), '.spotify-mcp'), FEEDBACK_FILENAME);
+}
+
+/** Positive integer from the environment, or the fallback for anything else. */
+function capFromEnv(raw: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(raw ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export function feedbackMaxEntries(env: NodeJS.ProcessEnv = process.env): number {
+  return capFromEnv(env.SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES, DEFAULT_FEEDBACK_MAX_ENTRIES);
+}
+
+export function feedbackMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
+  return capFromEnv(env.SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES, DEFAULT_FEEDBACK_MAX_BYTES);
+}
+
+function emptyStore(): FeedbackStore {
+  return { entries: [], recorded: 0, evicted: 0, seq: 0 };
+}
+
+/**
+ * Coerce a stored field to a bounded string, or null when it is not a string.
+ * Length is clamped rather than rejected: a store written before `subject`
+ * carried a maximum, or one an owner hand-edited, is still readable data. The
+ * clamp is reported (see `clamped`) rather than passing through as if the long
+ * value had been stored.
+ */
+function boundedString(value: unknown, max: number): string | null {
+  return typeof value === 'string' ? value.slice(0, max) : null;
+}
+
+/**
+ * Validate the untrusted on-disk document into a FeedbackStore.
+ *
+ * Malformed *rows* are dropped (a store is a list; one bad row is not a corrupt
+ * document), but the shape of the document itself is what throws, and that
+ * throw is what routes the file through the sidecar preservation path. Long
+ * fields are clamped and counted, so an oversized record is bounded on the way
+ * in rather than becoming the reason the whole store is rejected.
+ */
+function validateFeedbackStore(parsed: unknown): FeedbackStore {
+  const envelope = (typeof parsed === 'object' && parsed !== null ? parsed : {}) as Record<string, unknown>;
+  // A bare array is accepted: the first on-disk version of this store may be
+  // read by a build that only knows the envelope, and vice versa.
+  const rows = Array.isArray(parsed) ? parsed : Array.isArray(envelope.entries) ? envelope.entries : null;
+  if (rows === null && !Array.isArray(parsed)) {
+    throw new Error('is not a feedback store: "entries" is not an array');
+  }
+  const entries: FeedbackEntry[] = [];
+  for (const row of rows ?? []) {
+    if (typeof row !== 'object' || row === null) continue;
+    const r = row as Record<string, unknown>;
+    const id = r.id;
+    if (typeof id !== 'number' || !Number.isFinite(id)) continue;
+    const subject = boundedString(r.subject, MAX_FEEDBACK_SUBJECT_LENGTH);
+    const rating = boundedString(r.rating, 32);
+    const subjectType = boundedString(r.subject_type, 32);
+    if (subject === null || rating === null || subjectType === null) continue;
+    if (!RATINGS.includes(rating) || !SUBJECT_TYPES.includes(subjectType)) continue;
+    const note = r.note === null || r.note === undefined ? null : boundedString(r.note, MAX_FEEDBACK_NOTE_LENGTH);
+    entries.push({
+      id,
+      at: typeof r.at === 'string' ? r.at : '',
+      subject_type: subjectType as FeedbackSubjectType,
+      subject,
+      rating: rating as FeedbackRating,
+      note,
+    });
+  }
+  const count = (value: unknown): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : 0;
+  // seq must be at least the highest id present, or the next record would
+  // reuse an id that is still on disk.
+  const highestId = entries.reduce((max, e) => (e.id > max ? e.id : max), 0);
+  const seq = Math.max(count(envelope.seq), highestId);
+  return {
+    entries,
+    recorded: Math.max(count(envelope.recorded), entries.length),
+    evicted: count(envelope.evicted),
+    seq,
   };
-  feedbackStore.push(entry);
-  return entry;
 }
 
-function listFeedbackEntries(): FeedbackEntry[] {
-  return [...feedbackStore];
+/** Read the store. Throws SidecarUnreadableError for anything but ENOENT. */
+export function loadFeedbackStore(env: NodeJS.ProcessEnv = process.env): Promise<FeedbackStore> {
+  return loadSidecar<FeedbackStore>(tasteFeedbackFile(env), emptyStore, validateFeedbackStore);
 }
 
-/** Test seam: reset the in-memory feedback store. */
+/** The exact bytes that would be written. Measuring beats estimating. */
+function serializeStore(store: FeedbackStore): string {
+  return `${JSON.stringify(store, null, 2)}\n`;
+}
+
+/**
+ * Persist atomically: a uniquely-named temp file in the SAME directory, fsync,
+ * then rename(2) over the target. The rename is the only mutation of the real
+ * path, so a crash before it leaves the previous store whole rather than a
+ * half-written one. Temp and target are owner-only and re-asserted after
+ * creation because a creation-time mode is masked by umask.
+ *
+ * The temp name MUST be unique per writer — a fixed `<path>.tmp` is a race
+ * between concurrent record_feedback calls, and the first rename moves the name
+ * away so the second fails ENOENT. Same idiom as artistwatch / auth / freshness.
+ *
+ * Failures THROW. A verdict that reads as recorded but is not on disk is the
+ * failure #764 removed from the watchlist store.
+ */
+async function saveFeedbackStore(store: FeedbackStore, env: NodeJS.ProcessEnv = process.env): Promise<void> {
+  const file = tasteFeedbackFile(env);
+  const tmp = `${file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
+  await mkdir(dirname(file), { recursive: true, mode: FEEDBACK_DIR_MODE });
+  // Directory mode is also creation-only — tighten a pre-existing one.
+  await chmod(dirname(file), FEEDBACK_DIR_MODE);
+  try {
+    const handle = await open(tmp, 'w', FEEDBACK_FILE_MODE);
+    try {
+      await handle.writeFile(serializeStore(store), 'utf8');
+      await handle.sync(); // on disk before the rename can publish them
+    } finally {
+      await handle.close();
+    }
+    await chmod(tmp, FEEDBACK_FILE_MODE);
+    await rename(tmp, file);
+  } catch (err) {
+    // A unique temp name means a failed write can leave a file nothing else
+    // will ever clean up. Do not leave litter in the state directory.
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+  await chmod(file, FEEDBACK_FILE_MODE);
+}
+
+/**
+ * Evict oldest-first until the count cap and the byte cap both hold, and write
+ * what survives. The byte loop measures the exact document it would write
+ * rather than estimating it, and is a no-op at the defaults: 500 records of at
+ * most ~750 bytes cannot reach 1 MiB, so the per-record and count bounds are
+ * what bind in practice and this is the backstop for a raised cap.
+ */
+async function persistCapped(store: FeedbackStore, env: NodeJS.ProcessEnv): Promise<FeedbackStore> {
+  const maxEntries = feedbackMaxEntries(env);
+  const maxBytes = feedbackMaxBytes(env);
+  let entries = store.entries.length > maxEntries ? store.entries.slice(store.entries.length - maxEntries) : store.entries;
+  let evicted = store.evicted + (store.entries.length - entries.length);
+  let seq = store.seq;
+  let body = serializeStore({ ...store, entries, evicted, seq });
+  while (entries.length > 0 && Buffer.byteLength(body) > maxBytes) {
+    entries = entries.slice(1);
+    evicted += 1;
+    body = serializeStore({ ...store, entries, evicted, seq });
+  }
+  const capped: FeedbackStore = { entries, recorded: store.recorded, evicted, seq };
+  await saveFeedbackStore(capped, env);
+  return capped;
+}
+
+/**
+ * Serialise load -> append -> save. record_feedback is a read-modify-write on a
+ * shared path and its handler awaits, so two concurrent calls would otherwise
+ * both read the same prefix and the second write would discard the first
+ * record. Chaining on the tail promise makes each cycle see the previous one's
+ * result; a rejection is cleared so one failed write cannot wedge the queue.
+ */
+let feedbackQueue: Promise<unknown> = Promise.resolve();
+
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = feedbackQueue.then(fn, fn);
+  feedbackQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+/**
+ * Record one verdict and persist the capped store. Returns the new entry, the
+ * store as written, and how many verdicts the caps dropped on this call.
+ */
+export function recordFeedbackEntry(
+  input: {
+    subject_type: FeedbackSubjectType;
+    subject: string;
+    rating: FeedbackRating;
+    note?: string;
+  },
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ entry: FeedbackEntry; store: FeedbackStore; evictedNow: number }> {
+  return serialized(async () => {
+    const store = await loadFeedbackStore(env);
+    const entry: FeedbackEntry = {
+      id: store.seq + 1,
+      at: new Date().toISOString(),
+      subject_type: input.subject_type,
+      subject: input.subject.slice(0, MAX_FEEDBACK_SUBJECT_LENGTH),
+      rating: input.rating,
+      note: input.note === undefined ? null : input.note.slice(0, MAX_FEEDBACK_NOTE_LENGTH),
+    };
+    const before = store.evicted;
+    const capped = await persistCapped(
+      { entries: [...store.entries, entry], recorded: store.recorded + 1, evicted: store.evicted, seq: entry.id },
+      env,
+    );
+    return { entry, store: capped, evictedNow: capped.evicted - before };
+  });
+}
+
+/** Rating tally over what is retained, computed from the caller's own snapshot. */
+export function feedbackRatingCounts(store: FeedbackStore): Record<FeedbackRating, number> {
+  const counts: Record<FeedbackRating, number> = { love: 0, like: 0, mixed: 0, boring: 0, dislike: 0 };
+  for (const entry of store.entries) counts[entry.rating] += 1;
+  return counts;
+}
+
+/** The failure result every feedback tool returns for an unreadable store. */
+function storeUnreadable(error: string) {
+  return {
+    content: [{ type: 'text' as const, text: `Taste feedback store could not be read: ${error}` }],
+    structuredContent: { ok: false, persisted: false, reason: 'store_unreadable', error },
+    isError: true,
+  };
+}
+
+/** The failure result for a verdict that did not reach disk. */
+function storeUnwritable(path: string, error: unknown) {
+  const message = (error as Error).message;
+  return {
+    content: [
+      {
+        type: 'text' as const,
+        text:
+          `NOT saved: writing ${path} failed (${message}). Nothing was persisted — ` +
+          'fix the path or its permissions and re-run.',
+      },
+    ],
+    structuredContent: { ok: false, persisted: false, reason: 'store_unwritable', path, error: message },
+    isError: true,
+  };
+}
+
+/** Test seam: reset the write serialisation queue. */
 export function __clearFeedbackEntries(): void {
-  feedbackStore.length = 0;
-  feedbackSeq = 0;
+  feedbackQueue = Promise.resolve();
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,7 +1363,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   dualRegister(
     'statsfm_record_feedback',
     'record_feedback',
-    'Record a local-only taste verdict (love/like/mixed/boring/dislike) or list stored verdicts. Never touches the network — memory for future recommendations.',
+    'Record a local-only taste verdict (love/like/mixed/boring/dislike) or list stored verdicts. Never touches the network. Verdicts persist in ~/.spotify-mcp/taste-feedback.json (SPOTIFY_MCP_DATA_DIR overrides) as a capped sidecar: the newest 500 survive, older ones are evicted and counted.',
     {
       action: z
         .enum(['record', 'list'])
@@ -1070,59 +1373,117 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
         .enum(['track', 'artist', 'album', 'genre'])
         .optional()
         .describe('Required for record'),
-      subject: z.string().min(1).optional().describe('Track/artist/album/genre name. Required for record'),
+      subject: z
+        .string()
+        .min(1)
+        .max(MAX_FEEDBACK_SUBJECT_LENGTH)
+        .optional()
+        .describe(`Track/artist/album/genre name, max ${MAX_FEEDBACK_SUBJECT_LENGTH} chars. Required for record`),
       rating: z
         .enum(['love', 'like', 'mixed', 'boring', 'dislike'])
         .optional()
         .describe('Required for record'),
-      note: z.string().max(500).optional().describe('Optional free-text note'),
+      note: z
+        .string()
+        .max(MAX_FEEDBACK_NOTE_LENGTH)
+        .optional()
+        .describe(`Optional free-text note, max ${MAX_FEEDBACK_NOTE_LENGTH} chars`),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(MAX_FEEDBACK_LIST_LIMIT)
+        .optional()
+        .describe(
+          `For action=list: newest verdicts to return (default ${DEFAULT_FEEDBACK_LIST_LIMIT}, max ${MAX_FEEDBACK_LIST_LIMIT}). The store holds at most ${DEFAULT_FEEDBACK_MAX_ENTRIES}; older ones are evicted.`,
+        ),
       response_format: ResponseFormat,
     },
     async (args) => {
       const action = args.action ?? 'record';
       if (action === 'list') {
-        const entries = listFeedbackEntries();
+        const limit = Math.min(MAX_FEEDBACK_LIST_LIMIT, Math.max(1, args.limit ?? DEFAULT_FEEDBACK_LIST_LIMIT));
+        let store: FeedbackStore;
+        try {
+          store = await loadFeedbackStore();
+        } catch (err) {
+          // Returned rather than thrown: the tool boundary turns a throw into a
+          // generic "invalid arguments" envelope, which would name the wrong
+          // cause and drop the path the user has to repair.
+          return storeUnreadable((err as Error).message);
+        }
+        // Newest `limit`, still in chronological order within the page.
+        const page = store.entries.slice(Math.max(0, store.entries.length - limit));
+        const truncated = page.length < store.entries.length;
         const lines =
-          entries.length === 0
-            ? ['No feedback recorded yet — use action=record to store a verdict.']
+          page.length === 0
+            ? [
+                store.recorded === 0
+                  ? 'No feedback recorded yet — use action=record to store a verdict.'
+                  : `No feedback retained: all ${store.recorded} recorded verdict(s) were evicted by the store cap.`,
+              ]
             : [
-                `${entries.length} feedback entr${entries.length === 1 ? 'y' : 'ies'}:`,
-                ...entries.map(
+                `${page.length} of ${store.entries.length} retained feedback entr${
+                  store.entries.length === 1 ? 'y' : 'ies'
+                } (newest first page; ${store.recorded} recorded, ${store.evicted} evicted by the cap):`,
+                ...page.map(
                   (e) =>
                     `  #${e.id} [${e.rating}] ${e.subject_type}:${e.subject}${e.note ? ` — ${e.note}` : ''} (${e.at})`,
                 ),
+                ...(truncated
+                  ? [`  … ${store.entries.length - page.length} older entr(y/ies) retained; raise limit to see them.`]
+                  : []),
               ];
+        const echo = {
+          ok: true,
+          entries: page,
+          returned: page.length,
+          retained: store.entries.length,
+          truncated,
+          recorded: store.recorded,
+          evicted: store.evicted,
+          max_entries: feedbackMaxEntries(),
+        };
         if (args.response_format === 'json') {
           return {
-            content: [{ type: 'text', text: JSON.stringify(entries) }],
-            structuredContent: { entries },
+            content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }],
+            structuredContent: echo,
           };
         }
-        return textOut(lines, { entries });
+        return textOut(lines, echo);
       }
       if (!args.subject_type || !args.subject || !args.rating) {
         throw new Error(
           'record_feedback with action=record requires subject_type, subject, and rating',
         );
       }
-      const entry = recordFeedbackEntry({
-        subject_type: args.subject_type,
-        subject: args.subject,
-        rating: args.rating,
-        note: args.note,
-      });
-      const counts: Record<FeedbackRating, number> = {
-        love: 0,
-        like: 0,
-        mixed: 0,
-        boring: 0,
-        dislike: 0,
-      };
-      for (const e of listFeedbackEntries()) counts[e.rating] += 1;
+      const path = tasteFeedbackFile();
+      let recorded: { entry: FeedbackEntry; store: FeedbackStore; evictedNow: number };
+      try {
+        recorded = await recordFeedbackEntry({
+          subject_type: args.subject_type,
+          subject: args.subject,
+          rating: args.rating,
+          note: args.note,
+        });
+      } catch (err) {
+        // A verdict that reports success but is not on disk is the #764
+        // watchlist failure. A corrupt store surfaces its own preserved-copy
+        // path through the same route rather than being reset.
+        const preserved = (err as { preservedAs?: string | null }).preservedAs;
+        return preserved
+          ? storeUnreadable((err as Error).message)
+          : storeUnwritable(path, err);
+      }
+      const { entry, store, evictedNow } = recorded;
+      const counts = feedbackRatingCounts(store);
       const lines = [
-        `Recorded #${entry.id}: [${entry.rating}] ${entry.subject_type}:${entry.subject}${entry.note ? ` — ${entry.note}` : ''} (local-only, ${listFeedbackEntries().length} total).`,
+        `Recorded #${entry.id}: [${entry.rating}] ${entry.subject_type}:${entry.subject}${entry.note ? ` — ${entry.note}` : ''} (local-only, ${store.entries.length} retained, ${store.recorded} recorded).`,
+        ...(evictedNow > 0
+          ? [`  Cap reached: ${evictedNow} oldest verdict(s) dropped (${store.entries.length}/${feedbackMaxEntries()} retained).`]
+          : []),
       ];
-      return textOut(lines, { entry, counts });
+      return textOut(lines, { ok: true, entry, counts, retained: store.entries.length, recorded: store.recorded, evicted: store.evicted });
     },
   );
 }

@@ -18,7 +18,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
 | `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory containing `mutations.jsonl`. |
-| `SPOTIFY_MCP_HISTORY_MAX_BYTES` | `1048576` | Size in **bytes** at which `mutations.jsonl` rotates. Only consulted when `SPOTIFY_MCP_HISTORY` is on. Unset, non-numeric, zero, and negative values fall back to the default rather than disabling rotation. |
+| `SPOTIFY_MCP_HISTORY_MAX_BYTES` | `1048576` | Size in **bytes** at which `mutations.jsonl` rotates to `mutations.jsonl.1`. Only consulted when `SPOTIFY_MCP_HISTORY` is on. Unset, non-numeric, zero, and negative values fall back to the default rather than disabling rotation. Exactly one generation is kept, so the ledger on disk never exceeds twice this, and `spotify_doctor` reports the live and archive sizes against the cap plus the record count. |
 | `SPOTIFY_MCP_RECEIPTS` | unset | `1`, `true`, `yes`, or `on` persists mutation receipts to `receipts.jsonl` so `verify_receipt` and `undo_mutation` survive a restart. Unset keeps them in process memory only, and every miss says so. |
 | `SPOTIFY_MCP_RECEIPTS_DIR` | `~/.spotify-mcp` | Directory containing `receipts.jsonl`; falls back to `SPOTIFY_MCP_HISTORY_DIR` when unset. |
 | `SPOTIFY_MCP_RECEIPTS_TTL_HOURS` | `24` | How long a persisted receipt stays resolvable; `0` disables expiry. The newest 100 receipts are kept either way, FIFO. |
@@ -45,6 +45,9 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
 | `SPOTIFY_MCP_SEARCH_HISTORY_FILE` | `~/.spotify-mcp/search-history.json` | Local search-history sidecar. |
 | `SPOTIFY_MCP_SEARCH_HISTORY` | unset (enabled) | `0`, `false`, `no`, or `off` (case-insensitive, trimmed) stops the search-history tools from recording or replaying queries. Any other value, including unset, keeps history on. |
+| `SPOTIFY_MCP_TASTE_FEEDBACK_FILE` | `<SPOTIFY_MCP_DATA_DIR>/taste-feedback.json` | Store for verdicts written by `statsfm_record_feedback`. The full path wins; otherwise the file is `taste-feedback.json` inside `SPOTIFY_MCP_DATA_DIR` (`~/.spotify-mcp`). Written at 0600, atomically (temp file, fsync, rename), and loaded through the shared sidecar policy in `src/sidecar.ts`: a missing file reads as an empty store, and a corrupt or truncated one is preserved at `<file>.corrupt[N]` and reported rather than reset. |
+| `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES` | `500` | Verdicts retained in the taste feedback store. Past this the oldest are evicted; the number dropped is persisted and reported, so a shrinking store never reads as an empty one. |
+| `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES` | `1048576` | Size cap for `taste-feedback.json`. Evicts oldest-first until the file fits, so raising `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES` past what the byte cap allows cannot unbound the store. |
 | `SPOTIFY_MCP_PLAYBACKEXT_FILE` | `~/.spotify-mcp/playback-ext.json` | Playback extension sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE` | `~/.spotify-mcp/exhaust2-playback.json` | Playback helper sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_MISC_FILE` | `~/.spotify-mcp/exhaust2-misc.json` | Miscellaneous helper sidecar. |
@@ -100,11 +103,31 @@ It is a **fallback, not the authority**. If `SPOTIFY_MCP_MAX_CONCURRENCY` is set
 
 Set `SPOTIFY_MCP_HISTORY=1` to append one JSONL record per agent-driven mutation. `SPOTIFY_MCP_HISTORY_DIR` changes the directory; the file is `mutations.jsonl`. Records contain only the mutation method, path, and receipt/snapshot metadata — never tokens or request bodies.
 
-Each record's `who` field names the tool that issued the mutation (e.g. `add_to_playlist`), falling back to `agent` only when the call did not come through a tool. `history_search` matches on it, and the `spotify_doctor` row `history` reports the resolved ledger path plus how many appends have been lost. A lost append never fails the mutation it describes, but it warns once per process on stderr and turns that doctor row red, because a trail with gaps otherwise reads as complete when it is not.
-
-**Rotation.** The ledger is bounded rather than cumulative. Before each append the live file's size is read, and if the existing size plus the incoming line would exceed `SPOTIFY_MCP_HISTORY_MAX_BYTES` (default **1 MiB**, i.e. `1048576` bytes), `mutations.jsonl` is renamed to `mutations.jsonl.1` and a fresh one is started. `rename(2)` replaces any existing archive atomically, so exactly one generation is kept and total on-disk history is bounded at roughly twice the threshold; the oldest records are what is lost, and the archive's owner-only mode is re-asserted on rotation because `rename` preserves the old inode's mode. The check happens per append, so a record can push the file just past the threshold before the next append rotates it.
+**Rotation.** The ledger is bounded rather than cumulative. Before each append the live file's size is read, and if the existing size plus the incoming line would exceed `SPOTIFY_MCP_HISTORY_MAX_BYTES` (default **1 MiB**, i.e. `1048576` bytes), `mutations.jsonl` is renamed to `mutations.jsonl.1` and a fresh one is started. `rename(2)` replaces any existing archive atomically, so exactly one generation is kept and total on-disk history is bounded at roughly twice the threshold; the oldest records are what is lost, and the archive's owner-only mode is re-asserted on rotation because `rename` preserves the old inode's mode. The check happens per append, so a record can push the file just past the threshold before the next append rotates it. Rotation bounds what is kept *on disk*; it does not bound what a read returns, so `history_search` walks the tail by a fixed-size backward read that keeps at most 500 records in memory regardless of the file's size.
 
 A value that is unset, empty, non-numeric, zero, or negative falls back to the default rather than disabling rotation, so a typo cannot turn a bounded ledger into a never-rotating one. This is the same intent as `SPOTIFY_MCP_BACKUP_RETENTION_DAYS`, but the two parse differently and the difference is worth knowing: retention is read with `Number()` and rejects a fractional value, while this threshold is read with `parseInt(…, 10)` and **truncates** it. `"2.5"` therefore means 2 bytes here, not the default, and surrounding whitespace is tolerated. Raise this only deliberately — a value below the size of a single record rotates the ledger on every append.
+
+Each record's `who` field names the tool that issued the mutation (e.g. `add_to_playlist`), falling back to `agent` only when the call did not come through a tool. `history_search` matches on it, and the `spotify_doctor` row `history` reports the resolved ledger path, the live and archive sizes against the cap, the record count, and how many appends have been lost. A lost append never fails the mutation it describes, but it warns once per process on stderr and turns that doctor row red, because a trail with gaps otherwise reads as complete when it is not.
+
+### Taste feedback store
+
+`statsfm_record_feedback` stores verdicts locally and never touches the network. The store is a file, not process memory, so a verdict recorded in one session is still there in the next — and, because it is a file, it is bounded and it can be corrupted, both of which it now handles explicitly.
+
+**The cap is three bounds, because no one of them is sufficient on its own.**
+
+- **One record.** `subject` is capped at 200 characters and `note` at 500; every other field is an enum or a timestamp. This is the bound a count cap alone cannot supply: before it, a single `subject` was unbounded and could have flushed the whole store on its own.
+- **A record count** — `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES`, default 500. This is what bounds memory and the size of one `action=list` response.
+- **A byte size** — `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES`, default 1 MiB. Defence in depth: the on-disk promise that survives someone later raising the count or the field caps.
+
+Eviction is oldest-first until all three hold, and the lifetime `recorded` and `evicted` counters are persisted. A store that quietly dropped your verdicts would otherwise read as an agent with no history.
+
+**Retention is a ring buffer, not a TTL.** A verdict's value is that it is recent, but a TTL cannot bound a store an agent fills within a single session; it would add a clock read to every record and every list while leaving the count unbounded. (The mutation history uses byte rotation instead, because an append-only log of fixed small lines is the opposite shape — there the cap is enforced by rotating the file, not by rewriting it.)
+
+**A corrupt or truncated store is preserved, not reset.** Loading follows the shared policy in `src/sidecar.ts` (#839, #1051), the same one the scene, genre-tag and playback-extension sidecars use: a missing file reads as an empty store, and every other read, parse or validation failure preserves the exact bytes at `<file>.corrupt` (or `<file>.corrupt.N`, opened `O_EXCL` so a later corruption cannot clobber an earlier preserved copy) at 0600 and reports the path. The original file is left where it is. Rotation and eviction make a malformed file *more* likely to appear, not less, so the write is built so that it does not create one.
+
+**The write is atomic.** The store is a single JSON document, so a write that truncated the target in place and died mid-write would lose *every* record rather than one line. Instead: a uniquely named temp file in the same directory, `fsync`, then `rename(2)` over the target. The rename is the only mutation of the real path, so a crash before it leaves the previous store whole. The temp name carries the pid and random bytes because a fixed `<path>.tmp` is a race between concurrent `record_feedback` calls (#1135). A write that fails is **reported** as a failure — a verdict that reads as recorded but is not on disk is the #764 watchlist failure.
+
+`spotify_doctor` reports both stores: the `history` row carries the ledger's sizes, cap and record count, and the taste-feedback row carries the store's path, how many verdicts are retained, and how many the cap has dropped.
 
 ### Mutation receipts
 

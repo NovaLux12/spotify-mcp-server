@@ -1039,7 +1039,20 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // adapt drops the client it is handed rather than passing Spotify's into a
   // stats.fm request.
   manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 22917], { readOnlySafe: true }),
-  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [16, 14005], { readOnlySafe: true }),
+  // #905: record_feedback gained a `limit` (the list page is bounded now, so
+  // the response no longer scales with the store) and its description names
+  // the store file and the cap. Tool count is unchanged at 16.
+  //
+  // MEASURED, not estimated: dist/index.js driven over stdio, tools/list read
+  // back, and the budget's own formula applied to the finalized description +
+  // inputSchema. 14005 B -> 14735 B (+730 B). The derived ceiling moves with
+  // the baseline, ceil(14735 * 1.1) = 16209 B, so the headroom stays 10% as
+  // before rather than being widened to make a breach pass.
+  //
+  // Host-session payload impact: the whole tools/list response goes
+  // 610738 B -> 611468 B (+730 B, +0.12%) across 592 tools, measured the same
+  // way on origin/main and on this branch.
+  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [16, 14735], { readOnlySafe: true }),
   manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 8040], { readOnlySafe: true }),
   manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1723], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 750], { alwaysActive: true, readOnlySafe: true }),

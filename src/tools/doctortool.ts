@@ -30,7 +30,25 @@ import {
   resolveToolsets,
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
-import { historyWriteStatus } from '../history.js';
+import { historyWriteStatus, historyLedgerStats } from '../history.js';
+
+/**
+ * The taste feedback store lives in the `taste` module, and #906 keeps a tool
+ * module unevaluated unless its registration key is active. A static import
+ * here would drag `statsfm_taste` — and, through its own import of the range
+ * schema, `statsfm` — into every startup that includes the doctor, which is
+ * registered unconditionally. The row therefore loads it on demand, at report
+ * time rather than at module-evaluation time.
+ */
+type TasteFeedbackModule = typeof import('./statsfm_taste.js');
+type FeedbackStore = Awaited<ReturnType<TasteFeedbackModule['loadFeedbackStore']>>;
+
+let tasteFeedbackModule: Promise<TasteFeedbackModule> | undefined;
+
+function loadTasteFeedback(): Promise<TasteFeedbackModule> {
+  tasteFeedbackModule ??= import('./statsfm_taste.js');
+  return tasteFeedbackModule;
+}
 import { ResponseFormat } from '../shaping.js';
 import { CHUNK_CAPS } from '../chunk.js';
 import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
@@ -479,13 +497,17 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
 }
 
 /**
- * Mutation-history trail health (#591). The ledger is what history_search and
- * the undo family read, and a lost append is invisible in the file itself —
- * an unwritable directory leaves a trail that reads as complete. So the
- * resolved path and the write-failure count are reported here, and any lost
- * append is a `fail` row: the audit trail is not trustworthy.
+ * Mutation-history trail health (#591, grown in #905). The ledger is what
+ * history_search and the undo family read, and a lost append is invisible in the
+ * file itself — an unwritable directory leaves a trail that reads as complete.
+ * So the resolved path and the write-failure count are reported here, and any
+ * lost append is a `fail` row: the audit trail is not trustworthy.
+ *
+ * #905 added the size and the record count. Growth used to be unobservable: a
+ * ledger sitting just under its rotation cap looked exactly like an empty one,
+ * so a user could not tell that the oldest records were about to be dropped.
  */
-function historyRow(): DoctorRow {
+async function historyRow(): Promise<DoctorRow> {
   const history = historyWriteStatus();
   if (!history.enabled) {
     return {
@@ -494,6 +516,8 @@ function historyRow(): DoctorRow {
       summary: `mutation history disabled — no audit trail is being written (${history.path})`,
     };
   }
+  const stats = await historyLedgerStats();
+  const growth = `${stats.bytes} B live + ${stats.archive_bytes} B archive of a ${stats.cap_bytes} B cap; ${stats.records}${stats.records_capped ? '+' : ''} record(s)`;
   if (history.failures > 0) {
     return {
       id: 'history',
@@ -501,14 +525,53 @@ function historyRow(): DoctorRow {
       summary:
         `mutation history writes failed ${history.failures} time(s) — the trail at ` +
         `${history.path} is incomplete, so history_search and undo may be missing records`,
-      detail: `last_failure=${history.last_failure ?? 'unknown'}`,
+      detail: `last_failure=${history.last_failure ?? 'unknown'}; ${growth}`,
     };
   }
   return {
     id: 'history',
     status: 'pass',
     summary: `mutation history enabled — ${history.path} (0 write failures)`,
+    detail: growth,
   };
+}
+
+/**
+ * Taste-feedback store health (#905). It is a capped sidecar now, so the two
+ * things a user can want to know are whether the file is where they think it is
+ * and how close it is to the cap that starts dropping their verdicts.
+ */
+async function tasteFeedbackRow(): Promise<DoctorRow> {
+  const { loadFeedbackStore, tasteFeedbackFile, feedbackMaxEntries } = await loadTasteFeedback();
+  const path = tasteFeedbackFile();
+  let store: FeedbackStore;
+  try {
+    store = await loadFeedbackStore();
+  } catch (err) {
+    // A store that cannot be read is a fail row, not an empty one: the
+    // SidecarUnreadableError message names the preserved copy to repair from.
+    return {
+      id: 'taste_feedback',
+      status: 'fail',
+      summary: `taste feedback store unreadable — ${path}`,
+      detail: (err as Error).message,
+    };
+  }
+  const maxEntries = feedbackMaxEntries();
+  const summary =
+    `taste feedback store ${path} — ${store.entries.length}/${maxEntries} retained, ` +
+    `${store.recorded} recorded, ${store.evicted} evicted by the cap`;
+  if (store.evicted > 0) {
+    return {
+      id: 'taste_feedback',
+      status: 'info',
+      summary,
+      detail:
+        'The oldest verdicts are being dropped. Raise SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES ' +
+        'to keep more; the file is also held under SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES.',
+    };
+  }
+  return { id: 'taste_feedback', status: 'pass', summary };
 }
 
 function staticRows(client: SpotifyClient): DoctorRow[] {
@@ -605,9 +668,17 @@ function staticRows(client: SpotifyClient): DoctorRow[] {
     summary: parts.join(' '),
   });
 
-  rows.push(historyRow());
-
   return rows;
+}
+
+/**
+ * Rows that have to touch the filesystem to be true. Kept out of
+ * `staticRows` because a `stat` and a bounded tail read are both awaits, and a
+ * store that cannot be read is itself a result worth reporting rather than a
+ * row to omit.
+ */
+async function storeRows(): Promise<DoctorRow[]> {
+  return [await historyRow(), await tasteFeedbackRow()];
 }
 
 /** Live account probe: report classified failures rather than silently omitting them. */
@@ -724,6 +795,7 @@ export async function collectDoctorReport(
     ...scopeRows(tokens.tokens, surface),
     ...account,
     ...staticRows(client),
+    ...(await storeRows()),
     surfaceRow(surface),
   ];
   return { ok: rows.every((row) => row.status !== 'fail'), rows, surface };
