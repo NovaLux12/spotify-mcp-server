@@ -275,12 +275,16 @@
         "label": "3. Commands"
       },
       {
-        "hash": "56a565a3e2bc8338",
+        "hash": "4cba6f94f8fa9fa3",
         "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
       },
       {
         "hash": "f4b0ad8d467ac713",
         "label": "Both doc gates accept --census-file <path> so CI generat…"
+      },
+      {
+        "hash": "1e1984c98d214b31",
+        "label": "npm run count:tools -- --out <path> writes the census to…"
       },
       {
         "hash": "12962b756ff975cb",
@@ -493,6 +497,10 @@
       {
         "hash": "bf24fbe1da30a9fe",
         "label": "npm run check:doc-tool-names fails when a doc backticks …"
+      },
+      {
+        "hash": "88e12d30efecabb9",
+        "label": "The last two claims are about values, not names, and bot…"
       },
       {
         "hash": "0eb39d3121c74056",
@@ -1877,8 +1885,8 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "6a3623334baae931",
-        "label": "responseformat ('concile' | 'detailed' | 'json', default…"
+        "hash": "63b9e66d50e1699d",
+        "label": "responseformat ('concise' | 'detailed' | 'json', default…"
       },
       {
         "hash": "e19989a52a9d8c0d",
@@ -1889,7 +1897,7 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "eec41f1a9cb91dc4",
+        "hash": "34c07ec51904b462",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
@@ -5331,6 +5339,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "56a565a3e2bc8338",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-09-27",
+      "reason": "reworded by #1476, and this time verified lossless: the AGENTS.md check:doc-tool-names row now also describes the two value checks that script runs, the SPEC.md response_format bullet corrects 'concile' to the 'concise' a live schema declares, and the Response byte cap paragraph corrects a 620,000B ceiling against a live 611,000. Each was diffed character-by-character against main and differs only by those corrections — the two emitOnce sentences #1472 added are present, which the earlier merge-forward on this same branch dropped. An earlier retirement record for these two SPEC.md paragraphs said 'reworded' when sentences had in fact been deleted; that record was the reason the deletion passed review, and is why this one names the verification."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "690103b2713d4bb0",
       "label": "Recover the correct way — take the merge base of the fil…",
       "date": "2026-09-27",
@@ -5555,6 +5570,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "6a3623334baae931",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "reworded by #1476, and this time verified lossless: the AGENTS.md check:doc-tool-names row now also describes the two value checks that script runs, the SPEC.md response_format bullet corrects 'concile' to the 'concise' a live schema declares, and the Response byte cap paragraph corrects a 620,000B ceiling against a live 611,000. Each was diffed character-by-character against main and differs only by those corrections — the two emitOnce sentences #1472 added are present, which the earlier merge-forward on this same branch dropped. An earlier retirement record for these two SPEC.md paragraphs said 'reworded' when sentences had in fact been deleted; that record was the reason the deletion passed review, and is why this one names the verification."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "7a1d95f8d80f8908",
       "label": "The chapters pair registers before the bare audiobook pa…",
       "date": "2026-09-27",
@@ -5674,6 +5696,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "eec41f1a9cb91dc4",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "reworded by #1476, and this time verified lossless: the AGENTS.md check:doc-tool-names row now also describes the two value checks that script runs, the SPEC.md response_format bullet corrects 'concile' to the 'concise' a live schema declares, and the Response byte cap paragraph corrects a 620,000B ceiling against a live 611,000. Each was diffed character-by-character against main and differs only by those corrections — the two emitOnce sentences #1472 added are present, which the earlier merge-forward on this same branch dropped. An earlier retirement record for these two SPEC.md paragraphs said 'reworded' when sentences had in fact been deleted; that record was the reason the deletion passed review, and is why this one names the verification."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "f0bf0983efcc2748",
       "label": "The endpoint takes no query parameters (the OpenAPI sche…",
       "date": "2026-09-27",
@@ -5723,8 +5752,8 @@
     }
   ],
   "provenance": {
-    "head": "f3b6ee80bac713525946da9991c23afa0c1bd7d2",
-    "upstream": "f3b6ee80bac713525946da9991c23afa0c1bd7d2",
+    "head": "57558f7eb3acd3323e4de9216fb129dc5961751e",
+    "upstream": "57558f7eb3acd3323e4de9216fb129dc5961751e",
     "behind": false
   }
 }
