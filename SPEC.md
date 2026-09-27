@@ -1873,7 +1873,7 @@ Get any Spotify user's public profile.
 
 **Inputs:** `user_id` (string, required)
 
-**Returns:** display name, user ID, URI, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields). Spotify removed `followers` from user profiles in February 2026, so on a current registration there is no follower count to report and the line is omitted rather than printed as `0`; a grandfathered registration that still sends one has it printed. The endpoint itself was removed in the same changelog, so a current registration gets a 403 that names the grandfathering requirement instead of a profile.
+**Returns:** display name, user ID, URI, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields). Spotify removed `followers` from user profiles in February 2026, so on a current registration there is no follower count to report and the line is omitted rather than printed as `0`; a grandfathered registration that still sends one has it printed. The endpoint itself was removed in the same changelog and no endpoint replaced it, so a current registration gets a 403 that names the removal and records the older-registration question as **unverified** rather than prescribing one, instead of a profile.
 
 ---
 
