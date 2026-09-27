@@ -52,6 +52,22 @@ const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-client-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
 process.env.SPOTIFY_CLIENT_ID = 'test-client-id';
 
+/**
+ * One progress event as a test records it. Declared at module scope, not
+ * inside the `getAllPages progress reporting` describe: the sibling
+ * `getAllPages per-call onPage hook (#902)` block annotates its own arrays
+ * with it, and from inside that sibling the interface was simply not in scope.
+ * tsx strips types, so the annotation vanished at runtime and the array was
+ * left untyped rather than wrong — nothing failed until `tests/` was
+ * typechecked (#1408).
+ */
+interface RecordedProgress {
+  walkId: number;
+  page: number;
+  fetched: number;
+  total?: number;
+}
+
 const { SpotifyClient, SpotifyApiError, selectNextLaneTask, parseRetryAfter } = await import('../src/client.ts');
 const { getTokenFilePath } = await import('../src/auth.ts');
 const tokenPath = getTokenFilePath();
@@ -2115,13 +2131,6 @@ describe('SpotifyClient', () => {
   // -------------------------------------------------------------------------
 
   describe('getAllPages progress reporting', () => {
-    interface RecordedProgress {
-      walkId: number;
-      page: number;
-      fetched: number;
-      total?: number;
-    }
-
     it('emits one PageProgress event per page with a shared walkId', async () => {
       await seedTokens();
       responder = (url) => {

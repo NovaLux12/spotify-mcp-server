@@ -1269,10 +1269,19 @@ describe('cache: persistence survives process exit (#1266)', () => {
       });
     });
 
+    // The `error` handler is registered INSIDE the executor so it closes over
+    // the same `resolve` the `exit` handler uses. It used to be registered
+    // after the `new Promise(...)`, where `resolve` is not in scope at all — so
+    // a spawn failure raised `ReferenceError: resolve is not defined` inside an
+    // event handler instead of settling `exited`, leaving the test hanging on
+    // the very failure it was written to report. The executor body runs
+    // synchronously, so registering here attaches the listener on the same
+    // tick and changes nothing else. tsx strips types, so nothing caught this
+    // until `tests/` was typechecked (#1408).
     const exited = new Promise<{ signal: string | null; code: number | null }>((resolve) => {
       child.on('exit', (code, signal) => resolve({ signal, code }));
+      child.on('error', () => resolve({ signal: null, code: null }));
     });
-    child.on('error', () => resolve({ signal: null, code: null }));
 
     if (how === 'sigterm') {
       await ready;
@@ -1332,6 +1341,44 @@ describe('cache: persistence survives process exit (#1266)', () => {
       'SIGTERM',
       'the process must still die OF the signal; a handler that swallows it would leave the server unkillable',
     );
+  });
+
+  it('a child that fails to spawn settles the wait instead of hanging (#1408)', async () => {
+    // The `error` handler inside `readThenDie` is the only thing that settles
+    // `exited` when the child never starts. It used to be registered AFTER the
+    // `new Promise(...)`, where `resolve` is not in scope — so the handler
+    // threw `ReferenceError` instead of resolving, and the test would hang
+    // until the runner timed out rather than reporting the failure.
+    //
+    // `error` is emitted when the child cannot be SPAWNED — a missing
+    // EXECUTABLE, not a missing script. Spawning `node` with a nonexistent
+    // script path still produces `exit` (node starts, then fails on the
+    // script), so it is the executable that has to be wrong here. Asserting
+    // the promise SETTLES is the point: with the handler out of scope it never
+    // does, and the race below turns that hang into a named failure instead of
+    // a stalled run.
+    const settled = await Promise.race([
+      new Promise<string>((resolve) => {
+        const child = spawn(path.join(dir, 'no-such-executable'), [], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+        // Same shape as the fixed registration in `readThenDie`: both handlers
+        // inside the executor, closing over the same `settle`.
+        const exited = new Promise<{ signal: string | null; code: number | null }>((settle) => {
+          child.on('exit', (code, signal) => settle({ signal, code }));
+          child.on('error', () => settle({ signal: null, code: null }));
+        });
+        exited.then(({ signal, code }) => resolve(`settled:signal=${signal}:code=${code}`));
+      }),
+      new Promise<string>((resolve) => setTimeout(() => resolve('HUNG'), 5_000)),
+    ]);
+
+    assert.notEqual(
+      settled,
+      'HUNG',
+      'the wait must settle on a spawn error; an unresolved promise here is the #1408 defect returning',
+    );
+    assert.match(settled, /^settled:signal=null:code=null$/);
   });
 
   it('flush() is idempotent and does not double-count a save that already ran (#1266)', async () => {

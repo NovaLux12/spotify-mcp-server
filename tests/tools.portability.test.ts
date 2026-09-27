@@ -35,24 +35,22 @@ function makeStubClient(responder: Responder=()=>null){
     async putRaw(p:string,b:string):Promise<void>{ calls.push({method:'PUT_RAW',path:p,arg:b}); await responder(p,b); },
     async delete<T>(p:string,b?:unknown):Promise<T|null>{ calls.push({method:'DELETE',path:p,arg:b}); return responder(p,b) as T|null; },
     async getAllPages<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<T[]>{
-      return (await (this as unknown as {getAllPagesWithTruncation:(p:string,pr?:Record<string,string>,o?:{maxItems?:number})=>Promise<{items:T[];truncated:boolean}>}).getAllPagesWithTruncation<T>(path,params,opts)).items;
+      // `getAllPagesWithTruncation` IS generic, so the view through which it
+      // is reached has to be too. Declaring it non-generic here is what made
+      // the `<T>` below a TS2558 — a call the compiler rejected but tsx ran.
+      const truncating = this as unknown as {
+        getAllPagesWithTruncation<T>(p:string,pr?:Record<string,string>,o?:{maxItems?:number}):Promise<{items:T[];truncated:boolean}>;
+      };
+      return (await truncating.getAllPagesWithTruncation<T>(path,params,opts)).items;
     },
     // Mirrors SpotifyClient.getAllPagesWithTruncation (#864) so a walk that
     // stopped AT the cap is not indistinguishable from one the cap cut short.
-    async getAllPagesWithTruncation<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<{items:T[];truncated:boolean}>{
-      const maxItems=opts?.maxItems??500; const all:T[]=[]; let offset=0;
-      for(;;){
-        const page=await (this as unknown as {get:(p:string,pr?:Record<string,string>)=>Promise<SpotifyPaged<T>|null>}).get(path,{...params, offset:String(offset)});
-        if(!page||!Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if(all.length>=maxItems) return { items: all.slice(0,maxItems), truncated: all.length>maxItems || typeof page.total!=='number' || all.length<page.total };
-        const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length;
-        offset+=limit;
-        if(page.items.length===0||page.items.length<limit) break;
-        if(typeof page.total==='number'&&offset>=page.total) break;
-      }
-      return { items: all, truncated:false };
-    },
+    //
+    // This method was defined TWICE in the object literal, identically. The
+    // second silently won, so the first was unreachable — a test double
+    // carrying a method that could never run, which is the shape a coverage
+    // claim quietly stops defending. Only one definition remains, and it is the
+    // one that was actually executing (#1408).
     async getAllPagesWithTruncation<T>(path:string,params?:Record<string,string>,opts?:{maxItems?:number}):Promise<{items:T[];truncated:boolean}>{
       const maxItems=opts?.maxItems??500; const all:T[]=[]; let offset=0;
       for(;;){ const page=await walkPage<T>(responder,calls,path,params,offset); if(!page||!Array.isArray(page.items)) break; all.push(...page.items); if(all.length>=maxItems) return { items: all.slice(0,maxItems), truncated: all.length>maxItems || typeof page.total!=='number' || all.length<page.total }; const limit=typeof page.limit==='number'&&page.limit>0?page.limit:page.items.length; offset+=limit; if(page.items.length===0||page.items.length<limit) break; if(typeof page.total==='number'&&offset>=page.total) break;}
