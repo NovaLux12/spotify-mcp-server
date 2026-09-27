@@ -1,6 +1,6 @@
 # Cookbook — copy-paste agent recipes
 
-Ten recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
+Eleven recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
 
 Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. User-scoped stats.fm endpoint tools require an explicit `user_id`; network-backed taste tools require an explicit `statsfm_user`; catalog/search tools and local `statsfm_record_feedback`/`record_feedback` are identity-free. Identity is per call—never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action. There is no `STATSFM_USER_ID` setting.
 
@@ -15,9 +15,9 @@ Build a playlist that sounds like you, from stats.fm evidence instead of vibes.
 2. Call statsfm_taste_profile with `statsfm_user: "<your-statsfm-user-id>"`, `range: "lifetime"`, and `response_format: "json"`.
 3. Call statsfm_top_genres with `user_id: "<your-statsfm-user-id>"` and `range: "months"`; note which genres are surging versus the lifetime baseline.
 4. Ask the human to approve the playlist name, then preview `create_playlist` with `name: "Taste Profile — YYYY-MM"`, `public: false`, and `dry_run: true`; commit the same arguments without `dry_run` only after confirmation.
-5. For each of the top 3 genres, call `search_tracks` with a genre- or artist-based `query` and `limit: 2`: request one anchor (an artist from the taste profile) and one discovery (an artist not in the top artists).
+5. For each of the top 3 genres, pick a seed artist for that genre from the taste profile, then call `search_tracks` with that artist as `query` and `limit: 2`: one anchor (a top artist) and one discovery (an artist not in the top artists). `search_tracks` takes free text only — it is `GET /search?type=track&q=…` and has no genre facet, so a genre has to reach it as an artist name, not as a genre name.
 6. Preview add_to_playlist with the created `playlist_id`, the selected track `uris` array, and `dry_run: true`; commit the same arguments without `dry_run` only after the human confirms.
-7. Reply with the playlist link, the genre split, and which picks were discovery versus anchor.
+7. Reply with the playlist link, the genre split (from the taste profile, not from the search results), and which picks were discovery versus anchor.
 ```
 
 Why it works: lifetime gives identity, the current month gives momentum, and the anchor/discovery split keeps the list familiar but not stale. Full walkthrough with a worked example: [taste showcase](taste.md).
@@ -60,7 +60,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 > Risk: starts a podcast session on the chosen device; preview first via `dry_run: true` on `start_podcast_session`.
 
 ```text
-1. Call whats_new with `kinds: ["podcasts"]`, `since: "last-check"`, and `dry_run: true`, or use the registered podcast_catchup prompt with its required `since: "YYYY-MM-DD"`.
+1. Call whats_new with `kinds: ["podcasts"]`, `since: "last-check"`, and `dry_run: true`, or use the registered podcast_catchup prompt — its arguments are `days` (default 7), `per_show_limit` (default 3) and `max_shows` (default 25), all optional, and it has no `since` argument.
 2. Call plan_podcast_session with `minutes: 45`.
 3. Present the plan; on approval, preview start_podcast_session with `minutes: 45`, the chosen `device_id`, and `dry_run: true`, then commit the same arguments without `dry_run` only after confirmation.
 4. If no device is active, call get_devices and ask the user to open Spotify first.
@@ -68,7 +68,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 6. Playlist merge without tears
 
-> Risk: merges sources into a destination playlist, replacing the destination's contents if it already exists; preview first via `dry_run: true` on `merge_playlists`.
+> Risk: merges sources into a destination playlist, appending to it when `target_playlist_id` names an existing one — `merge_playlists` is append-only and never clears the target — or creating a new playlist when `new_name` is given; preview first via `dry_run: true` on `merge_playlists`.
 
 ```text
 1. Call diff_playlists with `playlist_a` set to `SOURCE_A`, `playlist_b` set to `SOURCE_B`, and `response_format: "json"`.
@@ -81,7 +81,7 @@ Why it works: lifetime gives identity, the current month gives momentum, and the
 
 ## 7. Discovery injection (no recommendations endpoint)
 
-Spotify retired recommendations; this is the honest replacement.
+`/recommendations` is blocked on app registrations created after November 2024, and this server ships no tool that calls it; this recipe builds candidates from your own library instead.
 
 > Risk: bulk-adds candidate tracks to a playlist; preview first via `dry_run: true` on `add_to_playlist`.
 
@@ -124,7 +124,7 @@ Safe to run on someone else's account or a shared screen — zero writes.
 
 ```text
 1. Set SPOTIFY_MCP_READONLY=1 (or use a host config with it set) before starting.
-2. Call get_me; resolve the guest's explicit public stats.fm identity with statsfm_resolve_user and `user_id: "<guest-statsfm-user-id>"`; then call statsfm_taste_profile with `statsfm_user: "<guest-statsfm-user-id>"`.
+2. Call get_me; resolve the guest's public stats.fm identity with `statsfm_resolve_user`, passing their stats.fm user id or customId as `user_id`; then call statsfm_taste_profile with `statsfm_user` set to that same id.
 3. Call listening_report and preview whats_new with `dry_run: true` for live color; neither step writes.
 4. Narrate the taste: genres, anchors, and clock. Offer recipe 1 as the follow-up — on their own account.
 ```
@@ -148,11 +148,13 @@ The same applies to `get_currently_playing` (lightweight poll). A 304 never surf
 
 ## Undo tools
 
-Every receipt-bearing mutation can be reverted. The receipt ID returned by the tool is the handle for the rollback, and a verify step confirms the receipt itself. The undo surface is three tools; none of them touch Spotify until the human approves the rollback.
+Every receipt-bearing mutation can be reverted. The receipt ID returned by the tool is the handle for the rollback, and a verify step confirms the receipt itself. The undo surface is five tools; none of them touch Spotify until the human approves the rollback.
 
 - `verify_receipt` — looks up a receipt by ID and reports its recorded URIs and verification state. Read-only, and registered unconditionally (not trimmed by `SPOTIFY_MCP_TOOLSETS` or the scope filter), because a session that just made the write must be able to verify it. `structuredContent.found` tells the two outcomes apart; an unknown or expired id also sets `isError`, so a miss is a failed *lookup*, never evidence about the mutation.
 - `undo_mutation` — inverts a specific mutation by receipt ID. Add/save receipts roll back as a removal, removal receipts as a re-add. Playlist add undos target only the rows the add created — never every copy of the URI. Defaults to `dry_run: true`; execute needs elicitation confirmation and is refused when the host cannot prompt (`SPOTIFY_MCP_CONFIRM=never` bypasses).
 - `undo_last_mutation` — same inversion semantics as `undo_mutation`, target = the most recent reversible receipt.
+- `undo_preview` — dry-run for `undo_mutation`: the before/after diff and the inversion calls a revert *would* make, without executing. Read-only, 0–2 reads, and its own receipts are not reversible.
+- `receipt_lookup` — find receipts by id, by an issue date (`since`), or by an affected URI. Local only, zero API calls — this is how you get a receipt ID when you did not keep the one the tool returned.
 
 Prefer `undo_last_mutation` after a single speculative write; reach for `undo_mutation` (with the receipt ID the previous step returned) when the rollback you want is not the latest mutation.
 

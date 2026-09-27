@@ -3,7 +3,7 @@
 Current default production surface: **592 tools**, including the shipped taste composites documented below. Earlier release totals in this page's history are not current registry truth; regenerate this block with `npm run count:tools -- --write`.
 <!-- END:generated surface-census -->
 
-The `taste` toolset contributes eleven tools across two registrar rows: ten read-only composites in `taste_composites.ts`, plus `taste_to_playlist` in `taste_playlist.ts`, which previews by default and writes only when a caller passes `dry_run: false`. They are separate rows because `readOnlySafe` is a per-ROW flag — one row holding both would either expose the writer to `SPOTIFY_MCP_READONLY` sessions or hide the ten readers with it (#1009). Earlier release totals are historical context, not current registry truth.
+Eleven of the tools behind the `taste` toolset come from two composite registrar rows: ten read-only composites in `taste_composites.ts`, plus `taste_to_playlist` in `taste_playlist.ts`, which previews by default and writes only when a caller passes `dry_run: false`. They are separate rows because `readOnlySafe` is a per-ROW flag — one row holding both would either expose the writer to `SPOTIFY_MCP_READONLY` sessions or hide the ten readers with it (#1009). The `taste` toolset is larger than that: `src/toolsets.ts` maps it to the registration keys `taste` and `tastecomposites`, and the `taste` key is a third manifest row — `src/tools/statsfm_taste.ts` — documented in [statsfm.md](statsfm.md), not on this page. Earlier release totals are historical context, not current registry truth.
 
 ## Data-source and write guarantees
 
@@ -19,10 +19,13 @@ Every composite in `src/tools/taste_composites.ts` and `src/tools/taste_playlist
   performs one `POST /me/playlists` and chunked `PUT`/`POST
   /playlists/{id}/items` adds, and refuses outright under
   `SPOTIFY_MCP_READONLY` before any wire call. See #723.
-- `stats.fm` `externalIds.spotify[]` entries are frequently dead (≈12% in
-  the wild), so every track-list output includes Spotify-search fallback
-  guidance (`search_tracks "Artist - Title"`) and a `missing[]` section for
-  rows with no usable Spotify id.
+- `stats.fm` `externalIds.spotify[]` entries are frequently dead, so every
+  track-list output includes Spotify-search fallback guidance
+  (`search_tracks "Artist - Title"`) and a `missing[]` section for rows with no
+  usable Spotify id. The tools quote a `~12%` dead-id rate in their output; that
+  figure is an in-hand observation, not a measurement this repo took or can
+  reproduce, so treat the number as indicative and the fallback guidance as the
+  part that is load-bearing.
 - On a `dry_run: false` commit, tracks whose stats.fm id is unusable are
   looked up with one `/search` GET each. Only a 404 or an empty result set
   means "search matched nothing" (`unresolved[]`); a lookup that itself fails

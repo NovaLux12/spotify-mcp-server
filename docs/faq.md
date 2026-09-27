@@ -30,19 +30,15 @@ Still looping? Run `npx -y @novalux12/spotify-mcp@latest doctor` and read the `[
 
 **Answer:** expected on Free accounts — Spotify reserves playback control for Premium. There is no workaround and no flag that lifts it. Search, library, playlists, personalization, podcasts, and stats.fm tools all work on Free; only transport control needs Premium.
 
-## Registration-gated endpoints (403 table)
+## Registration-gated endpoints
 
 **Symptom:** `403 Forbidden` on lookup tools even with all scopes granted and Premium active.
 
-**Answer:** Spotify denies some endpoints **at the app-registration level** — current registrations get 403 no matter the scopes or subscription. Verified by live probe 2026-08-27. The server's tools stay exposed (legacy registrations may still have access) and return a plain-English explanation instead of crashing.
+**Answer:** Spotify denies some endpoints **at the app-registration level**, so what comes back is a property of *your* app registration rather than of your scopes or your subscription. A registration without the grant answers `403`, `404` or `410`; a grandfathered one still answers `200`. The server's tools stay exposed either way and return a plain-English explanation instead of crashing.
 
-| Response | Endpoints |
-|---|---|
-| `403 Forbidden` | `/browse/new-releases`, `/browse/categories` (and `/browse/categories/{id}/playlists`), `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` (and `/users/{id}/playlists`), every documented `/me/{type}/contains` check, `/playlists/{id}/followers/contains` |
-| `404 Not Found` | `/recommendations`, `/recommendations/available-genre-seeds` |
-| `410 Gone` | `/me/apps`, `/me/chapters` |
+The authoritative list is **generated**, and it is not on this page: see [README → Registration-gated endpoints](../README.md#registration-gated-endpoints), rendered from the `GATED_FAMILIES` array in [`src/gating.ts`](../src/gating.ts), which lists each family next to the shipped tools that actually call it. That table is the one to read. This page keeps no second copy on purpose — a hand-maintained list of this kind has already drifted once, when an earlier version here advertised `/recommendations`, `/me/apps` and `/me/chapters` as responses a caller would see, none of which any shipped tool can produce.
 
-Not gated: the undocumented `/me/library/contains` check (powers duplicate cleanup) and the stats.fm surface, which is a separate upstream.
+`GET /me/library/contains` is **not** gated, and it is not undocumented: it is a live endpoint ([Check User's Saved Items](https://developer.spotify.com/documentation/web-api/reference/check-library-contains)) that the February 2026 changelog kept as the replacement for the removed per-type `contains` checks. It backs the saved-state reads behind `check_playlist_following`, `restore_library_snapshot` and receipt verification — not the playlist duplicate-cleanup tools, which page `/playlists/{id}/items` instead. A `403` from it is a real problem, not a gated registration. The stats.fm surface is a separate upstream and is likewise not gated.
 
 ## Headless / remote hosts
 

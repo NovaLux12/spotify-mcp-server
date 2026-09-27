@@ -19,7 +19,7 @@ The finalized default MCP registry exposes **592 tools**, **16 fixed resources**
 >
 > Copy the block below into Claude Code, Cursor, OpenClaw, or any coding agent — it will set SpotifyMCP up for you.
 >
-> ⚠️ **Never paste your Spotify credentials into a chat.** Spotify defines the Client ID as a Security Code in its [Developer Terms](https://developer.spotify.com/terms) (Sec. VI.1.a), and Sec. VI.1.c–d forbids disclosing it. Anything you type into a conversation is retained by the model provider, written to shell history, and carried in the agent's context window. The Client ID is the only credential this server needs, and it is a *Security Code* rather than a public identifier — treat it like a password.
+> ⚠️ **Never paste your Spotify credentials into a chat.** Spotify's [Developer Terms](https://developer.spotify.com/terms) treat the Client ID as a credential: §VI.1.1 groups "I.D.s, client I.D.s, keys, passwords, security codes, or tokens" together as *Security Codes*, §VI.1.3 forbids disclosing them to any other party, and §VI.1.4 makes you responsible for their confidentiality. Anything you type into a conversation is retained by the model provider, written to shell history, and carried in the agent's context window. The Client ID is the only credential this server needs, and it is a *Security Code* rather than a public identifier — treat it like a password.
 >
 > ```
 > Set up the Spotify MCP server from https://github.com/NovaLux12/spotify-mcp-server.
@@ -205,7 +205,7 @@ gates that hid modules, and the granted scopes in one call.
 - [docs/configuration.md](docs/configuration.md) — all env vars
 - [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
-- [docs/cookbook.md](docs/cookbook.md) — ten copy-paste agent recipes
+- [docs/cookbook.md](docs/cookbook.md) — eleven copy-paste agent recipes
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
 - [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
 - [docs/distribution.md](docs/distribution.md) — distribution and release notes
@@ -256,7 +256,7 @@ grep -n "id: '" src/gating.ts        # the families, with tools and fallback per
 Notes:
 
 - A family in that list is a runtime **classifier**, not a promise that a tool calls it. Two families (`browse-new-releases`, `playlist-followers-contains`) have no live call site left — the tools that used them were migrated onto replacements — and their patterns are retained so a future caller is still covered by the 403 contract rather than silently losing it.
-- `GET /me/library/contains` is **not** gated (it returned 200 on the same probe) and powers the duplicate-cleanup and playlist-following tooling. The `contains` families above are the *documented* per-type checks, which the changelog marks removed in favour of this one.
+- `GET /me/library/contains` is **not** gated (it returned 200 on the same probe) and backs the saved-state reads behind `check_playlist_following`, `restore_library_snapshot` and receipt verification. The `contains` families above are the *documented* per-type checks, which the changelog marks removed in favour of this one. (The playlist duplicate-cleanup tools are not in that set — they page `/playlists/{id}/items`.)
 - **Batch fallback ([#725](https://github.com/NovaLux12/spotify-mcp-server/issues/725)).** When a `Get Several` batch endpoint answers 403, `fetchSeveral` retries through per-id `GET /<kind>/{id}` calls on the client's existing queue/backoff. Per-id paths are not in the gated class, so the read still succeeds. The response carries `degraded: true` and a `[degraded: batch endpoint returned 403; … fetched individually]` footer in prose, plus `degraded_reason` in `structuredContent`, so a caller can tell a per-item round-trip from a clean batch read.
 - Endpoints Spotify lists as removed that this server does **not** wrap at all (no shipped tool, so nothing to explain): `/recommendations`, `/recommendations/available-genre-seeds`, `/me/apps`, `/me/chapters`, the `/artists/{id}/related-artists`, `/audio-features`, `/audio-analysis` and `/browse/featured-playlists` reads, and the `/playlists/{id}/tracks` family (superseded by `/playlists/{id}/items`). These are absent from the table above because absence of a tool is the honest answer for them — there is no 403 to explain.
 
