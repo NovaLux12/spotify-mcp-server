@@ -1133,16 +1133,29 @@ describe('cache: cross-process persistence (#893)', () => {
     await rm(dir, { recursive: true, force: true });
     assert.equal(existsSync(dir), false, 'precondition: the directory is gone before the timer fires');
 
-    const reappeared = await waitFor(() => existsSync(dir), RESURRECTION_BUDGET_MS);
+    // Wait on the FILE, not on the directory.
+    //
+    // `savePersistedCache` does `mkdir(dirname(file), { recursive: true })` and
+    // only then `writeFile(tmp)` + `rename(tmp, file)`, so the directory is
+    // observable for a window before the file lands. Polling the directory and
+    // then asserting on the file reads that intermediate state and fails on a
+    // COIN FLIP: measured on this box at up to 16ms between the mkdir and the
+    // rename, against a 10ms poll interval, so whether the poll lands inside
+    // the window depends on nothing but how the write interleaves. That is the
+    // same class of test as the ENOTEMPTY itself — a real failure decided by
+    // timing — and it is what CI caught on Node 22.
+    //
+    // The file is also the stronger claim. It is the last step of the write,
+    // it arrives by an atomic `rename` so it has no partial state, and its
+    // presence in `dir` implies the directory too — which is exactly what
+    // ENOTEMPTY is about. One assertion, no intermediate state to fall into.
+    const writeLanded = await waitFor(() => existsSync(path.join(dir, 'cache.json')), RESURRECTION_BUDGET_MS);
     assert.equal(
-      reappeared,
+      writeLanded,
       true,
-      `an unflushed save must re-create the directory it was writing into within ${RESURRECTION_BUDGET_MS}ms. ` +
-        'If this fails then the mechanism behind #1339 is gone, and the guard below is proving nothing.',
-    );
-    assert.ok(
-      existsSync(path.join(dir, 'cache.json')),
-      "and it re-creates it with the cache file already in it — which is what makes rm's final rmdir fail ENOTEMPTY",
+      `an unflushed save must re-create the directory and complete its write into it within ${RESURRECTION_BUDGET_MS}ms — ` +
+        "that write landing is what makes rm's final rmdir fail ENOTEMPTY. If this fails then the mechanism behind " +
+        '#1339 is gone, and the guard below is proving nothing.',
     );
   });
 
