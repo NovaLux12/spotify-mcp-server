@@ -135,11 +135,11 @@ With `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` set, that is:
 
 | Opted-in surface (`tools/list`) | Value | Where it comes from |
 |---|---:|---|
-| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 604,138B | 567 tools — the same measurement, registered with the opt-in on |
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 604,378B | 567 tools — the same measurement, registered with the opt-in on |
 | Added by the opt-in | 9,988B | +11 tools over the default surface, measured rather than summed (see below) |
-| Headroom with the opt-in | 7,862B | 1.3% of the enforced limit — **tight** |
+| Headroom with the opt-in | 7,622B | 1.2% of the enforced limit — **tight** |
 
-The default surface reports 2.27× as much room — 17,850B against the opt-in's 7,862B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
+The default surface reports 2.31× as much room — 17,610B against the opt-in's 7,622B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
 
 The byte figure is measured, not derived from the manifest. The per-module `gatedSurface` byte deltas sum to **8,683B** against a measured **9,988B**, a 1,305B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and `_meta` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares 11 and the measurement finds 11 — so it is cross-checked rather than measured twice.
 

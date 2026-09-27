@@ -49,6 +49,7 @@ import {
   aggregateGatedEnvVars,
   applyToolAnnotations,
   applyToolOutputSchemas,
+  assertSingleAggregateGatedFlag,
   assertToolNamingPolicy,
   collectAggregateSurfaceMeasurement,
   declaredGatedToolDelta,
@@ -227,9 +228,25 @@ describe('the aggregate budget describes the opted-in surface too (#1493)', () =
   });
 
   it('the manifest gates exactly one env var, and it is the one measured here', () => {
-    // `aggregateGatedEnvVars()` throws above one. This pins the name, so a
-    // renamed flag moves these tests rather than silently measuring nothing.
+    // Pins the name, so a renamed flag moves these tests rather than silently
+    // measuring nothing.
     assert.deepEqual(aggregateGatedEnvVars(), [OPT_IN]);
+  });
+
+  it('a second declared gated flag is refused, not measured', () => {
+    // The guard is the load-bearing part. Asserting `deepEqual` on the constant
+    // above reads the same whether or not `assertSingleAggregateGatedFlag`
+    // exists, so it could never detect the guard's absence — which is how a
+    // claim that lived in four comments shipped with no code behind it. Drive
+    // the function with a two-flag list instead.
+    assert.throws(
+      () => assertSingleAggregateGatedFlag(['SPOTIFY_MCP_ALPHA', 'SPOTIFY_MCP_BETA']),
+      /2 gated flags declared/,
+    );
+    // And the shapes either side of the boundary must be exempt, or the guard
+    // is a tripwire rather than a rule.
+    assert.doesNotThrow(() => assertSingleAggregateGatedFlag([]));
+    assert.doesNotThrow(() => assertSingleAggregateGatedFlag([OPT_IN]));
   });
 
   it('aggregate-budget states the opted-in surface, its delta, and its headroom', async () => {

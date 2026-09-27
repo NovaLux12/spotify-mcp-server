@@ -1079,7 +1079,31 @@ export interface GatedSurface {
  * in a new place.
  */
 export function aggregateGatedEnvVars(): readonly string[] {
-  return [...new Set(REGISTRAR_MANIFEST.filter((entry) => entry.gatedSurface).map((entry) => entry.gatedSurface!.gatedBy))].sort();
+  const flags = [...new Set(REGISTRAR_MANIFEST.filter((entry) => entry.gatedSurface).map((entry) => entry.gatedSurface!.gatedBy))].sort();
+  assertSingleAggregateGatedFlag(flags);
+  return flags;
+}
+
+/**
+ * The invariant behind `aggregateGatedEnvVars`, split out so it is testable.
+ *
+ * The census LABELS the opted-in table from the declared flags but MEASURES it
+ * by flipping the one flag it knows (`surface-census.mjs`). A second declared
+ * flag would publish a table captioned with both while measuring only one — a
+ * figure describing an installation that does not exist. This claim used to live
+ * in four comments and no code, so a second flag would have shipped silently,
+ * and the test that "pinned" it was a `deepEqual` on a constant that reads the
+ * same whether or not the guard exists.
+ */
+export function assertSingleAggregateGatedFlag(flags: readonly string[]): void {
+  if (flags.length > 1) {
+    throw new Error(
+      `aggregateGatedEnvVars: ${flags.length} gated flags declared (${flags.join(', ')}). ` +
+        'The aggregate opt-in measurement flips exactly one known flag, so a second ' +
+        'declared flag would caption the table with a surface it never measured. ' +
+        'Teach surface-census.mjs to measure the new flag before declaring it.',
+    );
+  }
 }
 
 /**
