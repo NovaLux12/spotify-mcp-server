@@ -2115,7 +2115,7 @@ Eight registered tools read `GET /me/player/queue`. Two are left; the other six 
 
 | Retired name | Call that replaces it | What moved |
 |---|---|---|
-| `describe_queue` | `get_queue` with `view: "enriched"` | `context_label` and `total_remaining_ms`. Its `include_context: false` has no equivalent — `view: "raw"` is the "do not resolve the context" answer, and the total is not returned there. |
+| `describe_queue` | `get_queue` with `view: "enriched"` | `context_label` and `total_remaining_ms`. Its `include_context: false` has no equivalent — `view: "raw"` is the "do not resolve the context" answer, and the total is not returned there. Three of its fields do **not** come across, and none of them is a measurement: `queue_length` is `items.length`, and `insertion: "tail"` and `workaround: "queue is append-only"` were two renderings of the constant that Spotify's queue is append-only. They are named here so the omission is a decision on the page rather than a field a caller discovers missing. |
 | `get_queue_snapshot` | `get_queue` with `include: ["runtime"]` | `total_runtime_ms`; its `total` is now `runtime.upcoming_count`. |
 | `queue_runtime_report` | `get_queue` with `include: ["runtime"]` | Every field, unchanged, now nested under `runtime`. |
 | `queue_duplicate_check` | `get_queue` with `include: ["duplicates"]` | Every field, now nested under `duplicates`. |
