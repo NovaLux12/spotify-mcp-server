@@ -45,6 +45,12 @@ import {
   TRADEMARK_NOTICE,
 } from '../src/branding.js';
 import { renderDoctorProse, type DoctorReport } from '../src/tools/doctortool.js';
+// One vocabulary for "how did the child end", borrowed rather than re-invented:
+// `classifyChild`/`describeOutcome` are #1335's, and `describeHostPressure` is
+// #1366's. A second way to say "killed by SIGKILL" in this repo would be the
+// exact drift these helpers exist to stop.
+import { classifyChild, describeOutcome, stderrTail, type ChildOutcome, type RawChildResult } from './helpers/subprocess-outcome.js';
+import { describeHostPressure } from './helpers/stdio-child.js';
 
 const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -298,28 +304,181 @@ function initializeFrom(
 const initializeInstructions = (): Promise<string | undefined> => initializeFrom('src/index.ts');
 
 const CLI_TIMEOUT_MS = 30_000;
+const CLI_ENTRY = path.join(ROOT, 'src', 'index.ts');
 
 /**
- * Run a one-shot CLI subcommand and return whatever it printed.
+ * What a one-shot CLI run produced.
  *
- * A non-zero exit is returned rather than thrown: `doctor` exits 1 whenever
- * any check fails, and with a fixture token it always will. The notice is
- * printed on the banner *before* the report is collected, so the partial
- * output of a failed run is still the thing under test — which is why a
- * killed child returns its stdout instead of an empty string.
+ * `ok: true` means the child **exited** — any code, including a non-zero one,
+ * because `doctor` exits 1 whenever any check fails and with the fixture token
+ * it always will. Its stdout is the thing under test, and an empty one is a
+ * legitimate answer.
+ *
+ * `ok: false` means the child never reached a verdict at all, and `reason` says
+ * which of the three ways that happened. The distinction is the whole point:
+ * collapsing `ok: false` into `stdout: ''` reports a box that was starved as a
+ * product that dropped a compliance notice.
  */
-async function cli(args: string[], extraEnv: NodeJS.ProcessEnv = {}): Promise<string> {
-  try {
-    const { stdout } = await run(
-      process.execPath,
-      ['--import', 'tsx/esm', path.join(ROOT, 'src', 'index.ts'), ...args],
-      { cwd: ROOT, encoding: 'utf8', timeout: CLI_TIMEOUT_MS, killSignal: 'SIGKILL', env: childEnv(extraEnv) },
-    );
-    return stdout;
-  } catch (err) {
-    const e = err as { stdout?: string };
-    return e.stdout ?? '';
+type CliRun =
+  | { readonly ok: true; readonly stdout: string; readonly code: number }
+  | { readonly ok: false; readonly reason: string };
+
+/** Test seams. Production callers pass `args` and nothing else. */
+interface CliOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  /** The module to run. The regression test points this at a fixture. */
+  readonly entry?: string;
+  /** The harness deadline. Shorter in the regression test, which must not wait 30s for a hang. */
+  readonly timeoutMs?: number;
+}
+
+/** The spawn-failure half of the async error, in `classifyChild`'s vocabulary. */
+function spawnFailure(err: { readonly code?: number | string | null; readonly killed?: boolean }): RawChildResult['error'] {
+  // Checked before `signal` for the reason #1335 documents: a timed-out child
+  // carries BOTH a signal (this harness's own `killSignal`) and a deadline, and
+  // `classifyChild` reads `error` first, so the deadline has to be spelled here
+  // or it is lost and the watchdog is filed as an unexplained kill.
+  if (err.killed === true) return { code: 'ETIMEDOUT' };
+  // Async `execFile` reports a fork/exec failure as a *string* `code`
+  // (`'ENOENT'`), where the sync APIs nest it under `error`. Measured, not
+  // assumed — the table in `classifyCliChild` above is reproduced against real
+  // children by the `#1378` describe block at the foot of this file.
+  if (typeof err.code === 'string') return { code: err.code };
+  return undefined;
+}
+
+/**
+ * Re-spell an async `execFile` failure in the vocabulary `classifyChild` reads.
+ *
+ * The sync and async APIs do not report the same three events the same way, and
+ * the differences are precisely the ones that decide the diagnosis:
+ *
+ * | child outcome         | async `execFile` error                              | `classifyChild` reads   |
+ * |-----------------------|------------------------------------------------------|-------------------------|
+ * | ran, exited N         | `code: N`, `signal: null`                            | `status: N`             |
+ * | killed by a signal    | `code: null`, `signal: 'SIGKILL'`, `killed: false`   | `signal`                |
+ * | killed by the deadline| `code: null`, `signal: <killSignal>`, `killed: true` | `error.code: 'ETIMEDOUT'` |
+ * | never started         | `code: 'ENOENT'`, `signal: undefined`                | `error.code: 'ENOENT'`  |
+ *
+ * The timeout row cannot be passed through. Async `execFile` attaches **no**
+ * `error` property at all on any of these paths, so a raw hand-off files the
+ * 30 s watchdog as `killed by SIGKILL` — the same conflation #1335 fixed for
+ * the sync APIs, re-entering through the async door, and a reader sent to look
+ * for an OOM kill that their own deadline caused.
+ */
+function classifyCliChild(err: unknown): { readonly raw: RawChildResult; readonly outcome: ChildOutcome } {
+  const e = err as {
+    readonly code?: number | string | null;
+    readonly signal?: NodeJS.Signals | null;
+    readonly killed?: boolean;
+    readonly stdout?: string;
+    readonly stderr?: string;
+  };
+  const raw: RawChildResult = {
+    error: spawnFailure(e),
+    signal: e.signal ?? null,
+    status: typeof e.code === 'number' ? e.code : null,
+    stdout: e.stdout,
+    stderr: e.stderr,
+  };
+  return { raw, outcome: classifyChild(raw) };
+}
+
+/**
+ * What kind of death this was, stated so it cannot be read as a defect in the
+ * product. Split from the facts above so a message carrying both says each once.
+ */
+function explainCliFailure(outcome: ChildOutcome, timeoutMs: number): string {
+  if (outcome.kind === 'signalled') {
+    return 'A signal kill is a resource/process failure, NOT a compliance failure. Nothing the CLI could have\n'
+      + 'printed was lost in the product — a signal takes the process with it before it reaches the banner —\n'
+      + 'so the notice assertion that would have run here never got output to judge. Check the host pressure\n'
+      + 'line before concluding the notice is missing from the product.';
   }
+  if (outcome.kind === 'not-started' && outcome.reason === 'ETIMEDOUT') {
+    return `The child ran for the full ${timeoutMs}ms deadline and was ended by this harness's own killSignal.\n`
+      + 'That is a hang, not an unexplained kill, and it is a different thing to go looking for: check whether\n'
+      + 'the child is still booting at this load before reading anything into the notice.';
+  }
+  return `The child never started (${outcome.reason}), so no line of the code under test ever ran. This is a\n`
+    + 'harness/environment failure, not a statement about the notice.';
+}
+
+/** The self-describing report for a CLI child that never reached an exit code. */
+function describeCliFailure(
+  label: string,
+  command: readonly string[],
+  raw: RawChildResult,
+  outcome: ChildOutcome,
+  timeoutMs: number,
+): string {
+  return [
+    `${label}: the CLI child ${describeOutcome(outcome)} `
+      + `(code=${raw.status ?? 'null'} signal=${raw.signal ?? 'null'}), so it produced no output to check.`,
+    explainCliFailure(outcome, timeoutMs),
+    `command: ${command.join(' ')}`,
+    `host pressure: ${describeHostPressure()}`,
+    `child stderr:\n${stderrTail(raw.stderr ?? '')}`,
+  ].join('\n');
+}
+
+/**
+ * Run a one-shot CLI subcommand and report **how it ended**, not just what it printed.
+ *
+ * A non-zero exit is a verdict and is returned as one: `doctor` exits 1 whenever
+ * any check fails, and with the fixture token it always will. The notice is
+ * printed on the banner *before* the report is collected, so the partial output
+ * of a child that ran and failed is genuinely the thing under test.
+ *
+ * What is **not** returned is the reason the previous version of this function
+ * claimed. It said a killed child "returns its stdout instead of an empty
+ * string", and that was false as a rule — it held only for a child that had
+ * already reached the banner. A child killed earlier, during module load under
+ * load, has an `err.stdout` of `''` exactly as a child that printed nothing has,
+ * and `e.stdout ?? ''` handed both to the notice assertion as the same empty
+ * string. The result was a red that read as *the product dropped its
+ * non-affiliation notice* when the truth was *the box was too busy to run the
+ * child*, and a green that could not distinguish them either.
+ *
+ * So the three outcomes are kept apart: exited (any code) carries stdout;
+ * signalled and never-started do not, and say which they were.
+ */
+async function cli(args: string[], options: CliOptions = {}): Promise<CliRun> {
+  const entry = options.entry ?? CLI_ENTRY;
+  const timeoutMs = options.timeoutMs ?? CLI_TIMEOUT_MS;
+  const argv = ['--import', 'tsx/esm', entry, ...args];
+  const label = `spotify-mcp ${args.length > 0 ? args.join(' ') : '--help'}`;
+  try {
+    const { stdout } = await run(process.execPath, argv, {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      killSignal: 'SIGKILL',
+      env: childEnv(options.env),
+    });
+    return { ok: true, stdout, code: 0 };
+  } catch (err) {
+    const { raw, outcome } = classifyCliChild(err);
+    // A child that ran and exited is a verdict, crash or not: `doctor` exits 1
+    // on every failing check, and that is the case the notice assertions exist
+    // to cover.
+    if (outcome.kind === 'exited') {
+      return { ok: true, stdout: outcome.stdout, code: outcome.code };
+    }
+    return { ok: false, reason: describeCliFailure(label, [process.execPath, ...argv], raw, outcome, timeoutMs) };
+  }
+}
+
+/**
+ * The stdout of a run that reached a verdict, failing with the child's own cause
+ * if it did not.
+ *
+ * This is the call site every notice assertion goes through, so the failure it
+ * raises is what a reader sees instead of `expected <notice>, got ''`.
+ */
+function cliStdout(result: CliRun): string {
+  if (!result.ok) assert.fail(result.reason);
+  return result.stdout;
 }
 
 // ------------------------------------------------------------------ the guard
@@ -357,7 +516,7 @@ describe('non-affiliation notice: the runtime surfaces (#705)', () => {
   });
 
   it('the CLI doctor banner carries the notice, above the Configuration block', async () => {
-    const stdout = await cli(['doctor']);
+    const stdout = cliStdout(await cli(['doctor']));
     // Position, not `includes`. The rendered report *also* carries the notice
     // (see the prose test above), so a bare substring check is satisfied by the
     // report and passes with the banner line deleted — an assertion that
@@ -380,7 +539,7 @@ describe('non-affiliation notice: the runtime surfaces (#705)', () => {
   });
 
   it('the --help banner carries the notice, directly under the title line', async () => {
-    const stdout = await cli(['--help']);
+    const stdout = cliStdout(await cli(['--help']));
     const lines = stdout.split('\n');
     assert.equal(
       lines[0],
@@ -679,5 +838,180 @@ describe('the stdio harness fails with a cause (#1366)', () => {
     // "fix" written as `fail()` in the spawn would take.
     const instructions = await initializeFrom('src/index.ts');
     assert.equal(instructions, BRANDING_NOTICE, 'precondition: the real server still answers initialize');
+  });
+});
+
+/**
+ * The CLI harness, tested (#1378).
+ *
+ * ## The defect
+ *
+ * `cli()` caught every failure of the child and returned `e.stdout ?? ''`. Its
+ * own doc comment claimed this was deliberate and correct:
+ *
+ * > …which is why a killed child returns its stdout instead of an empty string.
+ *
+ * That claim is not true as a rule, and the file's headline subject makes the
+ * gap expensive rather than cosmetic. `cli()` feeds the **non-affiliation
+ * notice** assertions. `''` from a SIGKILLed child therefore reached
+ *
+ * ```ts
+ * assert.equal(lines[1], NON_AFFILIATION_NOTICE, '`spotify-mcp doctor` must print …')
+ * ```
+ *
+ * as `expected 'Independent, unofficial project. …', got ''` — a red that says
+ * *the product dropped its compliance notice* when the truth is *the box was too
+ * busy to finish starting the child*. The `doctor` and `--help` cases are
+ * precisely the ones that go red on a loaded machine, which is the only machine
+ * a reader is on when they see it.
+ *
+ * It is also a check whose green is uninformative: a fix that simply asserted
+ * "notice present or not" without separating the causes would pass on a kill and
+ * on a real omission alike.
+ *
+ * ## The correction to the issue's own diagnosis, measured
+ *
+ * #1378 attributes the empty result to `killSignal: 'SIGKILL'` leaving
+ * `err.stdout` **`undefined`**. That is not what Node does. Measured against
+ * Node 24.21.0 on this box, the async `execFile` error object always *has* a
+ * `stdout` property, and it holds whatever the child managed to flush:
+ *
+ * | child outcome          | `err.stdout` | `err.code` | `err.signal` | `err.killed` |
+ * |------------------------|--------------|------------|--------------|--------------|
+ * | ran, exited 1, printed | `'HELLO\n'`  | `1`        | `null`       | `false`      |
+ * | killed by SIGKILL, printed | `'HELLO\n'` | `null` | `'SIGKILL'`  | `false`      |
+ * | killed by SIGKILL, silent   | `''`     | `null`     | `'SIGKILL'`  | `false`      |
+ * | killed by the deadline     | `'HELLO\n'` | `null`    | `'SIGKILL'`  | `true`       |
+ * | never started (ENOENT)     | `''`        | `'ENOENT'` | `undefined`  | —            |
+ *
+ * So the comment was right for a child that had already reached the banner and
+ * wrong for one killed during module load — which is the one that happens under
+ * load. The empty string is reachable either way; that is the defect, and it
+ * survives the correction to the mechanism. AGENTS.md §6: a correctly named
+ * payload field can still lie about its value. `stdout` was named for the
+ * banner and was reporting "nothing arrived, for reasons this discards".
+ *
+ * The measured table also shows the timeout and the signal are the *same three
+ * fields* — `code: null`, `signal: 'SIGKILL'` — separated only by `killed`.
+ * Handing a raw async error to `classifyChild` would therefore file this
+ * harness's own 30 s deadline as `killed by SIGKILL` and send the next reader
+ * hunting an OOM killer they caused themselves.
+ *
+ * ## What is pinned
+ *
+ * The three outcomes stay distinguishable **at the point of judgement**, each
+ * naming itself, and each driven by a real child process rather than a
+ * hand-built object — the shapes asserted are the shapes Node produces, which is
+ * the whole lesson of the table above.
+ */
+describe('the CLI harness tells a killed child from a silent one (#1378)', () => {
+  /**
+   * Real children, one per outcome. `killed` is the OOM killer's exact shape:
+   * a process that dies by signal having printed nothing.
+   */
+  const FIXTURES: Readonly<Record<string, string>> = {
+    killed: 'process.kill(process.pid, "SIGKILL");\n',
+    wedged: 'setInterval(() => {}, 1000);\n',
+    exits1: 'process.exit(1);\n',
+    exits0: 'process.exit(0);\n',
+  };
+
+  let fixtures: string;
+  before(async () => {
+    fixtures = await mkdtemp(path.join(tmpdir(), 'x1378-cli-'));
+    await Promise.all(
+      Object.entries(FIXTURES).map(([name, body]) =>
+        writeFile(path.join(fixtures, `${name}.mjs`), body, 'utf8'),
+      ),
+    );
+  });
+  after(async () => {
+    await rm(fixtures, { recursive: true, force: true });
+  });
+
+  const fixture = (name: string): string => path.join(fixtures, `${name}.mjs`);
+
+  /** The reason from a run that did not reach a verdict, or a hard failure if it did. */
+  function reasonOf(result: CliRun): string {
+    if (result.ok) {
+      assert.fail(
+        `expected the child not to have exited, but it exited ${result.code} `
+          + `with stdout ${JSON.stringify(result.stdout)}`,
+      );
+    }
+    return result.reason;
+  }
+
+  it('reports a SIGKILLed child as killed, and never as a child that printed nothing', async () => {
+    // The regression, driven rather than described. A real child killed by a
+    // real signal, the shape a loaded box produces and the shape the old
+    // `e.stdout ?? ''` returned as `''`.
+    const result = await cli([], { entry: fixture('killed') });
+
+    const reason = reasonOf(result);
+
+    // Named in #1335's vocabulary, so a grep finds one convention repo-wide.
+    assert.match(reason, /killed by SIGKILL/, 'the cause must be the signal, by name');
+    // A signalled child has no exit code; saying so keeps the OOM kill from
+    // being filed under "exited with no status".
+    assert.match(reason, /code=null/, 'a signalled child has no exit code and the report must say so');
+    assert.match(reason, /signal=SIGKILL/);
+    // The line that answers the reader's only question: box or code?
+    assert.match(reason, /host pressure:/, 'the report must carry the host pressure reading');
+    // And it must not read as the compliance regression it is not.
+    assert.match(reason, /NOT a compliance failure/, 'a signal kill must not be reported as a missing notice');
+
+    // The caller side, which is what the notice assertions actually go through.
+    assert.throws(
+      () => cliStdout(result),
+      /killed by SIGKILL/,
+      'a notice assertion must fail with the cause, not with an empty expected value',
+    );
+  });
+
+  it('tells the harness deadline apart from an unexplained signal', async () => {
+    // A hang and an OOM kill are the same three fields on the wire
+    // (`code: null`, `signal: 'SIGKILL'`) and different diagnoses: one points at
+    // this file's `CLI_TIMEOUT_MS`, the other at the machine. Filing the
+    // deadline as a kill sends the reader after a process failure they caused.
+    const result = await cli([], { entry: fixture('wedged'), timeoutMs: 1_000 });
+
+    const reason = reasonOf(result);
+
+    assert.match(reason, /ETIMEDOUT/, 'the deadline must be named as one');
+    assert.match(reason, /1000ms deadline/, 'the report must say the child ran the full deadline, not that it vanished');
+    assert.doesNotMatch(
+      reason,
+      /killed by SIGKILL/,
+      'the harness\'s own deadline must not be reported as an unexplained signal kill',
+    );
+    // It is a hang, so the "not a product failure" wording is different: a
+    // child that ran for 30s may genuinely be stuck, and saying so is the point.
+    assert.doesNotMatch(reason, /NOT a compliance failure/, 'a hang is a different diagnosis from a signal kill');
+  });
+
+  it('still returns the empty output of a child that ran and exited non-zero', async () => {
+    // The anti-overcorrection, and the case that matters most, because it is the
+    // real one: `doctor` exits 1 whenever any check fails. A fix that failed
+    // every non-exit-zero run would break the notice guard outright, and a fix
+    // that failed every *empty* one would pass the kill case above while
+    // breaking a child that legitimately printed nothing.
+    const result = await cli([], { entry: fixture('exits1') });
+
+    assert.equal(result.ok, true, 'a non-zero exit is a verdict, not a crash');
+    if (result.ok) {
+      assert.equal(result.code, 1, 'the exit code must survive rather than be flattened');
+      assert.equal(cliStdout(result), '', 'empty output from a child that ran is a legitimate answer');
+    }
+  });
+
+  it('still returns the empty output of a child that exited cleanly', async () => {
+    // The other direction through the same code, and the one that would catch a
+    // `cli()` that failed whenever the notice was *absent* rather than whenever
+    // the child was gone.
+    const result = await cli([], { entry: fixture('exits0') });
+
+    assert.equal(result.ok, true, 'a clean exit is the normal path');
+    assert.equal(cliStdout(result), '', 'a silent clean exit must not be reported as a harness failure');
   });
 });
