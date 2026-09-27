@@ -1885,6 +1885,38 @@
         "label": "structuredContent — every result attaches its machine-re…"
       },
       {
+        "hash": "71b72ae6df9918b9",
+        "label": "outputSchema (#687) — a tool that publishes an output sc…"
+      },
+      {
+        "hash": "00e429c9c8df78fe",
+        "label": "The rollout is deliberately partial, and the reason is a…"
+      },
+      {
+        "hash": "86ccc2733e430daa",
+        "label": "| State | Where | Meaning | |---|---|---| | Declared | O…"
+      },
+      {
+        "hash": "b6d2ed07ff81bea0",
+        "label": "The structuredContent bullet above describes the intent;…"
+      },
+      {
+        "hash": "7c988b17a0790604",
+        "label": "A module in the pending state is not a lesser module: it…"
+      },
+      {
+        "hash": "966f7a034e9bb82d",
+        "label": "The families are open objects (additionalProperties perm…"
+      },
+      {
+        "hash": "38c31cccc9426d74",
+        "label": "| Family | Declares | |---|---| | ListOutput | items, pl…"
+      },
+      {
+        "hash": "abdcb34ab686da67",
+        "label": "A confirmation refusal is included rather than special-c…"
+      },
+      {
         "hash": "5129c1bae8a33354",
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
@@ -5515,8 +5547,8 @@
     }
   ],
   "provenance": {
-    "head": "db4ea03de337a54aa4fd97b369574e7828458b6e",
-    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
+    "head": "b98c0aaf7e593ecbd3f52b22f91b8c9585f09a33",
+    "upstream": "d5fca0f6e93388bb98786e8b9438db489530ae35",
     "behind": false
   }
 }
