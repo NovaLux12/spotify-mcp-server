@@ -1327,7 +1327,13 @@ describe('#50 snapshot precision on playlist mutations', () => {
       snapshot_id: 'snap-base',
     });
 
-    assert.deepEqual(h.client.calls[0].arg, {
+    // #626: a positional removal now reads the pre-mutation row count before
+    // the DELETE so the receipt has a baseline to compare against, so the
+    // baseline GET is calls[0]. The assertion is about the wire body, so it
+    // selects the DELETE rather than trusting call order.
+    const deletes = h.client.calls.filter((c) => c.method === 'DELETE');
+    assert.equal(deletes.length, 1, 'exactly one DELETE reaches the playlist');
+    assert.deepEqual(deletes[0]!.arg, {
       tracks: [{ uri: 'spotify:track:a' }, { uri: 'spotify:track:b', positions: [2, 7] }],
       snapshot_id: 'snap-base',
     });
@@ -1382,6 +1388,122 @@ describe('#50 snapshot precision on playlist mutations', () => {
       (err: unknown) => err instanceof z.ZodError,
     );
     assert.equal(h.client.calls.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #626 — a positional removal verifies against a baseline captured before the
+// DELETE, and the verdict must agree with an independent count.
+// ---------------------------------------------------------------------------
+
+describe('remove_from_playlist positional receipt verification (#626)', () => {
+  // The stub is stateful: the DELETE has to actually shrink the row list, or
+  // the receipt's re-read would observe the pre-write total and every verdict
+  // computed from it would be vacuous.
+  function removalHarness() {
+    let ids = ['a', 'b', 'c', 'd'];
+    const h = harness((path, arg) => {
+      if (path === '/playlists/pl') {
+        // Serves both the tool's pre-mutation baseline read and any
+        // independent get_playlist count.
+        return { id: 'pl', name: 'P', owner: { id: 'o' }, items: { total: ids.length } };
+      }
+      if (path === '/playlists/pl/items') {
+        // The DELETE carries a `tracks` body; the walk carries paging params.
+        if (arg && typeof arg === 'object' && 'tracks' in arg) {
+          ids = ids.slice(0, -1);
+          return { snapshot_id: 'snap-after' };
+        }
+        return {
+          items: ids.map((id) => ({ item: playableTrack(id, id) })),
+          total: ids.length,
+        };
+      }
+      return undefined;
+    });
+    return h;
+  }
+
+  it('reports VERIFIED when the post-write count matches the captured baseline', async () => {
+    const h = removalHarness();
+
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl',
+      uris: [{ uri: 'spotify:track:d', positions: [3] }],
+    });
+    // Independent count, taken through a different tool and a different read
+    // than the receipt's own verification walk.
+    const independent = await h.invoke('get_playlist', {
+      playlist_id: 'pl',
+      response_format: 'json',
+    });
+    const independentTotal = (
+      independent.structuredContent as { items: { total: number } }
+    ).items.total;
+
+    const receipt = (out.structuredContent as { receipt: Record<string, unknown> }).receipt;
+    assert.equal(receipt.before, 4, 'the baseline is the row count from before the delete');
+    assert.equal(receipt.after, 3, '4 rows minus 1 targeted row');
+    assert.equal(
+      receipt.after,
+      independentTotal,
+      'the receipt count must agree with an independent get_playlist count',
+    );
+    assert.equal(receipt.verified, true, `unmet said: ${String(receipt.unmet)}`);
+  });
+
+  it('reports UNVERIFIED when the delete did not shrink the playlist as expected', async () => {
+    // Same call, but the write is a no-op: the row count never moves, so the
+    // comparison must fail. This is the half that proves the test above is not
+    // passing by construction.
+    let rows = ['a', 'b', 'c', 'd'].map((s) => `spotify:track:${s}`);
+    const h = harness((path, arg) => {
+      if (path === '/playlists/pl') return { id: 'pl', name: 'P', owner: { id: 'o' }, items: { total: rows.length } };
+      if (path === '/playlists/pl/items') {
+        if (arg && typeof arg === 'object' && 'tracks' in arg) {
+          return { snapshot_id: 'snap-noop' }; // rows deliberately unchanged
+        }
+        return { items: rows.map((uri) => ({ item: { uri, name: uri } })), total: rows.length };
+      }
+      return undefined;
+    });
+
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl',
+      uris: [{ uri: 'spotify:track:d', positions: [3] }],
+    });
+
+    const receipt = (out.structuredContent as { receipt: Record<string, unknown> }).receipt;
+    assert.equal(receipt.verified, false, 'a write that changed nothing must not report VERIFIED');
+    assert.match(String(receipt.unmet), /row count 4.*expected 3/);
+    assert.match(textOf(out), /UNVERIFIED/);
+  });
+
+  it('still removes the rows when the baseline read fails', async () => {
+    // The pre-write read is best-effort. An unreadable baseline must withhold
+    // the VERIFIED claim, never block the write the user asked for.
+    const h = harness((path, arg) => {
+      if (path === '/playlists/pl') throw new Error('baseline read unavailable');
+      if (path === '/playlists/pl/items') {
+        if (arg && typeof arg === 'object' && 'tracks' in arg) return { snapshot_id: 'snap-ok' };
+        return { items: [{ item: { uri: 'spotify:track:a', name: 'a' } }], total: 1 };
+      }
+      return undefined;
+    });
+
+    const out = await h.invoke('remove_from_playlist', {
+      playlist_id: 'pl',
+      uris: [{ uri: 'spotify:track:d', positions: [3] }],
+    });
+
+    assert.equal(
+      h.client.calls.filter((c) => c.method === 'DELETE').length,
+      1,
+      'the DELETE must still reach the API',
+    );
+    const receipt = (out.structuredContent as { receipt: Record<string, unknown> }).receipt;
+    assert.equal(receipt.verified, false);
+    assert.match(String(receipt.unmet), /no baseline/i);
   });
 });
 

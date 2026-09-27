@@ -711,24 +711,35 @@ export async function issueReceipt(
             _windowExceeded = true;
           }
         } else {
-          // Positions are within fetched window — verify each removed position now holds different URI
-          // After removal, indices shift; we check that the URI at each original position is no longer the removed one
-          // Simplified: check remaining count shrank or position content changed
-          const failures: string[] = [];
-          // For per-position, we verify occurrence counts decreased by expected amount
-          if (opts.before !== undefined) {
-            const totalBefore = opts.before;
-            const expectedTotal = totalBefore - opts.targetedPositions!.length;
-            if (totalReported !== undefined && totalReported !== expectedTotal) {
-              failures.push(`row count ${totalReported} ≠ expected ${expectedTotal}`);
-            }
-          }
-          if (failures.length === 0) {
-            verified = true;
-            missing = [];
-          } else {
+          // Positions are within the fetched window. A positional removal is
+          // verified by a row-count comparison: the playlist should hold
+          // exactly `before - removed` rows once the targeted rows are gone.
+          // #626: a comparison needs BOTH numbers, and this branch used to set
+          // `verified = true` whenever its check array came out empty — which
+          // it did when `before` was absent (no check ran at all) and when the
+          // re-read reported no total (the check was skipped). An unrun check
+          // is not a passing one: a receipt that says VERIFIED while comparing
+          // nothing is a field named for evidence that does not exist, the
+          // shape of #803. Fail closed, and name which half was missing.
+          //
+          // The reason goes in `unmet`, not `missing`: this is a check about
+          // row counts, not a set of uris (#879). `missing` is consumed as
+          // data — `writeVerdict` counts its entries as unconfirmed rows and
+          // `undo` renders them as a uri list — so a sentence filed there
+          // would be read back as one missing track.
+          if (opts.before === undefined) {
             verified = false;
-            missing = failures;
+            missing = [];
+            unmet = 'no baseline for position verification — the caller captured no pre-mutation row count, so there is nothing to compare the re-read against';
+          } else if (totalReported === undefined) {
+            verified = false;
+            missing = [];
+            unmet = 'position-total check could not run — the re-read reported no row total to compare against the pre-mutation count';
+          } else {
+            const expectedTotal = opts.before - opts.targetedPositions!.length;
+            verified = totalReported === expectedTotal;
+            missing = [];
+            if (!verified) unmet = `row count ${totalReported} ≠ expected ${expectedTotal}`;
           }
         }
       } else {

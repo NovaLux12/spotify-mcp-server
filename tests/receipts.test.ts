@@ -598,6 +598,132 @@ describe('issueReceipt occurrence recording (#625)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #626 — a positional-removal receipt must not report VERIFIED without a
+// baseline to compare against.
+// ---------------------------------------------------------------------------
+
+describe('position verification needs a real baseline (#626)', () => {
+  // A playlist of 3 rows; one targeted position is removed, so the receipt's
+  // re-read should see 2. `before` is the pre-mutation count the caller must
+  // supply for that comparison to mean anything.
+  const twoRows = () => pagedItems([track('spotify:track:b'), track('spotify:track:c')], 2);
+  const onePosition = [{ uri: 'spotify:track:a', position: 0 }];
+
+  it('refuses to verify a targeted removal that carries no baseline', async () => {
+    const client = stubClient(() => twoRows());
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: onePosition,
+      // `before` deliberately absent.
+    });
+
+    // The defect: with no baseline the branch ran no comparison at all, and an
+    // empty failure list read as success — a receipt claiming VERIFIED for a
+    // check that never happened.
+    assert.equal(receipt.verified, false, 'no baseline must not produce a VERIFIED verdict');
+    assert.match(
+      receipt.unmet ?? '',
+      /no baseline/i,
+      'the reason must name the missing baseline, not just fail silently',
+    );
+  });
+
+  it('refuses to verify when the re-read reports no row total to compare', async () => {
+    // `before` is present but the walk yields a payload with no `total`, so the
+    // comparison cannot be made. A skipped check is not a passing one.
+    const withoutTotal = pagedItems([track('spotify:track:b'), track('spotify:track:c')], 2);
+    delete (withoutTotal as { total?: number }).total;
+    const client = stubClient(() => withoutTotal);
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: onePosition,
+      before: 3,
+    });
+
+    assert.equal(receipt.verified, false, 'an unrun comparison must not read as verified');
+    assert.match(receipt.unmet ?? '', /could not run|no row total/i);
+  });
+
+  it('verifies a targeted removal whose count matches the baseline', async () => {
+    const client = stubClient(() => twoRows());
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: onePosition,
+      before: 3,
+    });
+
+    // The expectation is recomputed here, not read back out of the receipt:
+    // one row was targeted, so a 3-row playlist must end at 2.
+    assert.equal(receipt.before, 3);
+    assert.equal(receipt.after, 2);
+    assert.equal(receipt.verified, true, `unmet said: ${receipt.unmet ?? '(none)'}`);
+    assert.equal(receipt.unmet, undefined, 'a passing check records no unmet reason');
+  });
+
+  it('reports a row-count mismatch as a reason, never as a missing uri', async () => {
+    const client = stubClient(() => pagedItems([track('spotify:track:b')], 1));
+    const receipt = await issueReceipt(client, {
+      kind: 'playlist_items',
+      id: 'pl1',
+      uris: ['spotify:track:a'],
+      expectPresent: false,
+      targetedPositions: onePosition,
+      before: 3,
+    });
+
+    assert.equal(receipt.verified, false);
+    // `missing` is consumed as data — writeVerdict counts its entries as
+    // unconfirmed rows and undo renders them as a uri list. A sentence filed
+    // there would be read back as one missing track.
+    assert.deepEqual(receipt.missing, [], 'a row-count failure is not a set of uris');
+    assert.match(receipt.unmet ?? '', /row count 1.*expected 2/);
+  });
+
+  it('leaves `missing` empty on every targeted path, verified or not', async () => {
+    // Sweeps the four combinations so no future edit can quietly re-file a
+    // reason into the uri list on just one of them.
+    const cases = [
+      { before: undefined, total: 2, expectVerified: false },
+      { before: undefined, total: undefined, expectVerified: false },
+      { before: 3, total: 2, expectVerified: true },
+      { before: 3, total: 1, expectVerified: false },
+    ];
+    for (const { before, total, expectVerified } of cases) {
+      const page = pagedItems([track('spotify:track:b')], total ?? 1);
+      if (total === undefined) delete (page as { total?: number }).total;
+      const client = stubClient(() => page);
+      const receipt = await issueReceipt(client, {
+        kind: 'playlist_items',
+        id: 'pl1',
+        uris: ['spotify:track:a'],
+        expectPresent: false,
+        targetedPositions: onePosition,
+        ...(before !== undefined ? { before } : {}),
+      });
+      assert.deepEqual(
+        receipt.missing,
+        [],
+        `missing must stay a uri list (before=${before}, total=${total})`,
+      );
+      assert.equal(
+        receipt.verified,
+        expectVerified,
+        `verdict for before=${before}, total=${total} (unmet: ${receipt.unmet ?? 'none'})`,
+      );
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // #586 — verify_receipt must not invert a removal receipt's vocabulary
 // ---------------------------------------------------------------------------
 
