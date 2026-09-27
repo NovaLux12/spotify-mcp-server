@@ -1,6 +1,8 @@
 # Cookbook — copy-paste agent recipes
 
-Eleven recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
+<!-- BEGIN:generated recipe-index -->
+**11** recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.
+<!-- END:generated recipe-index -->
 
 Conventions: JSON tool args are shown inline; replace `PLAYLIST_ID` and IDs with yours. Which identity argument a stats.fm tool takes is a property of the tool, not of its prefix: the endpoint tools take `user_id`, the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take `statsfm_user`, and the `taste_*` composites follow their own schema (most take `statsfm_user`; `taste_shift_report` and `taste_checkpoint` read your Spotify top lists and take none). Catalog/search tools and the local `statsfm_record_feedback`/`record_feedback` pair are identity-free. Check the tool's own schema rather than inferring from the name. Identity is per call—never infer it from the Spotify account. Preview Spotify writes with `dry_run: true` when the tool supports it, show the human what will change, and get explicit confirmation immediately before every write or destructive action. There is no `STATSFM_USER_ID` setting.
 

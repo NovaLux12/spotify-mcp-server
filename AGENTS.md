@@ -253,6 +253,7 @@ outcome.
 - `docs/schema-budgets.md`: `schema-budget-table`, `aggregate-budget`, `response-cap`
 - `docs/wave2-composites.md`: `surface-census`
 - `docs/distribution.md`: `surface-census`
+- `docs/cookbook.md`: `recipe-index`
 - `skills/spotify-exhaustive-feature-sweep/SKILL.md`: `surface-census`
 - `skills/spotify-mcp-competitor-comparison/SKILL.md`: `surface-census`
 - `src/toolsets.ts`: `surface-census`

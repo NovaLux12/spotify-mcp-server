@@ -785,3 +785,145 @@ describe('registry tool counts stay out of hand-maintained text (#1290)', () => 
     assert.deepEqual(offenders, [], `a registry count sits on a code line the comment mask skips: ${offenders.join(', ')}`);
   });
 });
+// docs/cookbook.md — the recipe count (#1288)
+// ---------------------------------------------------------------------------
+
+/**
+ * A hand-typed recipe count, in either the digit or the spelled-out spelling.
+ *
+ * The spelled-out arm is not defensive padding. #1288's own sentence said
+ * "eleven copy-paste agent recipes" and the cookbook said "Eleven recipes", so
+ * a digits-only pattern would have passed against the exact text it was written
+ * to catch — the #1241 `607,000B` boundary trap in a different costume.
+ *
+ * Anchored on `recipes?` so the words must be a *count of recipes*; a bare
+ * number in a list item ("3. Duplicate cleanup sweep") is not this rule's
+ * business, and neither is the word "recipe" used on its own.
+ */
+const HAND_TYPED_RECIPE_COUNT = new RegExp(
+  String.raw`\b(?:\d[\d,]*|(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty))\s+(?:\w+[-\s]+){0,3}recipes?\b`,
+  'gi',
+);
+
+/** Run the census's cookbook measurement over a supplied source. */
+function measureCookbook(source: string): { count: number; ordinals: number[]; errors: string[] } {
+  return runCookbookFixture(source, false);
+}
+
+/** As above, but for a source the measurement is expected to REJECT. */
+function cookbookMeasurementFailure(source: string): string {
+  return runCookbookFixture(source, true);
+}
+
+/**
+ * Drive `--cookbook-fixture`, which is the census's own `readCookbookRecipes`
+ * over the supplied text — not a re-implementation of the counting.
+ */
+function runCookbookFixture(source: string, expectFailure: false): { count: number; ordinals: number[]; errors: string[] };
+function runCookbookFixture(source: string, expectFailure: true): string;
+function runCookbookFixture(source: string, expectFailure: boolean) {
+  return withTempDir((dir) => {
+    const fixture = join(dir, 'cookbook.json');
+    writeFileSync(fixture, JSON.stringify({ source }));
+    const args = ['scripts/surface-census.mjs', '--cookbook-fixture', fixture];
+    if (!expectFailure) {
+      return JSON.parse(execFileSync(process.execPath, args, {
+        cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024,
+      })) as { count: number; ordinals: number[]; errors: string[] };
+    }
+    try {
+      execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+    } catch (error) {
+      const result = error as { stdout?: string; stderr?: string };
+      return `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    }
+    assert.fail('expected the cookbook measurement to reject this source');
+  });
+}
+
+describe('the cookbook recipe count is generated, not typed (#1288)', () => {
+  it('the rendered recipe count equals the number of recipe headings in the file', () => {
+    // The measurement is the census's, not this test's: an expected value typed
+    // into the test would be the same drift one file over (AGENTS.md §6). What
+    // is asserted here is that the *rendered block* carries the figure the
+    // census derived from the cookbook's own headings.
+    const measured = measureCookbook(readDoc('docs/cookbook.md'));
+    // Preconditions, so this cannot pass against an empty or malformed scan.
+    assert.ok(measured.count > 0, `the measurement found ${measured.count} recipes`);
+    assert.deepEqual(measured.errors, [], measured.errors.join('\n'));
+    const body = generatedBlockBody('docs/cookbook.md', 'recipe-index').trim();
+    assert.ok(
+      body.startsWith(`**${measured.count}** recipes`),
+      `the recipe-index block says ${JSON.stringify(body.slice(0, 60))} but the cookbook has ${measured.count} numbered recipe headings`,
+    );
+  });
+
+  it('rejects a wrong rendered count', () => {
+    // The anti-vacuity half for the block: a figure off by one in either
+    // direction must be caught, so a comparison that never compared anything
+    // cannot pass. Both perturbations go through the real gate
+    // (`inspectGeneratedBlock`), not a re-implementation of it.
+    const body = generatedBlockBody('docs/cookbook.md', 'recipe-index');
+    for (const wrong of [10, 12]) {
+      const mutated = body.replace(/\*\*\d+\*\* recipes/, `**${wrong}** recipes`);
+      assert.notEqual(mutated, body, `precondition: the ${wrong} mutation changed nothing`);
+      const output = gateRejectsMutatedBlock('docs/cookbook.md', 'recipe-index', (source) => source.replace(body, mutated));
+      assert.match(output, /is stale/, `a rendered count of ${wrong} was accepted`);
+    }
+  });
+
+  it('README prose carries no hand-typed recipe count', () => {
+    // #1288's sentence as it stood. A list item is where a generated block
+    // cannot go — its end marker renders at column 0 and splits the list — so
+    // the README's job is to carry no count at all.
+    const prose = stripGeneratedBlocks(readDoc('README.md'));
+    assert.ok(prose.length < readDoc('README.md').length, 'stripGeneratedBlocks removed nothing from README.md');
+    const hits = [...prose.matchAll(HAND_TYPED_RECIPE_COUNT)].map((match) => match[0]);
+    assert.deepEqual(hits, [], `README.md prose hand-types a recipe count: ${hits.join(', ')}`);
+  });
+
+  it('the recipe-count guard would have caught both #1288 sentences', () => {
+    // The two shapes the issue describes, restored verbatim. The digit arm and
+    // the spelled-out arm each have to earn their place here, or one of them
+    // is decoration.
+    const restored = readDoc('README.md').replace(
+      '- [docs/cookbook.md](docs/cookbook.md) — copy-paste agent recipes',
+      '- [docs/cookbook.md](docs/cookbook.md) — twelve copy-paste agent recipes',
+    );
+    const hits = [...stripGeneratedBlocks(restored).matchAll(HAND_TYPED_RECIPE_COUNT)].map((match) => match[0]);
+    assert.deepEqual(hits, ['twelve copy-paste agent recipes'], 'the guard did not flag the recipe count it exists to catch');
+
+    // The cookbook's own "Eleven recipes" — the spelled-out arm, which a
+    // digits-only pattern would have missed entirely.
+    const cookbookProse = stripGeneratedBlocks(readDoc('docs/cookbook.md'));
+    const withOldIntro = `Eleven recipes you can paste to an agent.${cookbookProse}`;
+    const spelled = [...withOldIntro.matchAll(HAND_TYPED_RECIPE_COUNT)].map((match) => match[0]);
+    assert.deepEqual(spelled, ['Eleven recipes'], 'the guard missed the spelled-out recipe count in the cookbook intro');
+  });
+
+  it('the cookbook measurement rejects a gapped or repeated recipe sequence', () => {
+    // The count alone cannot see this: a file numbered 1..11,13,14 has thirteen
+    // headings, so a count-only check would report "thirteen" for a document
+    // whose prose is describing a different set. These are the negative cases
+    // the real `--check` cannot show, because the repository's cookbook is
+    // correct.
+    const gap = ['## 1. A', '## 2. B', '## 4. D'].join('\n');
+    const gapOutput = cookbookMeasurementFailure(gap);
+    assert.match(gapOutput, /numbered 1, 2, 4/, gapOutput);
+    assert.match(gapOutput, /no gaps or repeats/, 'the failure must name the defect class');
+
+    const repeat = ['## 1. A', '## 1. B'].join('\n');
+    assert.match(cookbookMeasurementFailure(repeat), /numbered 1, 1/, 'a repeated recipe number was not caught');
+
+    const none = '## Undo tools\n\n## See also';
+    assert.match(cookbookMeasurementFailure(none), /no numbered/, 'a cookbook with no numbered recipes was not caught');
+
+    // And the other direction: a well-formed fixture must be ACCEPTED, or a
+    // classifier that only ever returns errors satisfies every test above.
+    const good = measureCookbook(['## 1. A', '## 2. B', '## 3. C'].join('\n'));
+    assert.deepEqual(good.errors, []);
+    assert.equal(good.count, 3);
+    assert.deepEqual(good.ordinals, [1, 2, 3]);
+  });
+});
+
