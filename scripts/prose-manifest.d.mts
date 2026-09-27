@@ -46,6 +46,20 @@ export type ProseManifest = {
   provenance?: ProseProvenance;
 };
 
+/** One prose unit, as `coverage` reports it. */
+export type ProseCoverageEntry = ProseUnitPin & { file: string };
+
+/**
+ * The two counts a comparison produces, reconciled by direction.
+ *
+ * `unpinned` is prose the walk found that no pin claims — ordinary work, free
+ * by design, never an error. `missing` is a pin the walk did not find: prose a
+ * file no longer carries, one entry per matching entry in `proseDrift`'s
+ * `errors`. Reporting both by name is what stops a caller from subtracting
+ * `currentCount` and `pinnedCount` and guessing the sign (#1460).
+ */
+export type ProseCoverage = { unpinned: ProseCoverageEntry[]; missing: ProseCoverageEntry[] };
+
 /**
  * The documents a comparison read, repo-relative path to source text.
  *
@@ -80,6 +94,7 @@ export function proseDrift(
   errors: string[];
   currentCount: number;
   pinnedCount: number;
+  coverage: ProseCoverage;
   files: string[];
 };
 
