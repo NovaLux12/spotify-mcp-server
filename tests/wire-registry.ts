@@ -24,17 +24,25 @@
  * copy is the failure #659 was filed for: two harnesses that read the same way,
  * are updated separately, and agree until they do not.
  *
+ * That argument came back one layer down. This file's own harness was itself a
+ * hand-rolled copy of `helpers/stdio-child.ts`, it predated the helper, and it
+ * disagreed with the helper about the one field that matters on a killed child
+ * (#1405). It now uses `StdioJsonRpcChild` directly — see the note at the
+ * spawn. `tests/child-exit-gate.test.ts` is what keeps the next copy from
+ * appearing.
+ *
  * ## Hermeticity
  *
  * HOME and the token file both point into a fresh `mkdtemp`, so a run cannot
  * read or write Jack's real `~/.spotify-mcp/`. Nothing here binds a port — the
  * transport is stdio, not TCP.
  */
-import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 const REPO_ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -68,11 +76,6 @@ export interface WireTool {
   readonly inputSchema?: unknown;
 }
 
-interface RpcResult {
-  readonly result?: { readonly tools?: WireTool[] };
-  readonly error?: unknown;
-}
-
 let cached: Promise<WireTool[]> | undefined;
 
 /**
@@ -96,67 +99,51 @@ async function listWireTools(): Promise<WireTool[]> {
     { mode: 0o600 },
   );
 
-  const child = spawn(process.execPath, ['--import', 'tsx/esm', 'src/index.ts'], {
+  // The shared harness, not a second copy of it (#1405, #1379).
+  //
+  // This file carried its own hand-rolled harness whose `exit` handler took only
+  // `code`:
+  //
+  //     child.on('exit', (code) => { … `exited with code ${code}` … });
+  //
+  // Node supplies `(code, signal)`, and a signalled child has `code === null`,
+  // so every SIGKILL — the OOM killer, a host under pressure — was reported as
+  // "exited with code null". The signal was on the event and was thrown away in
+  // the parameter list, which is the AGENTS.md §6 shape: a value that exists,
+  // is discarded, and leaves a message that is confidently wrong about the cause.
+  //
+  // `StdioJsonRpcChild` already did this correctly (it latches the death,
+  // records the signal, and keeps first-cause-wins so a following EPIPE cannot
+  // overwrite the SIGKILL). Migrating is the fix and the consolidation #1379
+  // asks for: one implementation rather than a correct one and a lossy one.
+  //
+  // The env is passed explicitly and stays minimal — `PATH`, a temp `HOME`, and
+  // `CENSUS_ENV` — because booting with *no* inherited environment is part of
+  // what this derivation proves. `hermeticServerEnv` spreads `process.env`, so
+  // using it here would quietly stop testing that.
+  const child = StdioJsonRpcChild.spawn({
+    label: 'wire-registry',
+    command: process.execPath,
+    args: ['--import', 'tsx/esm', 'src/index.ts'],
     cwd: REPO_ROOT,
     env: { PATH: process.env.PATH, HOME: home, ...CENSUS_ENV, SPOTIFY_MCP_TOKEN_FILE: tokenFile },
-    stdio: ['pipe', 'pipe', 'pipe'],
   });
-
-  let buffer = '';
-  let stderr = '';
-  const pending = new Map<number, { resolve: (value: RpcResult) => void; reject: (reason: Error) => void }>();
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (chunk: string) => { stderr += chunk; });
-  child.stdout.setEncoding('utf8');
-  child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let index: number;
-    while ((index = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (!line) continue;
-      const message = JSON.parse(line) as { id?: number };
-      if (typeof message.id !== 'number') continue;
-      pending.get(message.id)?.resolve(message as RpcResult);
-      pending.delete(message.id);
-    }
-  });
-
-  let nextId = 0;
-  const failAll = (reason: string): void => {
-    for (const [, settle] of pending) settle.reject(new Error(reason));
-    pending.clear();
-  };
-  child.on('exit', (code) => {
-    if (pending.size > 0) failAll(`the server exited with code ${code} before answering\nstderr:\n${stderr.trim() || '(no stderr)'}`);
-  });
-  child.on('error', (error) => failAll(`the server failed to start: ${error.message}`));
-
-  const request = (method: string, params: Record<string, unknown> = {}): Promise<RpcResult> => {
-    const { promise, resolve, reject } = Promise.withResolvers<RpcResult>();
-    const id = ++nextId;
-    pending.set(id, { resolve, reject });
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`);
-    setTimeout(() => reject(new Error(`timeout waiting for ${method}\nstderr:\n${stderr}`)), 60_000).unref();
-    return promise;
-  };
 
   try {
-    const init = await request('initialize', {
-      protocolVersion: '2024-11-05',
-      capabilities: {},
-      clientInfo: { name: 'wire-registry', version: '1.0.0' },
-    });
-    if (init.error !== undefined) throw new Error(`initialize failed: ${JSON.stringify(init.error)}`);
-    child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })}\n`);
-    const listed = await request('tools/list');
-    if (listed.error !== undefined) throw new Error(`tools/list failed: ${JSON.stringify(listed.error)}\nstderr:\n${stderr}`);
+    await child.initialize('wire-registry');
+    const listed = await child.request('tools/list');
+    if (listed.error !== undefined) {
+      throw new Error(`tools/list failed: ${JSON.stringify(listed.error)}\nchild stderr:\n${child.stderr}`);
+    }
     const tools = listed.result?.tools;
     if (!Array.isArray(tools)) throw new Error('tools/list must return an array');
-    return tools;
+    return tools as WireTool[];
   } finally {
-    child.stdin.end();
-    setTimeout(() => child.kill('SIGKILL'), 1_500).unref();
+    // `dispose()` rather than the old `stdin.end()` + unref'd SIGKILL: the old
+    // teardown left the child's stdio streams registered in the event loop, and
+    // a reaped child that inherited a descriptor from a survivor can hold a
+    // test file open for the rest of the run.
+    await child.dispose();
   }
 }
 

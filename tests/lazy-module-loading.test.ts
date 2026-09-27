@@ -190,6 +190,32 @@ function recordStartup(toolsets: string): Promise<RecordedRun> {
       }
     });
     child.on('error', (error) => finish(() => reject(error)));
+    // A child that dies before answering must say so (#1404).
+    //
+    // There was no `exit` listener at all: `on('error')` above fires on a
+    // *spawn* failure only, never on a process that started and then died, so
+    // a SIGKILL — the OOM killer on a box running a dozen parallel suites —
+    // left nothing to reject. The 60 s watchdog caught it and reported
+    // `TOOLSETS=playback never answered tools/list`, which reads as a
+    // module-loading problem: a trimmed toolset failing to register. An OOM
+    // mid-startup and a genuine trimming bug produce byte-identical failures,
+    // and this file's whole subject is *which modules got loaded*.
+    //
+    // `signal` is taken as well as `code` because a signalled child has
+    // `code === null`. Printing `code=null` would name "exited with no status"
+    // for a kill, which is the same discarded-field mistake as #1405. A SIGKILL
+    // also leaves no stderr, so `err` is empty by construction and the signal
+    // is the only evidence there is.
+    child.on('exit', (code, signal) => {
+      if (settled) return; // `finish` killed the child itself on the success path.
+      finish(() => reject(new Error(
+        `TOOLSETS=${toolsets} exited before answering tools/list (code=${code} signal=${signal})\n`
+        + (signal
+          ? 'A signal takes the child\'s stderr with it, so an empty stderr below is expected and is itself the evidence.\n'
+          : '')
+        + `stderr:\n${err.trim() || '(no stderr)'}`,
+      )));
+    });
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) + '\n');
   });
 }
