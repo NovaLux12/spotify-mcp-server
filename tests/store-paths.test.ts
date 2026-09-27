@@ -1002,6 +1002,38 @@ describe('erasing through the registry is still contained (#711 did not weaken t
   });
 });
 
+/**
+ * The rows of PRIVACY.md's "Local stores and paths" table, as their first cell.
+ *
+ * SCOPED TO THE TABLE, and that is the whole point of the helper. The file
+ * mentions `~/.spotify-mcp/accounts.json` in PROSE (in the logout paragraph),
+ * so a check that merely asked "does PRIVACY.md contain the path?" would pass
+ * while the table — the part whose job is to answer "what is on my disk, and
+ * how do I delete it" — had no row for a store the server writes. #1450 was
+ * open for exactly that reason: the file was not silent about the file, it was
+ * silent about the ROW. A guard that greps the whole document cannot tell those
+ * apart, so it cannot catch the omission.
+ *
+ * The section is bounded by its own heading and the next `## `, and the header
+ * and separator rows are dropped, so a `|` appearing in unrelated prose later
+ * in the file cannot contribute a cell. Returns the cells, not the whole file,
+ * so a caller cannot accidentally re-widen the scope it was given.
+ */
+function privacyStoreRows(): string[] {
+  const text = readFileSync(join(ROOT, 'PRIVACY.md'), 'utf8');
+  const start = text.indexOf('## Local stores and paths');
+  assert.notEqual(start, -1, 'PRIVACY.md no longer has a "## Local stores and paths" section');
+  const end = text.indexOf('\n## ', start + 5);
+  const section = text.slice(start, end === -1 ? undefined : end);
+  const lines = section.split('\n').filter((line) => line.trim().startsWith('|'));
+  // Header row plus the `|---|` separator. Both are structural, not content.
+  assert.ok(
+    lines.length > 2,
+    `the PRIVACY.md local-stores table has ${lines.length} lines — expected a header, a separator and rows, so the check would be vacuous`,
+  );
+  return lines.slice(2).map((line) => line.split('|').slice(1, -1)[0]!.trim());
+}
+
 describe('the documentation is generated from the registry, not retyped', () => {
   const configDoc = readFileSync(join(ROOT, 'docs', 'configuration.md'), 'utf8');
 
@@ -1046,6 +1078,33 @@ describe('the documentation is generated from the registry, not retyped', () => 
         + 'which is the directory the registry resolves into with no override set',
       );
     }
+  });
+
+  it('gives every registered store a row in the PRIVACY.md local-stores table', () => {
+    // The gap #1450 was filed for. PRIVACY.md's table is the document a reader
+    // consults to answer "what is on my disk, and how do I delete it", and it
+    // listed 18 rows while the registry listed 19 stores: `accounts.json`, the
+    // record of which accounts exist on this machine and where each one's token
+    // file is, had no row. A partial table reads as a complete one, and the one
+    // store missing was the one whose absence `logout` would otherwise be the
+    // only way to discover.
+    //
+    // Matched on `defaultPath`, not on a hand-typed list of names: the registry
+    // already spells each store's documented default, and `resolve()` is
+    // separately asserted to agree with it, so this compares the table against
+    // the code without a second registry of store names to keep in step.
+    const rows = privacyStoreRows();
+    const missing = LOCAL_STORES.filter(
+      (s) => !rows.some((cell) => cell.includes(s.defaultPath)),
+    ).map((s) => `${s.id} (${s.defaultPath})`);
+    assert.deepEqual(
+      missing,
+      [],
+      'these stores are written under ~/.spotify-mcp/ but have no row in PRIVACY.md\'s '
+      + '"Local stores and paths" table. A reader using that table to find out what to clear '
+      + 'would not learn the file exists. Add a row naming the default path, the data and its '
+      + 'purpose, and how it is deleted: ' + missing.join(', '),
+    );
   });
 
   it('resolves every read root from the registry rather than a second copy', () => {
