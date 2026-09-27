@@ -1637,6 +1637,31 @@ Both outcomes carry `structuredContent.found`, so a caller branches on one field
 The miss is an error because it is a failed **lookup**. Reporting it as a plain result lets an agent that branches on `result.isError` — and a host that renders green on success — read it as "the write was checked and is fine", when in fact the store simply no longer holds the id.
 
 **Scope of the store.** The store keeps the 100 most recent mutations, in memory only unless `SPOTIFY_MCP_RECEIPTS` is set, and ids are boot-scoped so an id from an earlier process can never resolve to a *different* mutation — it resolves to nothing. A miss therefore says nothing about whether the mutation landed; only a found receipt does. See `docs/configuration.md` for the persistence flags and TTL.
+
+#### `undo_mutation` / `undo_last_mutation`
+
+`undo_mutation` takes `receipt_id` and inverts **that** receipt. `undo_last_mutation` takes no id: it scans the store newest-first and takes the first entry that is both a reversible kind (`playlist_items`, `library`) and carries at least one URI. A newer metadata receipt and a newer URI-less receipt are both skipped, so "last" means the last mutation that can actually be inverted. When nothing qualifies it returns `ok: false` with `reason: 'no_reversible'` rather than choosing one. Both take `response_format` and `dry_run`; **`dry_run` defaults to `true`**, the opposite of the shared default, because an undo is a destructive write and the safe reading is the one the schema advertises.
+
+Direction is read from the receipt, never assumed. An `added` receipt (add/save) is undone by removing; a `removed` receipt is undone by re-adding. A receipt written before direction tracking carries no field, and `added` is assumed — the assumption is stated in every branch that uses it, as `direction_assumed: true` in `structuredContent` and as a line of prose, because the alternative (re-adding) duplicates rows that cannot be deduplicated back.
+
+Executing is a write and says so: both tools carry `destructiveHint: true` and no `readOnlyHint`, so a host that auto-approves on those hints cannot wave a rollback through. A preview issues no request and asks nothing. An execute asks through MCP elicitation first, and `requiredConfirmationRefusal` fails closed — a client that never advertised the capability, or a prompt that fails mid-flight, returns `ok: false` with `reason: 'confirmation_unavailable'` and **zero** writes.
+
+Refusals decided before the prompt, so a rollback that cannot happen never spends the user's attention:
+
+| `reason` | Meaning |
+|---|---|
+| `unknown_receipt` | The id is not in the store — never issued, evicted past the cap, or expired. Prose is the shared miss message, which names the store's scope. No writes, and no receipt. |
+| `not_reversible` | A `playlist_meta` receipt; the kind is named back rather than an inverse being guessed. |
+| `no_uris` | A reversible receipt carrying no URIs, so there is nothing to write. |
+| `no_reversible` | `undo_last_mutation` only: nothing in the store qualifies. |
+| `occurrences_unrecorded` | A playlist add whose receipt does not record which rows it created. A bare-URI delete would remove *every* copy of each URI, including rows that predate the mutation, so the undo refuses and asks for an explicit removal instead. |
+| `confirmation_unavailable` | The client cannot prompt. Fails closed. |
+
+A successful execute returns `ok`, `undone_receipt`, `direction`, `inverted_to`, `requests`, `verified`, `expected_absent`, `expected_present`, `snapshot_id` and `receipt` — the last being a fresh receipt for the post-state, so the rollback is itself verifiable and can itself be undone.
+
+**A failed undo says so, and certifies nothing.** A rollback is several requests; when one fails, the result is `ok: false` with `reason: 'partial_write_failure'`, `completed_requests` and `attempted_requests` — the two counts differ precisely because a partial write is what happened — and **no receipt is issued**, so nothing can later read a half-applied state as verified. The original receipt stays resolvable, because a failed undo does not invalidate the record of the mutation it was trying to reverse. If the writes landed but the post-state refetch did not confirm them, `ok` is `false` with `reason: 'post_state_mismatch'` and `unconfirmed_uris` naming exactly which URIs were not observed as expected, or `post_state_unverified` when the check could not run at all. A receipt that could not be checked is not a passing one.
+
+**Known gap (#658).** Both tools declare `response_format` but neither handler reads it, so `json` returns the same prose as `concise` — where the shared controls section above promises a raw API payload. The registry-wide conformance gate in `tests/mutations.conformance.test.ts` checks that a write-capable tool *exposes* `dry_run` and `response_format`, not that it honours them, so this is invisible to it. `tests/tools.undo-receipts.test.ts` deliberately asserts nothing about `response_format`'s effect rather than ratifying the mismatch.
 ### 5.12 Discovery and registry introspection
 
 Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a 592-tool surface. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:

@@ -494,12 +494,20 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   pause: { destructiveHint: false },
   next_track: { destructiveHint: false },
   previous_track: { destructiveHint: false },
-  // undo_mutation / undo_last_mutation are deliberately NOT listed here: they
-  // delete real library rows, and a client that trusts destructiveHint to decide
-  // what it may auto-approve must not be told a rollback is safe (#627).
+  // undo_mutation / undo_last_mutation state their destructiveness HERE rather
+  // than by being omitted above, because omitting them was not enough: neither
+  // name matches DESTRUCTIVE_PREFIXES, so the name-based fallback reached
+  // `destructive ? { destructiveHint: true } : { destructiveHint: false }` and
+  // handed the host `destructiveHint: false` — telling an auto-approving client
+  // a rollback is safe when it deletes real library/playlist rows (#658). The
+  // rows are the explicit claim AGENTS.md requires of every write; readOnlyHint
+  // stays absent (MCP defaults it false), which is the truth for a write.
+  //
   // (No read-only overrides for undo_preview / restore_playlist_plan here — they
   // live in NEVER_MUTATING_PLANS below with the per-handler audit notes.)
   restore_playback: { destructiveHint: false },
+  undo_mutation: { destructiveHint: true },
+  undo_last_mutation: { destructiveHint: true },
   restore_playlist_from_snapshot: { destructiveHint: true },
   apply_snapshot_changes: { destructiveHint: true },
   merge_snapshot_changes: { destructiveHint: true },
