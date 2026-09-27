@@ -638,7 +638,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **572 tools** (all 572 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **129 tools** / 142,737 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **565 tools** (all 565 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **129 tools** / 143,659 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -650,10 +650,11 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
   - a **declared but invalid** value answers `kind: "validation"`, naming the argument, the constraint the schema actually enforces, and the field's own description as the concrete next step — `playlist_sort rejected parameter playlist_id: expected a string (Playlist ID, spotify:playlist: URI, or URL)`.
 
   Strict rejection, not stripping: a call carrying an undeclared key is refused rather than run with that key silently dropped, because a caller whose argument did not arrive otherwise gets a confident answer to a question it never asked. Two rules govern the message, and the second is the one that is easy to get wrong — **it never claims a constraint the schema does not enforce.** A message that named a type the schema does not check would be the `name: string` arriving as `undefined` failure (#804) in prose, so a validation failure whose zod issue carries no readable expectation says nothing about the expectation and points at the schema instead. §7 states the same contract for `prompts/get`, which shares this boundary's helpers.
-- **`response_format`** (`'concile' | 'detailed' | 'json'`, default `'concile'`) — `'concile'` renders human-readable prose, `'detailed'` appends fields the concise view drops, and `'json'` returns the raw API payload as JSON text.
+- **`response_format`** (`'concile' | 'detailed' | 'json'`, default `'concile'`) — `'concile'` renders human-readable prose, `'detailed'` appends fields the concise view drops, and `'json'` returns the raw API payload as JSON text. The one exception is a call site routed through `emitOnce` (row cap and emit-once, below), where the payload rides in `structuredContent` and the text block is a bounded summary rather than a second serialization of the same object.
 - **`structuredContent`** — every result attaches its machine-readable payload as MCP structuredContent alongside the human-readable text.
 - **`max_results`** (list-type tools; positive integer, ≤ 2000) — per-call truncation cap. The default comes from `SPOTIFY_MCP_MAX_ITEMS` (50). Truncated lists state how many items were withheld; pagination info (total / offset / next offset) rides in structuredContent and a footer hints at the next page.
-- **Response byte cap (#895)** — `response_format: 'json'` and `structuredContent` are bounded by `MAX_RESPONSE_BYTES` (64,000) serialized bytes, applied by the single shared helper `applyResponseCap` in `src/shaping.ts` at the truncation boundary. json-mode text is not capped separately: it is a serialization of the same object, so it is re-emitted from the capped object and the two channels cannot disagree about what was returned. The cap is a **backstop** behind `max_results`, not a substitute for it — a tool that declares `max_results` caps itself at a far finer grain and never reaches this. It bounds a **per-call** cost and is sized against the aggregate **one-time** schema budget (`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 620,000B) at roughly 1/10 of it, so ten capped calls cost about what the schema surface cost once; it does not raise or lower any schema ceiling, because the aggregate gate measures `tools/list` and a response-time constant cannot affect it. A capped result is never silently small: it carries a `response_cap` object in `structuredContent` — `response_capped: true`, `cap_bytes`, the measured `actual_bytes`, `retained_fields`, `omitted_fields` (each `{ field, bytes }`), `omitted_field_count`, and a `note` stating in words that the result is **not** the full payload. `omitted_fields` is populated only by measuring the uncapped payload, never estimated. Trimming is **top-level only**, smallest-fields-first: the cheap fields in a shaped result are the ones that describe what happened (`truncated`, `returned`, `total`, `pagination`, `counts`) and the expensive one is the bulk, so a capped result still says how much there was and the caller can page. Deep trimming is deliberately not done — dropping half a nested object would require inventing a value for the other half, which is the `name: string` arriving as `undefined` failure (#804); a field is therefore wholly present or wholly absent, and an absent field is named rather than implied. Human prose is not affected; it is capped by each tool's own `max_results` plus a footer. An `isError` result is not capped. The one case with no shared object — a bare JSON array in the text block with no `structuredContent` beside it — is capped as a byte-fitting prefix, and the disclosure follows the JSON in that same text block, which is the only channel available.
+- **Response byte cap (#895)** — `response_format: 'json'` and `structuredContent` are bounded by `MAX_RESPONSE_BYTES` (64,000) serialized bytes, applied by the single shared helper `applyResponseCap` in `src/shaping.ts` at the truncation boundary. json-mode text is not capped separately at a call site that still stringifies the payload: it is a serialization of the same object, so it is re-emitted from the capped object and the two channels cannot disagree about what was returned. **At a call site routed through `emitOnce` there is no second serialization to cap** — the text block is a bounded summary, so this sentence does not apply there, and the only thing bounding that call is `MAX_RESPONSE_BYTES` itself unless the handler also called `capRowSections`. The cap is a **backstop** behind `max_results`, not a substitute for it — a tool that declares `max_results` caps itself at a far finer grain and never reaches this. It bounds a **per-call** cost and is sized against the aggregate **one-time** schema budget (`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 620,000B) at roughly 1/10 of it, so ten capped calls cost about what the schema surface cost once; it does not raise or lower any schema ceiling, because the aggregate gate measures `tools/list` and a response-time constant cannot affect it. A capped result is never silently small: it carries a `response_cap` object in `structuredContent` — `response_capped: true`, `cap_bytes`, the measured `actual_bytes`, `retained_fields`, `omitted_fields` (each `{ field, bytes }`), `omitted_field_count`, and a `note` stating in words that the result is **not** the full payload. `omitted_fields` is populated only by measuring the uncapped payload, never estimated. Trimming is **top-level only**, smallest-fields-first: the cheap fields in a shaped result are the ones that describe what happened (`truncated`, `returned`, `total`, `pagination`, `counts`) and the expensive one is the bulk, so a capped result still says how much there was and the caller can page. Deep trimming is deliberately not done — dropping half a nested object would require inventing a value for the other half, which is the `name: string` arriving as `undefined` failure (#804); a field is therefore wholly present or wholly absent, and an absent field is named rather than implied. Human prose is not affected; it is capped by each tool's own `max_results` plus a footer. An `isError` result is not capped. The one case with no shared object — a bare JSON array in the text block with no `structuredContent` beside it — is capped as a byte-fitting prefix, and the disclosure follows the JSON in that same text block, which is the only channel available.
+- **Row cap and emit-once (#895) — `capRowSections` and `emitOnce`.** The byte cap above is a backstop. The **primary** cap is per-row and per-call, and there is exactly one implementation of it: `capRowSections(payload, arrays, maxResults, withhold?)` in `src/shaping.ts`. It slices each named top-level array to `maxResults` and **always** publishes a `sections` envelope beside the payload — one `{ returned, total, truncated }` per named key, where `total` is the **pre-cap** count. A cap that hid rows without saying how many there were would be a quiet lie, so the helper cannot be used to drop data quietly: a caller can always recover how big the answer really was. The payload also carries a top-level `truncated`, and that word means exactly one thing here — **rows were withheld from THIS payload** — which is why the source-walk flag, a different quantity, is named `truncated_by_cap`. A named key whose value is not an array is reported `unreadable: true` and left **exactly** as the handler produced it; writing `[]` would report a scan that found nothing where the truth is that it read something it could not (#804). A key passed in `withhold` is removed from the payload entirely and reported `{ withheld: true, total, available_via: "response_format: 'json'" }` — used where the array is the raw scan rather than the answer (`library_hygiene.groups`, each entry of which carries its own `liked_tracks[]`, so slicing it would still ship the whole library). `emitOnce(raw, summarize)` is the paired half: the payload is attached to `structuredContent` once and the text block is the summary, so the two channels are never byte-identical copies and the host pays once. The summary is bounded by construction — capped-section counts and at most six scalars — because an unbounded summary is no saving at all. `structuredContent` is the contract; the text block is a pointer. **On the `json` text block:** the row-capped tools put the raw payload in `structuredContent` and a bounded one-line summary in the text block rather than a second serialization of the same object. `jsonResult` is unchanged and still stringifies — only call sites routed through the shared cap take the summary form. Migrated call sites: `library_hygiene`, `find_duplicate_saved_tracks`, the `taste_*` composites, the stats.fm collection envelope, `diff_playlists` / `overlap_playlists`, `dead_library_finder`, and the swarm3 playlist-diff surfaces. **The two halves of the pair are applied independently, and the difference is load-bearing rather than incidental.** In `src/tools/swarm3_playlistops.ts` (24 tools) and `src/tools/exhaust2_misc.ts` (27 tools) the summary form is a `{ jsonSummary }` option on the one shared `emit` in `src/result.ts` — 5 and 59 call sites respectively. It is deliberately **not** a module-local renderer: a local `shape()`/`emit()` re-implements the prose-vs-json dispatch, which is the copy-drift #582 exists to prevent, and `tests/result.consolidation.test.ts` fails on one by name. `capRowSections` is called per handler, and only 4 handlers in the swarm3 module (`playlist_intersection`, `playlist_union_preview`, `dedupe_playlist_plan`, `playlist_edit_journal`) and 1 in exhaust2misc (`dead_library_finder`) call it. **A call site that takes the summary without calling `capRowSections` therefore gets the summary text block and the `MAX_RESPONSE_BYTES` backstop, but no per-row cap and no `sections` envelope** — its json-mode text says `Full payload in structuredContent.` rather than per-section counts, and `structuredContent` is bounded only at 64,000 serialized bytes. `balance_playlist_pairs` is the named case where the two halves are deliberately different in kind: its payload is a move plan rather than a section set, so it takes `summarizeMoves` (counts and the metric, never a move) and its own `moves_total` / `moves_returned` / `moves_withheld` disclosure rather than a `sections` envelope. The same is true of the `taste_*` composites, whose single shared `jsonUpstream` helper does cap, so those ten do publish `sections`; the split is per module, not a property of the helper. **One documented exception on purpose:** `library_hygiene` and `find_duplicate_saved_tracks` treat `response_format: 'json'` as the documented **bulk export** and return the whole analysis there, because their `groups` array is the raw album-group scan rather than a rendered answer; the cap and the withholding apply to the human-facing modes, and the withheld rows say where to get them. The shape change on `diff_playlists` / `overlap_playlists` — the ad-hoc `truncation: {returned, total}` object is replaced by `sections`, and the source-walk flag moves from `truncated` to `truncated_by_cap` — is breaking for any caller reading those two names. `year_in_review` is deliberately not capped: its `tops` map is bounded upstream at `limit: '50'` per time range, so a row cap there would trim an already-bounded answer without adding a disclosure worth having.
 - **Paging signal** (any tool that reads one `offset` page of a larger collection: `search`, `search_deep`, the `search_<type>` family, `search_by_isrc`, `audiobooks_by_author`, and the other typed search tools) — the offset to continue from is printed as a `Next page: offset=N` line in the prose **and** carried in the `pagination` object of structuredContent. A line-oriented agent never reads structuredContent, so the prose line is the operative one; both are derived from the same value, so they cannot disagree. The line is omitted, and the pagination object's next offset is null, once the walk is exhausted — an exhausted page must not tell the agent to keep going. `structuredContent.pagination` always reports the page that was actually requested (offset and limit as sent to `/search`, never a hardcoded zero), and a `next_offset` is only emitted for a tool that declares the `offset` control it names: the truncation boundary strips an offset a caller cannot act on, because a paging signal the caller has no way to use is not a signal.
 - **`fetch_all`** (paged reads) — walk every page via `client.getAllPages`, capped by `SPOTIFY_MCP_FETCH_ALL_CAP` (500). Long walks emit MCP progress notifications per page.
 - **Bounded-read disclosure (#1423) — one name, repo-wide.** A tool that reads a collection under a cap and must say the read was partial discloses it with exactly this pair:
@@ -782,9 +783,35 @@ Set repeat mode.
 ---
 
 #### `get_queue`
-Get the current playback queue.
+Read the playback queue. This and `peek_next` are the only two queue-read entry points (#847); the six registrations they replaced — `describe_queue`, `get_queue_snapshot`, `queue_runtime_report`, `queue_duplicate_check`, `queue_profile` and `predict_next_tracks` — are retired, and a call naming one is refused with `reason: "retired_tool_alias"` and a `fix` naming the exact replacement call below.
 
-**Returns:** currently playing item, plus the up-next list (name, artist, duration, URI) truncated to `max_results` with pagination info in structuredContent.
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `view` | `"raw"` \| `"enriched"` | no | `raw` (default) = the queue as returned. `enriched` = plus `context_label` (the source playlist/album name) and `total_remaining_ms`. |
+| `include` | `("runtime"\|"duplicates"\|"profile")[]` | no | Local analyses over the same read, default `[]`. `runtime` = total/average/longest/shortest, the time left on the current track, and a `timeline` of every row with its cumulative `plays_at_ms`. `duplicates` = repeated rows and the runtime they waste. `profile` = unique artists/albums/shows, track-vs-episode mix, longest single-artist run. |
+| `max_results` | number | no | Truncates the returned item list only. |
+| `response_format` | enum | no | |
+
+**Quota:** exactly one `GET /me/player/queue` per call, whatever `view` and `include` are. `view: "enriched"` and `include: ["runtime"]` each add one `GET /me/player`; a call asking for both reads it once, and the context label adds one catalog read. `duplicates` and `profile` are local compute and cost nothing.
+
+**Returns:** currently playing item, plus the up-next list (name, artist, duration, URI) truncated to `max_results` with pagination info in structuredContent. Analyses run over the **whole** queue, never the truncated page, and appear under `runtime` / `duplicates` / `profile` only when requested.
+
+`runtime.current_track_remaining_ms` needs a second endpoint. If that read fails it is `null` with `current_track_remaining_error` naming the failure, and `estimated_total_wait_ms` and `runtime.timeline` are `null` too — never `0` and never a column of plausible offsets, which would read as "the current track is already over" and as real start times (#803). `timeline` entries are the full row (`position`, `uri`, `name`, `subtitle`, `duration_ms`, `is_episode`, plus the album/show/artist context) with `plays_at_ms` added, which is the retired `predict_next_tracks` `items[]` widened. It is not capped by `max_results`: the page is a page, a total that quietly covered one is a wrong number wearing the right field name.
+
+---
+
+#### `peek_next`
+Short lookahead at the queue: the next N items with durations and total runway. One of the two queue-read entry points (#847) — the other is `get_queue`, which answers for the whole queue, its runtime, duplicates and composition.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `count` | number | no | How many to peek, 1–50 (default 5). Alias for `max_results`. |
+| `max_results` | number | no | |
+| `response_format` | enum | no | |
+
+**Quota:** 1 read. The per-item ETA the retired `predict_next_tracks` returned is `runtime.timeline` from `get_queue` with `include: ["runtime"]` — it needs a second endpoint, which this lookahead does not pay for.
 
 ---
 
@@ -889,90 +916,6 @@ A 404 means "not available in this market"; a 429 or transport failure is a
 statement about the run, not about the market, and is reported as such with
 its reason so a throttled sweep cannot read as a clean sweep of
 unavailability.
-
-#### The one playback-position record (#846)
-
-Three sidecars each persisted "where was I listening" in their own shape, under
-their own key scheme, with their own id generator — `exhaust2-playback.json`
-under `checkpoints` (`cp-YYYY-MM-DDTHH:MM`), `playback-extensions.json` under
-`states` (the caller's slot name), and one file per record under
-`backups/playback-bookmark-*.json` (an ISO id with `:`/`.` → `-`). Nothing could
-list them together and a position saved by one tool could not be continued by
-another.
-
-There is now **one record shape**, in the playback-extensions sidecar under its
-own `positions` key — a new key rather than a reuse of `states`, because
-`states` backs `save_playback_state`/`restore_playback_state` and holds a whole
-`PlaybackState` the #833 restore path reads. The other four keys in that file
-(`devicePresets`, `sessions`, `smartRules`, `showDigest`, `states`) are
-untouched.
-
-| Field | Notes |
-|---|---|
-| `id` | Canonical id. The tool-reported id for a fresh write, or the migration-assigned id for an imported one. |
-| `label` / `note` | The free-text slot. The three legacy stores spelled it `label`, `note` and `name`; one field, whichever the source had. `null` when there was none. |
-| `saved_at` | ISO 8601. One timestamp, used for both the id and the field, so they cannot disagree. |
-| `device_id` / `device_name` | `null` when not captured. |
-| `track_uri` / `track_name` | `null` when nothing was playing. |
-| `position_ms` | Offset within the track. |
-| `is_playing` | Boolean. |
-| `context_uri` | Album/playlist context when one was captured, else `null`. |
-| `shuffle_state` / `repeat_state` | **`null` means "not captured"**, which is not the same as `false`. The bookmark shape never recorded them, so a migrated bookmark reports `null` rather than a default that reads as a fact. |
-| `origin` | `bookmark` \| `checkpoint` \| `playback_state` — which store wrote it. |
-| `origin_id` | The key it had there. Together with `origin` this is the **idempotency key**. |
-| `legacy` | The source record, verbatim. |
-
-`legacy` is the losslessness contract: two of the three legacy shapes stored a
-whole `PlaybackState`, and flattening it would throw away anything the
-migration failed to anticipate. So every imported record keeps its original
-whole. A flattening bug therefore costs a default, never user data.
-
-**Tools.** `capture_playback_position` and `checkpoint_playback` are the
-writers of the record. `list_playback_bookmarks`, `resume_playback_position`,
-`delete_playback_bookmark` and `continue_last` are thin wrappers over it, and
-all four accept either a canonical `id` or the legacy `origin_id`, so an id
-handed out before the migration still resolves.
-
-**The reads work before the migration too.** A legacy bookmark file, exhaust2
-checkpoint or `states` entry whose `origin_id` is not in the store is still
-returned by `list_playback_bookmarks` / `resume_playback_position` /
-`continue_last`. Consolidating the format must not make a position the user
-already saved unreachable in the meantime. For the same reason
-`delete_playback_bookmark` removes the legacy original as well as the canonical
-row — deleting only the canonical row would leave the position visible in the
-very listing it was just deleted from.
-
-**`migrate_playback_positions`** is the one-time, idempotent import. It reports
-`imported`, `already_present`, a per-source breakdown, the `.migrated` renames
-it made, and — separately from every total — an `unreadable[]` list naming each
-record it could **not** read and why, so no total can be read as "everything
-migrated" when something did not.
-
-- **Idempotent** by `origin` + `origin_id` provenance, not by a marker flag, so
-  a position added *after* a run is still picked up by a later one.
-- **Refuses rather than partially applies.** A legacy sidecar that exists but
-  cannot be parsed is fatal: nothing is written, the bytes are preserved to
-  `<file>.corrupt`, and every original is still on disk to retry from. A
-  half-finished migration that drops the readable records behind an unreadable
-  one is worse than no migration. A refused run reports `imported: 0` even when
-  it had already staged records in memory, because reporting those counts
-  alongside a refusal tells the caller records were imported when not a byte
-  was written.
-- A **missing** store is the first-run case, not a fault. A single unparseable
-  bookmark *file* is non-fatal — it is named with its reason and the rest still
-  migrate, because aborting a 400-record migration over one bad file is the
-  worse outcome.
-- Legacy bookmark files are **renamed** to `.migrated`, never unlinked.
-
-**Breaking (v3):** `capture_playback_position` returns
-`{ bookmarked, position, path }` where `path` is the sidecar and `position` is
-the canonical record; it previously returned `{ bookmarked, bookmark, path }`
-with `captured_at` and one file per bookmark. `list_playback_bookmarks` sorts by
-`saved_at` rather than by id, because a canonical id is not a timestamp.
-`delete_playback_bookmark` describes and removes a record in the shared store,
-not a file. A **new** `checkpoint_playback` record no longer stores the whole
-`PlaybackState` (queue and `disallows`); it stores the fields a resume reads.
-An unmigrated one keeps its state under `legacy`.
 
 ---
 
@@ -1957,7 +1900,7 @@ Get any Spotify user's public profile.
 
 **Inputs:** `user_id` (string, required)
 
-**Returns:** display name, user ID, URI, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields). Spotify removed `followers` from user profiles in February 2026, so on a current registration there is no follower count to report and the line is omitted rather than printed as `0`; a grandfathered registration that still sends one has it printed. The endpoint itself was removed in the same changelog, so a current registration gets a 403 that names the grandfathering requirement instead of a profile.
+**Returns:** display name, user ID, URI, profile image URL, external URL. Uses `GET /users/{user_id}` (no authentication-scoped data — only public fields). Spotify removed `followers` from user profiles in February 2026, so on a current registration there is no follower count to report and the line is omitted rather than printed as `0`; a grandfathered registration that still sends one has it printed. The endpoint itself was removed in the same changelog and no endpoint replaced it, so a current registration gets a 403 that names the removal and records the older-registration question as **unverified** rather than prescribing one, instead of a profile.
 
 ---
 
@@ -2190,20 +2133,35 @@ One tool in the `moodexpand` module. It is `alwaysActive` (registration key `moo
 
 **Prompt reuse.** `dj`, `playlist_from_mood`, `discover_weekly_alternative` and `crate_digging` each begin with the shared `moodExpansionClause` in `src/prompts/index.ts`, which names this tool, both `source` outcomes, and the `isError` case. The clause is one function because four prompts naming the tool in their own words is how they drift.
 
+### 5.16 Queue-read migration (#847)
+
+Eight registered tools read `GET /me/player/queue`. Two are left; the other six are retired and a call naming one is refused with `kind: "unknown_tool"`, `reason: "retired_tool_alias"`, and a `fix` naming the exact replacement call.
+
+| Retired name | Call that replaces it | What moved |
+|---|---|---|
+| `describe_queue` | `get_queue` with `view: "enriched"` | `context_label` and `total_remaining_ms`. Its `include_context: false` has no equivalent — `view: "raw"` is the "do not resolve the context" answer, and the total is not returned there. Three of its fields do **not** come across, and none of them is a measurement: `queue_length` is `items.length`, and `insertion: "tail"` and `workaround: "queue is append-only"` were two renderings of the constant that Spotify's queue is append-only. They are named here so the omission is a decision on the page rather than a field a caller discovers missing. |
+| `get_queue_snapshot` | `get_queue` with `include: ["runtime"]` | `total_runtime_ms`; its `total` is now `runtime.upcoming_count`. |
+| `queue_runtime_report` | `get_queue` with `include: ["runtime"]` | Every field, unchanged, now nested under `runtime`. |
+| `queue_duplicate_check` | `get_queue` with `include: ["duplicates"]` | Every field, now nested under `duplicates`. |
+| `queue_profile` | `get_queue` with `include: ["profile"]` | Every field, now nested under `profile`. Still counts the playing item. |
+| `predict_next_tracks` | `peek_next` with `count` for the item list; `get_queue` with `include: ["runtime"]` for the ETA | Every field. `items[]` is `runtime.timeline` — same rows, same cumulative `plays_at_ms`, widened with the album/show/artist context and not capped. `current_track_remaining_ms` is `runtime.current_track_remaining_ms`. |
+
+**These six are deliberately NOT reachable through `SPOTIFY_MCP_LEGACY_ALIASES=1`.** The eight `taste_*` aliases that flag restores were argument-identical to their canonical tools, so rewriting the name preserved the call. None of these six is: `queue_runtime_report` sends no arguments and its answer is the runtime analysis, while `get_queue` with no arguments answers with the raw queue. A name-only rewrite would return a different, entirely plausible answer under a name that used to be right — the same defect class as #803 and #830. The flag means "same call, new name", not "same name, different question".
+
 
 ## 6. Resources
 
 MCP Resources expose read-only data as URIs Claude can reference. Fixed resources and template inventories are generated from the live registry:
 
 <!-- BEGIN:generated resource-surface -->
-The finalized default registry contains **17 fixed resources** and **47 resource templates**. Fixed URIs: `spotify://me`, `spotify://me/followed/artists`, `spotify://me/genre-heatmap`, `spotify://me/listening-history`, `spotify://me/playlists`, `spotify://me/rate-limit`, `spotify://me/recently-played`, `spotify://me/saved/albums`, `spotify://me/saved/audiobooks`, `spotify://me/saved/episodes`, `spotify://me/saved/shows`, `spotify://me/saved/tracks`, `spotify://me/top/artists`, `spotify://me/top/tracks`, `spotify://player/devices`, `spotify://player/queue`, `spotify://player/state`. Template URIs: `spotify://album/{id}`, `spotify://album/{id}{+qs}`, `spotify://artist/{id}`, `spotify://artist/{id}/albums`, `spotify://artist/{id}/albums{+qs}`, `spotify://artist/{id}{+qs}`, `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters`, `spotify://audiobook/{id}/chapters{+qs}`, `spotify://audiobook/{id}{+qs}`, `spotify://chapter/{id}`, `spotify://chapter/{id}{+qs}`, `spotify://episode/{id}`, `spotify://episode/{id}{+qs}`, `spotify://me/followed/artists{?format}`, `spotify://me/genre-heatmap{?format}`, `spotify://me/listening-history{?format}`, `spotify://me/playlists{?format}`, `spotify://me/rate-limit{?format}`, `spotify://me/recently-played{+qs}`, `spotify://me/recently-played{?format,limit,after,before}`, `spotify://me/saved/albums{+qs}`, `spotify://me/saved/albums{?format,limit,offset}`, `spotify://me/saved/audiobooks{+qs}`, `spotify://me/saved/audiobooks{?format,limit,offset}`, `spotify://me/saved/episodes{+qs}`, `spotify://me/saved/episodes{?format,limit,offset}`, `spotify://me/saved/shows{+qs}`, `spotify://me/saved/shows{?format,limit,offset}`, `spotify://me/saved/tracks{+qs}`, `spotify://me/saved/tracks{?format,offset,limit}`, `spotify://me/top/artists{+qs}`, `spotify://me/top/artists{?format,time_range,limit,offset}`, `spotify://me/top/tracks{+qs}`, `spotify://me/top/tracks{?format,time_range,limit,offset}`, `spotify://me{?format}`, `spotify://player/devices{?format}`, `spotify://player/queue{?format}`, `spotify://player/state{?format}`, `spotify://playlist/{id}`, `spotify://playlist/{id}/tracks`, `spotify://playlist/{id}/tracks{+qs}`, `spotify://playlist/{id}{+qs}`, `spotify://show/{id}`, `spotify://show/{id}{+qs}`, `spotify://track/{id}`, `spotify://track/{id}{+qs}`.
+The finalized default registry contains **17 fixed resources** and **28 resource templates**. Fixed URIs: `spotify://me`, `spotify://me/followed/artists`, `spotify://me/genre-heatmap`, `spotify://me/listening-history`, `spotify://me/playlists`, `spotify://me/rate-limit`, `spotify://me/recently-played`, `spotify://me/saved/albums`, `spotify://me/saved/audiobooks`, `spotify://me/saved/episodes`, `spotify://me/saved/shows`, `spotify://me/saved/tracks`, `spotify://me/top/artists`, `spotify://me/top/tracks`, `spotify://player/devices`, `spotify://player/queue`, `spotify://player/state`. Template URIs: `spotify://album/{id}{?format}`, `spotify://artist/{id}/albums{?format}`, `spotify://artist/{id}{?format}`, `spotify://audiobook/{id}/chapters{?format,market,limit,offset}`, `spotify://audiobook/{id}{?format,market}`, `spotify://chapter/{id}{?format,market}`, `spotify://episode/{id}{?format,market}`, `spotify://me/followed/artists{?format}`, `spotify://me/genre-heatmap{?format}`, `spotify://me/listening-history{?format}`, `spotify://me/playlists{?format}`, `spotify://me/rate-limit{?format}`, `spotify://me/recently-played{?format,limit,after,before}`, `spotify://me/saved/albums{?format,limit,offset}`, `spotify://me/saved/audiobooks{?format,limit,offset}`, `spotify://me/saved/episodes{?format,limit,offset}`, `spotify://me/saved/shows{?format,limit,offset}`, `spotify://me/saved/tracks{?format,offset,limit}`, `spotify://me/top/artists{?format,time_range,limit,offset}`, `spotify://me/top/tracks{?format,time_range,limit,offset}`, `spotify://me{?format}`, `spotify://player/devices{?format}`, `spotify://player/queue{?format}`, `spotify://player/state{?format}`, `spotify://playlist/{id}/tracks{?format,offset,limit}`, `spotify://playlist/{id}{?format}`, `spotify://show/{id}{?format,market}`, `spotify://track/{id}{?format,market}`.
 <!-- END:generated resource-surface -->
 
 ### 6.1 Query parameters on paged resources
 
 A fixed resource that reads a paged endpoint accepts its window in the URI. The window travels on the URI because a resource read has no arguments field — the URI is the only thing a host controls — and because a host that polls `spotify://me/top/tracks?time_range=short_term&limit=5` can cache the answer against the URI it asked for.
 
-Each parameterised resource registers three entries, not one: the bare URI, a form-style template naming the parameters (`{?format,time_range,limit,offset}`), and a `{+qs}` catch-all.
+Each parameterised resource registers two entries, not one: the bare URI, and a form-style template naming the parameters (`spotify://me/top/tracks{?format,time_range,limit,offset}`). The template is the query-absorbing form — it matches the bare URI, `?format=json`, and any declared parameter — so a third entry for the same read is not a spare, it is a second claim on one URI (#685).
 
 **Expansion is the host's job, so the server's job is to match a pattern against a concrete URI.** `resources/templates/list` returns template strings; `resources/read` takes a concrete `uri`, and nothing in a read request can carry the braces. That makes the server's obligation precise: match the concrete URI a conforming host built from the template it was advertised.
 
@@ -2216,9 +2174,9 @@ spotify://me/top/tracks{?format,time_range,limit,offset}
 
 Every named parameter must be present, and in declaration order. RFC 6570 §3.2.8 says the opposite: a form-style expression expands with *whatever variables are defined*, joined by `&` in declaration order, and with none defined it expands to the empty string. The SDK therefore disagrees with its own expander — `expand({time_range:'short_term', limit:'5'})` returns `spotify://me/top/tracks?time_range=short_term&limit=5`, and `match()` of that same string returns `null`.
 
-Before #1401 the server routed around this by depending on the `{+qs}` twin, so every advertised `{?…}` entry was decorative: a host that expanded the template correctly landed on the catch-all, not on the entry it was told to build a URI from. `src/resources/uritemplate.ts` (`Rfc6570UriTemplate`, a `UriTemplate` subclass) now compiles these templates the way RFC 6570 expands them, and every `{?…}` and `{+qs}` template in `src/resources/` is registered with it. `toString()` is unchanged, so `resources/templates/list` still advertises the same strings.
+Before #1401 the server routed around this by depending on a `{+qs}` catch-all twin, so every advertised `{?…}` entry was decorative: a host that expanded the template correctly landed on the catch-all, not on the entry it was told to build a URI from. `src/resources/uritemplate.ts` (`Rfc6570UriTemplate`, a `UriTemplate` subclass) now compiles these templates the way RFC 6570 expands them, and every template in `src/resources/` is registered with it. With the matcher corrected the twin had no remaining job, so #685 removed it: `resources/templates/list` now advertises one template per readable shape, and every one of them is a shape a read can actually reach.
 
-**The `{+qs}` twin is the catch-all for query strings this server does not model** — a typo, an undeclared parameter, a parameter sent in an order the template does not expand to. It also has to *not* match a path difference, and the SDK's `(.+)` could not do that: `spotify://me/saved/tracks{+qs}` matched `spotify://me/saved/tracksX`, and the server served saved tracks for a URI that names no such resource. The corrected matcher requires a real `?`, so that URI is now rejected.
+**A catch-all twin was the wrong way to absorb a query string, twice over.** The `{+qs}` twin existed to catch query strings this server does not model — a typo, an undeclared parameter, a parameter sent in an order the template does not expand to — which the corrected form-style matcher now does on its own, and it had to *not* match a path difference, which it could not: the SDK's `(.+)` made `spotify://me/saved/tracks{+qs}` match `spotify://me/saved/tracksX`, and the server served saved tracks for a URI that names no such resource. Worse, the SDK resolves `resources/read` against registered templates **in registration order** and takes the first match, so a catch-all beside the form-style entry is a template that can never win — advertised in `resources/templates/list` and unreachable by any read. One template per shape is the honest count, and `tests/resources-template-dedup.test.ts` asserts it as a property: no registered template is a `{+…}` expression, and no two registered templates claim the same concrete URI.
 
 A read of the advertised `uriTemplate` string itself also resolves, to the unparameterised default, rather than failing with "resource not found" against a URI the server published. `tests/resources-uri-template-matching.test.ts` covers all of this, including the general property that every registered template matches the URI the SDK's own expander produces from it — so the next template that gets this wrong is caught here rather than by a host. `tests/resources-603.test.ts` still pins the SDK's stricter behaviour, so an SDK that relaxes it to true RFC 6570 turns that test red rather than making the override's reason disappear quietly.
 
@@ -2242,7 +2200,7 @@ A read of the advertised `uriTemplate` string itself also resolves, to the unpar
 
 `limit` is bounded to 1–50 and `offset` to ≥0 before forwarding, matching the tool schemas and the OpenAPI maxima. An unparseable value falls back to the endpoint default rather than failing the read.
 
-**Normalising silently is a reason to publish the bound, so the bound is in the description.** Each parameterised resource states its range, its default and — for `time_range` and the cursors — its unit and legal values, on all three of its registered entries, so a host reads the contract from `resources/list` before it builds the URI rather than inferring it from a shortened response. `?limit` and `?offset` are zero-anchored numbers a natural-language request becomes ("the next ten"), so the same failure #883 fixed for playlist position bases applies here in the other direction: a guessed bound produces a *narrower* window than asked for and nothing in the body says the request was rewritten. `?after` and `?before` are **Unix epoch milliseconds**, not seconds and not an ISO date — a seconds cursor selects 1970 and returns an empty page. `tests/resources-603.test.ts` fails if any advertised parameter loses its bound.
+**Normalising silently is a reason to publish the bound, so the bound is in the description.** Each parameterised resource states its range, its default and — for `time_range` and the cursors — its unit and legal values, on both of its registered entries, so a host reads the contract from `resources/list` before it builds the URI rather than inferring it from a shortened response. `?limit` and `?offset` are zero-anchored numbers a natural-language request becomes ("the next ten"), so the same failure #883 fixed for playlist position bases applies here in the other direction: a guessed bound produces a *narrower* window than asked for and nothing in the body says the request was rewritten. `?after` and `?before` are **Unix epoch milliseconds**, not seconds and not an ISO date — a seconds cursor selects 1970 and returns an empty page. `tests/resources-603.test.ts` fails if any advertised parameter loses its bound.
 
 ### 6.2 Audiobook and chapter templates
 
@@ -2254,7 +2212,7 @@ A read of the advertised `uriTemplate` string itself also resolves, to the unpar
 | `spotify://audiobook/{id}/chapters` | `GET /audiobooks/{id}/chapters` | `?market`, `?limit` (1–50), `?offset`, `?format=json` |
 | `spotify://chapter/{id}` | `GET /chapters/{id}` | `?market`, `?format=json` |
 
-**The chapters pair registers before the bare audiobook pair.** `spotify://audiobook/{id}{+qs}` compiles to `(.+)`, so registered first it would swallow `spotify://audiobook/{id}/chapters`. This is the same ordering constraint that puts `artist-albums` ahead of `artist`, and it is why registration order in `src/resources/templates.ts` is a correctness property rather than a cosmetic one.
+**These two shapes no longer compete, so their order carries no meaning.** `spotify://audiobook/{id}{+qs}` compiled to `(.+)` and used to be registered ahead of the chapters entry precisely so it would not swallow `spotify://audiobook/{id}/chapters` — a correctness property that lived in the order of two lines of code. Each `{id}` capture is now followed either by the end of the URI or by a literal `/`, so no two templates can match the same URI and the order is documentation rather than mechanism. `tests/resources-template-dedup.test.ts` registers both resource modules in both orders and requires identical routing, which is what keeps that a checked claim instead of a comment that decays.
 
 `{id}` completions come from `/me/audiobooks` for the audiobook template, following the `artist-albums`/`show`/`episode` pattern. The chapter template has no suggester: `/me/audiobooks` yields audiobook ids, and a chapter's id is only reachable through `spotify://audiobook/{id}/chapters`.
 
@@ -2268,7 +2226,7 @@ A read of the advertised `uriTemplate` string itself also resolves, to the unpar
 
 It renders `id`, `name`, `type`, `is_active` and `volume_percent` through `deviceLine` in `src/devices.ts`, which `get_devices` also calls — so the two surfaces cannot drift on the #855 `volume_percent` guard, where the field is omitted on some devices and `null` on others. A volume-capable device with no reported level prints `volume: unknown`; one that cannot report volume at all prints no volume.
 
-The endpoint takes no query parameters (the OpenAPI schema declares none), so this resource has no `{?…}` template beyond the standard `?format=json` twin. `get_devices`'s tool description names the resource, so an agent that has the tool list can discover the cheaper read.
+The endpoint takes no query parameters (the OpenAPI schema declares none), so its single template is the standard `?format=json` one. `get_devices`'s tool description names the resource, so an agent that has the tool list can discover the cheaper read.
 
 ### 6.4 `spotify://me/genre-heatmap` coverage contract (#604)
 

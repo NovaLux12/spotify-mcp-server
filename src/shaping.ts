@@ -634,6 +634,74 @@ export function retiredToolAliasMessage(name: string, canonical: string): string
   return `${name} was removed in ${RETIRED_TOOL_ALIASES_REMOVED_IN}; use ${canonical} instead.`;
 }
 
+/** The release that stopped registering the six queue-read tool names (#847). */
+export const RETIRED_QUEUE_TOOLS_REMOVED_IN = 'v3.0';
+
+export interface RetiredQueueTool {
+  /** The surviving tool that answers the same question. */
+  canonical: string;
+  /**
+   * The exact call to make instead, arguments included — what goes in the
+   * refusal's `fix`, which is the one field a migrating caller reads.
+   */
+  call: string;
+}
+
+/**
+ * The six queue-read names withdrawn into two entry points (#847).
+ *
+ * They are NOT in {@link LEGACY_TOOL_ALIASES}, and the difference is about
+ * arguments, not about policy. The eight stats.fm aliases registered with the
+ * same zod shape and the same handler as their canonical name, so
+ * `resolveLegacyToolAlias` alone was a faithful rewrite of the call. None of
+ * these six is argument-compatible: `queue_runtime_report` sends no arguments
+ * at all and its answer is the runtime analysis, while the canonical
+ * `get_queue` with no arguments answers with the raw queue. A name-only
+ * rewrite would have returned a *different, entirely plausible* answer under a
+ * name that used to be right — the same defect class as #803 and #830, where a
+ * value that could not be obtained was filled in with something that looked
+ * true. And `SPOTIFY_MCP_LEGACY_ALIASES=1` must not make them work either,
+ * because that flag means "same call, new name", not "same name, different
+ * question".
+ *
+ * So these refuse, at the CallTool boundary and before any Spotify request,
+ * with the exact replacement call in `fix`. That is the migration a caller
+ * needs; a silent rewrite is not an upgrade, it is a wrong answer with a
+ * familiar name attached.
+ */
+export const RETIRED_QUEUE_TOOLS: Readonly<Record<string, RetiredQueueTool>> = Object.freeze({
+  describe_queue: { canonical: 'get_queue', call: "get_queue with view: 'enriched'" },
+  get_queue_snapshot: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_runtime_report: { canonical: 'get_queue', call: "get_queue with include: ['runtime']" },
+  queue_duplicate_check: { canonical: 'get_queue', call: "get_queue with include: ['duplicates']" },
+  queue_profile: { canonical: 'get_queue', call: "get_queue with include: ['profile']" },
+  predict_next_tracks: { canonical: 'peek_next', call: 'peek_next with count (and get_queue with include: [\'runtime\'] for the per-item ETA)' },
+});
+
+/** Every retired queue-read name, for the surface test and the census assertions. */
+export const RETIRED_QUEUE_TOOL_NAMES: readonly string[] = Object.freeze(
+  Object.keys(RETIRED_QUEUE_TOOLS).sort(),
+);
+
+/**
+ * The replacement for a retired queue-read name, or `undefined` when `name`
+ * was never one.
+ *
+ * `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias} uses it:
+ * this is a frozen object literal that still carries `Object.prototype`, and
+ * the name arrives from the wire, so a bare index would answer
+ * `RETIRED_QUEUE_TOOLS['constructor']` with a function.
+ */
+export function resolveRetiredQueueTool(name: string): RetiredQueueTool | undefined {
+  if (!Object.hasOwn(RETIRED_QUEUE_TOOLS, name)) return undefined;
+  return RETIRED_QUEUE_TOOLS[name];
+}
+
+/** The one-line migration note for a retired queue-read name. */
+export function retiredQueueToolMessage(name: string, tool: RetiredQueueTool): string {
+  return `${name} was removed in ${RETIRED_QUEUE_TOOLS_REMOVED_IN}; use ${tool.canonical} instead.`;
+}
+
 interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];
@@ -1108,6 +1176,136 @@ type JsonObject = Record<string, unknown>;
  * gate measures `tools/list`, which a response-time constant cannot affect.
  */
 export const MAX_RESPONSE_BYTES = 64_000;
+
+/** What one named section cost, and what came back (#895). */
+export interface SectionCap {
+  /** Rows actually returned for this section. */
+  returned: number;
+  /** Rows available before capping — the exact count, never the capped one. */
+  total: number;
+  /** True when rows were dropped from this section. */
+  truncated: boolean;
+  /**
+   * True when the field was withheld ENTIRELY rather than sliced.
+   *
+   * Distinct from `returned: 0` on an empty array: this section exists and has
+   * `total` rows, but none of them shipped in this channel. A caller that reads
+   * `returned: 0, truncated: false` would conclude the scan found nothing, which
+   * is the #803 failure class one field over — a value that could not be
+   * delivered recorded as a value that does not exist.
+   */
+  withheld?: boolean;
+  /** How to get the withheld rows, e.g. `response_format: 'json'`. */
+  available_via?: string;
+  /**
+   * True when the payload carried nothing array-shaped at this key.
+   *
+   * A named key that is absent, `null`, or not an array is a value this payload
+   * never carried — reporting `total: 0` for it would state a row count the read
+   * never produced. The key is left in the payload exactly as it was, so the
+   * unreadable thing stays unreadable rather than being coerced into `[]`.
+   */
+  unreadable?: boolean;
+}
+
+/**
+ * The machine-readable row cap, applied per named array (#895).
+ *
+ * `MAX_RESPONSE_BYTES` above is the BACKSTOP: it fires when a tool forgot to
+ * shape its own output, and it pays for that by DROPPING whole top-level
+ * fields. A `library_hygiene` call over the cap loses `groups` entirely rather
+ * than returning the ten rows the caller asked `max_results` for — the caller
+ * gets a smaller answer to a question it did not ask. This helper is the
+ * PRIMARY control the backstop stands behind: it slices the row arrays a tool
+ * names, to that tool's own `max_results`, and leaves every other field
+ * (aggregates, counts, scan metadata) untouched because those are the cheap
+ * fields that describe what happened.
+ *
+ * Three properties make it the thing to reach for rather than a local
+ * `slice(0, cap)`:
+ *
+ *  - **The exact totals survive.** `sections` reports `returned` against
+ *    `total` for every named array, so a capped result is never
+ *    indistinguishable from a complete one — the #803 failure class, where a
+ *    caller cannot tell an answer that was cut down from an answer that was
+ *    whole, and reports it as complete.
+ *  - **Arrays are capped INDEPENDENTLY.** A tool with three sections gets up to
+ *    `max_results` in each, which is what its prose path already renders,
+ *    and what its own description promises. One shared budget across sections
+ *    would silently starve a section the caller can see described in full.
+ *  - **The named arrays keep their keys.** The envelope is added beside the
+ *    payload, not around it, so a consumer reading `structuredContent.groups`
+ *    keeps working; only its length changes, and `sections.groups` says why.
+ *
+ * A name in `withhold` is DELETED rather than sliced, and reported with
+ * `withheld: true` and its exact `total`. This is not a stylistic preference:
+ * a row cap cannot bound a field whose rows are themselves large. Capping
+ * `library_hygiene`'s `groups` to 10 rows still ships up to 10 whole album
+ * groups including each one's `liked_tracks[]` — a payload that grows with the
+ * library while looking capped, which is worse than no cap because it looks
+ * like the cap worked. `groups` is the scanned library, it is the field the
+ * bulk export exists for, and it belongs in `response_format: 'json'`.
+ *
+ * `truncated` is written at the TOP level, and means rows were withheld from
+ * THIS payload. It does not mean a source walk hit `scan_cap`: that is
+ * `truncated_by_cap`, which is a different quantity about a different read, and
+ * a call site that reports both must pass the walk's flag in under that name
+ * rather than letting this one overwrite it.
+ *
+ * The return type states BOTH fields the envelope writes, rather than only
+ * `sections`. Omitting `truncated` made the return type a partial description
+ * of the object actually returned, which is the §6 failure one level up: a
+ * caller reading `capped.truncated` had to widen the type at the call site, and
+ * a test asserting the flag had to cast past the signature that the truncation
+ * boundary in this same file reads (`markedTruncated`). It is written on every
+ * return path, so it belongs in the type.
+ */
+export function capRowSections<T extends JsonObject>(
+  payload: T,
+  arrays: readonly string[],
+  maxResults: number,
+  withhold: readonly string[] = [],
+): T & { truncated: boolean; sections: Record<string, SectionCap> } {
+  const sections: Record<string, SectionCap> = {};
+  const next: JsonObject = { ...payload };
+  for (const key of arrays) {
+    const value = payload[key];
+    if (!Array.isArray(value)) {
+      // Not a coercion site: an absent or non-array value is left exactly as
+      // the handler produced it. Writing `[]` here would report a scan that
+      // found nothing where the truth is that it reported something we could
+      // not read (#804).
+      sections[key] = { returned: 0, total: 0, truncated: false, unreadable: true };
+      continue;
+    }
+    const view = truncateItems(value, maxResults);
+    sections[key] = { returned: view.returned, total: view.total, truncated: view.truncated };
+    next[key] = view.items;
+  }
+  for (const key of withhold) {
+    const value = payload[key];
+    if (value === undefined) {
+      sections[key] = { returned: 0, total: 0, truncated: false, unreadable: true };
+      continue;
+    }
+    const total = Array.isArray(value) ? value.length : 1;
+    sections[key] = {
+      returned: 0,
+      total,
+      truncated: true,
+      withheld: true,
+      available_via: "response_format: 'json'",
+    };
+    delete next[key];
+  }
+  // The issue asks for `truncated: true` on any capped response, and it is the
+  // flag a host and the truncation boundary both look for, so it is stated at
+  // the top level as well as per section. `sections` remains the precise
+  // statement — one boolean cannot say WHICH section lost rows.
+  next.truncated = Object.values(sections).some((section) => section.truncated);
+  next.sections = sections;
+  return next as T & { truncated: boolean; sections: Record<string, SectionCap> };
+}
 
 /**
  * How many omitted field names the receipt enumerates before it reports only
@@ -1850,6 +2048,40 @@ function fmtFieldValue(value: unknown): string | null {
 /** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
 export function jsonResult(raw: Record<string, unknown>): RenderedToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
+}
+
+/**
+ * The payload appears ONCE (#895).
+ *
+ * `jsonResult` above puts the same object in both channels, so a host pays for
+ * it twice on every call — a per-call cost, unlike the one-time `tools/list`
+ * schema surface, which is what makes the doubling worth removing. This emits
+ * the object in `structuredContent` and a bounded summary in the text block,
+ * which is the channel a host shows a human.
+ *
+ * **The text block is NOT valid JSON, deliberately.** A mirrored JSON text
+ * block is a second copy of a payload the host already has in
+ * `structuredContent`; replacing it with a pointer is what makes the saving
+ * real. The trade is that a client reading only `content[].text` no longer
+ * finds the object there — which is why this is opt-in per call site rather
+ * than a change to `jsonResult` (SPEC.md §5 promises "the raw API payload as
+ * JSON text", and the ~180 json branches that keep the mirrored form are how
+ * that promise is kept), and why the summary names the channel the data is in
+ * rather than assuming the reader can find it.
+ *
+ * `summarize` receives the payload so a call site can describe what it holds
+ * (section counts, whether anything was capped) rather than emit a constant.
+ * A summary that is itself unbounded is no saving at all, so a caller that
+ * interpolates a list must bound it.
+ */
+export function emitOnce(
+  raw: Record<string, unknown>,
+  summarize: (payload: Record<string, unknown>) => string,
+): RenderedToolResult {
+  return {
+    content: [{ type: 'text', text: summarize(raw) }],
+    structuredContent: raw,
+  };
 }
 
 /**

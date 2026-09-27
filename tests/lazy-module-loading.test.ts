@@ -36,7 +36,7 @@
  * to do with this change. What is asserted instead is the machine-independent
  * fact those thresholds were a proxy for: how many tool modules the process
  * evaluates. Measured on both dists of the same tree, that is 18 under
- * `playback` where it was 69, for the identical 106 tools.
+ * `playback` where it was 69, for the identical 100 tools.
  * `scripts/measure-startup.mjs` is the harness for the wall-clock and RSS
  * numbers; ARCHITECTURE.md records the interleaved A/B, including the part
  * that does not flatter the change (peak RSS rises under a trimmed toolset,
@@ -225,7 +225,7 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     const playback = await recordStartup('playback');
 
     // 18 measured on the machine this landed on; 69 before the change, for the
-    // then-identical surface. The bound is deliberately loose so an
+    // identical 100-tool surface. The bound is deliberately loose so an
     // unrelated future transitive import does not redden the build, while
     // still failing loudly if the gate stops gating — a revert to static
     // imports puts every one of the 66 back.
@@ -238,6 +238,22 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
+    // Two deltas land on this number, from opposite directions, and the
+    // comment has to carry both or the next reader attributes it to the wrong
+    // one.
+    //
+    // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
+    // registers under every toolset — the `prompts` set is in the default
+    // install and the four mood prompts name this tool, and a prompt naming a
+    // tool the surface trimmed is what `prompt-resource-hints` fails on. The
+    // cost of that choice is visible right here: an `alwaysActive` module
+    // lands in EVERY trimmed surface, not only the default one. Stated rather
+    // than absorbed, because the next person to add a helper will hit the same
+    // number and should know they will.
+    //
+    // Three deltas land on this number, and the comment has to carry all of
+    // them or the next reader attributes a change to the wrong one.
+    //
     // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
     // registers under every toolset — the `prompts` set is in the default
     // install and the four mood prompts name this tool, and a prompt naming a
@@ -251,7 +267,12 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // the three legacy playback-position stores. It is the only tool that
     // change adds; the other three writers/readers were REWIRED onto the
     // shared record rather than added alongside it.
-    assert.equal(playback.toolCount, 108, 'the playback surface itself must not change');
+    //
+    // 108 -> 102 (#847): six queue readers collapsed into `get_queue` and
+    // `peek_next`. The retired names still forward for one release, so the
+    // tools a caller can name did not shrink by six — the registrations did,
+    // and this is the count of registrations.
+    assert.equal(playback.toolCount, 102, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -304,10 +325,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // asserting a number this tripwire has never measured.
     // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
     // tool. Same choice, and the same trade, as the `playback` figure above.
+    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
+    // tool. Same choice, and the same trade, as the `playback` figure above.
+    //
     // 571 -> 572 (#846): `migrate_playback_positions`, the same one tool as
-    // above. So the two deltas are 106->107->108 and 570->571->572, and this
-    // tripwire still catches a third.
-    assert.equal(full.toolCount, 572, 'the full (TOOLSETS=all) surface must be unchanged');
+    // above.
+    //
+    // 572 -> 566 (#847): the six queue readers, same trade again — a
+    // registration count, and the forwarding aliases do not add a line here.
+    assert.equal(full.toolCount, 566, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

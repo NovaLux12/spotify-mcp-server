@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 601,956B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 66,722B | 11.1% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 10,044B | 1.6% of the enforced limit |
+| Measured `tools/list` payload | 598,228B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 65,918B | 11.0% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 13,772B | 2.3% of the enforced limit |
 
-Headroom is **10,044B** of the 612,000B enforced limit — 1.6% — so the aggregate budget is **tight**.
+Headroom is **13,772B** of the 612,000B enforced limit — 2.3% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -166,7 +166,7 @@ than maintained.
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 27,222 | 31 | 27,222 | 32 | 29,945 |
 | library | 13 | 12,814 | 13 | 12,814 | 14 | 14,096 |
-| playback | 16 | 12,210 | 16 | 12,210 | 17 | 13,432 |
+| playback | 16 | 13,132 | 16 | 13,132 | 17 | 14,446 |
 | following | 3 | 2,502 | 3 | 2,502 | 4 | 2,753 |
 | users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
@@ -180,7 +180,7 @@ than maintained.
 | analytics | 3 | 1,908 | 3 | 1,908 | 5 | 3,099 |
 | statsfm | 30 | 29,181 | 30 | 29,181 | 31 | 32,100 |
 | taste | 8 | 8,224 | 8 | 8,224 | 9 | 9,047 |
-| tastecomposites | 10 | 9,650 | 10 | 9,650 | 11 | 10,615 |
+| tastecomposites | 10 | 10,242 | 10 | 10,242 | 11 | 11,267 |
 | tasteplaylist | 1 | 1,884 | 1 | 1,884 | 2 | 2,073 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | accounts | 2 | 1,644 | 2 | 1,644 | 3 | 1,809 |
@@ -206,8 +206,8 @@ than maintained.
 | browse | 1 | 436 | 1 | 436 | 2 | 480 |
 | artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
 | queueops | 3 | 3,293 | 3 | 3,293 | 4 | 3,623 |
-| playbackext | 14 | 8,852 | 14 | 8,852 | 15 | 9,738 |
-| playbackintel | 15 | 11,773 | 15 | 11,773 | 16 | 12,951 |
+| playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
+| playbackintel | 14 | 11,098 | 14 | 11,098 | 15 | 12,208 |
 | scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
 | playlisthealth | 8 | 5,713 | 8 | 5,713 | 9 | 6,285 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
@@ -217,7 +217,7 @@ than maintained.
 | exhaustmisc | 10 | 7,876 | 10 | 7,876 | 11 | 8,664 |
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 23 | 17,781 | 23 | 17,781 | 24 | 19,560 |
+| exhaust2playback | 22 | 17,050 | 22 | 17,050 | 23 | 18,755 |
 | exhaust2playlists | 18 | 24,403 | 18 | 24,403 | 19 | 26,844 |
 | exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,092 | 3 | 4,092 | 4 | 4,502 |
@@ -227,7 +227,7 @@ than maintained.
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 15 | 12,030 | 15 | 12,030 | 25 | 20,847 |
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
-| swarm3playback | 24 | 14,471 | 24 | 14,471 | 25 | 15,919 |
+| swarm3playback | 20 | 12,113 | 20 | 12,113 | 21 | 13,325 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
 | swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
 | swarm4playlists | 18 | 23,228 | 18 | 23,228 | 19 | 25,551 |

@@ -81,12 +81,14 @@ const DATED_TREE = /\b(?:measured|re-?measur\w*|measuring)\b|(?:warrant|grant)s?
  * one of these lines asks the question again.
  */
 const ALLOWED: { file: string; contains: string; why: string }[] = [
-  {
-    file: 'src/tools/annotations.ts',
-    contains: 'Then 11,882 -> 11,773B (-109) when #922 reworded this module',
-    why:
-      'dated: the #922 `playbackintel` re-measure. The figure is the manifest baseline it set; the sentence qualifying it ("The two deltas compose, and neither is measured off the other’s tree — this figure is the merged measurement.") is the NEXT one, so the anchoring test cannot reach it from here.',
-  },
+  // #847 deleted the `Then 11,882 -> 11,773B (-109) when #922 reworded this
+  // module` allowance. It existed because 11,773 WAS the `playbackintel`
+  // manifest baseline, so the comment was quoting a live constant whose
+  // qualifier sat in the next sentence and the anchoring test could not reach
+  // it. #847 lowered that baseline to 11,098, so 11,773 is no longer a
+  // constant anywhere in the tree and the sentence quotes nothing. Deleting
+  // the entry makes this gate stricter, not looser: a future raise back to
+  // 11,773 has to earn its allowance again.
   {
     file: 'src/tools/annotations.ts',
     contains: 'and the first raise was 19x its warrant',
