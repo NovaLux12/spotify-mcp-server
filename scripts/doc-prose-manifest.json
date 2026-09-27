@@ -1469,16 +1469,40 @@
         "label": "Steps 2–4 are bounded by SPOTIFYAUTHTIMEOUTMS (default 3…"
       },
       {
-        "hash": "daeeaf8db8f43c39",
-        "label": "OAuth scopes requested"
+        "hash": "f217c1192ff3f3c6",
+        "label": "OAuth scope profiles"
       },
       {
-        "hash": "03ca64d232110207",
-        "label": "user-read-private user-read-email user-read-playback-sta…"
+        "hash": "f2256a35c8879692",
+        "label": "The scopes auth asks for are chosen by a profile, not wr…"
       },
       {
-        "hash": "fe5c9a358f83aced",
-        "label": "Note: streaming is not included — that scope is for the …"
+        "hash": "c94ccc2d81aaac33",
+        "label": "| Profile | Scopes | What it unlocks | | --- | --- | ---…"
+      },
+      {
+        "hash": "930f719bdfc3291e",
+        "label": "Default core requests these 11 scopes:"
+      },
+      {
+        "hash": "b92795a17594c844",
+        "label": "user-read-private user-read-playback-state user-read-cur…"
+      },
+      {
+        "hash": "c4c3b4242216a070",
+        "label": "Before #700 an unconfigured auth run requested all 17, s…"
+      },
+      {
+        "hash": "1160284845f8a51e",
+        "label": "What a profile does and does not promise. A profile deci…"
+      },
+      {
+        "hash": "bdbfbdf08e71889b",
+        "label": "A grant that lacks a write scope therefore does not 403 …"
+      },
+      {
+        "hash": "bbc5214b5621a9e0",
+        "label": "Note: streaming and app-remote-control are in no profile…"
       },
       {
         "hash": "db13e35dc0ccf19f",
@@ -4983,6 +5007,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "03ca64d232110207",
+      "label": "user-read-private user-read-email user-read-playback-sta…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "19fcf320a679a642",
       "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
       "date": "2026-09-27",
@@ -5039,6 +5070,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "daeeaf8db8f43c39",
+      "label": "OAuth scopes requested",
+      "date": "2026-09-27",
+      "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "e3ad71b5cfba881d",
       "label": "Returns: per group: track label, occurrence count and ki…",
       "date": "2026-09-27",
@@ -5050,6 +5088,13 @@
       "label": "findduplicatesinplaylist Find duplicate tracks in a play…",
       "date": "2026-09-27",
       "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fe5c9a358f83aced",
+      "label": "Note: streaming is not included — that scope is for the …",
+      "date": "2026-09-27",
+      "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
     }
   ]
 }

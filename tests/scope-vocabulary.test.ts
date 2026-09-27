@@ -38,8 +38,11 @@ import { fileURLToPath } from 'node:url';
 import {
   DEFAULT_SCOPES,
   KNOWN_SPOTIFY_SCOPES,
+  SCOPE_PROFILE_NAMES,
   isKnownScope,
+  isReadScope,
   parseScopes,
+  scopesForProfile,
 } from '../src/config.ts';
 import { parseScopesString, resolveScopes } from '../src/auth.ts';
 import { WRITE_SCOPE_REQUIREMENTS } from '../src/scopefilter.ts';
@@ -51,20 +54,24 @@ const read = (rel: string): string => readFileSync(path.join(ROOT, rel), 'utf8')
 const OPT_IN = ['app-remote-control', 'streaming'] as const;
 
 describe('the scope vocabulary has one definition (#618)', () => {
-  it('derives the known set from the defaults rather than restating it', () => {
-    // KNOWN must be exactly defaults + opt-ins. Asserting the relationship
-    // instead of the literal list is what makes it structural: adding a scope
-    // to one array and forgetting the other fails here.
-    const derived = new Set([...DEFAULT_SCOPES, ...OPT_IN]);
+  it('derives the known set from the profiles rather than restating it', () => {
+    // KNOWN must be every scope any profile grants, plus the opt-ins that no
+    // profile carries. Asserting the relationship instead of the literal list
+    // is what makes it structural: a scope added to a group and forgotten
+    // elsewhere fails here rather than at a consent screen.
+    const derived = new Set<string>();
+    for (const name of SCOPE_PROFILE_NAMES) {
+      for (const scope of scopesForProfile(name)) derived.add(scope);
+    }
+    for (const optIn of OPT_IN) derived.add(optIn);
     assert.deepEqual(
       [...KNOWN_SPOTIFY_SCOPES].sort(),
       [...derived].sort(),
-      'KNOWN_SPOTIFY_SCOPES is not DEFAULT_SCOPES + the opt-in scopes',
+      'KNOWN_SPOTIFY_SCOPES is not the union of the profiles plus the opt-in scopes',
     );
   });
 
-  it('keeps the default grant at 17 scopes with no duplicates', () => {
-    assert.equal(DEFAULT_SCOPES.length, 17);
+  it('keeps the default grant free of duplicates and of opt-in scopes', () => {
     assert.equal(
       new Set(DEFAULT_SCOPES).size,
       DEFAULT_SCOPES.length,
@@ -76,6 +83,18 @@ describe('the scope vocabulary has one definition (#618)', () => {
         `${optIn} must be opt-in, not part of the standing grant`,
       );
     }
+  });
+
+  it('holds the default grant to the minimum (AGENTS.md §1, #700)', () => {
+    // The rule this file exists to enforce was never enforced anywhere. Named
+    // literally so the assertion cannot be satisfied by the profile table
+    // agreeing with itself: a default that grew a mutation scope would have to
+    // grow it in BOTH the group and this list to pass.
+    assert.equal(
+      DEFAULT_SCOPES.filter((scope) => !isReadScope(scope)).join(' '),
+      'user-modify-playback-state',
+      'the standing grant requests something other than reads plus playback control',
+    );
   });
 
   it('makes every known scope pass the type guard, and nothing else', () => {
@@ -119,12 +138,25 @@ describe('both parsers accept exactly the same vocabulary (#618 acceptance)', ()
     }
   });
 
-  it('gives the auth flow the same default set the config documents', () => {
+  it('gives the auth flow exactly the documented default grant', () => {
     // The default grant is what a user is CONSENTED to when they set no
-    // override, so the string the token request carries and the array the docs
-    // describe must be the same 17 scopes.
-    assert.equal(resolveScopes(undefined, undefined), DEFAULT_SCOPES.join(' '));
-    assert.equal(resolveScopes(undefined, undefined).split(' ').length, 17);
+    // override, so the string the token request carries must be the `core`
+    // profile, spelled out here rather than read back from config.ts — the
+    // old form of this assertion compared DEFAULT_SCOPES against a string
+    // built from DEFAULT_SCOPES, which passes whatever config.ts says.
+    assert.deepEqual(resolveScopes(undefined, undefined).split(' ').sort(), [
+      'playlist-read-collaborative',
+      'playlist-read-private',
+      'user-follow-read',
+      'user-library-read',
+      'user-modify-playback-state',
+      'user-read-currently-playing',
+      'user-read-playback-position',
+      'user-read-playback-state',
+      'user-read-private',
+      'user-read-recently-played',
+      'user-top-read',
+    ]);
   });
 });
 
@@ -151,8 +183,8 @@ describe('the restatements of the vocabulary are checked, not trusted (#618)', (
     // relationship is asserted instead. Order is deliberately NOT compared:
     // SPEC groups them differently and the order carries no meaning.
     const spec = read('SPEC.md');
-    const block = spec.match(/### OAuth scopes requested\s*\n+```\n([\s\S]*?)```/);
-    assert.ok(block, 'SPEC.md lost its "OAuth scopes requested" code block');
+    const block = spec.match(/Default .core. requests these \d+ scopes:\s*\n+```\n([\s\S]*?)```/);
+    assert.ok(block, 'SPEC.md lost its default-profile scope block');
     const documented = (block[1] ?? '')
       .split('\n')
       .map((line) => line.trim())
@@ -165,11 +197,11 @@ describe('the restatements of the vocabulary are checked, not trusted (#618)', (
   });
 
   it('scans a real surface (a stale parse would make the SPEC check vacuous)', () => {
-    const documented = (read('SPEC.md').match(/### OAuth scopes requested\s*\n+```\n([\s\S]*?)```/)?.[1] ?? '')
+    const documented = (read('SPEC.md').match(/Default .core. requests these \d+ scopes:\s*\n+```\n([\s\S]*?)```/)?.[1] ?? '')
       .split('\n')
       .map((l) => l.trim())
       .filter(Boolean);
-    assert.equal(documented.length, 17, `parsed ${documented.length} scopes from SPEC.md, expected 17`);
+    assert.equal(documented.length, DEFAULT_SCOPES.length, `parsed ${documented.length} scopes from SPEC.md, expected ${DEFAULT_SCOPES.length}`);
     assert.ok(
       KNOWN_SPOTIFY_SCOPES.size >= 19,
       `the vocabulary holds only ${KNOWN_SPOTIFY_SCOPES.size} scopes — the derivation looks wrong`,

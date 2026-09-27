@@ -11,7 +11,8 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_TOKEN_FILE` | `~/.spotify-mcp/tokens.json` | Persistent token cache (written with mode 600). Explicit path wins over profile and default. |
 | `SPOTIFY_MCP_PROFILE` | unset | Profile name for `~/.spotify-mcp/tokens.<profile>.json`; `--profile <name>` is the CLI equivalent, and it applies to the WHOLE invocation — `spotify-mcp --profile work` (server), `spotify-mcp auth --profile work`, `spotify-mcp doctor --profile work` and `spotify-mcp logout --profile work` all act on that account. An explicit `--profile` outranks this variable. Every per-account store resolves through one function, so a named profile cannot leave the token file, the refresh guard, the persisted read cache, or the doctor pointing at the default account's files (#609). The CLI flag rejects an empty or missing name instead of falling back to the default token file. |
 | `SPOTIFY_MCP_ACCOUNTS_FILE` | `~/.spotify-mcp/accounts.json` | The account registry added in #602: which local accounts exist, and which one a session is acting as. Read by `list_accounts`; written by `switch_account` and by `spotify-mcp auth --profile <name>`. Owner-only (0600) and written atomically, like the token files. **It never contains token material** — an entry is an `account_id`, a profile name, a label and the PATH of the token file, and the listing a tool returns is projected through a type that has no field able to hold one. A file that is not valid JSON is refused rather than overwritten. |
-| `SPOTIFY_SCOPES` | unset (17 default scopes) | Space- or comma-separated OAuth scopes to request; unknown scopes fail startup, and so does a value that is set but names no scope. |
+| `SPOTIFY_SCOPES` | unset (the `core` profile, 11 scopes) | Space- or comma-separated OAuth scopes to request; a profile name (`read`, `core`, `write`, `full`) is also accepted. Unknown scopes fail startup, and so does a value that is set but names no scope. |
+| `SPOTIFY_MCP_SCOPE_PROFILE` | unset (`core`) | Which scope profile `auth` requests: `read`, `core`, `write` or `full`. `core` asks for reads plus playback control and **no** library / playlist / follow writes, so a read-only user is not consented to mutation on first login. Ignored when `SPOTIFY_SCOPES` or `--scopes` names an explicit list. An unknown name fails startup rather than falling back. |
 | `SPOTIFY_MCP_MARKET` | unset (no market applied) | Default ISO 3166-1 alpha-2 market for market-gated lookups. Precedence: the tool's `market` argument, then this variable, then the account country when `GET /me` still carries one. Spotify removed `country` from `GET /me` in its February 2026 changes, so on a current registration nothing supplies a default and the result reports `market_source: "none"`. |
 | `SPOTIFY_HEADLESS` | unset | `1`, `true`, `yes`, or `on` enables browserless paste-flow authentication. |
 | `SPOTIFY_AUTH_TIMEOUT_MS` | `300000` | How long the browser flow waits for the OAuth callback before giving up and closing the listener. |
@@ -137,7 +138,26 @@ Containment is decided on the *real* path — every component is resolved before
 
 `SPOTIFY_HEADLESS=1` affects only the `auth` command. The auth URL is printed for a browserless host; complete it anywhere and paste the redirect URL back.
 
-`SPOTIFY_SCOPES` accepts spaces or commas and rejects unknown scope names. When unset, the default scopes in `src/config.ts` are requested. A variable that is *set but names no scope* (`SPOTIFY_SCOPES=`, `SPOTIFY_SCOPES=" "`) also fails: it used to be read as "unset" and silently widened the request to all 17 default scopes, five of which are mutation scopes. Unset the variable instead of emptying it. The `auth` command's `--scopes` flag follows the same rule. `SPOTIFY_MCP_MARKET` accepts a two-letter ISO 3166-1 alpha-2 code; invalid values are ignored with a warning, and an explicit tool `market` argument takes precedence.
+### Scope profiles
+
+`auth` asks for a **profile** of scopes, not a hand-written list. Pick one with `SPOTIFY_MCP_SCOPE_PROFILE` or `spotify-mcp auth --scope-profile <name>`:
+
+| Profile | What it requests | What it unlocks |
+| --- | --- | --- |
+| `read` | the 10 read scopes | Browsing only; nothing in it can change Spotify state. |
+| **`core`** *(default)* | `read` + `user-modify-playback-state` | The above plus playback control. |
+| `write` | `core` + `user-library-modify`, `playlist-modify-public`, `playlist-modify-private`, `user-follow-modify`, `ugc-image-upload` | The full write tool surface. |
+| `full` | `write` + `user-read-email` | The maximal 17-scope grant this server shipped before #700. |
+
+Before #700 an unconfigured `auth` run requested all 17, so a user who only wanted to browse consented on first login to library, playlist, follow and cover-upload writes — and to disclosing the account email, which **no shipped tool reads**. That is why the default is now `core`.
+
+`auth` prints the requested scopes grouped with a one-line rationale, marking every non-read group, **before** it opens the browser. Declining a group is only free at that point; afterwards the remedy is a re-auth.
+
+Two things a profile does *not* promise. It decides what the consent screen **asks for**; what a granted token can then **see** is decided separately, per manifest row, by the scope gate. The unit there is the row, not the tool, so no profile claims "this one tool needs exactly this one scope" — that is not expressible in this architecture, and a profile implying it would be the same defect #1005 shipped. And a grant that lacks a write scope does not 403 on those tools: the row registers with its write half removed, so a caller gets an unknown-tool error rather than a tool that fails at the API. Run `spotify_doctor` to see the profile your token matches and the granted-vs-required scopes per module, including the modules the grant is withholding.
+
+**Existing tokens are unaffected** — grants are stored per token, so only new auth runs change.
+
+`SPOTIFY_SCOPES` accepts spaces or commas and rejects unknown scope names; a profile name is accepted there too, so `SPOTIFY_SCOPES=full` and `--scopes full` are the same request as `--scope-profile full`. An explicit list in `SPOTIFY_SCOPES` or `--scopes` overrides the profile. A variable that is *set but names no scope* (`SPOTIFY_SCOPES=`, `SPOTIFY_SCOPES=" "`) fails rather than falling back: it used to be read as "unset" and silently widened the request to every scope, five of which are mutation scopes. Unset the variable instead of emptying it. `SPOTIFY_MCP_MARKET` accepts a two-letter ISO 3166-1 alpha-2 code; invalid values are ignored with a warning, and an explicit tool `market` argument takes precedence.
 
 ### Runtime limits and requests
 

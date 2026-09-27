@@ -13,9 +13,16 @@ import type { TokenData } from './types/spotify.js';
 // from this module, so there is no cycle.
 import {
   DEFAULT_SCOPES as SCOPE_DEFAULTS,
+  DEFAULT_SCOPE_PROFILE,
   KNOWN_SPOTIFY_SCOPES,
+  SCOPE_PROFILE_NAMES,
   isKnownScope,
   tokenFilePathForProfile,
+  isKnownScopeProfile,
+  scopeGroupsFor,
+  scopeProfileFor,
+  scopesForProfile,
+  type ScopeProfileName,
   truthyEnv,
 } from './config.js';
 
@@ -220,9 +227,9 @@ function escapeHtml(value: string): string {
 }
 
 /**
- * Scope vocabulary and defaults come from config.ts (#618) — this module used
- * to hold a second hand-maintained copy of both, kept in step only by a
- * comment. A scope added to one side and not the other produced a startup
+ * Scope vocabulary, profiles and defaults come from config.ts (#618) — this
+ * module used to hold a second hand-maintained copy of both, kept in step only
+ * by a comment. A scope added to one side and not the other produced a startup
  * error that named this file, or a scope this flow requested and the server
  * then rejected, and the failure looked like a config bug rather than an edit.
  *
@@ -230,6 +237,23 @@ function escapeHtml(value: string): string {
  * token request carries.
  */
 const DEFAULT_SCOPES = SCOPE_DEFAULTS.join(' ');
+
+/**
+ * How the request was decided, for the pre-consent printout (#700 step 4) and
+ * for the error when a profile name is wrong.
+ *
+ * `profile` is not a separate mechanism from a scope list — it is a way of
+ * NAMING one, which is why `--scopes full` and `--scope-profile full` have to
+ * resolve to the same set.
+ */
+export type ScopeResolution = {
+  /** The space-joined `scope` parameter the authorize URL will carry. */
+  readonly scopes: string;
+  /** The profile this set matches, or null for a hand-written list. */
+  readonly profile: ScopeProfileName | null;
+  /** Which knob decided it, in words a user can act on. */
+  readonly source: string;
+};
 
 /**
  * Parse SPOTIFY_SCOPES / --scopes: space- or comma-separated, validated,
@@ -271,20 +295,134 @@ export function parseScopesString(
 }
 
 /**
- * Resolve scopes for the current auth flow: CLI --scopes > SPOTIFY_SCOPES env > default.
- * The env argument is injectable so the precedence is testable without mutating
- * process.env; only a genuine absence (undefined) falls through to the default.
+ * Resolve a scope VALUE that may be either a profile name or an explicit list.
+ *
+ * `--scopes full` is a profile and `--scopes user-read-private` is a list, and
+ * they are told apart by being a single token that names a profile. No Spotify
+ * scope is called `read`, `core`, `write` or `full`, so the two vocabularies
+ * cannot collide — and the alternative (rejecting `full` as an unknown scope)
+ * is exactly the confusing error #700's acceptance criteria would produce,
+ * since the issue itself names `--scopes full` as the opt-in spelling.
+ */
+function resolveScopeValue(
+  raw: string | undefined,
+  label: string,
+): { scopes: string; profile: ScopeProfileName | null; source: string } | null {
+  if (raw === undefined) return null;
+  // A profile name is checked BEFORE scope parsing, because the scope parser
+  // rejects anything outside the Spotify vocabulary and every profile name is
+  // outside it. The reverse order makes `--scopes full` — the spelling #700's
+  // own acceptance criteria names — fail with "Unknown scope".
+  const trimmed = raw.trim();
+  if (isKnownScopeProfile(trimmed)) {
+    return { scopes: scopesForProfile(trimmed).join(' '), profile: trimmed, source: label };
+  }
+  const parsed = parseScopesString(raw, label);
+  if (!parsed) return null;
+  return { scopes: parsed.join(' '), profile: scopeProfileFor(parsed), source: `${label} (explicit list)` };
+}
+
+/**
+ * Resolve scopes for the current auth flow (#700).
+ *
+ * Precedence, highest first:
+ *   1. `--scopes`      — an explicit list, or a profile name
+ *   2. `SPOTIFY_SCOPES`— same two spellings
+ *   3. `--scope-profile` / `SPOTIFY_MCP_SCOPE_PROFILE` — a profile name only
+ *   4. the `core` profile — the default for an unconfigured run
+ *
+ * Every argument is injectable so the precedence is testable without mutating
+ * process.env; only a genuine absence (undefined) falls through.
+ */
+export function resolveScopeRequest(
+  cliScopes?: string,
+  envScopes: string | undefined = process.env.SPOTIFY_SCOPES,
+  cliProfile?: string,
+  envProfile: string | undefined = process.env.SPOTIFY_MCP_SCOPE_PROFILE,
+): ScopeResolution {
+  const cli = resolveScopeValue(cliScopes, '--scopes');
+  if (cli) return cli;
+  const env = resolveScopeValue(envScopes, 'SPOTIFY_SCOPES');
+  if (env) return env;
+
+  for (const [raw, label] of [
+    [cliProfile, '--scope-profile'],
+    [envProfile, 'SPOTIFY_MCP_SCOPE_PROFILE'],
+  ] as const) {
+    if (raw === undefined) continue;
+    if (!isKnownScopeProfile(raw)) {
+      throw new Error(
+        `Unknown scope profile "${raw}" in ${label}. Known profiles: ${SCOPE_PROFILE_NAMES.join(', ')}.`,
+      );
+    }
+    return { scopes: scopesForProfile(raw).join(' '), profile: raw, source: label };
+  }
+
+  return {
+    scopes: DEFAULT_SCOPES,
+    profile: DEFAULT_SCOPE_PROFILE,
+    source: `default profile "${DEFAULT_SCOPE_PROFILE}"`,
+  };
+}
+
+/**
+ * The `scope` parameter the token request carries. Thin wrapper over
+ * {@link resolveScopeRequest} for the call sites that only need the string —
+ * the persisted-scope fallback and the pre-existing tests.
  */
 export function resolveScopes(
   cliScopes?: string,
   envScopes: string | undefined = process.env.SPOTIFY_SCOPES,
 ): string {
-  // CLI takes precedence
-  const cli = parseScopesString(cliScopes, '--scopes');
-  if (cli) return cli.join(' ');
-  const env = parseScopesString(envScopes, 'SPOTIFY_SCOPES');
-  if (env) return env.join(' ');
-  return DEFAULT_SCOPES;
+  return resolveScopeRequest(cliScopes, envScopes, undefined, undefined).scopes;
+}
+
+/**
+ * The scope request `runAuthFlow` will actually put on the authorize URL:
+ * `parseAuthArgs` on the real argv, then {@link resolveScopeRequest} on that
+ * plus the environment.
+ *
+ * Exported so the tests drive the same wiring the CLI does. A test that
+ * re-derives the precedence by calling `resolveScopeRequest` with arguments it
+ * chose itself is asserting a copy of the rule, not the rule — and a
+ * precedence bug introduced in `runAuthFlow` alone would sail past it.
+ */
+export function authScopeRequest(
+  argv: readonly string[] = process.argv.slice(2),
+  env: NodeJS.ProcessEnv = process.env,
+): ScopeResolution {
+  const args = parseAuthArgs([...argv]);
+  return resolveScopeRequest(
+    args.scopes,
+    env.SPOTIFY_SCOPES,
+    args.scopeProfile,
+    env.SPOTIFY_MCP_SCOPE_PROFILE,
+  );
+}
+
+/**
+ * What `auth` is about to ask for, in the form a human can act on (#700 step
+ * 4): the profile, which knob chose it, and one line per group of scopes.
+ *
+ * Printed BEFORE the browser opens, so declining a group is still possible at
+ * the point where declining is free. A wall of identifiers is not reviewable;
+ * "library mutations: add to and remove from your library" is.
+ */
+export function formatScopePreview(resolution: ScopeResolution): string {
+  const groups = scopeGroupsFor(resolution.scopes.split(' '));
+  const lines = groups.map((g) =>
+    g.read
+      ? `    ${g.scopes.join(' ')}\n      -> ${g.rationale}`
+      : `    ${g.scopes.join(' ')}\n      -> ${g.rationale}  [not a read: this group can change or expose data]`,
+  );
+  const writeCount = groups.filter((g) => !g.read).length;
+  return [
+    `Scope profile: ${resolution.profile ?? 'custom'} (${resolution.scopes.split(' ').length} scopes, from ${resolution.source})`,
+    ...(writeCount > 0
+      ? [`  ${writeCount} of these groups are not read-only. Re-run with --scope-profile read to drop them.`]
+      : []),
+    ...lines,
+  ].join('\n');
 }
 
 /** Profile names become file names, so they are restricted to a safe charset. */
@@ -292,9 +430,15 @@ const PROFILE_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
 
 const EMPTY_PROFILE_ERROR = '--profile requires a name matching [A-Za-z0-9._-]+';
 const EMPTY_SCOPES_ERROR = '--scopes was given but contained no scope names';
+const EMPTY_SCOPE_PROFILE_ERROR = '--scope-profile requires a profile name';
 
 /**
- * Parse --profile / --scopes from argv (auth subcommand).
+ * Parse --profile / --scopes / --scope-profile from argv (auth subcommand).
+ *
+ * Two different things are called "profile" here and they must not be confused:
+ * `--profile` names the ACCOUNT (which token file to use), `--scope-profile`
+ * names the SCOPE SET to ask the consent screen for. `--scope-profile=full`
+ * cannot be mistaken for `--profile=full` — the strings differ before the `=`.
  *
  * A flag that is present but carries no value is an error (#617), not a
  * fall-through to the default. `--profile ""` and a dangling trailing
@@ -307,11 +451,23 @@ const EMPTY_SCOPES_ERROR = '--scopes was given but contained no scope names';
 export function parseAuthArgs(argv: string[] = process.argv.slice(2)): {
   profile?: string;
   scopes?: string;
+  scopeProfile?: string;
 } {
-  const result: { profile?: string; scopes?: string } = {};
+  const result: { profile?: string; scopes?: string; scopeProfile?: string } = {};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--profile') {
+    // Checked before --profile: the two share a suffix, not a prefix.
+    if (arg === '--scope-profile') {
+      if (i + 1 >= argv.length || argv[i + 1].trim() === '') {
+        throw new Error(EMPTY_SCOPE_PROFILE_ERROR);
+      }
+      result.scopeProfile = argv[i + 1];
+      i++;
+    } else if (arg.startsWith('--scope-profile=')) {
+      const value = arg.slice('--scope-profile='.length);
+      if (value.trim() === '') throw new Error(EMPTY_SCOPE_PROFILE_ERROR);
+      result.scopeProfile = value;
+    } else if (arg === '--profile') {
       if (i + 1 >= argv.length || argv[i + 1].trim() === '') {
         throw new Error(EMPTY_PROFILE_ERROR);
       }
@@ -860,15 +1016,16 @@ export async function runAuthFlow(): Promise<void> {
       console.error(`Error: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
-  })() as { profile?: string; scopes?: string };
-  const effectiveScopes = (() => {
+  })() as { profile?: string; scopes?: string; scopeProfile?: string };
+  const scopeResolution = (() => {
     try {
-      return resolveScopes(authArgs.scopes);
+      return authScopeRequest(process.argv.slice(2), process.env);
     } catch (err) {
       console.error(`Error: ${err instanceof Error ? err.message : err}`);
       process.exit(1);
     }
-  })() as string;
+  })() as ScopeResolution;
+  const effectiveScopes = scopeResolution.scopes;
 
   // Validate profile early so we fail fast. `!== undefined` rather than a
   // truthiness test: an empty name must be rejected, not skipped (#617).
@@ -899,6 +1056,12 @@ export async function runAuthFlow(): Promise<void> {
     state,
   });
   const authUrl = `https://accounts.spotify.com/authorize?${authParams}`;
+
+  // What the consent screen is about to ask for, in words, BEFORE the browser
+  // opens (#700 step 4). The moment a user can still decline a group for free
+  // is before they have clicked Approve; after that the only remedy is a
+  // re-auth, which is why this is not a line in the post-auth summary.
+  console.log(`\n${formatScopePreview(scopeResolution)}\n`);
 
   // Headless mode: skip the local callback server and `open()` step.
   if (isHeadlessMode()) {
