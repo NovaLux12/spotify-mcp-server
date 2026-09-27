@@ -115,7 +115,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | File | Responsibility | LOC |
 |---|---|---:|
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | 148 |
-| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 679 |
+| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 878 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 325 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 2030 |
