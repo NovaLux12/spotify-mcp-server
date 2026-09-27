@@ -22,18 +22,44 @@ import { installGatedPathContract } from './gating.js';
 import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
 import { installActingAccountBoundary, resolveActingAccount } from './actingaccount.js';
 import { installCancellationContextBoundary } from './cancellation.js';
+import { BRANDING_NOTICE, NON_AFFILIATION_NOTICE } from './branding.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
+
+/**
+ * The `instructions` a host receives in the `initialize` response (#705).
+ *
+ * This is the only surface an agent that never sees the README, the npm page
+ * or the repository gets: a host that launches the server over stdio and
+ * speaks JSON-RPC sees the tool list and this string, and nothing else. The
+ * non-affiliation notice is the sentence that must therefore be here, because
+ * the project name begins with "Spot" and the decision to keep it (see
+ * docs/compliance.md) is only defensible if an unaffiliated user cannot be
+ * left to infer otherwise.
+ *
+ * The wording is `BRANDING_NOTICE`, not a hand-typed copy: the sibling units
+ * that own host-orientation guidance extend this string rather than editing
+ * the notice. `tests/branding-notice-guard.test.ts` reads the instructions
+ * back off a spawned server, so dropping the constant here fails a test rather
+ * than shipping a silent gap.
+ */
+const SERVER_INSTRUCTIONS = BRANDING_NOTICE;
 
 async function startMcpServer(): Promise<void> {
   // Read the SPOTIFY_MCP_* env family once; everything else consumes
   // getConfig() from here on.
   initConfig();
 
-  const server = new McpServer({
-    name: 'spotify-mcp',
-    version,
-  });
+  const server = new McpServer(
+    {
+      name: 'spotify-mcp',
+      version,
+    },
+    // The second argument, not a field on serverInfo: `instructions` is a
+    // ServerOptions member, and the two are easy to confuse when the first
+    // call site has only ever taken one.
+    { instructions: SERVER_INSTRUCTIONS },
+  );
   // Progress-context boundary MUST install before the truncation boundary
   // (#728): both wrap the SDK's tool/registerTool, and progress wraps
   // truncation at call time so any long walks triggered by shaping also see
@@ -194,6 +220,12 @@ async function runDoctor(): Promise<void> {
   const profile = parseAuthArgs().profile ?? cfg.profile;
 
   console.log(`spotify-mcp ${version}`);
+  // The banner, not just the report below it (#705). A user pastes the first
+  // lines of this output into a bug thread, and the rendered prose that
+  // follows carries the same notice — but the banner is the line a person
+  // reads while deciding whether this is an official integration, so it says
+  // so itself.
+  console.log(NON_AFFILIATION_NOTICE);
   console.log('');
   console.log('Configuration:');
   console.log(`  token file        ${tokenFile}`);
@@ -231,6 +263,7 @@ async function runDoctor(): Promise<void> {
 }
 
 const HELP = `spotify-mcp — MCP server for the Spotify Web API
+${BRANDING_NOTICE}
 
 Usage:
   spotify-mcp                          Start the MCP server over stdio (this is the default)

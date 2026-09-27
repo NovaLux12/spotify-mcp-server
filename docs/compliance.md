@@ -4,12 +4,16 @@ Scope of this page: what this repository may and may not put in front of a
 user, and what it must say when it displays Spotify content. It covers
 [#698](https://github.com/NovaLux12/spotify-mcp-server/issues/698).
 
-It does **not** cover the product-name decision, the non-affiliation notice
-wording, or the `initialize` handshake — those belong to
-[#705](https://github.com/NovaLux12/spotify-mcp-server/issues/705) and
-[#690](https://github.com/NovaLux12/spotify-mcp-server/issues/690) and are
-expected to land in this same file. Whoever lands second should extend this
-page rather than create a competing one.
+It also carries the product-name decision and the non-affiliation notice
+wording that [#705](https://github.com/NovaLux12/spotify-mcp-server/issues/705)
+landed here, under [Naming decision (2026-09-18)](#naming-decision-2026-09-18)
+and [The non-affiliation notice](#the-non-affiliation-notice). #705 covered the
+non-affiliation half of the MCP `initialize` `instructions` string;
+[#690](https://github.com/NovaLux12/spotify-mcp-server/issues/690) still owns
+the host-guidance half. Whoever lands it should **extend this page** rather
+than create a competing one, and should extend `SERVER_INSTRUCTIONS` in
+`src/index.ts` — leaving the notice in `src/branding.ts` where it is — rather
+than author a second one.
 
 ## The two rules, and why both survive
 
@@ -130,6 +134,158 @@ The guard asserts the shape, not just the absence: any `user-agent` value
 under `src/` must match `product-name (+https://contact-url)`, and must not
 contain a third-party service token.
 
+## Naming decision (2026-09-18)
+
+This project is called **SpotifyMCP** in the README heading, "Spotify MCP" in
+`server.json`'s `title`, and `@novalux12/spotify-mcp` on npm. The name begins
+with "Spot". Spotify's Developer Policy Sec. VI.2 says of an SDA's name: *"the
+name should not begin with 'Spot' or be confusing in sound or spelling to
+Spotify. Unless you have applicable permissions, don't imply any endorsement,
+tie-in, co-branding or promotion by Spotify."* Developer Terms Sec. IV.2.c.ii
+lists "using Spotify Marks as part of the name of your company or service"
+among breaches, and Sec. IX.7 forbids suggesting endorsement.
+
+That is a real exposure and it is not a misreading. It is recorded here with
+its reasoning and its date so that the next maintainer inherits a decision
+rather than an accident.
+
+**Option A — rename.** Move to a neutral product name and carry "for Spotify"
+as a descriptor, so the name itself is clean and only the description names the
+platform. It is the option that removes the exposure. It is not a rename of a
+string: it touches `README.md`, `SPEC.md`, `ARCHITECTURE.md`, `CLAUDE.md`,
+every `docs/` page, both `skills/*/SKILL.md`, `server.json`'s `title`, and
+`package.json` — plus every place a user, a directory, a blog post or a
+support answer has already recorded the old name, which is not in the
+repository and does not update when a file does.
+
+**Option B — keep the name, accept the risk.** Ship v2 under the current name
+and make the non-affiliation disclosure unconditional, so the residual risk is
+"a third-party project whose name resembles the platform it integrates" rather
+than "a project that could be mistaken for an official integration".
+
+**Decision: Option B, for v2. Decided 2026-09-18.**
+
+The reasoning, in the order it actually mattered:
+
+1. **Option A's cost is concentrated in exactly the places nobody updates.**
+   The repository is the cheap part, and it is not the expensive part: the
+   published npm name, the MCP Registry entry, the installation instructions
+   already pasted into other people's configuration files, and the ecosystem's
+   memory of this project are the expensive part, and none of them update when
+   a file does. A rename resolves the ambiguity for a reader who has *not* met
+   the project and does nothing for one who has, who is left holding an npm
+   install that no longer matches the name in their host config.
+2. **The exposure is about implication, not about the literal.** Sec. VI.2's
+   operative clause is *"unless you have applicable permissions, don't imply
+   any endorsement, tie-in, co-branding or promotion"*. A name that resembles
+   the platform is the weak half of that test; the strong half is whether a
+   reader can be left thinking Spotify ships, reviews, or blesses this. Option
+   B can neutralise the strong half completely, on every surface, forever.
+3. **The "for Spotify" form was not obviously better.** A neutral name plus a
+   "for Spotify" descriptor still says "Spotify" in the same position a
+   browser tab reads it, and trades a name Spotify's policy names for one it
+   does not — an argument about which rule we are not breaching, not about
+   whether anyone is misled.
+
+**What is accepted, stated plainly.** The name *does* begin with "Spot", which
+is what Policy Sec. VI.2 asks it not to; that exposure is accepted knowingly and
+is not mitigated by argument. It is not a Spotify mark, and it is used
+nominatively to describe the platform integrated. `server.json`'s `name`
+(`io.github.NovaLux12/spotify-mcp-server`) and the npm scope
+(`@novalux12/spotify-mcp`) stay: those are machine identifiers, not display
+names, and the fully-qualified npm name begins with the scope rather than with
+"Spot". No Spotify wordmark, logo, or brand element is used — see above, and
+`tests/third-party-marks-guard.test.ts`.
+
+**What makes this decision defensible is the compensating control, not the
+argument.** If the notice below is ever absent from a surface, this page is
+wrong and the decision should be reopened. The notice is the load-bearing
+part of Option B, which is why it is a single exported constant, why the
+surfaces that must carry it are enumerated, and why
+`tests/branding-notice-guard.test.ts` fails when one drops it.
+
+**Re-check trigger.** Re-evaluate the name against the current text of Policy
+Sec. VI.2 **before** any of the following goes live:
+
+- the app is listed in an MCP directory, marketplace, or registry beyond the
+  canonical `server.json` entry;
+- the app is promoted, sponsored, featured, or otherwise distributed by a third
+  party;
+- a paid tier, Sponsorship, or Verified Partner conversation with Spotify
+  starts — that conversation can supply the *"applicable permissions"* Sec.
+  VI.2 carves out, and it changes the analysis entirely;
+- Spotify publishes a change to Sec. VI.2 or to the Branding Guidelines that
+  names this pattern explicitly.
+
+An ordinary release is not a trigger; a new distribution channel is. The
+checklist in [`docs/distribution.md`](distribution.md#claim-checklist) carries
+the same trigger at the point where someone is about to add a channel.
+
+## The non-affiliation notice
+
+The wording lives in exactly one place, `src/branding.ts`, and every surface
+reads it from there:
+
+| Constant | Text | Where it is used |
+|---|---|---|
+| `NON_AFFILIATION_NOTICE` | `Independent, unofficial project. Not affiliated with, endorsed by, or sponsored by Spotify.` | The `spotify-mcp doctor` CLI banner on its own; the first sentence of `BRANDING_NOTICE` everywhere else |
+| `TRADEMARK_NOTICE` | `"Spotify" is a trademark of Spotify AB; this project is not a Spotify product.` | Folded into `BRANDING_NOTICE` — no surface carries it alone |
+| `BRANDING_NOTICE` | the two sentences joined | The MCP `initialize` `instructions` string, the `--help` banner, and the `spotify_doctor` prose header |
+| `SHORT_NON_AFFILIATION_NOTICE` | `Not affiliated with Spotify.` | The 100-character-capped metadata surfaces, via `CANONICAL_DESCRIPTION` |
+
+**Why there are two forms, and why that is not drift.** The MCP Registry caps
+`ServerDetail.description` at 100 characters (`maxLength` in the `$schema`
+pinned by `server.json`), and five surfaces have to fit that budget: the
+`server.json` description, the `package.json` description, the README
+one-liner, and both blurbs in `docs/distribution.md`. They are all filled from
+one sentence, `CANONICAL_DESCRIPTION` in `tests/registry-meta.test.ts` (#655),
+whose tail is `SHORT_NON_AFFILIATION_NOTICE`. The cap is the only reason the
+short form exists; every surface with room carries the long form.
+
+The two are tied together from both sides so they cannot quietly diverge:
+`tests/registry-meta.test.ts` fails if the canonical sentence stops ending with
+the short form, and `tests/branding-notice-guard.test.ts` fails if any shipped
+description stops ending with it, or if the long form stops opening by denying
+official status and stops denying endorsement and sponsorship. Shortening the
+long form to the short form's claim is a change, not a wording tweak.
+
+**The surfaces the notice must reach**, and why each one is on the list:
+
+| Surface | Form | Why it is one |
+|---|---|---|
+| `README.md` H1 one-liner | short | First thing a reader sees; above the fold, and paired with the Developer Terms link in the footer |
+| `package.json` `description` | short | What npm renders on the package page |
+| `server.json` `description` | short | What the MCP Registry renders to every host that browses it |
+| `docs/distribution.md` blurbs | short | The copy a directory listing or marketplace card is pasted from |
+| MCP `initialize` `instructions` | long | **The only surface a host-only agent sees.** An OpenClaw session with no shell, no repository and no README gets the tool list and this string and nothing else |
+| `spotify-mcp --help` | long | What a user reads when deciding whether this is an official integration |
+| `spotify-mcp doctor` banner | long | The output users paste into bug threads and issue reports |
+| `spotify_doctor` prose header | long | The agent-facing identity line, rendered by the same function the CLI uses so the two cannot disagree |
+| `NOTICE`, `CONTRIBUTING.md`, `PRIVACY.md`, `END_USER_AGREEMENT.md` | prose | Legal/provenance surfaces, worded for those documents rather than for a first-glance reader; each already says it |
+
+**Deliberately not carrying the notice**, so a future maintainer does not read
+the absence as an oversight:
+
+- `SECURITY.md` and `CODE_OF_CONDUCT.md` are GitHub-only surfaces reached by
+  someone who is already in the repository. They are a candidate for a future
+  pass, not a gap in this one.
+- `--version` prints exactly one machine-readable line, asserted byte-exact by
+  `tests/index-cli.test.ts`. Adding a sentence to it would break every script
+  that parses it. A version string is not a place a reader forms an impression
+  of the project.
+- The one hosted directory this repository once shipped a manifest for is not a
+  surface to add a notice to. That manifest was retired deliberately in #710,
+  `tests/distribution-channel-guard.test.ts` fails if it comes back, and the
+  recorded posture is in [`docs/distribution.md`](distribution.md). A
+  non-affiliation notice is not a reason to resurrect a retired channel.
+
+**How this is enforced.** `tests/branding-notice-guard.test.ts` spawns the real
+server over stdio and reads the `initialize` response's `instructions` back,
+so it fails if `src/index.ts` stops passing the constant — not merely if a
+document stops containing the words. The same file renders the doctor prose,
+invokes `--help` and the CLI doctor, and compares every metadata and document
+surface against the exported constants.
+
 ## Provenance
 
 `NOTICE` records that this project is an independent implementation, and that
@@ -142,7 +298,8 @@ must stay absent.
 
 ---
 
-Quotations above are from <https://developer.spotify.com/branding-guidelines>
-and <https://developer.spotify.com/terms>, retrieved 2026-09-27. Those pages
+Quotations above are from <https://developer.spotify.com/branding-guidelines>,
+<https://developer.spotify.com/terms> and
+<https://developer.spotify.com/policy>, retrieved 2026-09-27. Those pages
 change without notice; if a rule here stops matching them, the page is stale,
 not the rule.
