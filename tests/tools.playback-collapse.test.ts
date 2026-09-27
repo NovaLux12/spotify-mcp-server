@@ -202,6 +202,25 @@ describe('#848 the one device resolver', () => {
     assert.equal(matchDevice(DEVICES.devices, 'dev_ph'), null);
   });
 
+  it('matches the id step EXACTLY, and leaves case-folding to the name step', () => {
+    // The id step is `d.id === hint`, not a case-insensitive compare. Every
+    // other step in the precedence folds case, so this is the one place a
+    // reader would assume the same — and it is the step where assuming wrong is
+    // worst: an id that differs only in case is not the id step's business, and
+    // a resolver that folded it here would claim a match the later, looser
+    // steps were supposed to earn.
+    //
+    // `DEV_PHONE` finds nothing, and specifically not `dev_phone` by the id
+    // step. The name step would not rescue it either — no device is *named*
+    // `dev_phone` in the fixture — so a fold introduced at the id step shows up
+    // as a spurious match rather than as a pass.
+    assert.equal(matchDevice(DEVICES.devices, 'DEV_PHONE'), null);
+    // The same hint, lower-cased, resolves — proving the fixture and the id
+    // step are both live, so the null above is the id step declining and not a
+    // dead assertion.
+    assert.equal(matchDevice(DEVICES.devices, 'dev_phone')?.id, 'dev_phone');
+  });
+
   it('falls back to the sidecar label, case-insensitively, before the name', async () => {
     await writeStore('playback-ext.json', {
       states: {}, sessions: {}, smartRules: {},
@@ -271,6 +290,29 @@ describe('#848 retired names forward with the flags that made them themselves', 
     // `handoff` was a preserve transfer, so the transfer body must NOT force
     // play: forcing it restarts the track the resume is about to seek into.
     assert.deepEqual(h.puts()[0]?.arg, { device_ids: ['dev_phone'] });
+  });
+
+  it('handoff NEVER lets `play` force a restart, in either direction', async () => {
+    // A perturbation of the forwarding table dropped `play` from `handoff`'s
+    // rewrite and NOTHING went red — which is correct, and worth pinning as
+    // fact rather than left as an accident. `handoff` forwards
+    // `preserve_position: true` unconditionally, and that flag makes the
+    // arrival clause "resume at the captured position" in every case, so an
+    // explicit `play` has no observable effect left to lose: the transfer body
+    // omits `play` (sending it would restart the track the resume seeks into),
+    // the resume is issued from the captured state either way, and the step
+    // text is the same. A caller passing `play` to `handoff` gets the handoff
+    // it asked for; the flag is inert, not dropped.
+    for (const play of [true, false] as const) {
+      const h = await makeHarness();
+      const out = await h.call('handoff', { device_id: 'dev_phone', play, response_format: 'json' });
+      const paths = h.puts().map((p) => p.path);
+      assert.deepEqual(h.puts()[0]?.arg, { device_ids: ['dev_phone'] },
+        `play=${play} must not reach the transfer body in preserve mode`);
+      assert.ok(paths.includes('/me/player/play?device_id=dev_phone'),
+        `play=${play} still resumes from the captured position`);
+      assert.equal(h.sc(out).device_id, 'dev_phone');
+    }
   });
 
   it('apply_device_presets forwards to set_volume with op: preset', async () => {
