@@ -1829,6 +1829,10 @@
         "label": "Mutation history: when SPOTIFYMCPHISTORY=1, successful m…"
       },
       {
+        "hash": "ef1ec0497dfcf3ac",
+        "label": "Mutation history retention (#703): the ledger is bounded…"
+      },
+      {
         "hash": "7fe4e66a430c16b0",
         "label": "Pagination walks: getAllPages walks offset-paginated end…"
       },
@@ -1915,6 +1919,38 @@
       {
         "hash": "ee5ead5d624e3c9e",
         "label": "Strict rejection, not stripping: a call carrying an unde…"
+      },
+      {
+        "hash": "c516e0c8e531cb4c",
+        "label": "Argument encodings (#694) — strictness above is about ar…"
+      },
+      {
+        "hash": "6a3a583da50b69da",
+        "label": "| Declared | Also accepted | Rule | |---|---|---| | arra…"
+      },
+      {
+        "hash": "c72d5f693de78dbb",
+        "label": "Three properties make the layer safe, and all three are …"
+      },
+      {
+        "hash": "feb3a07b319fd1dd",
+        "label": "A candidate must prove itself against its own field's sc…"
+      },
+      {
+        "hash": "ccb1e82ac7cd4e22",
+        "label": "The layer runs after the unknown-key check, because a to…"
+      },
+      {
+        "hash": "7ebeeb6a787167b1",
+        "label": "Aliases are not part of this contract, and are not claim…"
+      },
+      {
+        "hash": "0b12547894013c79",
+        "label": "| Spelling | Where | State | |---|---|---| | id for play…"
+      },
+      {
+        "hash": "3bcb4072799aac99",
+        "label": "So the duplication is real but small, and the one entry …"
       },
       {
         "hash": "63b9e66d50e1699d",
@@ -2273,6 +2309,10 @@
         "label": "Returns: grouped results by type. Each item includes URI…"
       },
       {
+        "hash": "db32176376ec4a98",
+        "label": "The episode group is a PagingSimplifiedEpisodeObject, wh…"
+      },
+      {
         "hash": "5497bb931b3e7139",
         "label": "playlistfillfromsearch also sends at most 10 track resul…"
       },
@@ -2395,6 +2435,10 @@
       {
         "hash": "d863a4e63427be04",
         "label": "Returns: episode name, release date, duration, URI, and …"
+      },
+      {
+        "hash": "e92e38f78c087e2d",
+        "label": "Each row also carries showId (the id the caller supplied…"
       },
       {
         "hash": "435c3f43b943b398",
@@ -4037,7 +4081,7 @@
         "label": "It carries no SDK or zod wording. No MCP error -32602: p…"
       },
       {
-        "hash": "64f4c4be41f69fea",
+        "hash": "5070b86228b51d77",
         "label": "Strictness is about argument names, not encodings. A dec…"
       },
       {
@@ -5746,6 +5790,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "64f4c4be41f69fea",
+      "label": "Strictness is about argument names, not encodings. A dec…",
+      "date": "2026-09-27",
+      "reason": "#694 implemented the contract this paragraph deferred to: it said 'that is #694, and it is untouched', which landing #694 made false. Reworded in place to name the new section and to record that prompts/get runs the same encoding layer. Nothing deleted."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "6768c82e14144549",
       "label": "Inputs: | Field | Type | Required | Description | |---|-…",
       "date": "2026-09-27",
@@ -5935,9 +5986,9 @@
     }
   ],
   "provenance": {
-    "head": "51ee16d8ab7095f24fb341c92aad20e4d1de606d",
-    "base": "ec1d561a8cdc4751e2f2963c22e43a895fee1005",
-    "upstream": "ec1d561a8cdc4751e2f2963c22e43a895fee1005",
+    "head": "1bc10da5617c93eefcc65aed02f05ce7b7755cc0",
+    "base": "21724f118ae14c4a0edcc9b68a4ae523d1113578",
+    "upstream": "21724f118ae14c4a0edcc9b68a4ae523d1113578",
     "behind": false
   }
 }
