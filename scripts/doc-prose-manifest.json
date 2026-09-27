@@ -283,6 +283,10 @@
         "label": "Both doc gates accept --census-file <path> so CI generat…"
       },
       {
+        "hash": "1e1984c98d214b31",
+        "label": "npm run count:tools -- --out <path> writes the census to…"
+      },
+      {
         "hash": "12962b756ff975cb",
         "label": "A tool count belongs in a generated block, or nowhere. T…"
       },
@@ -1881,7 +1885,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "53c5ad22698d619a",
+        "hash": "63b9e66d50e1699d",
         "label": "responseformat ('concise' | 'detailed' | 'json', default…"
       },
       {
@@ -1893,7 +1897,7 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "8ac42e254787069c",
+        "hash": "34c07ec51904b462",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
@@ -5545,6 +5549,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "53c5ad22698d619a",
+      "label": "responseformat ('concise' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "not a rewording: the merge-forward that brought #1476 onto main resolved SPEC.md as a whole file and silently dropped two sentences #1472 added, the emitOnce exception on the response_format bullet and the emitOnce clause of the Response byte cap paragraph. Both are restored from origin/main; these two shortened paragraphs never shipped to any release and are retired in favour of the restored text."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5a1a0046c8f24dc4",
       "label": "playlistbalance is deliberately excluded: it creates new…",
       "date": "2026-09-27",
@@ -5591,6 +5602,13 @@
       "label": "Every named parameter must be present, and in declaratio…",
       "date": "2026-09-27",
       "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "8ac42e254787069c",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "not a rewording: the merge-forward that brought #1476 onto main resolved SPEC.md as a whole file and silently dropped two sentences #1472 added, the emitOnce exception on the response_format bullet and the emitOnce clause of the Response byte cap paragraph. Both are restored from origin/main; these two shortened paragraphs never shipped to any release and are retired in favour of the restored text."
     },
     {
       "file": "SPEC.md",
@@ -5727,8 +5745,8 @@
     }
   ],
   "provenance": {
-    "head": "d30f3ec6b6206ffd208e20b170c29de1f5143465",
-    "upstream": "f3b6ee80bac713525946da9991c23afa0c1bd7d2",
+    "head": "74cb87741af027421148138384c55cccf1de8c80",
+    "upstream": "528b959f164a8c1e5690e701595746c6bac45f3f",
     "behind": false
   }
 }
