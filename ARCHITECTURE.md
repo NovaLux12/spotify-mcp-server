@@ -132,7 +132,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 588 |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
-| `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 316 |
+| `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 325 |
 | `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 927 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 257 |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | 279 |

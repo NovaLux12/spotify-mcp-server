@@ -68,9 +68,6 @@ export function registerPrompts(server: McpServer): void {
     },
     async (rawArgs) => {
       const args = { ...rawArgs, time_range: rawArgs.time_range ?? 'all' };
-      const ranges = args.time_range === 'all'
-        ? ['short_term', 'medium_term', 'long_term']
-        : [args.time_range];
       const isAll = args.time_range === 'all';
       const calls = isAll
         ? 'all 6 calls in parallel (Promise.all: get_top_tracks and get_top_artists for short_term, medium_term, long_term)'
@@ -111,7 +108,12 @@ export function registerPrompts(server: McpServer): void {
   }
   );
 
-  // playlist_audit — dedupe / dead-track health check for one playlist (#509, #460)
+  // playlist_audit — dedupe / dead-track health check for one playlist (#509, #460).
+  // The findings are an explicit, contiguous three-item list (#714). The body
+  // used to open with a bare "(3)" whose items (1) and (2) existed only as
+  // prose, so the marker implied two sections the prompt never named. Every
+  // numbered prompt here renders its steps as their own `N. ` line
+  // (music_briefing, triage_liked_songs); this one is the third.
   server.prompt(
     'playlist_audit',
     "Audit a playlist for duplicate tracks and unplayable ('dead') entries, with cleanup suggestions.",
@@ -123,7 +125,14 @@ export function registerPrompts(server: McpServer): void {
         role: 'user',
         content: {
           type: 'text',
-          text: `Audit the playlist "${args.playlist}" for problems. If it was given by name, resolve it first with get_user_playlists (fetch_all=true) — page until found; otherwise use its ID/URI directly. If no playlist matches the name, report the miss and list the closest name matches rather than proceeding with a wrong ID. Pull every item with get_playlist_items (fetch_all=true). Then run find_duplicates_in_playlist and report its groups verbatim as the DUPLICATES section (it also catches relinked copies that ID-matching misses); additionally flag DEAD TRACKS — entries whose track is null or flagged unavailable/unplayable, including region-restricted relinks; (3) a summary table with counts per issue. For every problem entry give its position and URI so I can act with remove_from_playlist. Do NOT remove anything yet — just present findings and ask which fixes to apply. ${STANDARD_FOOTER}`,
+          text: [
+            `Audit the playlist "${args.playlist}" for problems. If it was given by name, resolve it first with get_user_playlists (fetch_all=true) — page until found; otherwise use its ID/URI directly. If no playlist matches the name, report the miss and list the closest name matches rather than proceeding with a wrong ID. Pull every item with get_playlist_items (fetch_all=true), then run find_duplicates_in_playlist. Report exactly three sections, in this order and no others:`,
+            '(1) DUPLICATES — the groups returned by find_duplicates_in_playlist, verbatim (it also catches relinked copies that ID-matching misses).',
+            '(2) DEAD TRACKS — entries whose track is null or flagged unavailable/unplayable, including region-restricted relinks.',
+            '(3) SUMMARY TABLE — a summary table with counts per issue.',
+            'For every problem entry give its position and URI so I can act with remove_from_playlist. Do NOT remove anything yet — just present findings and ask which fixes to apply.',
+            STANDARD_FOOTER,
+          ].join('\n'),
         },
       }],
     }),
