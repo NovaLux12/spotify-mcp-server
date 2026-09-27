@@ -1,11 +1,15 @@
 /**
  * stats.fm taste-intelligence slice (v2 taste track).
  *
- * Eight read-only tools over the stats.fm PUBLIC API v1 (no auth):
- *   https://api.stats.fm/api/v1
+ * Eight read-only tools over the stats.fm PUBLIC API v1 (no auth).
  *
- * The shared client owns transport and HTTP error normalization. This module
- * retains a parsed-payload test seam for the existing pure-analytics suite.
+ * Every read goes through the one shared client in `lib/statsfm-client.ts`,
+ * which owns the base URL, the request timeout, the retry and the cache (#907).
+ * This module used to carry a second copy of the base-URL constant and a bare
+ * `fetch` with no timeout, so the ~124 KB `/users/{u}/streams` page was
+ * re-downloaded by every sibling tool and a stalled response blocked forever.
+ * What stays here is only a parsed-payload test seam for the pure-analytics
+ * suite, which the client adapts onto its own transport.
  *
  * Parsing is deliberately lenient: stats.fm shapes vary across endpoints
  * (streams vs top vs stats), so every extractor tolerates missing/renamed
@@ -23,51 +27,37 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 
-import { StatsfmApiError, StatsfmClient } from '../lib/statsfm-client.js';
+import {
+  StatsfmClient,
+  __setStatsfmClient,
+  statsfmClient,
+  statsfmFetchFromPayloadImpl,
+} from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
 
 // ---------------------------------------------------------------------------
 // Parsed-payload fixture seam over the shared stats.fm client
 // ---------------------------------------------------------------------------
 
-/** Base for every request in this module. */
-const STATSFM_API_BASE = 'https://api.stats.fm/api/v1';
-
 /** Minimal fetch: full URL in, parsed JSON out (or throw). */
 type StatsfmFetchImpl = (url: string) => Promise<unknown>;
 
-const liveStatsfmClient = new StatsfmClient(async (url) => fetch(url, {
-  headers: {
-    accept: 'application/json',
-    'user-agent': 'spotify-mcp/statsfm-taste',
-  },
-}));
-
-let fetchImpl: StatsfmFetchImpl | undefined;
-
-/** Test seam: inject fixture-backed fetch. */
+/**
+ * Test seam: inject fixture-backed fetch. It becomes the active client for
+ * every stats.fm module (#907), so a suite that drives two of them against one
+ * fixture also exercises the shared cache.
+ */
 export function __setStatsfmFetchImpl(impl: StatsfmFetchImpl): void {
-  fetchImpl = impl;
+  __setStatsfmClient(new StatsfmClient(statsfmFetchFromPayloadImpl(impl)));
 }
 
 /** Test seam: restore live requests through the shared client. */
 export function __resetStatsfmFetchImpl(): void {
-  fetchImpl = undefined;
+  __setStatsfmClient(undefined);
 }
 
 async function statsfmGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  if (fetchImpl) {
-    const qs = params && Object.keys(params).length > 0
-      ? `?${new URLSearchParams(params).toString()}`
-      : '';
-    try {
-      return (await fetchImpl(`${STATSFM_API_BASE}${path}${qs}`)) as T;
-    } catch (err) {
-      if (err instanceof StatsfmApiError) throw err;
-      throw new StatsfmApiError(0, 'stats.fm request failed', undefined, 'transport_error');
-    }
-  }
-  return (await liveStatsfmClient.get<T>(path, params)) as T;
+  return (await statsfmClient().get<T>(path, params)) as T;
 }
 
 // ---------------------------------------------------------------------------

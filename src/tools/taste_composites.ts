@@ -11,9 +11,13 @@
  *
  * Spec: docs/wave2-composites.md
  *
- * Local minimal fetch shim lives inside this module on purpose — do NOT
- * depend on sibling-branch client files. Tests inject fixtures via
- * __setTasteCompositeFetchImpl. Pure shaping reuses the lenient
+ * Reads go through the one shared client in `lib/statsfm-client.ts`, which owns
+ * the base URL, the request timeout, the retry and the cache (#907). This module
+ * used to carry its own base-URL constant and a bare `fetch` with no timeout,
+ * so the same ~124 KB `/users/{u}/streams` page was re-downloaded once per
+ * composite tool while `statsfm_taste.ts` paid for its own copy again. Tests
+ * still inject fixtures via __setTasteCompositeFetchImpl, which now becomes the
+ * active client rather than a parallel stack. Pure shaping reuses the lenient
  * normalizers exported from statsfm_taste.ts.
  */
 import { z } from 'zod';
@@ -37,84 +41,37 @@ import {
   classifyExposure,
   type TasteStream,
 } from './statsfm_taste.js';
-import { StatsfmApiError, statsfmApiErrorFromHttp, statsfmTransportError } from '../lib/statsfm-client.js';
+import {
+  StatsfmClient,
+  __setStatsfmClient,
+  statsfmClient,
+  statsfmFetchFromPayloadImpl,
+} from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
 import { readOnlyModeEnabled } from './annotations.js';
 
-// Retry-After parsing, reason extraction and the redaction policy live in
-// lib/statsfm-client.ts; a second copy here would drift back into surfacing
-// the upstream envelope text, which can echo private paths and query values.
-const statsfmError = (status: number, _upstreamMessage: string, body: unknown, headers: Headers): StatsfmApiError =>
-  statsfmApiErrorFromHttp(status, body, headers);
-
-
 // ---------------------------------------------------------------------------
-// Local minimal stats.fm fetch shim (own seam; does not share fetchImpl
-// with statsfm_taste.ts on purpose so fixtures stay hermetic per module)
+// Parsed-payload fixture seam over the shared stats.fm client
 // ---------------------------------------------------------------------------
-
-const TASTE_COMPOSITE_API_BASE = 'https://api.stats.fm/api/v1';
 
 type TasteCompositeFetchImpl = (url: string) => Promise<unknown>;
 
-async function defaultFetchImpl(url: string): Promise<unknown> {
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      headers: {
-        accept: 'application/json',
-        'user-agent': 'spotify-mcp/taste-composites',
-      },
-    });
-  } catch (err) {
-    if (err instanceof StatsfmApiError) throw err;
-    throw statsfmTransportError();
-  }
-  let body: unknown = null;
-  try {
-    body = await res.json();
-  } catch {
-    body = null;
-  }
-  if (!res.ok) {
-    const message = body && typeof body === 'object' && 'message' in body && typeof body.message === 'string'
-      ? body.message
-      : `stats.fm HTTP ${res.status}`;
-    throw statsfmError(res.status, message, body, res.headers);
-  }
-  if (body && typeof body === 'object' && 'status' in body && 'message' in body) {
-    const envelope = body as { status: unknown; message: unknown };
-    if (typeof envelope.status === 'number' && envelope.status >= 400 && typeof envelope.message === 'string') {
-      throw statsfmError(envelope.status, envelope.message, body, res.headers);
-    }
-  }
-  return body;
-}
-
-
-let fetchImpl: TasteCompositeFetchImpl = defaultFetchImpl;
-
-/** Test seam: inject fixture-backed fetch. */
+/**
+ * Test seam: inject fixture-backed fetch. It becomes the active client for
+ * every stats.fm module (#907), so fixtures stay hermetic per suite while the
+ * request still travels the client's real timeout/retry/cache path.
+ */
 export function __setTasteCompositeFetchImpl(impl: TasteCompositeFetchImpl): void {
-  fetchImpl = impl;
+  __setStatsfmClient(new StatsfmClient(statsfmFetchFromPayloadImpl(impl)));
 }
 
-/** Test seam: restore the live fetch shim. */
+/** Test seam: restore live requests through the shared client. */
 export function __resetTasteCompositeFetchImpl(): void {
-  fetchImpl = defaultFetchImpl;
+  __setStatsfmClient(undefined);
 }
 
 export async function statsfmGet<T>(path: string, params?: Record<string, string>): Promise<T> {
-  const qs =
-    params && Object.keys(params).length > 0
-      ? `?${new URLSearchParams(params).toString()}`
-      : '';
-  try {
-    return (await fetchImpl(`${TASTE_COMPOSITE_API_BASE}${path}${qs}`)) as T;
-  } catch (err) {
-    if (err instanceof StatsfmApiError) throw err;
-    throw statsfmTransportError();
-  }
+  return (await statsfmClient().get<T>(path, params)) as T;
 }
 
 // ---------------------------------------------------------------------------

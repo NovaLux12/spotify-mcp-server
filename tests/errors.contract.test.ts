@@ -55,6 +55,9 @@ async function harness(): Promise<Client> {
   server.tool('statsfm_not_found_error', '404', throws(new StatsfmApiError(404, 'raw stats.fm /private/missing')));
   server.tool('statsfm_rate_limited_error', '429', throws(new StatsfmApiError(429, 'raw stats.fm /private/rate', 17, 'QUOTA_EXCEEDED')));
   server.tool('statsfm_unavailable_error', '503', throws(new StatsfmApiError(503, 'raw stats.fm /private/unavailable')));
+  // Our own deadline (#907), not a stats.fm status: the caller needs to be told
+  // "slow upstream", not "inspect protected server diagnostics".
+  server.tool('statsfm_timeout_error', '408', throws(new StatsfmApiError(408, 'stats.fm request timed out after 30s', undefined, 'timeout')));
   server.tool('statsfm_transport_error', 'transport', throws(new StatsfmApiError(0, 'raw stats.fm https://example.test/private?token=secret', undefined, 'transport_error')));
   // The mid-flight playlist guard: a concurrency abort, not an unexpected
   // crash. Classified as `internal` it would advise a blind retry, which is
@@ -128,6 +131,7 @@ describe('production tool error contract (#921)', () => {
       { tool: 'statsfm_not_found_error', kind: 'not_found', status: 404, reason: 'statsfm_resource_not_found' },
       { tool: 'statsfm_rate_limited_error', kind: 'rate_limited', status: 429, retryAfterSec: 17, reason: 'QUOTA_EXCEEDED' },
       { tool: 'statsfm_unavailable_error', kind: 'unavailable', status: 503, reason: 'statsfm_unavailable' },
+      { tool: 'statsfm_timeout_error', kind: 'unavailable', status: 408, reason: 'statsfm_timeout' },
       { tool: 'statsfm_transport_error', kind: 'internal', status: 0, reason: 'statsfm_error' },
     ] as const;
 

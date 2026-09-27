@@ -5,7 +5,12 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { StatsfmApiError, StatsfmClient } from '../src/lib/statsfm-client.js';
+import {
+  StatsfmApiError,
+  StatsfmClient,
+  __resetStatsfmSleepImpl,
+  __setStatsfmSleepImpl,
+} from '../src/lib/statsfm-client.js';
 import { registerStatsfmTools } from '../src/tools/statsfm.js';
 import {
   __resetStatsfmFetchImpl,
@@ -168,10 +173,16 @@ test('StatsfmClient preserves typed 404 and 429 metadata', async () => {
     (error: unknown) => error instanceof StatsfmApiError && error.status === 404 && error.reason === 'RESOURCE_NOT_FOUND',
   );
 
-  const limited = new StatsfmClient(async () => new Response(
-    JSON.stringify({ message: 'raw /private/rate', reason: 'QUOTA_EXCEEDED' }),
-    { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '23' } },
-  ));
+  // `sleepFn` is stubbed to nothing: since #907 the client waits out the
+  // advertised Retry-After before its one retry, and 23s of wall clock says
+  // nothing about the metadata under assertion here.
+  const limited = new StatsfmClient(
+    async () => new Response(
+      JSON.stringify({ message: 'raw /private/rate', reason: 'QUOTA_EXCEEDED' }),
+      { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '23' } },
+    ),
+    { sleepFn: async () => {} },
+  );
   await assert.rejects(
     () => limited.get('/users/busy'),
     (error: unknown) => error instanceof StatsfmApiError && error.status === 429 && error.retryAfterSec === 23 && error.reason === 'QUOTA_EXCEEDED',
@@ -188,19 +199,24 @@ test('StatsfmClient redacts response messages and preserves classified failure m
   ] as const;
 
   for (const expected of cases) {
-    const client = new StatsfmClient(async () => new Response(
-      JSON.stringify({
-        message: 'private https://example.test/users/alice?token=secret',
-        reason: expected.reason,
-      }),
-      {
-        status: expected.status,
-        headers: {
-          'content-type': 'application/json',
-          ...(expected.retryAfter === undefined ? {} : { 'retry-after': String(expected.retryAfter) }),
+    const client = new StatsfmClient(
+      async () => new Response(
+        JSON.stringify({
+          message: 'private https://example.test/users/alice?token=secret',
+          reason: expected.reason,
+        }),
+        {
+          status: expected.status,
+          headers: {
+            'content-type': 'application/json',
+            ...(expected.retryAfter === undefined ? {} : { 'retry-after': String(expected.retryAfter) }),
+          },
         },
-      },
-    ));
+      ),
+      // The 429/503 rows now earn one backoff wait before their retry; the
+      // wait's duration is asserted in statsfm-shims.test.ts.
+      { sleepFn: async () => {} },
+    );
     await assert.rejects(
       () => client.get('/users/alice'),
       (error: unknown) => {
@@ -267,13 +283,22 @@ test('taste tools normalize injected transport failures to shared errors', async
 
 test('taste tools normalize non-2xx responses and preserve typed metadata', async () => {
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => new Response(
-    JSON.stringify({
-      message: 'private https://example.test/users/alice?token=secret',
-      reason: 'QUOTA_EXCEEDED',
-    }),
-    { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '31' } },
-  );
+  const seen: string[] = [];
+  globalThis.fetch = async (url: string | URL | Request) => {
+    seen.push(typeof url === 'string' ? url : String(url));
+    return new Response(
+      JSON.stringify({
+        message: 'private https://example.test/users/alice?token=secret',
+        reason: 'QUOTA_EXCEEDED',
+      }),
+      { status: 429, headers: { 'content-type': 'application/json', 'retry-after': '31' } },
+    );
+  };
+  // The wait itself is stubbed; that there IS one, and that it is the
+  // advertised 31s, is asserted in statsfm-shims.test.ts. Here the point is
+  // that the LIVE default transport — not an injected stub — reaches the taste
+  // tools, and that a 429 now costs two dispatches rather than one.
+  __setStatsfmSleepImpl(async () => {});
   try {
     const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolContent>>();
     const server = {
@@ -298,7 +323,18 @@ test('taste tools normalize non-2xx responses and preserve typed metadata', asyn
         return true;
       },
     );
+    // The taste profile tool reads several endpoints and every one of them is
+    // a 429 here, so the count is per-path, not a single number: each read is
+    // dispatched exactly twice — the original and the one retry — before the
+    // error reaches the tool.
+    const perPath = new Map<string, number>();
+    for (const u of seen) perPath.set(u, (perPath.get(u) ?? 0) + 1);
+    assert.ok(perPath.size >= 1, 'the tool dispatched nothing at all');
+    for (const [url, dispatches] of perPath) {
+      assert.equal(dispatches, 2, `${url} should be dispatched once and retried once`);
+    }
   } finally {
+    __resetStatsfmSleepImpl();
     __resetStatsfmFetchImpl();
     globalThis.fetch = originalFetch;
   }
@@ -314,6 +350,7 @@ test('taste tools normalize HTTP 200 error envelopes through the shared client',
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   );
+  __setStatsfmSleepImpl(async () => {});
   try {
     const handlers = new Map<string, (args: Record<string, unknown>) => Promise<ToolContent>>();
     const server = {
@@ -339,6 +376,7 @@ test('taste tools normalize HTTP 200 error envelopes through the shared client',
       },
     );
   } finally {
+    __resetStatsfmSleepImpl();
     __resetStatsfmFetchImpl();
     globalThis.fetch = originalFetch;
   }
