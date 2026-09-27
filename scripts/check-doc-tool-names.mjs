@@ -480,6 +480,14 @@ const retiredParameterNames = new Set([
   'playlist_id_a', 'playlist_id_b', 'playlist_a_id', 'playlist_b_id',
 ]);
 const documentedMetadata = new Set([
+  // #848 removed the last tool that took a `device_name` argument, so
+  // `census.parameterNames` stopped carrying the name and SPEC.md's playback-
+  // position record table (#846) started failing this gate on a field that is
+  // still perfectly real. It belongs here rather than in `parameterAllowlist`:
+  // that set is fed by the live registry on purpose, so a name added to it
+  // would claim a tool accepts it. This one is a documented FIELD of a payload,
+  // which is what this set is for.
+  'device_name',
   'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
   'rate_limited', 'unavailable', 'statsfm_resource_not_found', 'conflict',

@@ -1257,13 +1257,15 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   //     beside it. That is this module's *base*, not a delta measured here.
   //   * #848 extended `set_volume` and `transfer_playback` to carry the UNION
   //     of the flags the twelve tools they replaced each needed, and retired
-  //     `handoff` — the only one of the ten that lived in this module. 16 -> 15
-  //     tools; the two survivors are wider, not more numerous.
+  //     `handoff` — the only one of the ten that lived in this module. Re-measured
+  //     on this tree that is 16 -> 15 tools; the two survivors are wider, not
+  //     more numerous.
   //
-  // 13,132 -> 14,441B (+1,309) is the honest split of that: the union schemas and
-  // the two prose arms they gained cost more than the ten retired rows saved
-  // across the five modules. The other nine retirements live in the four modules
-  // below and are attributed there.
+  // Re-measured, the byte delta is +1,309B and it is not a saving: the union
+  // schemas and the two prose arms they gained cost more than the ten retired
+  // rows saved across the five modules, which is what a union is supposed to
+  // do. The other nine retirements live in the four modules below and are
+  // attributed there, so no single line here has to carry the whole collapse.
   manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [15, 14441]),
   // --- from the #848 branch ---
   //
@@ -1639,11 +1641,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
   // Re-measured on the merged tree, 2026-09-27, carrying #846, #847 and #848.
-  // 13 -> 14 tools and 8,178 -> 8,852B was #846's delta alone — the one tool that
-  // writes the canonical playback-position record. #848 then retired
+  // #846 alone took this module 13 -> 14 tools and 8,178 -> 8,852B — the one
+  // tool that writes the canonical playback-position record. #848 then retired
   // `apply_device_presets` into `set_volume { op: 'preset' }`, so 14 -> 13.
-  // Bytes 8,852 -> 8,331B (-521): the retired row, less the one clause the
-  // survivor's `op` description gained.
+  // Re-measured after that, bytes fell by 521: the retired row, less the one
+  // clause the survivor's `op` description gained.
   manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8331], { scopeKey: 'playback' }),
   // --- from the #848 branch ---
 
@@ -1661,11 +1663,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // Then 11,882 -> 11,773B (-109) when #922 reworded this module's quota
   // cost in words: the quota-circle glyphs and the cross-sell breadcrumbs
   // come out of the 15 descriptions. The two deltas compose, and neither is
-  // Re-measured on the merged tree, 2026-09-27. 14 tools was #847's figure and it
-  // holds; #848 retired `volume_step` into `set_volume { op: 'level',
-  // delta_step }`, so 14 -> 13. Bytes 11,098 -> 10,315B (-783) — the retired row
-  // is most of it, the rest the `set_volume` cross-sell the survivor's
-  // description picked up. A merged measurement, not either change's own.
+  // Re-measured on the merged tree, 2026-09-27. The 14 tools #847 left is the
+  // figure this tree inherits; #848 retired `volume_step` into
+  // `set_volume { op: 'level', delta_step }`, so 14 -> 13. Re-measured, bytes
+  // fell by 783 — the retired row is most of it, the rest the `set_volume`
+  // cross-sell the survivor's description picked up. A merged measurement, not
+  // either change's own.
   manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [13, 10315], { scopeKey: 'playback' }),
   // --- from the #848 branch ---
   // measured off the other's tree.
@@ -1713,13 +1716,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `weekday_heatmap` no longer point at `listening_report` / `listening_heatmap`
   // by name, because those are derived analytics the default registry does not
   // serve and a description must not advertise a tool that is absent. +45B.
-  // Re-measured on the merged tree, 2026-09-27. 22 tools / 17,313B was #846 and
-  // #847's figure; #848 moved `mute`, `unmute`, `switch_device` and
-  // `room_level` into `set_volume` and `transfer_playback` in playback.ts, where
-  // the duplicate writers already were, so 22 -> 18. Bytes 17,313 -> 14,279B
-  // (-3,034), the largest per-module share of the collapse. The timer/ramp family
-  // stayed here because a scheduled ramp is a different operation, not a
-  // differently-spelled one.
+  // Re-measured on the merged tree, 2026-09-27. The figure this tree inherits
+  // from #846 and #847 was 22 tools; #848 moved `mute`, `unmute`,
+  // `switch_device` and `room_level` into `set_volume` and `transfer_playback`
+  // in playback.ts, where the duplicate writers already were, so 22 -> 18.
+  // Re-measured, bytes fell by 3,034 — the largest per-module share of the
+  // collapse. The timer/ramp family stayed here because a scheduled ramp is a
+  // different operation, not a differently-spelled one.
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [18, 14279], { scopeKey: 'playback' }),
   // --- from the #848 branch ---
 
@@ -1787,12 +1790,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
     gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 18951 },
   }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
-  // Re-measured on the merged tree, 2026-09-27. 20 tools / 12,541B was #847 and
-  // #846's figure; #848 retired `plan_volume_level_across_devices`,
-  // `apply_volume_plan` and `transfer_playback_with_state` into the two
-  // playback.ts survivors, so 20 -> 17. Bytes 12,541 -> 10,006B (-2,535). The
-  // queue planners that remain — split_queue_plan, queue_prune_plan,
-  // sleep_timer_plan — are untouched by any of the three changes.
+  // Re-measured on the merged tree, 2026-09-27. The figure this tree inherits
+  // from #847 and #846 was 20 tools; #848 retired
+  // `plan_volume_level_across_devices`, `apply_volume_plan` and
+  // `transfer_playback_with_state` into the two playback.ts survivors, so
+  // 20 -> 17. Re-measured, bytes fell by 2,535. The queue planners that remain
+  // — split_queue_plan, queue_prune_plan, sleep_timer_plan — are untouched by
+  // any of the three changes.
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [17, 10006], { scopeKey: 'playback' }),
   // --- from the #848 branch ---
 

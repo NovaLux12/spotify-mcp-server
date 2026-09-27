@@ -750,13 +750,18 @@ Seek to a position in the current track.
 ---
 
 #### `set_volume`
-Set playback volume.
+Set playback volume on one device, on a selection, or across every live device. One tool for the whole family (#848); the retired names forward to it with the flags that made them themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `volume_percent` | number | yes | 0–100 |
-| `device_id` | string | no | |
+| `op` | `"level"` \| `"mute"` \| `"unmute"` \| `"preset"` | no | Variant. `"level"` (default) sets or copies a level; `"mute"` drops to 0 and remembers the level, `"unmute"` restores what mute kept, `"preset"` applies the stored per-device presets. |
+| `volume_percent` | number | no | Absolute level 0–100. Omit it only to nudge with `delta_step` or to copy the active level across devices. Mutually exclusive with `delta_step`. |
+| `delta_step` | number | no | Signed nudge, e.g. +10 or -10, clamped to 0–100. Mutually exclusive with `volume_percent`. |
+| `device_id` | string | no | Device for a single-device write (default: the active device). |
+| `device_ids` | string[] | no | For `op: "level"`: fan the one `volume_percent` out over these device ids or names. |
+| `all_devices` | boolean | no | For `op: "level"`: set every volume-capable device rather than a named selection. |
+| `exclude_device_id` | string | no | For `op: "level"` with no `volume_percent`: leave this device untouched while levelling the rest. |
 
 ---
 
@@ -857,13 +862,17 @@ List available Spotify Connect devices.
 ---
 
 #### `transfer_playback`
-Move playback to a different device.
+Move playback to a different device, named by id, by the label you gave it, or by a name substring. One tool for the whole family (#848); the retired names forward to it with the flags that made them themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `device_id` | string | yes | Target device ID |
-| `play` | boolean | no | Force play immediately (default: maintain current state) |
+| `device` | string | yes | Target device: exact id, the sidecar label set by rename_device, or a case-insensitive name substring. |
+| `play` | boolean | no | Force play (`true`) or arrive paused (`false`); omit to preserve the current play state. |
+| `preserve_position` | boolean | no | Resume the current track at its current position on the target instead of restarting it (default: `false`). |
+| `restore_shuffle_repeat` | boolean | no | Re-apply the current shuffle and repeat modes on the target (default: `false`). |
+| `volume` | number | no | Volume to set on the target after the transfer, 0–100. |
+| `device_id` | string | no | Deprecated alias for `device`; still accepted for one release. |
 
 ---
 
