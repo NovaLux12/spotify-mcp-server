@@ -123,6 +123,204 @@ export const statsfmRangeSchema = z
   .enum(STATSFM_RANGES)
   .optional()
   .describe('Ranking window: weeks, months, or lifetime. Default: lifetime');
+
+/**
+ * The named stream-window vocabulary for `statsfm_recent_streams` (#730).
+ *
+ * ## This is deliberately NOT the same enum as {@link STATSFM_RANGES}
+ *
+ * The ranking `range` is forwarded verbatim to a stats.fm query parameter, so
+ * its vocabulary is whatever upstream answers 200 for. This one never reaches
+ * the network: `/users/{id}/streams/recent` takes no window parameter at all,
+ * and the bucket is resolved here into `after`/`before` and applied to the rows
+ * in hand. The two lists therefore *cannot* be one enum — merging them would
+ * advertise `year` to a ranking tool, and upstream answers
+ * `400 {"message":"invalid range"}` for `year` (re-verified 2026-09-27 for
+ * this issue; the same probe rejects `year`, `years`, `12months`, `52weeks`,
+ * `all`, `allTime` and `since`). See `statsfm-window-enum.test.ts`, which pins
+ * the split from both sides.
+ *
+ * ## Why the upstream bounds cannot do this work
+ *
+ * `after`/`before` were already declared on this tool, and they are a **silent
+ * no-op** upstream. Probed live 2026-09-27 against three public profiles
+ * (`rohan`, `spotify`, `lars`): `?after=4102444800000` (the year 2100) and
+ * `?before=1000000000000` (2001) each return byte-identical results to the
+ * unfiltered read. `limit` is ignored the same way, and `offset` is ignored
+ * too, so the route is a fixed window of the newest rows.
+ *
+ * That makes this a correctness fix and not only a convenience one: forwarding
+ * the bucket upstream would have returned unfiltered rows under a header
+ * claiming a month. The same probe found the bounds *are* honoured on
+ * `/users/{id}/streams`, on `/users/{id}/top/*` and on the per-entity
+ * `/stats` aggregate, so this is a per-route fact and not a general one.
+ *
+ * ## The window is a filter, never a claim about the whole period
+ *
+ * The route returns a fixed, unpaged page of the newest rows (50 observed). A
+ * `year` bucket over a page that spans 12 hours is a filter that kept
+ * everything, not a year of history — so the resolved window is reported
+ * alongside the page's own observed span (`page_oldest`/`page_newest`) and
+ * `page_truncated`, so a caller can see when the page could not have covered
+ * the bucket it asked for.
+ */
+export const STATSFM_STREAM_WINDOWS = ['today', 'week', 'month', 'year', 'lifetime'] as const;
+
+export type StatsfmStreamWindow = (typeof STATSFM_STREAM_WINDOWS)[number];
+
+export const statsfmStreamWindowSchema = z
+  .enum(STATSFM_STREAM_WINDOWS)
+  .optional()
+  .describe(
+    'Named window over the returned streams, resolved to UTC boundaries: '
+    + 'today (since 00:00 UTC), week (since Monday 00:00 UTC), month (since the 1st, 00:00 UTC), '
+    + 'year (since 1 January, 00:00 UTC), or lifetime (no lower bound). '
+    + 'Ignored when `after` or `before` is supplied — an explicit bound wins. '
+    + 'Applied to the rows stats.fm returns, which is a fixed recent page, not the full history.',
+  );
+
+/**
+ * One row's play time in epoch ms, or `null` when it cannot be read.
+ *
+ * `endTime` is an ISO 8601 string on this route (verified 2026-09-27), while
+ * the sibling `statsfm_taste.ts` helper also accepts epoch numbers and treats a
+ * value below 1e12 as seconds. Both spellings are accepted here for the same
+ * reason, because a bucket is a *filter*: a row whose time cannot be read
+ * cannot be placed in or out of the window, and dropping it silently would
+ * report a wrong count. It is returned as unreadable and counted instead
+ * (#803/#804 — a value that could not be read is never a number).
+ */
+function streamEndTimeMs(stream: J): number | null {
+  for (const key of ['endTime', 'playedAt', 'played_at', 'timestamp']) {
+    const value = stream?.[key];
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+      return value < 1e12 ? value * 1000 : value;
+    }
+    if (typeof value === 'string') {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return null;
+}
+
+/**
+ * A window bucket resolved to concrete UTC edges, plus the echo the caller
+ * needs to verify what was applied.
+ *
+ * `source` records *which* input decided the window, because the precedence
+ * rule is the part a caller cannot infer from the result: an explicit
+ * `after`/`before` beats `range`, and when both are supplied the bucket is
+ * recorded as `explicit` so the payload says the range was not the one used.
+ */
+type ResolvedWindow = {
+  after: number | null;
+  before: number | null;
+  source: 'range' | 'explicit' | 'unbounded';
+  label: string;
+};
+
+/**
+ * The start of the ISO week (Monday) containing `now`, in UTC.
+ *
+ * Monday is the ISO-8601 start and matches `libraryanalytics.ts`, which
+ * documents the same choice. Sunday-start would put Sunday's streams in the
+ * *previous* week, which is the kind of off-by-one that makes an agent report
+ * a wrong rotation picture as fact.
+ */
+function startOfIsoWeekUtc(now: number): number {
+  const d = new Date(now);
+  const isoDay = d.getUTCDay() === 0 ? 7 : d.getUTCDay();
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - (isoDay - 1));
+}
+
+/**
+ * Resolve the window a call actually applied.
+ *
+ * Precedence is explicit bounds over a named bucket, and the order is
+ * deliberate: a caller who computed a precise bound has more information than
+ * the bucket name carries, so the bucket must not silently narrow or widen it.
+ * A bucket alongside one explicit bound still contributes the *other* edge —
+ * `range:'week'` with only `before` set is "this week, up to that instant",
+ * which is what the caller asked for.
+ *
+ * `now` is a parameter rather than a `Date.now()` call so the boundaries are
+ * testable without freezing the clock.
+ */
+function resolveStreamWindow(
+  range: StatsfmStreamWindow | undefined,
+  after: number | undefined,
+  before: number | undefined,
+  now: number,
+): ResolvedWindow {
+  const explicitAfter = after ?? null;
+  const explicitBefore = before ?? null;
+  if (explicitAfter !== null || explicitBefore !== null) {
+    // The bucket still fills whichever edge the caller left open: `range` plus
+    // only `before` is "this window, up to that instant", and silently dropping
+    // the lower edge would widen the read back to the whole history.
+    const bucket = explicitAfter === null || explicitBefore === null
+      ? resolveStreamWindow(range, undefined, undefined, now)
+      : null;
+    return {
+      after: explicitAfter ?? bucket!.after,
+      before: explicitBefore ?? bucket!.before,
+      source: 'explicit',
+      label: 'explicit after/before',
+    };
+  }
+  if (range === undefined || range === 'lifetime') {
+    return { after: null, before: null, source: 'unbounded', label: 'lifetime (no bounds)' };
+  }
+  const d = new Date(now);
+  const edges: Record<Exclude<StatsfmStreamWindow, 'lifetime'>, number> = {
+    today: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
+    week: startOfIsoWeekUtc(now),
+    month: Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1),
+    year: Date.UTC(d.getUTCFullYear(), 0, 1),
+  };
+  return {
+    after: edges[range],
+    // No upper bound: the bucket means "since this instant", and pinning
+    // `before` to `now` would make the payload look like a closed interval
+    // when the only reason it ends is that the read happened just now.
+    before: null,
+    source: 'range',
+    label: range,
+  };
+}
+
+/**
+ * Apply a resolved window to the rows in hand.
+ *
+ * Rows whose time cannot be read are **excluded and counted**, never passed
+ * through and never dropped in silence: a bucket that quietly discarded
+ * unparseable rows would report a smaller, wrong number for the window.
+ */
+function filterByWindow(
+  items: J[],
+  window: ResolvedWindow,
+): { kept: J[]; unreadable: number; excluded: number } {
+  if (window.after === null && window.before === null) {
+    return { kept: items, unreadable: 0, excluded: 0 };
+  }
+  const kept: J[] = [];
+  let unreadable = 0;
+  let excluded = 0;
+  for (const item of items) {
+    const at = streamEndTimeMs(item);
+    if (at === null) {
+      unreadable += 1;
+      continue;
+    }
+    const afterOk = window.after === null || at >= window.after;
+    const beforeOk = window.before === null || at < window.before;
+    if (afterOk && beforeOk) kept.push(item);
+    else excluded += 1;
+  }
+  return { kept, unreadable, excluded };
+}
+
 const limitSchema = (max = 100, def = 10) =>
   z.number().int().min(1).max(max).optional().describe(`1–${max}. Default: ${def}`);
 const offsetSchema = () =>
@@ -694,10 +892,11 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
   // 6. statsfm_recent_streams — GET /users/{id}/streams/recent.
   server.tool(
     'statsfm_recent_streams',
-    "A stats.fm user's recently played streams",
+    "A stats.fm user's recently played streams, optionally narrowed to a named UTC window (`range`) or explicit Unix-ms bounds",
     {
       ...StatsfmUserInputFields,
       limit: limitSchema(100, 20),
+      range: statsfmStreamWindowSchema,
       after: afterSchema(),
       before: beforeSchema(),
       response_format: ResponseFormat,
@@ -709,9 +908,83 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
       if (args.before !== undefined) params.before = String(args.before);
       const body = await client.get<J>(`/users/${encodeURIComponent(resolveStatsfmUserInput(args as J).userId)}/streams/recent`, params);
       const items = collectionItems(body, `/users/${encodeURIComponent(resolveStatsfmUserInput(args as J).userId)}/streams/recent`);
-      return shapeCollection('Recent streams', items, args, streamLine, (s) =>
-        s.trackId !== undefined ? `trackId: ${s.trackId} | artists: ${(s.artistIds ?? []).join(', ')}` : null,
+
+      // The window is applied HERE, not upstream. `/streams/recent` ignores
+      // `after`/`before` (live-verified 2026-09-27: a bound in the year 2100
+      // and one in 2001 both return the unfiltered page), so forwarding the
+      // bucket would have returned every row under a header claiming a month.
+      // The bounds stay on the wire for forward-compatibility; the local
+      // filter is what makes them true today, and applying both is idempotent.
+      const window = resolveStreamWindow(args.range, args.after, args.before, Date.now());
+      const { kept, unreadable, excluded } = filterByWindow(items, window);
+
+      const timed = items
+        .map((s) => streamEndTimeMs(s))
+        .filter((t): t is number => t !== null)
+        .sort((a, b) => a - b);
+      const pageOldest = timed.length > 0 ? new Date(timed[0]).toISOString() : null;
+      const pageNewest = timed.length > 0 ? new Date(timed[timed.length - 1]).toISOString() : null;
+
+      // When the page's own span cannot reach back to the requested lower
+      // bound, the rows in hand were never a candidate for anything older —
+      // so the answer is "every stream in this page falls in the window", and
+      // saying so is the difference between a filter and a claim about the
+      // window's true contents.
+      const pageMayBeShort =
+        window.after !== null && pageOldest !== null && Date.parse(pageOldest) > window.after;
+
+      const result = shapeCollection('Recent streams', kept, args, streamLine, (s) =>        s.trackId !== undefined ? `trackId: ${s.trackId} | artists: ${(s.artistIds ?? []).join(', ')}` : null,
       );
+
+      const notes: string[] = [];
+      if (pageMayBeShort) {
+        notes.push(
+          `stats.fm returns a fixed recent page (not paged), which here spans ${pageOldest} to ${pageNewest}. `
+          + `That page does not reach back to the requested window start (${new Date(window.after!).toISOString()}), `
+          + `so this is every stream in the returned page that falls in the window — not a full count for the window.`,
+        );
+      }
+      if (unreadable > 0) {
+        notes.push(
+          `${unreadable} row(s) had no readable play time and were excluded from the window rather than counted in it.`,
+        );
+      }
+      if (excluded > 0) notes.push(`${excluded} row(s) fell outside the window and were filtered out.`);
+
+      const rangeResolved = {
+        requested: args.range ?? null,
+        applied: window.source,
+        after: window.after === null ? null : new Date(window.after).toISOString(),
+        before: window.before === null ? null : new Date(window.before).toISOString(),
+        timezone: 'UTC',
+        label: window.label,
+      };
+
+      const bodyExtras = {
+        range_resolved: rangeResolved,
+        returned_before_window: items.length,
+        returned_after_window: kept.length,
+        excluded_by_window: excluded,
+        unreadable_timestamps: unreadable,
+        page_oldest: pageOldest,
+        page_newest: pageNewest,
+        page_may_not_cover_window: pageMayBeShort,
+      };
+
+      if (args.response_format === 'json') {
+        const payload = { ...(result.structuredContent as Record<string, unknown>), ...bodyExtras };
+        return { content: result.content, structuredContent: payload };
+      }
+      const text = result.content.map((c) => c.text).join('\n');
+      const head = `Window: ${window.label} — ${rangeResolved.after ?? 'start of history'} → ${rangeResolved.before ?? 'now'} (UTC), from ${rangeResolved.applied === 'explicit' ? 'explicit after/before' : args.range ?? 'no range'}.`;
+      const suffix = notes.length > 0 ? `\n${notes.map((n) => `(${n})`).join('\n')}` : '';
+      const shaped = text.endsWith('no results.')
+        ? `${text}\n${head}${suffix}`
+        : `${text}\n${head}${suffix}`;
+      return {
+        content: [{ type: 'text' as const, text: shaped }],
+        structuredContent: { ...(result.structuredContent as Record<string, unknown>), ...bodyExtras },
+      };
     },
   );
 
@@ -894,7 +1167,7 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         // Resolved here rather than cast: this handler reaches the identity
         // through `(args as J)`, so a `as string` compiles cleanly and would
         // have sent the literal "undefined" as a profile name. See
-        // `resolveStatsfmUserId` — the throw is the contract, not the cast.
+        // `resolveStatsfmUserInput` — the throw is the contract, not the cast.
         const userId = resolveStatsfmUserInput(args as J).userId;
         const path = `/users/${encodeURIComponent(userId)}/top/${cfg.seg(entityId)}`;
         const body = await client.get<J>(path, {
