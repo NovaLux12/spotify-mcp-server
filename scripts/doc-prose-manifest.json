@@ -631,6 +631,22 @@
         "label": "A test that cannot fail is worse than no test. A schema-…"
       },
       {
+        "hash": "48b6971908ebb8e5",
+        "label": "A guard's scope is part of its contract, and widening it…"
+      },
+      {
+        "hash": "72d7b7efa19386e3",
+        "label": "A falsifier you derived yourself is the only proof a gua…"
+      },
+      {
+        "hash": "66363d98acae1895",
+        "label": "An exemption is a guard too, and it fails on the module …"
+      },
+      {
+        "hash": "57d9af8317d63675",
+        "label": "A vocabulary a negative check judges against has to be t…"
+      },
+      {
         "hash": "6e2c08f2c4e3d371",
         "label": "A failing test tells you the truth — read the assertion,…"
       },
@@ -4093,6 +4109,98 @@
         "label": "truncated distinguishes a cap that bound from a walk tha…"
       },
       {
+        "hash": "6cd7cd5c923b625d",
+        "label": "6.5 Resource subscriptions (#597)"
+      },
+      {
+        "hash": "6a258c36e23b1ef0",
+        "label": "Off by default. SPOTIFYMCPSUBSCRIPTIONS=1 advertises res…"
+      },
+      {
+        "hash": "f3b443e32487c6b6",
+        "label": "What \"changed\" means"
+      },
+      {
+        "hash": "a3dec1032021f3a4",
+        "label": "A subscription is a vector, not a heartbeat. For each wa…"
+      },
+      {
+        "hash": "e48e373464d61381",
+        "label": "The alternative — a notification per poll — is the \"a va…"
+      },
+      {
+        "hash": "cf09718a38127da8",
+        "label": "A failed read is not a change. If the read throws, or th…"
+      },
+      {
+        "hash": "8fba78c422f552c4",
+        "label": "The first read after subscribing is the baseline, not a …"
+      },
+      {
+        "hash": "925c35b1b3423c42",
+        "label": "| Resource | Vector — a change is any difference in… | |…"
+      },
+      {
+        "hash": "b849af19866b609c",
+        "label": "progressms and timestamp are excluded from player/state,…"
+      },
+      {
+        "hash": "e425d386c63ad332",
+        "label": "An unbacked subscription is refused, not accepted. resou…"
+      },
+      {
+        "hash": "0bde5d51e5baaabb",
+        "label": "Why the watchable set is exactly these four"
+      },
+      {
+        "hash": "9319ab7c56c243e7",
+        "label": "Two independent constraints, and the set is their inters…"
+      },
+      {
+        "hash": "01ff98aa12491543",
+        "label": "1. Nothing TTL-cached can be watched honestly. The clien…"
+      },
+      {
+        "hash": "b64a44c1b5bd1d3d",
+        "label": "2. A concrete URI is required. A watchable is a bare, pa…"
+      },
+      {
+        "hash": "fba1d8c76ac4f201",
+        "label": "The four are also the ones whose bodies carry a genuine …"
+      },
+      {
+        "hash": "8e64024db7129faf",
+        "label": "Notification payload"
+      },
+      {
+        "hash": "e3ac67c9a06d1867",
+        "label": "{ \"uri\": \"<the subscribed uri>\" } — the spec's ResourceU…"
+      },
+      {
+        "hash": "51c5661a3b720f4c",
+        "label": "Lifecycle"
+      },
+      {
+        "hash": "456b8d35448919d4",
+        "label": "resources/unsubscribe stops the poll and clears its time…"
+      },
+      {
+        "hash": "2ede84430f151da6",
+        "label": "The poll re-arms as a setTimeout chain, not a setInterva…"
+      },
+      {
+        "hash": "32b7e1ecb04ae193",
+        "label": "Configuration"
+      },
+      {
+        "hash": "24c64afb97b7a562",
+        "label": "| Variable | Default | Meaning | |---|---|---| | SPOTIFY…"
+      },
+      {
+        "hash": "3c49336455040911",
+        "label": "SPOTIFYMCPSUBSCRIPTIONPOLLMS is clamped, not refused: an…"
+      },
+      {
         "hash": "82bb95496388c09c",
         "label": "7. Prompts"
       },
@@ -4321,7 +4429,7 @@
         "label": "12. Configuration"
       },
       {
-        "hash": "e6dd95ac2b25619c",
+        "hash": "ce42735674833d61",
         "label": "Environment variables SPOTIFYCLIENTID= # required — from…"
       },
       {
@@ -4399,7 +4507,7 @@
         "label": "Summary"
       },
       {
-        "hash": "e4f064144096b51e",
+        "hash": "2b3f1ed9c3b7b151",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -4905,6 +5013,34 @@
       {
         "hash": "e7b9cdb9910f130a",
         "label": "This gate is independent of SPOTIFYMCPREADONLY in both d…"
+      },
+      {
+        "hash": "f49976a2ffc1d41b",
+        "label": "Resource subscriptions"
+      },
+      {
+        "hash": "cc1dd7211f7383b3",
+        "label": "SPOTIFYMCPSUBSCRIPTIONS=1 (also true, yes or on) adverti…"
+      },
+      {
+        "hash": "e4ac60495df69a22",
+        "label": "Off by default because a poll costs something a read doe…"
+      },
+      {
+        "hash": "12495243bb963cb3",
+        "label": "Only four resources are watchable, and each is watched o…"
+      },
+      {
+        "hash": "5ec51a16b3bd72e2",
+        "label": "| Resource | A change is any difference in… | |---|---| …"
+      },
+      {
+        "hash": "debe94425a757e39",
+        "label": "A notification is sent only when the new vector differs …"
+      },
+      {
+        "hash": "c8f5beda1dd9e179",
+        "label": "A failed read is not a change: the server sends nothing,…"
       },
       {
         "hash": "0f97b01f04c6f76d",
@@ -6351,6 +6487,13 @@
       "reason": "Both tables are pinned as one content-hashed unit each, so adding the SPOTIFY_MCP_ATTRIBUTION row retires the old hash in README.md and in docs/configuration.md. Nothing was removed: each table grows by exactly one row (README 8->9, configuration 68->69) and no SPOTIFY_* row is deleted on either side, verified by counting the tables on both trees rather than by reading the diff. The rebase that produced this also brought in #1521's changes to the same two tables, so the pre-rebase pins were superseded regardless."
     },
     {
+      "file": "docs/configuration.md",
+      "hash": "e4f064144096b51e",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "date": "2026-09-27",
+      "reason": "The env-var table is EXTENDED, not deleted: #597 adds the SPOTIFY_MCP_SUBSCRIPTIONS and SPOTIFY_MCP_SUBSCRIPTION_POLL_MS rows, so the pre-extension text no longer hashes. Verified additive before retiring — docs/configuration.md has 66 env rows on this tree against 64 on main, so no row was dropped, and SPEC.md's table is a generated block carrying both new rows at 2620-2621. The pin is keyed on content, so a reword and a deletion read identically (issue #1527)."
+    },
+    {
       "file": "docs/cookbook.md",
       "hash": "06d58c6b9c65cbe8",
       "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
@@ -6674,6 +6817,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "e6dd95ac2b25619c",
+      "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
+      "date": "2026-09-27",
+      "reason": "The env-var table is EXTENDED, not deleted: #597 adds the SPOTIFY_MCP_SUBSCRIPTIONS and SPOTIFY_MCP_SUBSCRIPTION_POLL_MS rows, so the pre-extension text no longer hashes. Verified additive before retiring — docs/configuration.md has 66 env rows on this tree against 64 on main, so no row was dropped, and SPEC.md's table is a generated block carrying both new rows at 2620-2621. The pin is keyed on content, so a reword and a deletion read identically (issue #1527)."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "ee57237e3d75af26",
       "label": "Each parameterised resource registers three entries, not…",
       "date": "2026-09-27",
@@ -6737,9 +6887,9 @@
     }
   ],
   "provenance": {
-    "head": "01258537645725d553a9c14ab0b678813b10cf85",
-    "base": "b1a30af2dc643b88e7430af1c9285e7040881f7f",
-    "upstream": "b1a30af2dc643b88e7430af1c9285e7040881f7f",
+    "head": "e383a3035424f1fb6ebc8fad4657947be5e6851a",
+    "base": "fb4dc5ed3bb394d7ee2431ceaab2d3f16db8f398",
+    "upstream": "fb4dc5ed3bb394d7ee2431ceaab2d3f16db8f398",
     "behind": false
   }
 }

@@ -48,6 +48,8 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` | unset (off) | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) registers the eleven **derived listening-analytics tools**; unset or any other value does not, and an unrecognised value also prints a stderr line naming the accepted spellings. Independent of `SPOTIFY_MCP_READONLY`: that one hides write-capable *modules*, this one hides individual read-only *tools* inside modules that stay active. See [Derived listening analytics](#derived-listening-analytics). |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Per-kind watermark file powering `whats_new` with `since: "last-check"`. Written by that tool, mode 0600. |
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
+| `SPOTIFY_MCP_SUBSCRIPTIONS` | unset (off) | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) advertises `resources.subscribe` and installs the poll that backs it. Unset, the server does not advertise the capability and answers `resources/subscribe` with `MethodNotFound` naming this switch. Off by default because a poll is a repeating API read against a shared rate-limit budget that the **host** started rather than a user request. See [Resource subscriptions](#resource-subscriptions). |
+| `SPOTIFY_MCP_SUBSCRIPTION_POLL_MS` | `15000` | How often a subscribed resource is re-read, in milliseconds. Clamped to `1000`–`300000`; an unparseable value falls back to the default. Only read when subscriptions are on. |
 | `SPOTIFY_MCP_MAX_CONCURRENCY` | `3` | **The one concurrency knob**: the ceiling on Spotify requests in flight at once for the whole process. Every request passes through the funnel, including those a single tool fans out, so this is the width that applies everywhere. Starts are still paced a minimum 100 ms apart and still stop entirely during a `Retry-After` cooldown; `1` restores the strictly serial funnel. Clamped to 32 — a larger value is not honoured, so unbounded concurrency cannot be configured by accident. |
 | `SPOTIFY_MCP_SHOWRADAR_BUDGET` | unset (falls back to `SPOTIFY_MCP_FRESHNESS_BUDGET`) | Per-call episode-lookup budget for `show_new_episodes` only. Takes precedence over the shared freshness budget; a `max_shows` argument still wins for one call. |
 | `SPOTIFY_MCP_FANOUT_CONCURRENCY` | unset (falls back to `SPOTIFY_MCP_MAX_CONCURRENCY`, default `3`) | How many requests a freshness-radar fan-out keeps in flight at once: the per-show lookups in `show_new_episodes`, the per-artist album lookups in `check_artist_releases` and `artist_release_digest`, and the per-type walks in `search_deep`. Bounds burst size, not request count — the number of requests a scan makes is unchanged. `1` restores the old strictly-serial walk. Every affected payload reports the width it used as `fanout_concurrency` / `fanout_concurrency_source`. **Yields to `SPOTIFY_MCP_MAX_CONCURRENCY`**: that request-funnel knob (#892) takes precedence for these tools, so the two can never disagree about how much is in flight. |
@@ -374,6 +376,25 @@ The withheld set is `listening_report`, `listening_heatmap`, `discovery_ratio`, 
 An unrecognised value — `enabled`, `2`, `y` — leaves the analytics **off** and prints a stderr line naming the accepted spellings. It is not a startup failure: the default is already the safe path, so refusing to start would take a working host offline over a cosmetic mistake. The value is parsed by the same `truthyEnv` convention as `SPOTIFY_MCP_READONLY`, so the two switches cannot drift into disagreeing about what counts as a boolean.
 
 This gate is independent of `SPOTIFY_MCP_READONLY` in both directions. A read-only host may still hold derived analytics; an analytics-opted-in host is still fully writable. Tools that re-present the account's own data — `get_top_artists`, `get_top_tracks`, `get_recently_played`, `top_artists_by_range`, `taste_shift_report`, `listening_history_export` and the leaderboard and rank-delta tools — are never gated. The policy reading behind the gate is written out in [`docs/compliance.md`](compliance.md#derived-listening-analytics-the-policy-and-the-interpretation).
+
+### Resource subscriptions
+
+`SPOTIFY_MCP_SUBSCRIPTIONS=1` (also `true`, `yes` or `on`) advertises the MCP `resources.subscribe` capability and installs the poll that backs it. Unset, the server does not advertise it, and a host that sends `resources/subscribe` anyway gets `MethodNotFound` with a message naming this switch — a clean refusal rather than a subscription that silently never fires.
+
+**Off by default because a poll costs something a read does not.** A subscription is a *repeating* API read against a shared rate-limit budget, started by the host rather than by a user request. Spending a user's quota on a background poll they did not ask for is a different decision from answering a read they made, so the default is the path that spends nothing. When the flag is on, the server prints one stderr line naming the watchable set, the interval in force, and the clamp range, so an operator can tell a running poll from a disabled one in a log.
+
+**Only four resources are watchable**, and each is watched on a hand-declared *vector* — the projection of the body onto the fields that constitute a change event:
+
+| Resource | A change is any difference in… |
+|---|---|
+| `spotify://player/state` | current item, play/pause, shuffle, repeat, active device |
+| `spotify://player/queue` | the queued items and their order |
+| `spotify://me/recently-played` | the played-at / track-URI pairs on the default first page |
+| `spotify://me/rate-limit` | the timestamp and Retry-After of the last throttle event |
+
+A notification is sent **only** when the new vector differs from the last one successfully read. Re-reading and finding nothing sends nothing; the two are distinguished by the presence or absence of a notification, not by a field. `progress_ms` and the rate-limit counters are excluded from the vectors precisely because they move on every read — a vector containing them would fire on every poll, which is a timer wearing a change notification's name.
+
+A failed read is not a change: the server sends nothing, leaves the last good baseline in place, and retries with backoff. Subscribing to any other URI — including a parameterised or templated one — is refused with `InvalidParams` naming the set, because a subscription the server cannot honour is a promise it must not make. `SPOTIFY_MCP_SUBSCRIPTION_POLL_MS` sets the interval and is clamped to 1–300 s; the clamp is printed on the startup line rather than enforced by refusing to start. SPEC.md §6.5 has the full contract.
 
 ### Freshness and local sidecars
 

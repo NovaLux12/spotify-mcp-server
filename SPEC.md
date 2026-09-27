@@ -2508,6 +2508,125 @@ since the id is the one field that cannot itself be missing.
 reported total without the cap applying, matching the walk disclosure the
 capped library resources use (#718/#864).
 
+### 6.5 Resource subscriptions (#597)
+
+**Off by default.** `SPOTIFY_MCP_SUBSCRIPTIONS=1` advertises
+`resources.subscribe`; unset, the server does not advertise it and answers the
+request with `MethodNotFound` naming the switch. A poll is a repeating API read
+against a shared rate-limit budget that the **host** started, not a user request,
+so it is opt-in — and when it is on, the server says so on stderr, naming the
+watchable set and the interval.
+
+#### What "changed" means
+
+**A subscription is a vector, not a heartbeat.** For each watchable resource the
+server holds a *vector* — a projection of the resource body onto the fields that
+constitute a change event — and re-reads the resource on a timer. A
+`notifications/resources/updated` is sent **only** when the new vector differs
+from the last one successfully read. Re-reading and finding nothing sends
+nothing, and the two are distinguished *structurally*: a change is the presence
+of a notification, and "I looked again and it had not" is its absence. There is
+no field a host has to read to tell them apart, because there is no field.
+
+The alternative — a notification per poll — is the "a value that could not be
+read being coerced into a plausible answer" defect this repo has shipped twice
+(#803, #830), in a costume. A host that received one notification per interval
+could not act on any of them, and would have to re-read every resource every
+interval to find out which ones mattered, which is what the subscription was
+supposed to avoid.
+
+**A failed read is not a change.** If the read throws, or the body is not a
+reading (absent content, not `text`, unparseable JSON), the server sends
+nothing, **leaves the baseline exactly where it was**, records the reason, and
+retries with exponential backoff capped at 16× the interval. The baseline rule
+is what makes the recovery correct rather than merely quiet: a change that
+happened while reads were failing is still detected against the last *good*
+vector, so it is neither lost nor reported twice. The first failure and the
+recovery are each disclosed once on stderr, so a silent poll and a broken one
+are distinguishable in a log.
+
+**The first read after subscribing is the baseline, not a change.** A change
+occurring before that first read is not reported. The window is at most one
+poll interval and is stated here rather than papered over; a host that must not
+miss it subscribes and then re-reads.
+
+| Resource | Vector — a change is any difference in… |
+|---|---|
+| `spotify://player/state` | current item URI, `is_playing`, `shuffle_state`, `repeat_state`, active device id, plus a distinct value for "the endpoint returned no playback state at all" |
+| `spotify://player/queue` | the URI of the item playing, and every queued item's URI **in order** |
+| `spotify://me/recently-played` | the `played_at` and track URI of every row on the page, in order |
+| `spotify://me/rate-limit` | the timestamp and Retry-After of the **last throttle event**, and nothing else |
+
+`progress_ms` and `timestamp` are excluded from `player/state`, and the request
+counters and cooldown countdown are excluded from `rate-limit`, because they
+advance on every read. A vector that included either would fire on every poll.
+A host wanting a live position or counter re-reads the resource; a resource read
+is live, and a subscription is not the place to get one.
+
+**An unbacked subscription is refused, not accepted.** `resources/subscribe` on
+a URI outside the table above fails with `InvalidParams`, naming the watchable
+set and stating that a resource can be readable without being watchable. A
+subscription the server cannot honour is a promise it must not make.
+
+#### Why the watchable set is exactly these four
+
+Two independent constraints, and the set is their intersection.
+
+1. **Nothing TTL-cached can be watched honestly.** The client's cache serves a
+   re-read from a stored body until it goes stale, so a poll against a cached
+   resource would compare a body against itself and report no change while the
+   real resource had moved. All four watched resources either bypass the cache
+   by construction (`shouldBypassCache` exempts `/me/player*` and `/me/top*`) or
+   are served from process state rather than the API (`me/rate-limit`).
+2. **A concrete URI is required.** A watchable is a bare, parameterless URI, so
+   `spotify://me/recently-played` means the default first page and not a window
+   the host chose. Templated and parameterised URIs are excluded: "which rows
+   changed" is not answerable for an arbitrary window, and a subscription that
+   silently watched a different URI than the one named would be worse than a
+   refusal.
+
+The four are also the ones whose *bodies* carry a genuine change event rather
+than a continuously-advancing reading. `player/devices` is the near miss: the
+active device is a change, but the OpenAPI schema's device object also carries
+`volume_percent`, which a host can change from another client continuously, so
+"the resource changed" and "someone nudged the volume" would be indistinguishable
+in a single vector.
+
+#### Notification payload
+
+`{ "uri": "<the subscribed uri>" }` — the spec's `ResourceUpdatedNotification`
+params, and nothing more. There is no diff and no vector in the payload: a host
+that wanted either would have to trust this server's internal comparison, and
+the notification's job is to say *that* something changed, not to characterise
+it. A host that needs the detail re-reads the resource, which is a live read.
+
+#### Lifecycle
+
+`resources/unsubscribe` stops the poll and clears its timer immediately.
+Closing the transport stops every poll: over the Streamable HTTP transport a
+host can disconnect without unsubscribing, and the close hook is the only moment
+the server can observe. Poll timers are deliberately **not** `unref`'d, so a leak
+keeps the process alive and is observable in a short run rather than being a
+timer nobody can see.
+
+The poll re-arms as a `setTimeout` chain, not a `setInterval`, so a read that
+outlives the interval delays the next one rather than overlapping it — two
+concurrent reads of one resource would race the baseline.
+
+#### Configuration
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `SPOTIFY_MCP_SUBSCRIPTIONS` | unset (off) | Advertise and implement `resources/subscribe`. |
+| `SPOTIFY_MCP_SUBSCRIPTION_POLL_MS` | `15000` | Poll interval, clamped to `1000`–`300000`. |
+
+`SPOTIFY_MCP_SUBSCRIPTION_POLL_MS` is **clamped, not refused**: an operator who
+asks for a 50 ms poll has asked for 50 reads a second against a shared quota,
+and a server that silently served it would be spending the user's rate limit on
+a mistyped value. The range is printed on the startup stderr line, so a clamp is
+visible without a second mechanism. An unparseable value falls back to the
+default.
+
 
 ---
 
@@ -2782,6 +2901,8 @@ SPOTIFY_MCP_FETCH_ALL_CAP=500 # ceiling for fetch_all pagination walks
 SPOTIFY_MCP_HISTORY=1         # opt-in mutation history JSONL logging
 SPOTIFY_MCP_HISTORY_DIR=      # history directory override (default ~/.spotify-mcp/history)
 SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1 # opt-in derived listening analytics (default OFF)
+SPOTIFY_MCP_SUBSCRIPTIONS=1 # opt-in resources.subscribe + the poll behind it (default OFF)
+SPOTIFY_MCP_SUBSCRIPTION_POLL_MS=15000 # poll interval, clamped to 1000-300000
 ```
 
 ### Derived listening analytics are opt-in (#695)
