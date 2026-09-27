@@ -39,8 +39,11 @@ import { fileURLToPath } from 'node:url';
 import type { z } from 'zod';
 
 import {
+  blankNonCode,
   collectErrorParamViolations,
+  collectModuleViolations,
   collectThrownMessages,
+  isCommandLineModule,
   parameterVocabulary,
   registrations,
   stringLiterals,
@@ -50,6 +53,7 @@ import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const TOOLS_DIR = join(ROOT, 'src', 'tools');
+const SRC_DIR = join(ROOT, 'src');
 
 function walkSources(dir: string): Array<{ file: string; source: string }> {
   return readdirSync(dir, { withFileTypes: true })
@@ -59,8 +63,13 @@ function walkSources(dir: string): Array<{ file: string; source: string }> {
 }
 
 const SOURCES = walkSources(TOOLS_DIR);
-const VOCAB = parameterVocabulary(SOURCES.map((s) => s.source));
-const TOOL_NAMES = toolNameVocabulary(SOURCES.map((s) => s.source));
+// The vocabulary spans every module under `src/`, not just the tool modules:
+// a parameter declared by a shared zod shape in `src/shaping.ts` and spread
+// into a tool is a declared parameter, and reading only the inline shapes
+// called it undeclared (#1500).
+const ALL_SOURCES = walkTree(SRC_DIR);
+const VOCAB = parameterVocabulary(ALL_SOURCES.map((s) => s.source));
+const TOOL_NAMES = toolNameVocabulary(ALL_SOURCES.map((s) => s.source));
 
 /** A minimal registration whose handler raises the given message. */
 const toolWith = (name: string, schema: string, handler: string) =>
@@ -84,12 +93,20 @@ test('#887 — the real tree names no un-passable flag and no undeclared paramet
   );
 });
 
-test('#887 — the guard is scoped to src/tools, so auth\'s real CLI flag is untouched', () => {
-  // `auth --profile` is a flag of the shipped CLI, not advice the MCP surface
-  // gives anybody. If this ever starts failing the scope moved, not the code.
+test('#887 — the per-tool rules are keyed on a registration, so a shared module is not their scope', () => {
+  // This is the limit #1500 widened past, pinned so the split stays visible:
+  // `src/auth.ts` registers no MCP tools, so `collectErrorParamViolations` has
+  // nothing to attribute a message to there. It is the module rule, not this
+  // one, that reads it now — and the CLI exemption that keeps `auth --profile`
+  // out of that rule is asserted in the #1500 block below.
   const auth = readFileSync(join(ROOT, 'src', 'auth.ts'), 'utf8');
   assert.match(auth, /Invalid --profile/);
   assert.equal(registrations(auth).length, 0, 'src/auth.ts registers no MCP tools, so nothing there is in scope');
+  assert.deepEqual(
+    collectErrorParamViolations(auth, 'src/auth.ts', VOCAB, TOOL_NAMES),
+    [],
+    'the per-tool rules must not reach a module that registers nothing',
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -445,4 +462,261 @@ test('#887 — the era-profile miss names the market param, not a flag', async (
   for (const token of named) {
     assert.ok(keys.has(token), `the verdict names \`${token}\`, which playlist_era_profile does not declare`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// #1500 — the scope gap. The two rules above are keyed on a registration, and
+// a shared module under `src/` registers nothing, so a message composed in
+// `shaping.ts` / `result.ts` / `accounts.ts` and surfaced verbatim by a tool
+// was never read. The concrete miss was `registerAccount` telling a caller to
+// re-run `spotify-mcp auth --profile`, which creates a token file and never
+// reaches the registry (#1465).
+// ---------------------------------------------------------------------------
+
+/** Every `.ts` file under `src/`, recursively — the region the gate covers. */
+function walkTree(dir: string): Array<{ file: string; source: string }> {
+  const out: Array<{ file: string; source: string }> = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...walkTree(p));
+    else if (e.name.endsWith('.ts')) {
+      out.push({ file: relative(ROOT, p), source: readFileSync(p, 'utf8') });
+    }
+  }
+  return out.sort((a, b) => a.file.localeCompare(b.file));
+}
+
+const TREE = walkTree(SRC_DIR);
+
+test('#1500 — the walk reaches every module under src/, not just src/tools', () => {
+  // If this shrinks back to src/tools the scope gap is open again and every
+  // module test below would be checking a region nothing scans. Pin both
+  // counts: the tools half and the shared half.
+  const inTools = TREE.filter((f) => f.file.startsWith('src/tools/'));
+  const outside = TREE.filter((f) => !f.file.startsWith('src/tools/'));
+  assert.ok(inTools.length > 20, `only ${inTools.length} tool modules found`);
+  assert.ok(
+    outside.length > 20,
+    `only ${outside.length} shared modules found — the walk is not covering src/`,
+  );
+  for (const required of ['src/shaping.ts', 'src/result.ts', 'src/accounts.ts', 'src/paths.ts']) {
+    assert.ok(
+      TREE.some((f) => f.file === required),
+      `${required} is not in the walk; the uncovered region is not the one the issue names`,
+    );
+  }
+});
+
+test('#1500 — the shared tree names no un-passable flag and no undeclared parameter', () => {
+  const found = TREE.flatMap(({ file, source }) =>
+    collectModuleViolations(source, file, VOCAB, TOOL_NAMES));
+
+  assert.deepEqual(
+    found,
+    [],
+    `a message composed in a shared module misnames a parameter to every tool that surfaces it:\n${found.join('\n')}`,
+  );
+});
+
+test('#1500 — the module scan fires on a --flag remediation composed outside a tool', () => {
+  // The exact shape of the #1465 defect, in a module with no registration and
+  // so no schema the per-tool rules could ever have checked it against.
+  const source = [
+    'export function registerThing(input: { profile: string }): void {',
+    "  if (!input.profile) throw new Error('Re-run \"spotify-mcp auth --profile\" once, then retry.');",
+    '}',
+  ].join('\n');
+  const found = collectModuleViolations(source, 'src/registerthing.ts', VOCAB, TOOL_NAMES);
+  assert.equal(found.length, 1, `expected the flag to be caught, got: ${JSON.stringify(found)}`);
+  assert.match(found[0]!, /command-line flag syntax "--profile"/);
+});
+
+test('#1500 — the module scan fires on a parameter no tool declares', () => {
+  // Rule 2's per-tool form cannot run here: there is no schema to check the
+  // name against. The schema-less form still catches the wrong-name defect —
+  // `match_bys` for `match_by` is #830 in a different costume.
+  const source = [
+    'export function resolveMatch(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `match_bys` to choose a rule.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  const found = collectModuleViolations(source, 'src/match.ts', VOCAB, TOOL_NAMES);
+  assert.equal(found.length, 1, `expected the wrong name to be caught, got: ${JSON.stringify(found)}`);
+  assert.match(found[0]!, /names "match_bys", which no registered tool declares/);
+  // …and a real parameter name is left alone: the module cannot know which
+  // tool surfaces it, so it must not guess that a declared name is wrong.
+  const ok = [
+    'export function resolveMatch(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `match_by` to choose a rule.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(collectModuleViolations(ok, 'src/match.ts', VOCAB, TOOL_NAMES), []);
+});
+
+test('#1500 — a flag in a shared module is judged by structure, not by a filename list', () => {
+  // `auth --profile` and `logout --profile` are real flags of the shipped CLI.
+  // The exemption used to be implicit — those files were simply never scanned
+  // — so widening the walk without widening the exemption would have turned
+  // both into violations. It is now a property of the module: a function whose
+  // parameter list names `argv`.
+  assert.equal(
+    isCommandLineModule(readFileSync(join(ROOT, 'src', 'auth.ts'), 'utf8')),
+    true,
+    'src/auth.ts parses argv, so it must be recognised as the CLI surface',
+  );
+  assert.equal(
+    isCommandLineModule(readFileSync(join(ROOT, 'src', 'logout.ts'), 'utf8')),
+    true,
+    'src/logout.ts parses argv, so it must be recognised as the CLI surface',
+  );
+  for (const shared of ['shaping.ts', 'result.ts', 'accounts.ts', 'paths.ts']) {
+    assert.equal(
+      isCommandLineModule(readFileSync(join(ROOT, 'src', shared), 'utf8')),
+      false,
+      `${shared} is not the CLI, so a --flag in it is a defect and must not be exempted`,
+    );
+  }
+
+  // A module that merely *mentions* argv in prose is not the CLI.
+  const mention = [
+    '// the docs mention argv but this module has no parser',
+    'export function check(input: { profile: string }): void {',
+    "  if (!input.profile) throw new Error('Pass --profile to choose.');",
+    '}',
+  ].join('\n');
+  assert.equal(isCommandLineModule(mention), false);
+  assert.equal(collectModuleViolations(mention, 'src/check.ts', VOCAB, TOOL_NAMES).length, 1);
+
+  // And an argv-taking function IS exempt, in a file the guard has never seen.
+  const cli = [
+    'export function parseThing(argv: string[]): string {',
+    "  if (!argv[0]) throw new Error('--profile requires a profile name');",
+    '  return argv[0];',
+    '}',
+  ].join('\n');
+  assert.equal(isCommandLineModule(cli), true);
+  assert.deepEqual(collectModuleViolations(cli, 'src/parse.ts', VOCAB, TOOL_NAMES), []);
+});
+
+test('#1500 — the real CLI flag in src/auth.ts is still not a violation', () => {
+  // Belt and braces on the one message the original scope comment named: if
+  // this ever fails, the exemption moved rather than the code.
+  const found = TREE.flatMap(({ file, source }) =>
+    file === 'src/auth.ts' || file === 'src/logout.ts'
+      ? collectModuleViolations(source, file, VOCAB, TOOL_NAMES)
+      : []);
+  assert.deepEqual(found, [], `the CLI surface was reported: ${found.join('\n')}`);
+});
+
+test('#1500 — the mask survives a regex literal containing a quote', () => {
+  // `/"/g` reads as an *opening* double quote to a scanner that only knows
+  // about strings, and the mask then swallows the rest of the file as string
+  // body. That made `src/auth.ts` lose 12 of its 15 throw sites and
+  // `swarm3_discovery.ts` lose 7 of its 24 registrations, so the guard
+  // reported those regions clean having not read them at all.
+  const source = [
+    'const esc = (s: string) => s.replace(/"/g, \'&quot;\').replace(/\'/g, \'&#39;\');',
+    'export function go(): void { throw new Error("reached"); }',
+  ].join('\n');
+  const mask = blankNonCode(source);
+  assert.equal(mask.length, source.length, 'the mask must stay offset-identical to the source');
+  assert.ok(mask.includes('throw new Error'), 'the code after the regex literal was blanked away');
+  assert.ok(!mask.includes('reached'), 'the string body was left visible');
+
+  // The invariant across the real tree, not just this synthetic source.
+  const broken = TREE.filter(({ source: s }) => blankNonCode(s).length !== s.length);
+  assert.deepEqual(
+    broken.map((b) => b.file),
+    [],
+    'these files desync the mask, so every offset the scan reads past the break is wrong',
+  );
+});
+
+test('#1500 — the mask fix recovers registrations the broken mask was hiding', () => {
+  // Not a count. These seven tools live after a regex literal containing a
+  // quote in `swarm3_discovery.ts`; with the mask broken they were invisible,
+  // so no rule could have judged anything they said.
+  const names = registrations(readFileSync(join(ROOT, 'src', 'tools', 'swarm3_discovery.ts'), 'utf8'))
+    .map((r: { name: string }) => r.name);
+  for (const tool of [
+    'artistwatch_new_additions',
+    'album_representative_plan',
+    'front_to_back_plan',
+    'b_sides_finder',
+    'album_focus_report',
+    'artist_catalog_stats',
+    'lyric_snippet_search',
+  ]) {
+    assert.ok(names.includes(tool), `${tool} is invisible to the guard again — the mask regressed`);
+  }
+});
+
+test('#1500 — a regex literal is not mistaken for a division or a comment', () => {
+  // The two ways the mask can be over-eager and blank real code.
+  const source = [
+    'const ratio = total / count;',
+    'const half = (total) / 2 / 1;',
+    "const pathed = value.replace(/a\\/b/g, '-');",
+    'export function go(): void { throw new Error("reached"); }',
+  ].join('\n');
+  const mask = blankNonCode(source);
+  assert.equal(mask.length, source.length);
+  assert.ok(mask.includes('throw new Error'), 'code after a division was blanked');
+  assert.ok(mask.includes('total / count'), 'a division was read as a regex and blanked');
+  assert.ok(mask.includes('(total) / 2 / 1'), 'a division after `)` was read as a regex');
+  assert.ok(!mask.includes('a\\/b'), 'the regex body itself should be blanked');
+});
+
+test('#1500 — a `+`-joined message is read whole, not just its first literal', () => {
+  // The shape the #1465 remediation actually has: a long message written as a
+  // run of concatenated literals, with the offending `--flag` in the LAST one.
+  // Reading only the first literal reported the real defect clean, which is
+  // how a guard built for exactly this class missed it twice.
+  const source = [
+    'export function registerThing(input: { profile: string }): void {',
+    '  if (!input.profile) {',
+    '    throw new Error(',
+    '      `Cannot register profile "${input.profile}": /me returned neither account_id nor id. ` +',
+    "        'The profile is authenticated and the session is acting as it. ' +",
+    "        'Re-run \"spotify-mcp auth --profile X\" once /me serves account_id.',",
+    '    );',
+    '  }',
+    '}',
+  ].join('\n');
+  const thrown = collectThrownMessages(source);
+  assert.equal(thrown.length, 1, `expected one throw, got: ${JSON.stringify(thrown)}`);
+  assert.match(thrown[0]!.message, /--profile/, 'the concatenated tail was not read');
+  const found = collectModuleViolations(source, 'src/registerthing.ts', VOCAB, TOOL_NAMES);
+  assert.equal(found.length, 1, `expected the flag to be caught, got: ${JSON.stringify(found)}`);
+  assert.match(found[0]!, /command-line flag syntax "--profile"/);
+
+  // And a parameter claim in the tail counts the same as one in the head.
+  const named = [
+    'export function pick(inputs: { match_by?: string }): string {',
+    '  if (!inputs.match_by) throw new Error(',
+    "    'Provide one of `match_by` or `match_bys` to choose a rule.',",
+    '  );',
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  const hits = collectModuleViolations(named, 'src/pick.ts', VOCAB, TOOL_NAMES);
+  assert.equal(hits.length, 1, `expected the tail claim to be caught, got: ${JSON.stringify(hits)}`);
+  assert.match(hits[0]!, /names "match_bys"/);
+});
+
+test('#1500 — a `+` after a non-literal ends the message instead of running on', () => {
+  // The walk stops at the first `+` that is not followed by a string. Reading
+  // past it would swallow the next statement into this message.
+  const source = [
+    'export function go(a: number, b: number): number {',
+    '  const c = a + b;',
+    "  if (!c) throw new Error('zero');",
+    '  return c;',
+    '}',
+  ].join('\n');
+  const thrown = collectThrownMessages(source);
+  assert.equal(thrown.length, 1, `expected one throw, got: ${JSON.stringify(thrown)}`);
+  assert.equal(thrown[0]!.message, 'zero');
 });

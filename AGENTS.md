@@ -851,6 +851,28 @@ assertions derived from the same source as the code under test, are decoration.
 The fix pattern for both: make the test exercise the comparison, then revert
 the source change and confirm the test actually fails.
 
+**A guard's scope is part of its contract, and widening it is a measurement
+before it is a fix.** `scripts/check-error-param-names.mjs` walks `src/tools`
+and nothing else, so a message naming a parameter that does not exist could sit
+in `shaping.ts`, `result.ts` or `accounts.ts` with the gate green — the modules
+that own the shared error paths. Widening the walk turned the gate **red on ten
+findings**, and that is the part worth reading: the fix was never "change a
+glob". Six were the guard's own vocabulary being incomplete (`playlist_a`,
+`playlist_b` reach tools by spread from `PlaylistPairFields`; `subject_type` is
+a real parameter of a tool registered through `registerCanonicalTool`, a
+registration form the original scanner never matched). Three were not parameter
+claims at all. One was a genuine bad message. Widening the scope *and* fixing
+the vocabulary *and* fixing the one bad message were three separate pieces of
+work that a scope-only patch would have hidden. Assert the widened rule over
+the whole tree, or it is decoration — the same failure as the test that cannot
+fail, one level up.
+
+**A falsifier you derived yourself is the only proof a guard is wired.** The
+original defect was a `--profile` in a `+`-joined message; the scanner read only
+the first literal. Reintroducing that exact defect into `src/accounts.ts` left
+the gate green, which is how the fourth defect surfaced. A green run on a test
+you did not break is not evidence.
+
 **A failing test tells you the truth — read the assertion, not the summary.**
 The failure line names the value that broke and where. Skimming the test name
 or the `AssertionError` headline and guessing at the cause is how a
