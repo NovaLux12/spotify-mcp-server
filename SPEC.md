@@ -1428,7 +1428,7 @@ What did **not** change, deliberately:
 
 The refusal is enforced at `atomicReplace`, the single write choke point, which now takes the whole `LoadedPlaylist` rather than a bare target id: all ten of its call sites build `uris` from `p.items` and target `p.id`, so that is the one point where "the read was whole" and "the write is about to happen" are provably the same playlist, and a tool added later inherits the guard by calling the function. The same predicate also runs per tool, ahead of the `dry_run` branch — not redundantly, but because a preview issues no write and is the only enforcement a dry run can reach. Without it a `dry_run` renders `would reverse 500 item(s)` over a 600-row playlist, which is the same false count as a commit, one step earlier.
 
-The affected tools are `playlist_flip_order`, `playlist_resequence`, `playlist_seed_shuffle`, `playlist_rotate`, `playlist_move_block`, `playlist_swap_positions`, `playlist_dedupe_advanced`, `playlist_remove_artist`, `playlist_keep_artist` and `playlist_filter_runtime`. `playlist_balance` is deliberately not among them: it creates new playlists and leaves the source untouched, so a truncated read there deletes nothing.
+The affected tools are `playlist_flip_order`, `playlist_resequence`, `playlist_seed_shuffle`, `playlist_rotate`, `playlist_move_block`, `playlist_swap_positions`, `playlist_dedupe_advanced`, `playlist_remove_artist`, `playlist_keep_artist` and `playlist_filter_runtime`. `playlist_balance` is deliberately not among them: it creates new playlists and leaves the source untouched, so a truncated read there deletes nothing — which is also why refusing is the wrong answer there, and why it **discloses** the partial split instead (#1388, below).
 
 #### Bounded verdicts in `remove_unavailable_playlist_items` (#1311)
 
@@ -1455,9 +1455,38 @@ Two enforcement points, deliberately, and they are not the same check twice:
 - `atomicReplace` — the single write choke point — now takes the whole `LoadedPlaylist` rather than a bare target id and refuses there, before the first `PUT`. All ten of its call sites build `uris` from `p.items` and target `p.id`, so that is the one place where "the read was whole" and "the write is about to happen" are provably the same playlist, and a tool added later inherits the guard by calling the function rather than by remembering it.
 - The same predicate also runs per tool ahead of the `dry_run` branch, which is the only enforcement a dry run can reach: a preview issues no write, and without it a `dry_run` renders `would reverse 500 item(s)` over a 600-row playlist — the same false count as a commit, one step earlier. `swarm4_*` already refused the sibling #860 unavailable-row fault on the `dry_run` path for the same reason.
 
-`playlist_balance` is deliberately excluded: it creates new playlists and leaves the source untouched, so a truncated read there destroys nothing.
+`playlist_balance` is the one tool in the slice this refusal does not cover, and the reason is the one thing it does not do: it creates new playlists and leaves the source untouched. It is covered instead, by disclosure — see the next section.
 
 **Migration note (breaking):** a `swarm4_*` rewrite of a playlist larger than `SPOTIFY_MCP_FETCH_ALL_CAP` now fails instead of deleting the unread tail. Raise the cap above the playlist's row count and retry. Tool descriptions, schemas, annotations and the registry are unchanged — this is a behavioural refusal on a path that previously destroyed data, not a new tool or a new argument.
+
+#### Bounded-read disclosure on `playlist_balance` (#1388)
+
+`playlist_balance` reads the source with the same bounded walk as its ten siblings — `fetchAllItems`, `maxItems: cap + 1`, clipped back to `fetchAllCap` — and since #1362 it has carried the walk's verdict on the `LoadedPlaylist`. It just never read it. It split what it read, wrote the parts to new playlists, and reported the count of the read as though it were the count of the playlist: a 600-row playlist at the default cap of 500 came back as three parts holding 500 rows, `ok: true`, and nothing anywhere in the response saying a hundred rows had never been fetched.
+
+That is the #6 shape — a correctly named payload field that lies about its value — and it is the one the two obvious fixes both fail:
+
+- **Refusing** would be the consistent choice, and it is wrong here. The refusal in `rewritable.ts` is argued on irreversibility: "there is no partial-damage outcome to warn about, only rows the user still had when the call returned and would not have afterwards." Nothing in that sentence is true of this tool. There is no full-content replace for a short read to be mistaken for, the source is intact when the call returns, and re-running at a higher cap costs the caller nothing but a re-read. Refusing would also mean a caller who cannot raise `SPOTIFY_MCP_FETCH_ALL_CAP` — a hosted server, a fixed environment — could never split a playlist larger than the cap at all. That is a permanent functional hole bought with no safety.
+- **Disclosing while leaving `items: n` alone** is what the tool already did, and it is the field the issue is filed on. A caller reading `items: 500` from a 600-row playlist has no way to know. The field is gone rather than redefined.
+
+So it discloses, and the disclosure is the caller's to act on:
+
+| Field | Meaning |
+|---|---|
+| `items_read` | Rows the walk returned, and the only ones the parts can contain. |
+| `items_total` | The source playlist's own `items.total`, or `null` when Spotify's count was not readable. Never the read size echoed back — that substitution is the fault one layer in. |
+| `truncated` | The walk stopped short of the end of the source. |
+| `truncated_by_cap` | The cap is the reason, as opposed to a walk that ended on a short page while the server's `total` still counted rows. Present only when `truncated`. |
+| `fetch_all_cap` | The ceiling that was in force. Present only when `truncated`, because a whole read was not capped. |
+
+The four coverage fields ride on the `ok: false` too-few-items return, so no branch of the tool reports a count the walk did not produce. The prose leads with `PARTIAL SPLIT — …` in the dry run and in the commit, above `describeDryRun`'s own header rather than inside its change list, and it names the ceiling, the rows read, the shortfall, and the remedy. A preview rendering `Would affect 500 items:` for a 600-row playlist is the same false count as a commit, one step earlier.
+
+`ok` stays `true` on a truncated split, and that is not a hedge: the three playlists exist, the source is untouched, and the operation succeeded. `truncated` beside it is the scope of the answer, not a failure of the call. This is `merge_playlists`' shape (`truncated` / `truncated_by_cap` / `rows_read` / `reported_total`, `ok: true`) applied to the other bounded non-destructive read in the tree; `remove_unavailable_playlist_items` uses `ok: false` there because its `verification` is a claim about its own effect, which a partial re-read cannot support.
+
+The tool description changed with it, and that is the part a host reads before the call. `interleave (round-robin deal, so every part samples the whole span)` was false on a truncated read — the deal sampled the *read's* span — so the description now says the span is what the read returned, names `SPOTIFY_MCP_FETCH_ALL_CAP`, and points at the coverage fields. A description that is only true on a whole read has to say which read it means.
+
+**A playlist at or below the cap is unchanged**: `truncated: false`, `items_read === items_total`, no `fetch_all_cap` or `truncated_by_cap` in the payload, and no shortfall sentence in the prose. A caller must be able to tell the two apart from the response alone, in either direction.
+
+**Not a migration:** no call that succeeded before fails now, and no call that produced a complete answer produces anything different. What changes is that a partial answer says so. The `[18, 21432]` manifest baseline moved to `[18, 21624]` (+192B, description text only, tool count unchanged).
 
 #### `merge_playlists`
 Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.

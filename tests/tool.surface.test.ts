@@ -211,6 +211,14 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'is_local',
   'is_playable',
   'item_count',
+  // #1388: playlist_balance discloses the coverage of a split it performed on
+  // a bounded walk, and its description names both halves so a host can tell a
+  // partial split from a whole one before it reads any prose. `items_read` is
+  // what the walk returned, `items_total` the source playlist's own size — the
+  // split of the two is the disclosure, and `items_total` is `null` when
+  // Spotify's count was not readable. Keys the call reports about its own
+  // result, like `rows_read` on `merge_playlists` and `truncated_by_cap` above.
+  'items_read', 'items_total',
   'library_requests',
   'new_entry',
   'oldest_created',

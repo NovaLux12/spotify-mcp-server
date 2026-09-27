@@ -150,6 +150,16 @@ const parameterAllowlist = new Set([
   'created_new_playlist', 'duplicates_skipped',
   'unavailable_items_skipped', 'batches_sent',
   'rows_read', 'reported_total',
+  // #1388: playlist_balance's coverage fields. The tool splits what its bounded
+  // walk returned, so it reports how much it read (`items_read`), how large the
+  // source playlist is (`items_total`, `null` when Spotify's own count was
+  // unreadable) and whether the two are the same. The description names them so
+  // a host can tell a partial split from a whole one without reading prose —
+  // which is the whole point of the disclosure, and the reason they belong here
+  // rather than being described in words only. structuredContent keys on that
+  // tool, on the same reasoning as `rows_read` above and `truncated_by_cap`
+  // below.
+  'items_read', 'items_total',
   // #1311: remove_unavailable_playlist_items' bounded-verdict fields. The
   // tool reports `verification: partial` over a walk that stopped at the cap
   // and names where the unread region starts, so a caller can tell a bounded
