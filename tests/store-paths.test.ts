@@ -119,11 +119,15 @@ const NOT_ERASED_BY_LOGOUT: Record<string, string> = {};
  * "Not erased", and the reason is the nesting rule rather than a coverage gap.
  * With `SPOTIFY_MCP_DATA_DIR` set, `playlist-health-snapshots` resolves to the
  * data directory itself, which is the PARENT of the stores that variable
- * relocates — the artist watchlist, the taste-feedback file, and the read
- * caches. Erasing it would take those with it, the opposite of the
- * enumerate-then-remove promise the command makes. It is a parent of a few
+ * relocates. Erasing it would take those with it, the opposite of the
+ * enumerate-then-remove promise the command makes. It is a parent of those
  * stores, not a superset of all of them; the rest resolve under
  * `~/.spotify-mcp/` either way.
+ *
+ * No list, and no count: how many stores the variable happens to relocate moves
+ * with every store added to the registry, and the reason string the user is
+ * shown computes it at runtime. Restating either here is what made
+ * `src/logout.ts` claim a superset that did not exist (#1426).
  */
 const KEPT_AS_CONTAINER: Record<string, string> = {
   'playlist-health-snapshots':
