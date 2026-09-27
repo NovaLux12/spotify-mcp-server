@@ -681,6 +681,26 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // 'confirmed', with `SPOTIFY_MCP_CONFIRM=never` the only bypass.
   switch_account: { readOnlyHint: false, destructiveHint: true },
 
+  // #1550: two bulk LIBRARY REMOVALS whose names match no destructive prefix,
+  // so the name-driven policy advertised them as safe writes. `archive` is in
+  // MUTATING_PREFIXES but not in DESTRUCTIVE_PREFIXES, and `dead` matches
+  // neither list at all — so both reached the fallback and were handed
+  // `destructiveHint: false`.
+  //
+  // That is the wrong way round for these two specifically. `archive_played_episodes`
+  // DELETEs up to 500 saved episodes in one call, and `dead_library_finder`
+  // unsaves every saved track absent from the recent window and from every
+  // scanned playlist — uncapped. A host that auto-approves on
+  // `destructiveHint: false` would have waved both through. Both now carry the
+  // #1550 elicitation gate as well, so the hint and the handler agree.
+  //
+  // Overrides on these two names rather than new DESTRUCTIVE_PREFIXES entries,
+  // for the same reason `switch_account` above: `archive_` and `dead_` are
+  // shared first words, and widening the prefix lists would misclassify every
+  // other tool that starts with them.
+  archive_played_episodes: { readOnlyHint: false, destructiveHint: true },
+  dead_library_finder: { readOnlyHint: false, destructiveHint: true },
+
   // #1347: two genuine read-only reports whose names carry no read verb, so
   // the name-driven policy advertised them as writes and the live gauntlet
   // gated them off. Same shape and same reasoning as `backup_library` and
@@ -1462,7 +1482,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // ceilings above are unchanged by it, the aggregate is not.
 
   manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 27222], { readOnlySafe: true }),
-  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12814]),
+  // #1550: 13 tools / 12814B -> 13 tools / 13018B (+204B), same 13 tools —
+  // MEASURED off the real `tools/list`, not estimated. `remove_from_library`'s
+  // `dry_run` moved from the bare opt-in `DryRun` fragment to `DryRunDefault`, so
+  // the published schema now carries `default: true`, and both the description and
+  // the elicitation clause grew. Same tool count: no tool was added or removed.
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 13018]),
   // #603: playback 12,077 -> 12,210B (+133), same 16 tools — MEASURED, not
   // estimated: the real `tools/list` payload for this module. The get_devices
   // description now names the spotify://player/devices resource so an agent
@@ -1827,7 +1852,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('restore', 'library', lazyModule('./restore.js', 'registerRestoreTools'), [1, 2072], { scopeKey: 'library' }),
   manifestEntry('undo', 'library', lazyModule('./undo.js', 'registerUndoTools'), [2, 1663], { scopeKey: 'library' }),
   manifestEntry('receipts', 'receipts', localModule('src/tools/annotations.ts', 'registerVerifyReceiptTool', registerVerifyReceiptTool), [1, 626], { alwaysActive: true, readOnlySafe: true }),
-  manifestEntry('episodemgmt', 'episodemgmt', lazyModule('./episodemgmt.js', 'registerEpisodeMgmtTools'), [1, 1053], { scopeKey: 'library' }),
+  // #1550: 1 tool / 1053B -> 1 tool / 1139B (+86B), same 1 tool — MEASURED off the
+  // real `tools/list`. `archive_played_episodes` moved to `DryRunDefault` and its
+  // description now states the preview default. Its elicitation threshold of 50 is
+  // deliberate and documented in the module; this change does not touch it.
+  manifestEntry('episodemgmt', 'episodemgmt', lazyModule('./episodemgmt.js', 'registerEpisodeMgmtTools'), [1, 1139], { scopeKey: 'library' }),
   // #900: 2,043 -> 2,235 bytes, description text only. The tool count, its
   // input schema and its output are unchanged. `whats_new`'s quota sentence
   // said "N followed artists = N+1 API requests ... each lookup is an API
@@ -1947,7 +1976,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // registry over stdio, not estimated.
   manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1322], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', lazyModule('./smart.js', 'registerSmartTools'), [1, 2364], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 7876], { scopeKey: 'exhaustmisc' }),
+  // #1550: 10 tools / 7876B -> 10 tools / 8291B (+415B), same 10 tools — MEASURED
+  // off the real `tools/list`. `unsave_orphan_tracks` and
+  // `remove_from_library_by_playlist` both moved to `DryRunDefault`; the schema
+  // gain is two `default: true` keys, the rest is description prose stating the
+  // confirmation requirement.
+  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 8291], { scopeKey: 'exhaustmisc' }),
 
 
 
@@ -1996,7 +2030,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // tool — so this is a re-measure of the same surface, not a ceiling raise
   // to make a breach pass. The derived ceiling follows the baseline
   // (ceil(24316 * 1.1) = 26748B).
-  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24316], { scopeKey: 'library' }),
+  // #1550: 27 tools / 24316B -> 27 tools / 24434B (+118B), same 27 tools —
+  // MEASURED off the real `tools/list`. `dead_library_finder` already previewed by
+  // default (#827); this change adds only the missing elicitation gate and the
+  // description clause that tells a caller it is there.
+  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24434], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
   // what the playlist walk costs per ref and that a capped walk reports
@@ -2025,7 +2063,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // #1224 +33B, same 24 tools: six tool descriptions now quote one
   // GET /albums/{id} per release rather than a batched /albums lookup.
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 20147], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 22103], { scopeKey: 'catalog' }),
+  // #1550: 24 tools / 22103B -> 24 tools / 22344B (+241B), same 24 tools — MEASURED
+  // off the real `tools/list`. `remove_saved_shows` and `remove_saved_episode`
+  // already previewed by default; this change adds only the missing elicitation
+  // gate and the description clause that names it. No schema field changed.
+  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 22344], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   // The figures this module used to carry — 24 tools, 18951B, measured
   // post-#1004 (top_genre_census reads /artists/{id} now) — are now its

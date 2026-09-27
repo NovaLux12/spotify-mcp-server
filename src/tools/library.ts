@@ -20,6 +20,8 @@ import {
   batchSummary,
   describeDryRun,
   DryRun,
+  DryRunDefault,
+  isDryRun,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import {
@@ -30,6 +32,12 @@ import {
   type ReceiptClient,
 } from '../receipts.js';
 import { getConfig } from '../config.js';
+import {
+  confirmViaElicitation,
+  describeConfirmation,
+  requiredConfirmationRefusal,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
 import { publisherByline } from '../removed.js';
 import {
   classifySpotifyReference,
@@ -585,26 +593,51 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
     },
   );
 
-  // remove_from_library (#37)
+  // remove_from_library (#37, #1550)
   server.tool(
     'remove_from_library',
-    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Remove one or more items from the user's library via Spotify's unified library endpoint. Max 40. Set dry_run=true to preview.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Remove one or more items from the user's library via Spotify's unified library endpoint. Max 40. PREVIEWS BY DEFAULT — pass dry_run=false to commit. Removals of 10+ items additionally require elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(40)
         .describe('Spotify URIs to remove'),
-      dry_run: z
-        .boolean()
-        .optional()
-        .describe('Preview only: show exactly which URIs would be removed without calling the API'),
+      // #1550: this was the shared opt-in `DryRun` — no default — behind a
+      // handler that branched on `if (args.dry_run)`. An omitted flag was
+      // therefore `undefined`, i.e. falsy, i.e. COMMIT, and one call could
+      // unsave 40 items with no preview and no confirmation. The published
+      // `tools/list` entry said nothing about a default either, so a host
+      // reading the schema had no way to see it. `DryRunDefault` fixes the
+      // schema half (it emits `default: true`); `isDryRun(args)` below fixes
+      // the decision half for a hand-built args object that skipped parsing.
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
       const uris = canonicalLibraryUris(args.uris, LIBRARY_SAVE_TYPES);
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         return dryRunOut(args.response_format, 'remove_from_library', 'user library', uris);
+      }
+      // #1550: the second half of the same defect. This module participated
+      // in no confirmation gate at all, so even an explicit dry_run=false on
+      // 40 items committed with nothing between the caller and the DELETE.
+      // Same threshold the rest of the repo uses for a removal this size
+      // (`remove_from_playlist`, `remove_unavailable_playlist_items`) and the
+      // same shared fail-closed guard: only `confirmed` proceeds, `SPOTIFY_MCP_CONFIRM=never`
+      // is the sole bypass, and a declined/unpromptable/failed prompt is a
+      // refusal that writes nothing.
+      if (uris.length >= REMOVE_ELICIT_THRESHOLD) {
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation('remove from library', 'your saved items', [
+            `Remove ${uris.length} item(s) from your library:`,
+            ...uris.slice(0, 10),
+            ...(uris.length > 10 ? [`(…and ${uris.length - 10} more)`] : []),
+          ]),
+          confirmLabel: 'Remove from library',
+        });
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return shapeResult(args.response_format, refusal.message, refusal.payload);
       }
       await client.delete(
         `/me/library?${new URLSearchParams(libraryUrisParam(uris)).toString()}`,

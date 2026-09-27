@@ -573,7 +573,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 | `get_saved_episodes` | GET | `/me/episodes` |
 | `get_saved_audiobooks` | GET | `/me/audiobooks` — market-gated to US/UK/CA/IE/NZ/AU |
 | `save_to_library` | PUT | `/me/library?uris=…` — any mix of track/album/episode/show/audiobook/user/playlist URIs |
-| `remove_from_library` | DELETE | `/me/library?uris=…`; supports `dry_run` |
+| `remove_from_library` | DELETE | `/me/library?uris=…`; `dry_run` defaults to `true`; 10+ URIs require elicitation confirmation |
 | `check_in_library` | GET | `/me/library/contains?uris=…` — also covers artist/user/playlist follow state |
 | `get_user_playlists` | GET | `/me/playlists` |
 | `get_playlist` (metadata + items) | GET | `/playlists/{id}`, then `/playlists/{id}/items` (plus `/playlists/{id}/images` when no cover is embedded) |
@@ -659,7 +659,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 145,002 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **556 tools** (all 556 attributed to the 68 files under `src/tools/`), organized by 47 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 145,621 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1500,9 +1500,13 @@ For a single playlist there is also the always-gated `unfollow_playlist` (see [P
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `uris` | string[] | yes | URIs to remove (same accepted types as `save_to_library`). Max 40. |
-| `dry_run` | boolean | no | Preview exactly which URIs would be removed without calling the API |
+| `dry_run` | boolean | no | **Defaults to `true`.** Preview exactly which URIs would be removed without calling the API; pass `dry_run=false` to commit. |
 
 Sends `DELETE /me/library?uris=…`.
+
+**Preview by default, and a gate at 10 (#1550).** `dry_run` is declared as the shared `DryRunDefault` fragment, so the emitted `tools/list` entry carries `"default": true` — a host reads the schema, not the source, and before the fix the property carried no default at all while the handler branched on `if (args.dry_run)`. An omitted flag was therefore `undefined`, i.e. falsy, i.e. commit: one call could unsave 40 items with no preview. The handler branches on `isDryRun(args)` as well, so a hand-built args object that skipped zod parsing cannot turn an omission into a write.
+
+With `dry_run=false`, a removal of **10 or more URIs** (`REMOVE_ELICIT_THRESHOLD`, `src/tools/confirm.ts`) additionally requires elicitation confirmation through the shared `confirmViaElicitation` / `requiredConfirmationRefusal` pair. The guard **fails closed**: a client that never advertised elicitation, a `decline`, and a prompt that throws mid-flight all refuse with zero requests to Spotify. `SPOTIFY_MCP_CONFIRM=never` — the exact string and nothing else — is the only bypass, and it removes the prompt, never the preview default.
 
 ---
 
@@ -1518,6 +1522,30 @@ The response is **positionally** matched to the request, so a body that is not a
 > **The read half accepts more URI types than the write half.** `contains` takes eight kinds including `artist`; `PUT`/`DELETE /me/library` take seven and exclude it. Playlist URIs are accepted by all three, so playlist follow/unfollow is fully expressible and an artist follow is not — see [Playlist follow family](#playlist-follow-family-1099).
 
 **Note on following an artist**: this tool *reads* follow state for artist URIs, but nothing can *write* it. `PUT /me/library` does not accept `spotify:artist:` URIs, and Spotify removed `PUT`/`DELETE /me/following` in February 2026 with no replacement, so no endpoint can follow or unfollow an artist. The read half migrating to `/me/library/contains` is what makes this look migrated; the write half has no target.
+
+#### The library-removal family is gated at 10 (#1550)
+
+`remove_from_library` was one of seven tools that issue `DELETE /me/library`, and it was the only one with neither half of the protection the rest of the server already had. It declared `dry_run: z.boolean().optional()` with **no default** and branched on `if (args.dry_run)`, so an omitted flag was `undefined` — falsy — **commit**: one call unsaved 40 items with no preview and no prompt. `src/tools/library.ts` had no `confirmViaElicitation` anywhere, against ten call sites in `playlists.ts`.
+
+The family is defined by the endpoint, not by the module. Every tool below issues `DELETE /me/library` and now uses the same two mechanisms: the shared `DryRunDefault` fragment (which emits `"default": true` into `tools/list`, so a host reading the schema sees the safety) plus `isDryRun(args)` at the decision point, and the shared `confirmViaElicitation` / `requiredConfirmationRefusal` pair at `REMOVE_ELICIT_THRESHOLD` (10).
+
+- **`remove_from_library`** (`library.ts`) — `dry_run` was the opt-in `DryRun`, so an omitted flag committed; no gate. Now `DryRunDefault` + `isDryRun`, 10+ URIs gated.
+- **`unsave_orphan_tracks`** (`exhaustmisc.ts`) — `dry_run` was the opt-in `DryRun` while the handler already read `?? true`, so the published schema understated the safety; no gate. Now `DryRunDefault`, 10+ orphan URIs gated (`max_remove` reaches 5000, the largest single removal in the server).
+- **`remove_from_library_by_playlist`** (`exhaustmisc.ts`) — same opt-in/schema split, no gate. Now `DryRunDefault`, 10+ removed tracks gated.
+- **`remove_saved_shows`** (`swarm3_shows.ts`) — `DryRunDefault` (#827) was already correct; no gate. Now 10+ **actually saved** shows gated.
+- **`remove_saved_episode`** (`swarm3_shows.ts`) — same, for episodes.
+- **`archive_played_episodes`** (`episodemgmt.ts`) — `dry_run` was the opt-in `DryRun`, so an omitted flag committed; it *was* already gated at `ARCHIVE_ELICIT_THRESHOLD` (50). Now `DryRunDefault`; the threshold deliberately stands.
+- **`dead_library_finder`** (`exhaust2_misc.ts`) — `DryRunDefault` (#827) was already correct; no gate. Now 10+ candidates gated.
+
+Three properties are load-bearing and shared by all seven:
+
+- **The threshold counts what would actually be removed, not what was passed.** `remove_saved_shows` and `remove_saved_episode` cross-check the given ids against `/me/library/contains` first; padding a 3-item removal to 50 ids does not trip the gate, and padding a 12-item removal to 50 does not escape it.
+- **The gate is a prompt, not a preview.** It fires only on the committing path (`dry_run=false`). A preview of 5000 orphan tracks costs no prompt, and `SPOTIFY_MCP_CONFIRM=never` removes the prompt without touching the preview default.
+- **`ARCHIVE_ELICIT_THRESHOLD` stays at 50** and is the one threshold in this family that does. That is a recorded in-module decision, not an oversight: `archive_played_episodes` was already gated, and lowering an existing gate's threshold is a behaviour change for callers who already had to answer one prompt. The three tools that were *ungated* all take the repo-wide 10.
+
+Two classification defects surfaced in the same audit and are fixed in `src/tools/annotations.ts` via `OVERRIDES`, not by widening a prefix list (the `unpin_playlist` precedent). `archive` is a `MUTATING_PREFIXES` entry but not a `DESTRUCTIVE_PREFIXES` one, and `dead` matches neither list, so `archive_played_episodes` and `dead_library_finder` both fell through to the fallback and were published with `destructiveHint: false` — a host auto-approving on that hint would have waved through a 500-episode archive and an uncapped library wipe.
+
+**Scope: the library endpoint, not the removal verbs.** Playlist *item* removals are a different family with their own thresholds and are unchanged by this section; see the unfiled findings in the #1550 report.
 
 ---
 

@@ -1,6 +1,6 @@
 import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
-import { describe, it, mock, before, after, type TestContext } from 'node:test';
+import { describe, it, mock, before, after, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
@@ -59,6 +59,41 @@ function getHandler(toolName: string, client: SpotifyClient): Handler {
   registerExhaust2MiscTools(server, client);
   assert.ok(captured, `tool ${toolName} not registered`);
   return captured;
+}
+
+/**
+ * #1550: `dead_library_finder` now sits behind the shared elicitation gate for
+ * a 10+ candidate removal. The gate resolves the host by probing the INNER
+ * `server.server` for `elicitInput` / `getClientCapabilities` (#684), so a stub
+ * shaped to pass that probe without a client ever being asked would let a dead
+ * gate look green. `elicit: false` therefore omits the `server` key entirely —
+ * the `unsupported` verdict, which must refuse.
+ */
+function getHandlerWithHost(
+  toolName: string,
+  client: SpotifyClient,
+  elicit: false | { action: string; content?: Record<string, unknown> } | Error,
+): { handler: Handler; prompts: () => number } {
+  let captured: Handler | undefined;
+  let prompts = 0;
+  const server: Record<string, unknown> = {
+    tool(name: string, _desc: string, _shape: unknown, handler: Handler) {
+      if (name === toolName) captured = handler;
+    },
+  };
+  if (elicit !== false) {
+    server.server = {
+      getClientCapabilities: () => ({ elicitation: { form: {} } }),
+      async elicitInput() {
+        prompts += 1;
+        if (elicit instanceof Error) throw elicit;
+        return elicit;
+      },
+    };
+  }
+  registerExhaust2MiscTools(server as unknown as McpServer, client);
+  assert.ok(captured, `tool ${toolName} not registered`);
+  return { handler: captured, prompts: () => prompts };
 }
 
 function registrationNames(): string[] {
@@ -976,5 +1011,156 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     chmodSync(file, 0o644);
     await saveMiscStore({ checkpoints: { k: { value: 1, captured_at: '2026-01-01T00:00:00Z', context: 'c', source: 's' } }, bookmarks: {}, journal: [], reports: {} });
     assert.equal(statSync(file).mode & 0o777, 0o600);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1550 — `dead_library_finder` gates a 10+ candidate removal
+//
+// The preview default here was already correct (#827). The missing half was
+// the gate: the candidate set is the whole dead-track sweep, uncapped, so a
+// single `dry_run:false` could unsave a library wholesale. Assertions are on
+// the stub's own `delete` log — "nothing was removed" must be observed, not
+// read off a message.
+// ---------------------------------------------------------------------------
+
+describe('#1550 dead_library_finder gates bulk removal at the family threshold', () => {
+  /** A library with `n` long-unsaved, unplayed, playlist-free tracks. */
+  function libraryOf(n: number) {
+    return makeClient({
+      getAllPages: mock.fn(async (path: string) => {
+        if (path.startsWith('/me/tracks')) {
+          return Array.from({ length: n }, (_, i) => ({
+            added_at: '2020-01-01T00:00:00Z',
+            track: { uri: `spotify:track:dead${i}`, name: `Dead ${i}` },
+          }));
+        }
+        if (path === '/me/playlists') return [{ id: 'p1', name: 'P' }];
+        if (path.startsWith('/playlists/p1/items')) return [];
+        return [];
+      }),
+      get: mock.fn(async (path: string) => (path.includes('recently-played') ? { items: [] } : null)),
+    });
+  }
+  const deletes = (c: SpotifyClient) =>
+    (c.delete as unknown as { mock: { calls: Array<{ arguments: [string] }> } }).mock.calls;
+  const reasonOf = (res: { structuredContent?: Record<string, unknown> }) =>
+    (res.structuredContent as { reason?: string } | undefined)?.reason;
+
+  afterEach(() => {
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+  });
+
+  it('an OMITTED dry_run deletes nothing', async () => {
+    // The preview default was already correct, but the omitted case is the one
+    // that must be asserted rather than assumed.
+    const client = libraryOf(12);
+    const { handler } = getHandlerWithHost('dead_library_finder', client, false);
+    const res = await handler({ min_age_days: 30, response_format: 'concise' });
+    assert.equal(deletes(client).length, 0, 'an omitted flag must preview, not remove');
+    assert.equal(res.structuredContent?.dry_run, true);
+  });
+
+  it('10+ candidates with a client that cannot prompt REFUSE with zero deletes', async () => {
+    const client = libraryOf(12);
+    const { handler } = getHandlerWithHost('dead_library_finder', client, false);
+    const res = await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(deletes(client).length, 0, 'an unpromptable client must not become an unprompted delete');
+    assert.equal(reasonOf(res), 'confirmation_unavailable');
+  });
+
+  it('a DECLINED prompt refuses with zero deletes', async () => {
+    const client = libraryOf(12);
+    const { handler, prompts } = getHandlerWithHost('dead_library_finder', client, { action: 'decline' });
+    const res = await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(prompts(), 1, 'the gate must actually have asked');
+    assert.equal(deletes(client).length, 0);
+    assert.equal((res.structuredContent as { cancelled?: boolean }).cancelled, true);
+  });
+
+  it('a prompt that FAILS mid-flight refuses with zero deletes', async () => {
+    // #684: a gate that throws must not degrade into an ungated write.
+    const client = libraryOf(12);
+    const { handler } = getHandlerWithHost('dead_library_finder', client, new Error('elicitation exploded mid-flight'));
+    const res = await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(deletes(client).length, 0);
+    assert.equal(reasonOf(res), 'elicitation_failed');
+  });
+
+  it('an accepted prompt at 12 candidates commits', async () => {
+    const client = libraryOf(12);
+    const { handler, prompts } = getHandlerWithHost('dead_library_finder', client, { action: 'accept', content: { confirm: true } });
+    await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(prompts(), 1);
+    assert.ok(deletes(client).length > 0, 'an accepted removal must actually reach DELETE');
+  });
+
+  it('9 candidates commits without asking — the gate starts at 10', async () => {
+    const client = libraryOf(9);
+    const { handler, prompts } = getHandlerWithHost('dead_library_finder', client, false);
+    await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(prompts(), 0, 'nothing below REMOVE_ELICIT_THRESHOLD may prompt');
+    assert.ok(deletes(client).length > 0);
+  });
+
+  it('the prompt names the operation and the number of tracks at stake', async () => {
+    const messages: string[] = [];
+    const client = libraryOf(12);
+    const { handler } = getHandlerWithHost('dead_library_finder', client, {
+      action: 'accept',
+      content: { confirm: true },
+    });
+    // Re-register with a recorder so the message text is observable.
+    let captured: Handler | undefined;
+    const server = {
+      tool(name: string, _d: string, _s: unknown, h: Handler) { if (name === 'dead_library_finder') captured = h; },
+      server: {
+        getClientCapabilities: () => ({ elicitation: { form: {} } }),
+        async elicitInput(params: { message?: string }) { messages.push(params?.message ?? ''); return { action: 'accept', content: { confirm: true } }; },
+      },
+    } as unknown as McpServer;
+    registerExhaust2MiscTools(server, client);
+    assert.ok(captured);
+    await captured({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    void handler;
+    assert.equal(messages.length, 1);
+    assert.match(messages[0], /remove from library/i);
+    assert.match(messages[0], /Remove 12 saved track\(s\)/);
+    assert.match(messages[0], /and 2 more/);
+  });
+
+  it('SPOTIFY_MCP_CONFIRM=never bypasses the prompt, never the preview default', async () => {
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    const committing = libraryOf(12);
+    const { prompts } = getHandlerWithHost('dead_library_finder', committing, false);
+    const { handler } = getHandlerWithHost('dead_library_finder', committing, false);
+    await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+    assert.equal(prompts(), 0);
+    assert.ok(deletes(committing).length > 0, 'the documented automation bypass must be honoured');
+
+    const preview = libraryOf(12);
+    const p2 = getHandlerWithHost('dead_library_finder', preview, false);
+    await p2.handler({ min_age_days: 30, response_format: 'concise' });
+    assert.equal(deletes(preview).length, 0, 'the bypass removes the PROMPT, never the dry-run default');
+  });
+
+  for (const value of ['NEVER', 'Never', 'no', 'false', '1', 'true', ' ']) {
+    it(`SPOTIFY_MCP_CONFIRM=${JSON.stringify(value)} does NOT bypass the gate`, async () => {
+      process.env.SPOTIFY_MCP_CONFIRM = value;
+      const client = libraryOf(12);
+      const { handler } = getHandlerWithHost('dead_library_finder', client, false);
+      const res = await handler({ min_age_days: 30, dry_run: false, response_format: 'concise' });
+      assert.equal(
+        deletes(client).length,
+        0,
+        `SPOTIFY_MCP_CONFIRM=${JSON.stringify(value)} must not act as a bypass`,
+      );
+      assert.equal(reasonOf(res), 'confirmation_unavailable');
+    });
+  }
+
+  it('the published shape declares default: true for dry_run', () => {
+    const shape = registrationShapes().get('dead_library_finder')!;
+    assert.equal((shape.dry_run as { _def?: { defaultValue?: unknown } })._def?.defaultValue, true);
   });
 });

@@ -2,6 +2,7 @@ import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { z } from 'zod';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -32,6 +33,27 @@ function makeClient(overrides: Record<string, unknown> = {}) {
     delete: mock.fn(async () => null),
     ...overrides,
   } as unknown as import('../src/client.js').SpotifyClient;
+}
+
+/**
+ * A stub server whose INNER host advertises elicitation and accepts (#684).
+ *
+ * #1550 put `unsave_orphan_tracks` and `remove_from_library_by_playlist`
+ * behind the shared confirmation gate, so a commit test that omits this is
+ * testing the refusal path, not the chunking it was written for. Shape is the
+ * one `elicitHost` actually resolves: the methods live on `server.server`,
+ * not on the McpServer wrapper.
+ */
+function autoConfirmingServer(capture?: { handler?: unknown; name: string }): McpServer {
+  return {
+    tool(name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
+      if (capture && capture.name === name) capture.handler = handler;
+    },
+    server: {
+      getClientCapabilities: () => ({ elicitation: {} }),
+      elicitInput: mock.fn(async () => ({ action: 'accept', content: { confirm: true } })),
+    },
+  } as unknown as McpServer;
 }
 
 /** Capture one registered tool's handler by name, in the shape the tests use. */
@@ -486,12 +508,8 @@ describe('exhaustmisc — mop-up 10 tools', () => {
   // "chunks at 50 IDs" assertion is replaced rather than repointed:
   // `/me/library` takes 40 uris, so 51 orphans are 40 + 11.
   it('unsave_orphan_tracks chunks destructive removals at the 40-uri /me/library cap', async () => {
-    let captured: unknown = null;
-    const server = {
-      tool(_name: string, _desc: string, _shape: unknown, handler: (args: unknown) => Promise<unknown>) {
-        if (_name === 'unsave_orphan_tracks') captured = handler;
-      },
-    } as unknown as McpServer;
+    const captured: { handler?: unknown; name: string } = { name: 'unsave_orphan_tracks' };
+    const server = autoConfirmingServer(captured);
     const saved = Array.from({ length: 51 }, (_, i) => ({
       track: { uri: `spotify:track:${i}`, id: `id-${i}`, name: `Track ${i}` },
     }));
@@ -500,7 +518,7 @@ describe('exhaustmisc — mop-up 10 tools', () => {
       delete: mock.fn(async () => null),
     });
     registerExhaustMiscTools(server, client);
-    const handler = captured as (args: unknown) => Promise<unknown>;
+    const handler = captured.handler as (args: unknown) => Promise<unknown>;
     await handler({ dry_run: false, max_remove: 51, response_format: 'concise' });
     const deleteMock = client.delete as { mock: { callCount(): number; calls: Array<{ arguments: unknown[] }> } };
     assert.equal(deleteMock.mock.callCount(), 2);
@@ -796,5 +814,126 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     // 205 uris over 3 parts: ceil(205/3) = 69 per part, last part takes the remainder.
     assert.deepEqual(dry.structuredContent!.chunk_sizes, [69, 69, 67]);
     assert.deepEqual(commit.structuredContent!.chunk_sizes, [69, 69, 67]);
+  });
+});
+
+/**
+ * #1550 — the bulk-removal half of this module.
+ *
+ * `unsave_orphan_tracks` and `remove_from_library_by_playlist` both declared
+ * the OPT-IN `DryRun` fragment, which publishes no default, while their
+ * handlers read `args.dry_run ?? true`. The runtime therefore previewed but
+ * the schema said nothing — and a host reads the schema. Neither had any
+ * confirmation gate, and between them they can unsave every saved copy of a
+ * playlist (unbounded) or up to 5,000 orphan tracks (`max_remove`).
+ */
+describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
+  const savedTracks = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      track: { uri: `spotify:track:${i}`, id: `id-${i}`, name: `Track ${i}` },
+    }));
+
+  it('unsave_orphan_tracks with NO dry_run key deletes nothing', async () => {
+    const captured: { handler?: unknown; name: string } = { name: 'unsave_orphan_tracks' };
+    const server = autoConfirmingServer(captured);
+    const client = makeClient({
+      getAllPages: mock.fn(async (path: string) => (path === '/me/tracks' ? savedTracks(30) : [])),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ response_format: 'concise' });
+
+    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+      'an omitted dry_run unsaved 30 tracks');
+    assert.equal(res.structuredContent?.dry_run, true, 'the result must report a preview');
+  });
+
+  it('unsave_orphan_tracks still commits on an explicit dry_run=false', async () => {
+    const captured: { handler?: unknown; name: string } = { name: 'unsave_orphan_tracks' };
+    const server = autoConfirmingServer(captured);
+    const client = makeClient({
+      getAllPages: mock.fn(async (path: string) => (path === '/me/tracks' ? savedTracks(3) : [])),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured.handler as (a: unknown) => Promise<unknown>;
+    await handler({ dry_run: false, response_format: 'concise' });
+    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 1);
+  });
+
+  it('unsave_orphan_tracks refuses at 10+ when the client cannot be asked', async () => {
+    // No elicitation advertised: the fail-closed `unsupported` arm.
+    const captured: { handler?: unknown; name: string } = { name: 'unsave_orphan_tracks' };
+    const server = {
+      tool(name: string, _d: string, _s: unknown, h: (a: unknown) => Promise<unknown>) {
+        if (name === 'unsave_orphan_tracks') captured.handler = h;
+      },
+    } as unknown as McpServer;
+    const client = makeClient({
+      getAllPages: mock.fn(async (path: string) => (path === '/me/tracks' ? savedTracks(10) : [])),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ dry_run: false, response_format: 'concise' });
+
+    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+      '10 orphans unsaved with no way to ask a human');
+    assert.equal(res.structuredContent?.reason, 'confirmation_unavailable');
+  });
+
+  it('unsave_orphan_tracks stays ungated below the threshold (9 orphans)', async () => {
+    const captured: { handler?: unknown; name: string } = { name: 'unsave_orphan_tracks' };
+    const server = {
+      tool(name: string, _d: string, _s: unknown, h: (a: unknown) => Promise<unknown>) {
+        if (name === 'unsave_orphan_tracks') captured.handler = h;
+      },
+    } as unknown as McpServer;
+    const client = makeClient({
+      getAllPages: mock.fn(async (path: string) => (path === '/me/tracks' ? savedTracks(9) : [])),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured.handler as (a: unknown) => Promise<unknown>;
+    await handler({ dry_run: false, response_format: 'concise' });
+    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 1);
+  });
+
+  it('remove_from_library_by_playlist publishes default:true for dry_run', async () => {
+    // The schema half: a host reading tools/list must be able to see the
+    // default without reading the handler.
+    const captured: { handler?: unknown; name: string; shape?: unknown } = { name: 'remove_from_library_by_playlist' };
+    const server = autoConfirmingServer(captured) as unknown as { tool: (n: string, d: string, s: unknown, h: unknown) => void };
+    const original = server.tool.bind(server);
+    server.tool = (n, d, s, h) => { if (n === 'remove_from_library_by_playlist') captured.shape = s; original(n, d, s, h); };
+    registerExhaustMiscTools(server as unknown as McpServer, makeClient());
+    const shape = z.object(captured.shape as z.ZodRawShape);
+    // `.default(true)` is what makes the published JSON Schema carry the
+    // default; assert the parse, not the source text.
+    assert.equal(shape.parse({ playlist_id: 'pl1' }).dry_run, true);
+    assert.equal(shape.parse({ playlist_id: 'pl1', dry_run: false }).dry_run, false);
+  });
+
+  it('remove_from_library_by_playlist refuses a 10-track removal with no way to ask', async () => {
+    const rows = Array.from({ length: 10 }, (_, i) => ({ item: { uri: `spotify:track:${i}` } }));
+    const captured: { handler?: unknown; name: string } = { name: 'remove_from_library_by_playlist' };
+    const server = {
+      tool(name: string, _d: string, _s: unknown, h: (a: unknown) => Promise<unknown>) {
+        if (name === 'remove_from_library_by_playlist') captured.handler = h;
+      },
+    } as unknown as McpServer;
+    const client = makeClient({
+      getAllPages: mock.fn(async () => rows),
+      get: mock.fn(async (path: string) => (path === '/me/library/contains' ? Array(10).fill(true) : null)),
+      delete: mock.fn(async () => null),
+    });
+    registerExhaustMiscTools(server, client);
+    const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
+    const res = await handler({ playlist_id: 'pl1', dry_run: false, response_format: 'concise' });
+
+    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+      'a 10-track library removal committed without a confirmation');
+    assert.equal(res.structuredContent?.reason, 'confirmation_unavailable');
   });
 });

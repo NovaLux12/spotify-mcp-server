@@ -41,6 +41,12 @@ import {
 import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
 import { getConfig, storePath } from '../config.js';
+import {
+  confirmViaElicitation,
+  describeConfirmation,
+  requiredConfirmationRefusal,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
 import { loadTokens } from '../auth.js';
 import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../scopefilter.js';
 import { loadScenes, scenesFilePath } from './scenes.js';
@@ -876,7 +882,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + 'playlists — unsave candidates. Local compute over /me/tracks + playlists + history. '
       + 'dry_run defaults to true and issues ZERO requests: it reports the request bound and says the '
       + 'candidate list is unknown, because only the scan can compute it. '
-      + 'disabling it actually removes the candidates.',
+      + 'disabling it actually removes the candidates. Removing 10+ candidates additionally requires elicitation confirmation (or SPOTIFY_MCP_CONFIRM=never for automation).',
     {
       min_age_days: z.number().int().min(1).max(3650).optional().default(30)
         .describe('Only consider tracks saved at least this long ago. Default 30.'),

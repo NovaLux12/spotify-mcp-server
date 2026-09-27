@@ -1,7 +1,7 @@
 import './helpers/hermetic.js';
 
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, afterEach } from 'node:test';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
@@ -84,6 +84,8 @@ function harness(options: {
   failingShowIds?: ReadonlySet<string>;
   searchPage?: { items: Show[]; total?: number };
   savedEpisodeIds?: ReadonlySet<string>;
+  /** #1550: which `spotify:show:` ids `/me/library/contains` reports as saved. */
+  savedShowIds?: ReadonlySet<string>;
   containsFails?: boolean;
   /**
    * Replaces the `/me/library/contains` body outright, so a test can hand the
@@ -91,6 +93,13 @@ function harness(options: {
    * used to be read positionally as "none of these are saved" (#638).
    */
   containsBody?: unknown;
+  /**
+   * #1550: the bulk removals (`remove_saved_shows`, `remove_saved_episode`) now
+   * sit behind the shared elicitation gate. `elicit` models the INNER host the
+   * gate actually resolves (`server.server`, per #684): `false`/undefined for a
+   * client that cannot prompt, or the verdict to answer with.
+   */
+  elicit?: false | { action: string; content?: Record<string, unknown> } | Error;
 } = {}) {
   const registered: RegisteredTool[] = [];
   const fakeServer = {
@@ -98,11 +107,27 @@ function harness(options: {
       registered.push({ name, validate: (args) => z.object(schema).parse(args), handler });
     },
   } as unknown as McpServer;
+  let prompts = 0;
+  if (options.elicit !== undefined) {
+    // Omit the whole `server` key for a client that never advertised
+    // elicitation: that is the `unsupported` verdict, and it must refuse.
+    if (options.elicit !== false) {
+      (fakeServer as unknown as { server: unknown }).server = {
+        getClientCapabilities: () => ({ elicitation: { form: {} } }),
+        async elicitInput() {
+          prompts += 1;
+          if (options.elicit instanceof Error) throw options.elicit;
+          return options.elicit;
+        },
+      };
+    }
+  }
 
   const shows = options.shows ?? [];
   const episodesByShow = options.episodesByShow ?? {};
   const failingShowIds = options.failingShowIds ?? new Set<string>();
   const savedEpisodeIds = options.savedEpisodeIds ?? new Set<string>();
+  const savedShowIds = options.savedShowIds ?? new Set<string>();
   const episodeRequests: string[] = [];
   const shelfRequests: string[] = [];
   const getCalls: Array<{ path: string; params: Record<string, string> }> = [];
@@ -133,7 +158,11 @@ function harness(options: {
         if (options.containsFails) throw new Error('library check unavailable');
         if ('containsBody' in options) return options.containsBody as T;
         const uris = String(params?.uris ?? '').split(',').filter(Boolean);
-        return uris.map((uri) => savedEpisodeIds.has(uri.replace(/^spotify:episode:/, ''))) as T;
+        return uris.map((uri) =>
+          uri.startsWith('spotify:show:')
+            ? savedShowIds.has(uri.slice('spotify:show:'.length))
+            : savedEpisodeIds.has(uri.replace(/^spotify:episode:/, '')),
+        ) as T;
       }
       const match = /^\/shows\/([^/]+)\/episodes$/.exec(path);
       if (!match) {
@@ -174,6 +203,7 @@ function harness(options: {
     shelfRequests,
     getCalls,
     writes,
+    get promptCount() { return prompts; },
     async invoke(name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {
       const tool = byName.get(name);
       assert.ok(tool, `${name} is registered`);
@@ -968,4 +998,152 @@ describe('episode rows carry the show the caller asked for, not a fabricated one
     assert.equal(payload.showName, null);
     assert.doesNotMatch(out.content[0].text, /unknown show/i);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1550 — the family gate on the two saved-show/episode removals
+//
+// `remove_saved_shows` and `remove_saved_episode` already previewed by
+// default (they carried `DryRunDefault` from #827). The half that was missing
+// was the same half `remove_from_library` was missing: nothing between an
+// explicit `dry_run=false` on up to 50 ids and the DELETE. These assert on
+// `writes` — the stub's own log — rather than on the prose a refusal returns.
+// ---------------------------------------------------------------------------
+
+describe('#1550 remove_saved_shows and remove_saved_episode gate at the family threshold', () => {
+  // `spotifyIdArray` requires exactly 22 base62 characters, so a readable
+  // `s0`/`e0` would be rejected at the schema before it ever reached the gate.
+  const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  const showIds = (n: number) =>
+    Array.from({ length: n }, (_, i) => `4s${String(i).padStart(4, '0')}00000000000AAAAAA`.slice(0, 22));
+  const episodeIds = (n: number) =>
+    Array.from({ length: n }, (_, i) => `5e${String(i).padStart(4, '0')}00000000000BBBBBB`.slice(0, 22));
+  assert.ok(showIds(50).every((id) => id.length === 22 && [...id].every((c) => ALPHABET.includes(c))));
+  const deletes = (h: { writes: Array<{ method: string; path: string }> }) =>
+    h.writes.filter((w) => w.method === 'delete').map((w) => w.path);
+
+  afterEach(() => {
+    delete process.env.SPOTIFY_MCP_CONFIRM;
+  });
+
+  it('an OMITTED dry_run on 50 shows deletes nothing', async () => {
+    const h = harness({ savedShowIds: new Set(showIds(50)) });
+    const out = await h.invoke('remove_saved_shows', { show_ids: showIds(50) });
+    assert.deepEqual(deletes(h), [], 'an omitted flag must preview, not remove');
+    assert.equal((out.structuredContent as { dry_run?: boolean }).dry_run, true);
+  });
+
+  it('an OMITTED dry_run on 50 episodes deletes nothing', async () => {
+    const h = harness({ savedEpisodeIds: new Set(episodeIds(50)) });
+    const out = await h.invoke('remove_saved_episode', { episode_ids: episodeIds(50) });
+    assert.deepEqual(deletes(h), [], 'an omitted flag must preview, not remove');
+    assert.equal((out.structuredContent as { dry_run?: boolean }).dry_run, true);
+  });
+
+  it('10 saved shows with a client that cannot prompt REFUSE with zero deletes', async () => {
+    const h = harness({ savedShowIds: new Set(showIds(10)), elicit: false });
+    const out = await h.invoke('remove_saved_shows', { show_ids: showIds(10), dry_run: false });
+    assert.deepEqual(deletes(h), [], 'an unpromptable client must not become an unprompted delete');
+    assert.equal(
+      (out.structuredContent as { reason?: string }).reason,
+      'confirmation_unavailable',
+    );
+  });
+
+  it('10 saved episodes with a client that cannot prompt REFUSE with zero deletes', async () => {
+    const h = harness({ savedEpisodeIds: new Set(episodeIds(10)), elicit: false });
+    const out = await h.invoke('remove_saved_episode', { episode_ids: episodeIds(10), dry_run: false });
+    assert.deepEqual(deletes(h), []);
+    assert.equal(
+      (out.structuredContent as { reason?: string }).reason,
+      'confirmation_unavailable',
+    );
+  });
+
+  it('a DECLINED prompt on 10 shows refuses with zero deletes', async () => {
+    const h = harness({ savedShowIds: new Set(showIds(10)), elicit: { action: 'decline' } });
+    const out = await h.invoke('remove_saved_shows', { show_ids: showIds(10), dry_run: false });
+    assert.deepEqual(deletes(h), []);
+    assert.equal(h.promptCount, 1, 'the gate must actually have asked');
+    assert.equal((out.structuredContent as { cancelled?: boolean }).cancelled, true);
+  });
+
+  it('a prompt that FAILS mid-flight refuses with zero deletes', async () => {
+    const h = harness({
+      savedShowIds: new Set(showIds(10)),
+      elicit: new Error('elicitation exploded mid-flight'),
+    });
+    const out = await h.invoke('remove_saved_shows', { show_ids: showIds(10), dry_run: false });
+    assert.deepEqual(deletes(h), []);
+    assert.equal((out.structuredContent as { reason?: string }).reason, 'elicitation_failed');
+  });
+
+  it('an accepted prompt at 10 saved episodes commits exactly one DELETE', async () => {
+    const h = harness({ savedEpisodeIds: new Set(episodeIds(10)), elicit: { action: 'accept', content: { confirm: true } } });
+    await h.invoke('remove_saved_episode', { episode_ids: episodeIds(10), dry_run: false });
+    assert.equal(h.promptCount, 1);
+    assert.equal(deletes(h).length, 1, 'an accepted 10-item removal is one /me/library request');
+  });
+
+  it('9 saved shows commits without asking — the gate starts at 10', async () => {
+    const h = harness({ savedShowIds: new Set(showIds(9)), elicit: { action: 'accept', content: { confirm: true } } });
+    await h.invoke('remove_saved_shows', { show_ids: showIds(9), dry_run: false });
+    assert.equal(h.promptCount, 0, 'nothing below REMOVE_ELICIT_THRESHOLD may prompt');
+    assert.equal(deletes(h).length, 1);
+  });
+
+  it('the threshold counts what is actually REMOVABLE, not what was passed', async () => {
+    // 20 ids given, 9 of them saved. The gate is on the removal, not the
+    // request: a caller padding a 9-item removal to 20 must not trip it, and a
+    // caller padding 3 to 20 must not escape it.
+    const h = harness({ savedShowIds: new Set(showIds(9)), elicit: false });
+    const out = await h.invoke('remove_saved_shows', { show_ids: showIds(20), dry_run: false });
+    assert.equal(h.promptCount, 0);
+    assert.equal(deletes(h).length, 1);
+
+    // 12 actually-saved out of 20 given, against a client that cannot prompt:
+    // the gate must fire on the 12 and refuse, even though the request carried
+    // ids that were never saved. A caller padding a real removal to the cap
+    // must not escape the gate.
+    const h2 = harness({ savedShowIds: new Set(showIds(12)), elicit: false });
+    const out2 = await h2.invoke('remove_saved_shows', { show_ids: showIds(20), dry_run: false });
+    assert.deepEqual(deletes(h2), [], '12 real removals must not commit unprompted');
+    assert.equal(
+      (out2.structuredContent as { reason?: string }).reason,
+      'confirmation_unavailable',
+    );
+  });
+
+  it('SPOTIFY_MCP_CONFIRM=never bypasses the prompt, never the preview default', async () => {
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    const committed = harness({ savedShowIds: new Set(showIds(10)), elicit: false });
+    await committed.invoke('remove_saved_shows', { show_ids: showIds(10), dry_run: false });
+    assert.equal(committed.promptCount, 0);
+    assert.equal(deletes(committed).length, 1, 'the documented automation bypass must be honoured');
+
+    const preview = harness({ savedShowIds: new Set(showIds(10)), elicit: false });
+    await preview.invoke('remove_saved_shows', { show_ids: showIds(10) });
+    assert.deepEqual(
+      deletes(preview),
+      [],
+      'the bypass removes the PROMPT, never the dry-run default',
+    );
+  });
+
+  for (const value of ['NEVER', 'Never', 'no', 'false', '1', 'true', ' ']) {
+    it(`SPOTIFY_MCP_CONFIRM=${JSON.stringify(value)} does NOT bypass the gate`, async () => {
+      process.env.SPOTIFY_MCP_CONFIRM = value;
+      const h = harness({ savedShowIds: new Set(showIds(10)), elicit: false });
+      const out = await h.invoke('remove_saved_shows', { show_ids: showIds(10), dry_run: false });
+      assert.deepEqual(
+        deletes(h),
+        [],
+        `SPOTIFY_MCP_CONFIRM=${JSON.stringify(value)} must not act as a bypass`,
+      );
+      assert.equal(
+        (out.structuredContent as { reason?: string }).reason,
+        'confirmation_unavailable',
+      );
+    });
+  }
 });
