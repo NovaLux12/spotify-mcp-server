@@ -108,7 +108,9 @@ The package contract is generated directly from `package.json`; the census guard
     "probe:edge": "node scripts/edge-probe.mjs",
     "probe:contains": "node scripts/contains-check.mjs",
     "wire:equivalence": "node scripts/wire-equivalence.mjs",
-    "wire:equivalence:compare": "node scripts/wire-equivalence.mjs --compare"
+    "wire:equivalence:compare": "node scripts/wire-equivalence.mjs --compare",
+    "gate:check": "node scripts/tool-gate-check.mjs",
+    "e2e:live": "node scripts/live-e2e.mjs"
   }
 }
 ```
