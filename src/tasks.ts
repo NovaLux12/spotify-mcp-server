@@ -45,8 +45,13 @@
  *
  * - A task whose work returned an error, or a confirmation refusal, is never
  *   reported `completed`. `completed` means the operation finished and said so.
- * - A task that was aborted reports `cancelled`, and its stored result says the
- *   run stopped partway rather than presenting a partial run as a whole one.
+ *   "Said so" is the operative half: in this server a handler reports failure
+ *   as `structuredContent.ok === false`, not as `isError`, so `ok: false` is
+ *   read as the failure it is.
+ * - A task that was aborted reports `cancelled`, and its stored result says what
+ *   the abort is known to have done — a partial run is never presented as a
+ *   whole one, and a run that finished before the stop landed is not described
+ *   as though it had not.
  * - A task found `working` on disk by a NEW process was interrupted by the
  *   restart and never finished. It is reconciled to `failed` at startup with
  *   that stated in `statusMessage`; it is never carried forward as in-flight,
@@ -547,7 +552,7 @@ function isTaskRecord(value: unknown): value is TaskRecord {  if (value === null
 
 /** The `statusMessage` a terminal task carries, read off its own result. */
 function describeTerminal(status: TaskStatus, result: Result): string {
-  if (status === 'cancelled') return 'Cancelled before the work finished; the run stopped partway.';
+  if (status === 'cancelled') return cancelMessage(result);
   if (status === 'failed') {
     const text = firstText(result);
     return text ? `Failed: ${text}` : 'Failed.';
@@ -566,6 +571,36 @@ function firstText(result: Result): string | undefined {
     }
   }
   return undefined;
+}
+
+/** The `structuredContent` record a result carries, or undefined. */
+function structuredRecord(result: Result | undefined): Record<string, unknown> | undefined {
+  if (result === null || result === undefined || typeof result !== 'object') return undefined;
+  if (!('structuredContent' in result)) return undefined;
+  const structured = (result as CallToolResult).structuredContent;
+  if (structured === null || typeof structured !== 'object') return undefined;
+  return structured as Record<string, unknown>;
+}
+
+/**
+ * The `statusMessage` for a cancelled run, claimed only as far as the result goes.
+ *
+ * `signal.aborted` says a human asked to stop. It does not say the stop landed
+ * before the last write: a cancel that arrives while the handler is already
+ * returning aborts a run whose work is done, and "the run stopped partway" over a
+ * stored `{ok: true, removed: 3, total: 3}` asserts something that did not
+ * happen — the same class of claim as a `0 streams` for a page that would not
+ * read. The stored result is the evidence, so the message reports what it shows,
+ * and says plainly that it shows nothing when that is the case.
+ */
+function cancelMessage(result: Result | undefined): string {
+  if (structuredRecord(result)?.ok === true) {
+    return 'Cancelled after the work finished: the stored result reports the operation completed before the stop landed.';
+  }
+  const text = result === undefined ? undefined : firstText(result);
+  return text === undefined
+    ? 'Cancelled; the run produced no result, so whether the work finished is not established.'
+    : `Cancelled; the stored result does not report the work as complete — ${text}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -600,7 +635,8 @@ export interface TaskStartRequest {
  * The task's terminal status is decided by what `run` actually did, never by
  * the fact that it returned:
  *
- * - it threw, or returned a result with `isError` → `failed`
+ * - it threw, or returned a result with `isError` or a non-refusal
+ *   `structuredContent.ok === false` → `failed`
  * - it returned a confirmation refusal → `cancelled` when a human said no,
  *   `failed` when consent could not be established at all, because "we could
  *   not ask" and "the user declined" are different facts
@@ -643,8 +679,11 @@ export async function startTask(request: TaskStartRequest): Promise<CreateTaskRe
       }
     } catch (error) {
       const cancelled = signal.aborted;
+      // No result to read: the run threw. The message can say it was cancelled
+      // and that the throw is the reason, and it cannot say the work stopped
+      // partway, because a run can throw on its way out of a finished write.
       const message = cancelled
-        ? 'Cancelled before the work finished; the run stopped partway.'
+        ? cancelMessage(undefined)
         : `Failed: ${errorText(error)}`;
       const status: TaskStatus = cancelled ? 'cancelled' : 'failed';
       // A failure still gets a result, so `tasks/result` answers with the reason
@@ -663,7 +702,10 @@ export async function startTask(request: TaskStartRequest): Promise<CreateTaskRe
 /** Decide a task's terminal status from what its run returned. */
 function terminalOutcome(result: CallToolResult, signal: AbortSignal): { status: TaskStatus; message?: string } {
   if (signal.aborted) {
-    return { status: 'cancelled', message: 'Cancelled before the work finished; the run stopped partway.' };
+    // First, and it stays first: a refusal or an `ok: false` that arrives from
+    // work the cancel already killed would otherwise be read as the run's own
+    // verdict rather than the stop a human asked for.
+    return { status: 'cancelled', message: cancelMessage(result) };
   }
   const refusal = refusalOf(result);
   if (refusal) {
@@ -673,6 +715,22 @@ function terminalOutcome(result: CallToolResult, signal: AbortSignal): { status:
   }
   if (result?.isError === true) {
     return { status: 'failed', message: `Failed: ${firstText(result) ?? 'the tool reported an error.'}` };
+  }
+  // `ok: false` that is not a refusal is this codebase's failure signal, and it
+  // is NOT a synonym for `isError`: `src/result.ts` makes an absent `isError`
+  // mean `false` and most tools never set it, so a handler can report that it
+  // did nothing and still hand back a result MCP calls a success. The quota
+  // cooldown in `library_hygiene` and `find_duplicate_saved_tracks` is that
+  // shape — `ok: false, cooldown: true, requests_made: 0` — and it arrives after
+  // any 429, which is routine rather than exotic; `export_all_playlists` returns
+  // it when the account identity will not read. Both modules say in their own
+  // comments that a host must be able to read `ok === true` as "the scan
+  // completed", which is only true if this arm exists. Without it a run that did
+  // no work at all reads `completed` and `Finished.`, the one thing this file's
+  // header promises never to report. A refusal is already gone by this point, so
+  // `ok: false` here never reclassifies a decline.
+  if (structuredRecord(result)?.ok === false) {
+    return { status: 'failed', message: `Failed: ${firstText(result) ?? 'the tool reported that it did not complete.'}` };
   }
   return { status: 'completed' };
 }

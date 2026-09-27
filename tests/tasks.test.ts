@@ -90,16 +90,25 @@ interface Harness {
   /** Poll `tasks/get` until terminal, or time out. */
   settle: (taskId: string, timeoutMs?: number) => Promise<{ status: string; statusMessage?: string }>;
   /**
-   * Resolve once the detached run has actually finished.
+   * Resolve once the detached run has actually finished, and return its result.
    *
    * Not the same as "the task is terminal": `tasks/cancel` sets the status to
    * `cancelled` the moment it arrives, while the work it stopped is still
    * unwinding. Asserting on request counts at that point races the run, and a
    * race is how a test ends up passing for the wrong reason — or failing for
-   * one. The store drops its controller in the run's `finally`, so this is the
-   * exact moment the work ended.
+   * one.
+   *
+   * The gate is the stored result, and deliberately not `store.runningCount`.
+   * That counter is populated by `attach`, so a mutation which stops attaching
+   * leaves it at 0 for the whole run: a gate built on it returns immediately
+   * while the walk is still fetching, the page-count assertion that follows it
+   * races and passes by luck, and the test then fails somewhere else entirely
+   * on a timing-dependent `tasks/result` error — which is a failure any
+   * unrelated bug would also produce. `storeTaskResult` runs only after `run`
+   * resolves, so a readable result is a fact about the run rather than about
+   * the bookkeeping, and it is blind to whether `attach` was called.
    */
-  workStopped: () => Promise<void>;
+  resultStored: (taskId: string, timeoutMs?: number) => Promise<CallToolResult>;
   /** The number of DELETE requests the client received. */
   deletes: () => number;
   /** The number of GET requests the client received. */
@@ -235,12 +244,18 @@ async function harness(opts: HarnessOptions = {}): Promise<Harness> {
       GetTaskResultSchema,
     ) as never as { status: string },
     settle: async (taskId, timeoutMs = 5000) => await settleThrough(() => h.getTask(taskId), taskId, timeoutMs),
-    workStopped: async () => {
-      const deadline = Date.now() + 5000;
-      while (store.runningCount > 0 && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 5));
+    resultStored: async (taskId, timeoutMs = 5000) => {
+      const deadline = Date.now() + timeoutMs;
+      let lastError: unknown;
+      while (Date.now() < deadline) {
+        try {
+          return await h.getResult(taskId);
+        } catch (error) {
+          lastError = error;
+          await new Promise((r) => setTimeout(r, 5));
+        }
       }
-      assert.equal(store.runningCount, 0, 'the detached run never finished');
+      assert.fail(`the run stored no result within ${timeoutMs}ms; last error: ${String(lastError)}`);
     },
     deletes: () => deleteCalls.length - baseDeletes,
     gets: () => getCalls.length - baseGets,
@@ -522,7 +537,9 @@ describe('#600 tasks/cancel stops the work', () => {
 
       // Wait for the run to END before counting requests. `tasks/cancel`
       // already made the task terminal; the work it stopped is still going.
-      await h.workStopped();
+      // The gate is the stored result, so it holds whether or not the run ever
+      // attached a controller — see `resultStored`.
+      await h.resultStored(taskId);
       assert.equal(h.gets(), 1, `the walk requested a second page after the cancel (${h.gets()} pages fetched)`);
       assert.equal(h.deletes(), 0, 'a cancelled task went on to write');
       assert.match(textOf(await h.getResult(taskId)), /stopped partway|cancel/i);
@@ -676,6 +693,164 @@ describe('#600 a task reports what actually happened', () => {
     const task = await store.createTask({ ttl: 90 * 24 * 60 * 60 * 1000 }, 'req-1', { id: 'req-1', params: { name: 'backup_library' } });
     assert.ok((task.ttl ?? 0) < 90 * 24 * 60 * 60 * 1000, 'the cap was applied but not reported back on the Task');
     assert.equal(typeof task.ttl, 'number');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The status, as distinct from the payload
+// ---------------------------------------------------------------------------
+
+describe('#600 a status is not completed just because a result came back', () => {
+  // `src/result.ts` makes an absent `isError` mean `false` and most tools never
+  // set it, so `isError` is NOT this server's failure signal. A handler that
+  // did no work at all — a quota cooldown after any 429, an unreadable identity —
+  // hands back `{ok: false}` with no `isError`, and the status is the only new
+  // surface a client is invited to read. A stored payload stays honest and
+  // stays fetchable either way; what was wrong was `completed` and `Finished.`
+  // over a run that made zero requests.
+
+  /** Start a task whose run resolves to exactly `result`, and settle it. */
+  async function settleResult(
+    prefix: string,
+    tool: string,
+    result: CallToolResult,
+  ): Promise<{ status: string; statusMessage?: string; stored: CallToolResult }> {
+    const dir = mkdtempSync(join(tmpdir(), prefix));
+    const store = new PersistentTaskStore(dir);
+    const { startTask } = await import('../src/tasks.ts');
+    const task = await startTask({
+      args: {},
+      extra: {},
+      request: { id: 'req-1', params: { name: tool } },
+      taskParams: {},
+      store,
+      run: async () => result,
+    });
+    const { taskId } = task.task;
+    const settled = await settleThrough(async () => {
+      const { tasks } = await store.listTasks();
+      return tasks[0] ?? { status: 'working' };
+    }, taskId);
+    return { ...settled, stored: await store.getTaskResult(taskId) as CallToolResult };
+  }
+
+  it('a quota-cooldown ok:false is failed, and the message is the tool\'s own words', async () => {
+    // The shape `library_hygiene` and `find_duplicate_saved_tracks` return
+    // whenever `quotaPreflight` blocks, which is after any 429.
+    const { status, statusMessage, stored } = await settleResult(
+      'spotify-mcp-tasks-cooldown-',
+      'library_hygiene',
+      {
+        content: [{ type: 'text', text: 'Quota cooldown active — 412 album lookups were not attempted. Retry in 30s.' }],
+        structuredContent: { ok: false, cooldown: true, wait_sec: 30, requests_made: 0, requests_planned: 412 },
+      },
+    );
+    assert.equal(status, 'failed', 'a run that made zero requests reported completed');
+    assert.match(statusMessage ?? '', /cooldown active/i, 'the status dropped the reason the tool gave');
+    // The payload was always honest and must stay readable — this is about the
+    // status, not about hiding the result from anyone who goes looking.
+    assert.equal((stored.structuredContent as { requests_made?: number }).requests_made, 0);
+  });
+
+  it('an unreadable-identity ok:false is failed, with the tool\'s own words', async () => {
+    // `export_all_playlists` with scope=owned, when `GET /me` will not read.
+    const { status, statusMessage } = await settleResult(
+      'spotify-mcp-tasks-identity-',
+      'export_all_playlists',
+      {
+        content: [{ type: 'text', text: 'Refused to export with scope=owned: your user id could not be read. Nothing was exported.' }],
+        structuredContent: {
+          ok: false,
+          error: 'GET /me could not be read (401)',
+          scope_applied: false,
+          total: 0,
+          playlists_exported: 0,
+        },
+      },
+    );
+    assert.equal(status, 'failed', 'a run that exported nothing reported completed');
+    assert.match(statusMessage ?? '', /user id could not be read/i);
+  });
+
+  it('a genuine refusal still reads as a refusal, and the ok:false arm does not eat it', async () => {
+    // Both halves, built by the real guards rather than by hand, because the
+    // two are different facts: a human said no, or consent was never
+    // obtainable. `refusalOf` has to run before the general `ok: false` test,
+    // or a decline — which is `ok: false` too — would be reported as a server
+    // failure instead of as the human stopping it.
+    const declined = refusalFor('declined');
+    assert.ok(declined);
+    const declineResult = await settleResult('spotify-mcp-tasks-declined-', 'clean_all_playlists', {
+      content: [{ type: 'text', text: declined.message }],
+      structuredContent: declined.payload,
+    });
+    assert.equal(declineResult.status, 'cancelled', 'a decline stopped reading as a decline');
+    assert.match(declineResult.statusMessage ?? '', /declined/i);
+
+    const unavailable = requiredConfirmationRefusal('unsupported');
+    assert.ok(unavailable);
+    const unavailableResult = await settleResult('spotify-mcp-tasks-unavailable-', 'clean_all_playlists', {
+      content: [{ type: 'text', text: unavailable.message }],
+      structuredContent: unavailable.payload,
+    });
+    assert.equal(unavailableResult.status, 'failed', 'consent never obtainable stopped reading as failed');
+    // `Failed: <the tool's own words>`, because `storeTaskResult` runs
+    // `describeTerminal`, which reads the refusal's own message. That is the
+    // text a reader wants here: it names unavailability and says nothing was
+    // changed, where a generic string would say neither.
+    assert.match(unavailableResult.statusMessage ?? '', /^Failed: .*unavailable/i);
+  });
+
+  it('a real isError result still reads failed, with the Failed: prefix', async () => {
+    const { status, statusMessage } = await settleResult('spotify-mcp-tasks-iserror-', 'backup_library', {
+      content: [{ type: 'text', text: 'walk hit a malformed page' }],
+      isError: true,
+    });
+    assert.equal(status, 'failed');
+    assert.match(statusMessage ?? '', /^Failed: .*malformed page/);
+  });
+
+  it('a cancel that lands after the last write does not claim the run stopped partway', async () => {
+    // The window: a human cancels, and the handler is already returning. The
+    // stored result is `{ok: true, removed: 3, total: 3}` — the work finished.
+    // `signal.aborted` is still true, so the status is `cancelled`, which is
+    // right; the message claiming "the run stopped partway" is not, because the
+    // run is the one thing that demonstrably did not stop partway.
+    const dir = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-late-cancel-'));
+    const store = new PersistentTaskStore(dir);
+    const { startTask } = await import('../src/tasks.ts');
+    const task = await startTask({
+      args: {},
+      extra: {},
+      request: { id: 'req-1', params: { name: 'clean_all_playlists' } },
+      taskParams: {},
+      store,
+      run: async () => {
+        // Stand in for the last write completing, then the cancel arriving
+        // before the handler hands its result back.
+        const { tasks } = await store.listTasks();
+        await store.updateTaskStatus(tasks[0].taskId, 'cancelled', 'Client cancelled task execution.');
+        return {
+          content: [{ type: 'text', text: 'removed 3 of 3 playlists' }],
+          structuredContent: { ok: true, removed: 3, total: 3 },
+        };
+      },
+    });
+    const { taskId } = task.task;
+    const settled = await settleThrough(async () => {
+      const { tasks } = await store.listTasks();
+      return tasks[0] ?? { status: 'working' };
+    }, taskId);
+    assert.equal(settled.status, 'cancelled', 'a cancel was asked for, so the task is cancelled');
+    assert.doesNotMatch(
+      settled.statusMessage ?? '',
+      /stopped partway/i,
+      'the message claims a partial run over a stored result that says all 3 of 3 were removed',
+    );
+    assert.match(settled.statusMessage ?? '', /completed/i, 'the message does not say what the result shows');
+    // The real result is still there for anyone who fetches it.
+    const stored = await store.getTaskResult(taskId) as CallToolResult;
+    assert.equal((stored.structuredContent as { total?: number }).total, 3);
   });
 });
 

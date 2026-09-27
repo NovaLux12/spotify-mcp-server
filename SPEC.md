@@ -2444,13 +2444,20 @@ the only bypass and is honoured identically in both paths.
 through `runInCancellationContext`, so a cancelled task stops at the next page
 boundary rather than finishing the work nobody is waiting for.
 
-**Status is never a guess.** `completed` means the handler returned without an
-error; a task whose work errored or was refused is `failed`; an aborted one is
-`cancelled` with a result saying the run stopped partway. A record found
-`working` by a *new* process is reconciled to `failed` naming the interruption —
-it does not resume, because the work it described was in the previous process's
-memory. That is the #803/#830 shape refused: never report `completed` for work
-that did not finish, and name the failing step.
+**Status is never a guess.** `completed` means the handler returned and said the
+work was done, which in this server is `structuredContent.ok === true` or an
+absent `ok`: a result that reports failure says so with `ok: false` and leaves
+MCP's own `isError` unset, so a run that made zero requests — a quota cooldown
+after any 429, an unreadable account identity — is `failed`, not `completed`. A
+refusal is `cancelled` when a human declined and `failed` when consent could not
+be obtained at all, because "the user said no" and "we could not ask" are
+different facts. An aborted run is `cancelled`, and its message claims only what
+the stored result shows: a partial run is never presented as a whole one, and a
+run whose work finished before the stop landed is not described as though it had
+not. A record found `working` by a *new* process is reconciled to `failed` naming
+the interruption — it does not resume, because the work it described was in the
+previous process's memory. That is the #803/#830 shape refused: never report
+`completed` for work that did not finish, and name the failing step.
 
 **Where task records live.** `PersistentTaskStore` (`src/tasks.ts`) writes one
 JSON file per task under `SPOTIFY_MCP_TASKS_DIR` (default
