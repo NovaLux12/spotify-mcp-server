@@ -355,7 +355,7 @@
         "label": "Changing or deleting prose needs --prose-sync. That comm…"
       },
       {
-        "hash": "118767fe31aa6582",
+        "hash": "71c8832aa6743c3b",
         "label": "A retirement reason is a claim about a tree, and --prose…"
       },
       {
@@ -4956,6 +4956,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "118767fe31aa6582",
+      "label": "A retirement reason is a claim about a tree, and --prose…",
+      "date": "2026-09-27",
+      "reason": "Reworded in #1440 to document the contradiction evidence the behind-refusal carries; same rule, stated in full."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "2baa4ae7670cf60a",
       "label": "Hand-written prose from both sides survives, because you…",
       "date": "2026-09-27",
@@ -5145,7 +5152,7 @@
     }
   ],
   "provenance": {
-    "head": "d3077efd323c767a1ad93217f93e6d0eb95744db",
+    "head": "da70bbd74a3e864d563bdacf563430ce3a99e868",
     "upstream": "d0b690fc094fab521ba215364346294c41f5ac8d",
     "behind": false
   }
