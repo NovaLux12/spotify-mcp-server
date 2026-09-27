@@ -152,6 +152,19 @@ interface JsonRpc {
 }
 
 /**
+ * `resolve` and `reject` are optional on purpose. They are typed optional so
+ * the shape the first draft of this file actually destructured — a promise plus
+ * two wrongly-named properties — is expressible as a `Deferred` at all, which
+ * is what lets the regression test below pass one in rather than describe it in
+ * a comment. `initializeFrom` checks them before it spawns anything.
+ */
+interface Deferred {
+  promise: Promise<string | undefined>;
+  resolve?: (value: string | undefined) => void;
+  reject?: (reason?: unknown) => void;
+}
+
+/**
  * The `initialize` response, read off a real server process.
  *
  * This is the assertion the issue's acceptance criteria ask for, and it is
@@ -163,8 +176,38 @@ interface JsonRpc {
  * `entry` is a parameter so the harness's own failure paths are reachable from a
  * test — see the "harness" describe block at the bottom. A harness that cannot
  * be pointed at a broken server is a harness whose error reporting is untested.
+ *
+ * `makeDeferred` is a second seam onto the same idea: it is how a test reaches
+ * the failure below without editing this function.
  */
-function initializeFrom(entry: string): Promise<string | undefined> {
+function initializeFrom(
+  entry: string,
+  makeDeferred: () => Deferred = () => Promise.withResolvers<string | undefined>(),
+): Promise<string | undefined> {
+  // Checked before the child exists, and in the caller's own stack (#1366).
+  //
+  // `Promise.withResolvers` returns `{ promise, resolve, reject }`. The first
+  // draft of this file destructured `{ promise, resolveWith, rejectWith }`, so
+  // both callbacks were `undefined`, and calling one inside a
+  // `child.stdout.on('data')` handler threw where the test's assertion
+  // machinery cannot see it. A throw on a stream is not a rejected test: the
+  // promise never settled, so the teardown below never ran, the child was
+  // never killed, and its ref'd stdio pipes held the runner open. That is the
+  // 35-minute hang, and it is the whole reason this guard exists.
+  //
+  // A `TypeError` thrown here instead lands in the caller, where `assert.rejects`
+  // and the runner both see it, and no process was ever spawned to leak.
+  const deferred = makeDeferred();
+  const { promise } = deferred;
+  const settle = deferred.resolve;
+  const fail = deferred.reject;
+  if (typeof settle !== 'function' || typeof fail !== 'function') {
+    throw new TypeError(
+      `makeDeferred() returned a deferred with no callbacks (resolve: ${typeof settle}, ` +
+        `reject: ${typeof fail}); the harness would throw inside a stream handler and wedge ` +
+        `the runner instead of failing this test`,
+    );
+  }
   const baseEnv = childEnv();
   delete baseEnv.SPOTIFY_SCOPES; // absent, not empty: #617 rejects a set-but-empty value
   const child = spawn(process.execPath, ['--import', 'tsx/esm', entry], {
@@ -172,13 +215,6 @@ function initializeFrom(entry: string): Promise<string | undefined> {
     env: baseEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  // `Promise.withResolvers` returns `{ promise, resolve, reject }`. Destructuring
-  // any other names yields `undefined` callbacks, and calling one inside a
-  // stream handler throws where the test's assertion machinery cannot see it:
-  // the runner dies with no failing assertion and the suite reports nothing at
-  // all. That is not hypothetical — it is how the first draft of this file
-  // hung for 35 minutes instead of failing.
-  const { promise, resolve: settle, reject: fail } = Promise.withResolvers<string | undefined>();
   let buffer = '';
   let stderr = '';
   child.stdout.setEncoding('utf8');
@@ -232,19 +268,29 @@ function initializeFrom(entry: string): Promise<string | undefined> {
   // cannot be faked from here, so a real deadline is the only way to fail fast
   // instead of wedging the suite. Every other failure has already settled the
   // promise by the time this can fire.
-  setTimeout(() => fail(new Error(`timeout waiting for initialize\nstderr:\n${stderr}`)), 30_000).unref();
+  //
+  // It kills the child itself rather than leaning on the settlement path. If
+  // the watchdog's only job were to reject, a harness that could not reject
+  // would leave a live child holding the runner open — which is the wedge
+  // above, one layer down. Teardown must not depend on a callback working.
+  const watchdog = setTimeout(() => {
+    teardown();
+    fail(new Error(`timeout waiting for initialize\nstderr:\n${stderr}`));
+  }, 30_000);
+  watchdog.unref();
   // The child is external, so tear it down on both outcomes: end stdin so a
   // healthy server exits on its own, and SIGKILL shortly after so a wedged one
-  // cannot hold the runner open. The `.catch` is load-bearing — `finally()`
-  // returns a *new* promise, and a watchdog rejection with no handler on that
-  // derivative is an unhandled rejection that takes the suite down instead of
-  // failing one assertion.
-  void promise
-    .finally(() => {
-      child.stdin.end();
-      setTimeout(() => child.kill('SIGKILL'), 1500).unref();
-    })
-    .catch(() => {});
+  // cannot hold the runner open. Idempotent, because both this and the watchdog
+  // above may call it. The `.catch` is load-bearing — `finally()` returns a
+  // *new* promise, and a watchdog rejection with no handler on that derivative
+  // is an unhandled rejection that takes the suite down instead of failing one
+  // assertion.
+  function teardown(): void {
+    clearTimeout(watchdog);
+    child.stdin.end();
+    setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+  }
+  void promise.finally(teardown).catch(() => {});
   return promise;
 }
 
@@ -538,9 +584,14 @@ describe('the recorded name decision (#705)', () => {
  * should fail. It did not, once: the callbacks destructured out of
  * `Promise.withResolvers` were `undefined`, calling one inside the stdout
  * handler threw, and an exception on a stream is not routed to the assertion
- * machinery — the runner died reporting nothing and the run leaked for 35
- * minutes. The two properties below are the ones that cost that, and both are
- * checkable.
+ * machinery. The promise then never settled, so the teardown chained to
+ * `finally` never ran, the child was never killed, and its ref'd stdio pipes
+ * held the runner open — the runner died reporting nothing and the run leaked
+ * for 35 minutes.
+ *
+ * The four properties below are the ones that cost that, and all four are
+ * checkable. The first is the headline: the historical broken shape is handed
+ * to the harness, so the regression is driven rather than described.
  *
  * What is deliberately *not* asserted here: that `Promise.withResolvers`
  * returns `{ promise, resolve, reject }`. That is a property of the Node
@@ -548,6 +599,45 @@ describe('the recorded name decision (#705)', () => {
  * definition of a test that cannot fail.
  */
 describe('the stdio harness fails with a cause (#1366)', () => {
+  it('refuses to run on a deferred with no callbacks, instead of throwing inside a stream handler', async () => {
+    // The regression, driven rather than described. This is the exact shape the
+    // first draft destructured: the promise under its real name, the two
+    // callbacks under names `Promise.withResolvers` does not have. `never` is
+    // the promise such a harness would be left holding — unsettled, because
+    // nothing can settle it.
+    const never = new Promise<string | undefined>(() => {});
+    const started = process.hrtime.bigint();
+    await assert.rejects(
+      async () =>
+        initializeFrom('src/index.ts', () => ({
+          promise: never,
+          resolveWith: () => {},
+          rejectWith: () => {},
+        })),
+      (err: Error) => {
+        assert.ok(
+          err instanceof TypeError,
+          `a deferred with no callbacks must fail as a TypeError, got: ${err.constructor.name}: ${err.message}`,
+        );
+        assert.match(
+          err.message,
+          /resolve: undefined, reject: undefined/,
+          `the failure must name what was missing, got: ${err.message}`,
+        );
+        return true;
+      },
+    );
+    // Promptly, and with nothing left running. The guard is a synchronous
+    // check made before the spawn, so this is microseconds and no child ever
+    // existed; anything near the watchdog's 30 s means the throw moved back
+    // inside a handler, which is the bug this test exists to keep out.
+    const elapsedMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
+    assert.ok(
+      elapsedMs < 5_000,
+      `the check must run before the spawn, took ${elapsedMs}ms — the callbacks are still being called from a handler`,
+    );
+  });
+
   it('rejects with the exit code when the server dies before answering', async () => {
     // A module that does not exist: node starts, fails to resolve it, and
     // exits non-zero without writing a frame. That is the same shape as a
