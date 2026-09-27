@@ -1106,11 +1106,6 @@ describe('#1550 dead_library_finder gates bulk removal at the family threshold',
   it('the prompt names the operation and the number of tracks at stake', async () => {
     const messages: string[] = [];
     const client = libraryOf(12);
-    const { handler } = getHandlerWithHost('dead_library_finder', client, {
-      action: 'accept',
-      content: { confirm: true },
-    });
-    // Re-register with a recorder so the message text is observable.
     let captured: Handler | undefined;
     const server = {
       tool(name: string, _d: string, _s: unknown, h: Handler) { if (name === 'dead_library_finder') captured = h; },
@@ -1122,10 +1117,13 @@ describe('#1550 dead_library_finder gates bulk removal at the family threshold',
     registerExhaust2MiscTools(server, client);
     assert.ok(captured);
     await captured({ min_age_days: 30, dry_run: false, response_format: 'concise' });
-    void handler;
     assert.equal(messages.length, 1);
-    assert.match(messages[0], /remove from library/i);
-    assert.match(messages[0], /Remove 12 saved track\(s\)/);
+    // Asserted against the line `describeConfirmation` actually builds, which is
+    // `About to <kind> "<target>":` — the operation and the count are both in
+    // `kind`, so one assertion covers what the test is named for.
+    assert.match(messages[0], /unsave 12 dead track\(s\) from your saved library/i);
+    // The preview is capped at 10 rows, so the remainder has to be disclosed
+    // rather than silently dropped — that is what makes 12 readable as 12.
     assert.match(messages[0], /and 2 more/);
   });
 
