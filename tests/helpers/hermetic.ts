@@ -40,6 +40,27 @@ export const REAL_HOME = homedir();
 /** The disposable home every store default resolves against during a test. */
 export const HERMETIC_ROOT = mkdtempSync(join(tmpdir(), 'spotify-mcp-hermetic-'));
 
+/**
+ * The DEFAULT account's token file inside the hermetic home.
+ *
+ * ## Why tests name an account at all (#1385)
+ *
+ * The account-keyed stores — the mutation ledger and the receipt trail — used
+ * to take an optional `tokenFile` that defaulted to `''`, and an empty token
+ * file resolved to the DEFAULT account's store. That default is gone, so a
+ * test that means "the default account" now says so. This constant is how it
+ * says so, and passing it preserves exactly the pre-#1385 behaviour: the
+ * basename is `tokens.json`, which is the default account, so these stores
+ * still land on the un-keyed `mutations.jsonl` / `receipts.jsonl` and every
+ * filename assertion in the suite is unchanged.
+ *
+ * Only the BASENAME reaches `accountStoreKey` — the token file is a key
+ * derivation input, not a file these stores read — so the path need not exist
+ * on disk. Naming a real path rather than a bare `'tokens.json'` keeps the
+ * fixture honest about what the server actually holds.
+ */
+export const DEFAULT_TOKEN_FILE = join(HERMETIC_ROOT, '.spotify-mcp', 'tokens.json');
+
 // `USERPROFILE` is the Windows spelling; the suite also runs there in CI, and
 // several existing tests (`doctor-unification`, `tools.export`, `tools.portability`)
 // already save and restore both names, so setting both keeps them consistent.

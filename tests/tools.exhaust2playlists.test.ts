@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,6 +58,9 @@ function makeFakeClient(routes: Record<string, unknown>): FakeClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: async (path) => {
       calls.push({ method: 'GET', path });
       const out = routes[path];
@@ -233,6 +236,9 @@ function makeMarketAwareClient(
   const calls: Call[] = [];
   return {
     calls,
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: async (path: string) => {
       calls.push({ method: 'GET', path });
       return meta;

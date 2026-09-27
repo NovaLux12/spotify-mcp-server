@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { afterEach, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -90,6 +90,8 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
     { episode: { id: 'ep3', uri: 'spotify:episode:ep3', name: 'Ep 3', resume_point: { fully_played: true } }, added_at: '2026-01-03' },
   ];
   const client = {
+    // The receipt store is keyed by the acting account's token file (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get(path: string, params?: Record<string, string>) {
       if (path === '/me/episodes') {
         // `libraryTotal` shapes what the non-paging client says about the size
@@ -265,7 +267,7 @@ describe('episodemgmt', () => {
     const receipt = out.structuredContent.receipt as { receipt_id?: string };
     assert.ok(receipt?.receipt_id, 'successful archive must surface a receipt id');
     // Same process, same in-module store: this is what verify_receipt reads.
-    const stored = verifyReceipt(receipt.receipt_id!);
+    const stored = verifyReceipt(receipt.receipt_id!, DEFAULT_TOKEN_FILE);
     assert.ok(stored, 'receipt id must resolve in the receipt store');
     assert.equal(stored!.kind, 'library');
     assert.deepEqual(stored!.uris, ['spotify:episode:ep0', 'spotify:episode:ep1', 'spotify:episode:ep2']);
@@ -299,7 +301,7 @@ describe('episodemgmt', () => {
     assert.doesNotMatch(out.content[0].text, /VERIFIED|confirmed absent/);
     const receipt = out.structuredContent.receipt as { receipt_id?: string };
     assert.ok(receipt.receipt_id, 'json mode must still expose the receipt via structuredContent');
-    assert.ok(verifyReceipt(receipt.receipt_id!));
+    assert.ok(verifyReceipt(receipt.receipt_id!, DEFAULT_TOKEN_FILE));
   });
   it('issues no receipt on any refused or dry-run path', async () => {
     const refused = harness({ episodes: playedEpisodes(51) });

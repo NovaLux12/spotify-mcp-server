@@ -12,7 +12,7 @@
  * Run with: node --import tsx --test tests/infra.test.ts
  */
 
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -587,7 +587,7 @@ describe('history: JSONL mutation records', () => {
 
   it('reports enabled state and resolved file path from env', () => {
     assert.equal(isHistoryEnabled(), true);
-    assert.equal(historyFilePath(), path.join(histDir, 'mutations.jsonl'));
+    assert.equal(historyFilePath(process.env, DEFAULT_TOKEN_FILE), path.join(histDir, 'mutations.jsonl'));
 
     process.env.SPOTIFY_MCP_HISTORY = '';
     assert.equal(isHistoryEnabled(), false);
@@ -599,7 +599,7 @@ describe('history: JSONL mutation records', () => {
       { method: 'put', path: '/playlists/p1/items', who: 'agent' },
       { access_token: 'SECRET', request_body: '{"uris":["spotify:track:x"]}' },
     );
-    await appendHistory(leaky as Parameters<typeof appendHistory>[0]);
+    await appendHistory(leaky as Parameters<typeof appendHistory>[0], DEFAULT_TOKEN_FILE);
 
     const raw = await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8');
     const lines = raw.trim().split('\n');
@@ -615,7 +615,7 @@ describe('history: JSONL mutation records', () => {
   });
 
   it('defaults who to "agent" and omits snapshot_id when absent', async () => {
-    await appendHistory({ method: 'delete', path: '/tracks/x' });
+    await appendHistory({ method: 'delete', path: '/tracks/x' }, DEFAULT_TOKEN_FILE);
 
     const rec = JSON.parse(
       (await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8')).trim(),
@@ -629,7 +629,7 @@ describe('history: JSONL mutation records', () => {
       method: 'post',
       path: '/playlists/p2/items',
       snapshot_id: 'snap-123',
-    });
+    }, DEFAULT_TOKEN_FILE);
 
     const rec = JSON.parse(
       (await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8')).trim(),
@@ -638,8 +638,8 @@ describe('history: JSONL mutation records', () => {
   });
 
   it('appends multiple mutations as separate lines', async () => {
-    await appendHistory({ method: 'post', path: '/a' });
-    await appendHistory({ method: 'put', path: '/b' });
+    await appendHistory({ method: 'post', path: '/a' }, DEFAULT_TOKEN_FILE);
+    await appendHistory({ method: 'put', path: '/b' }, DEFAULT_TOKEN_FILE);
 
     const lines = (await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8'))
       .trim()
@@ -651,7 +651,7 @@ describe('history: JSONL mutation records', () => {
 
   it('writes nothing while history is disabled', async () => {
     process.env.SPOTIFY_MCP_HISTORY = '0';
-    await appendHistory({ method: 'post', path: '/quiet' });
+    await appendHistory({ method: 'post', path: '/quiet' }, DEFAULT_TOKEN_FILE);
 
     await assert.rejects(readFile(path.join(histDir, 'mutations.jsonl'), 'utf8'), {
       code: 'ENOENT',
@@ -660,7 +660,7 @@ describe('history: JSONL mutation records', () => {
 
   it('creates the directory tree on demand', async () => {
     process.env.SPOTIFY_MCP_HISTORY_DIR = path.join(histDir, 'nested', 'deeper');
-    await appendHistory({ method: 'post', path: '/deep' });
+    await appendHistory({ method: 'post', path: '/deep' }, DEFAULT_TOKEN_FILE);
     const raw = await readFile(
       path.join(histDir, 'nested', 'deeper', 'mutations.jsonl'),
       'utf8',
@@ -676,12 +676,12 @@ describe('history: JSONL mutation records', () => {
     await appendHistory({
       method: 'put',
       path: `/me/library?uris=${encodeURIComponent(trackUri)}`,
-    });
+    }, DEFAULT_TOKEN_FILE);
     await appendHistory({
       method: 'post',
       path: `/playlists/${playlistId}/items`,
       snapshot_id: 'snap-9',
-    });
+    }, DEFAULT_TOKEN_FILE);
 
     const raw = await readFile(path.join(histDir, 'mutations.jsonl'), 'utf8');
     assert.ok(!raw.includes(trackUri), 'item URI from the query string never persisted');
@@ -694,8 +694,8 @@ describe('history: JSONL mutation records', () => {
     // "What changed" is still answerable: which route, which method, and a
     // stable per-target fingerprint that repeats for the same target.
     assert.equal(rows[0].target.length, 16);
-    await appendHistory({ method: 'put', path: `/me/library?uris=${encodeURIComponent(trackUri)}` });
-    const after = (await readHistory()).filter((r) => r.path === '/me/library');
+    await appendHistory({ method: 'put', path: `/me/library?uris=${encodeURIComponent(trackUri)}` }, DEFAULT_TOKEN_FILE);
+    const after = (await readHistory({ tokenFile: DEFAULT_TOKEN_FILE })).filter((r) => r.path === '/me/library');
     assert.equal(after.length, 2);
     assert.equal(after[0].target, after[1].target, 'same target hashes to the same fingerprint');
   });
@@ -717,7 +717,7 @@ describe('history: JSONL mutation records', () => {
     await chmod(file, 0o644);
     assert.equal((await stat(file)).mode & 0o777, 0o644, 'precondition: copied-in loose mode');
 
-    await appendHistory({ method: 'put', path: '/me/library' });
+    await appendHistory({ method: 'put', path: '/me/library' }, DEFAULT_TOKEN_FILE);
 
     assert.equal((await stat(file)).mode & 0o777, 0o600);
   });
@@ -728,7 +728,7 @@ describe('history: JSONL mutation records', () => {
     await chmod(dir, 0o755);
     process.env.SPOTIFY_MCP_HISTORY_DIR = dir;
 
-    await appendHistory({ method: 'put', path: '/me/library' });
+    await appendHistory({ method: 'put', path: '/me/library' }, DEFAULT_TOKEN_FILE);
 
     assert.equal((await stat(dir)).mode & 0o777, 0o700);
     assert.equal((await stat(path.join(dir, 'mutations.jsonl'))).mode & 0o777, 0o600);
@@ -740,7 +740,7 @@ describe('history: JSONL mutation records', () => {
     process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES = '2048';
     assert.equal(historyMaxBytes(), 2048);
     for (let i = 0; i < 200; i++) {
-      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` });
+      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` }, DEFAULT_TOKEN_FILE);
     }
 
     const live = await stat(path.join(histDir, 'mutations.jsonl'));
@@ -750,7 +750,7 @@ describe('history: JSONL mutation records', () => {
     assert.ok(archive.size > 0, 'rotation actually happened');
     assert.equal(archive.mode & 0o777, 0o600, 'rotated archive is owner-only too');
     // Rotation is lossy by design — but the newest records must survive.
-    const rows = await readHistory({ limit: 1 });
+    const rows = await readHistory({ limit: 1, tokenFile: DEFAULT_TOKEN_FILE });
     assert.equal(rows.length, 1);
     assert.match(String(rows[0].target), /^[0-9a-f]{16}$/);
   });
@@ -803,7 +803,7 @@ describe('history: JSONL mutation records', () => {
     await writeFile(file, records + '\n');
     assert.equal((await readFile(file, 'utf8')).trim().split('\n').length, 5000, 'precondition: the ledger is genuinely large');
 
-    const rows = await readHistory({ limit: 25 });
+    const rows = await readHistory({ limit: 25, tokenFile: DEFAULT_TOKEN_FILE });
     assert.equal(rows.length, 25);
     assert.equal(rows[24].target, 't4999', 'newest record retained');
     assert.equal(rows[0].target, 't4975', 'oldest of the retained window');
@@ -812,11 +812,11 @@ describe('history: JSONL mutation records', () => {
   it('readHistory spans the rotation boundary in chronological order', async () => {
     process.env.SPOTIFY_MCP_HISTORY_MAX_BYTES = '2048';
     for (let i = 0; i < 200; i++) {
-      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` });
+      await appendHistory({ method: 'put', path: `/me/library?uris=spotify%3Atrack%3A${i}` }, DEFAULT_TOKEN_FILE);
     }
-    await appendHistory({ method: 'delete', path: '/me/tracks/37i9dQZF1DXcBWIGoYBM5M' });
+    await appendHistory({ method: 'delete', path: '/me/tracks/37i9dQZF1DXcBWIGoYBM5M' }, DEFAULT_TOKEN_FILE);
 
-    const rows = await readHistory({ limit: 500 });
+    const rows = await readHistory({ limit: 500, tokenFile: DEFAULT_TOKEN_FILE });
     const methods = rows.map((r) => r.method);
     assert.ok(methods.length > 1, 'records came from both generations');
     assert.equal(methods.filter((m) => m === 'DELETE').length, 1, 'live generation read last');
@@ -834,12 +834,12 @@ describe('history: JSONL mutation records', () => {
       path.join(histDir, 'mutations.jsonl'),
       '{"method":"PUT","path":"/me/library","target":"a"}\n{"method":"PUT","path":"/me/lib\n',
     );
-    const rows = await readHistory();
+    const rows = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
     assert.equal(rows.length, 1);
     assert.equal(rows[0].target, 'a');
   });
 
   it('readHistory returns an empty list when no ledger exists', async () => {
-    assert.deepEqual(await readHistory(), []);
+    assert.deepEqual(await readHistory({ tokenFile: DEFAULT_TOKEN_FILE }), []);
   });
 });

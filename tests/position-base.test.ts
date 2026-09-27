@@ -33,7 +33,7 @@
  *
  * Run: node --import tsx --test tests/position-base.test.ts
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -321,6 +321,9 @@ interface WireCall {
 function harness(rows: PlaylistItemObject[]) {
   const writes: WireCall[] = [];
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get<T>(path: string): Promise<T | null> {
       const id = decodeURIComponent(path.replace('/playlists/', ''));
       return { id, name: `Playlist ${id}`, collaborative: false, public: false } as T;

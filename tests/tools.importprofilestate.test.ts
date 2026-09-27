@@ -6,7 +6,7 @@
  * Every test here points the sidecar paths at its own scratch directory, so
  * a regression that writes to the wrong place is visible rather than silent.
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -34,7 +34,10 @@ function harness() {
     },
   } as unknown as McpServer;
   // import_profile_state never calls Spotify; the client is a shape-only stub.
-  registerPortabilityTools(server, {} as SpotifyClient);
+  // It still has to NAME an account: the real SpotifyClient always sets
+  // `tokenFile` at construction, and the stores refuse to key by an unnamed
+  // caller rather than answering with the default account's store (#1385).
+  registerPortabilityTools(server, { tokenFile: DEFAULT_TOKEN_FILE } as SpotifyClient);
   return {
     invoke: async (args: Record<string, unknown>) => {
       const t = registered.find((x) => x.name === 'import_profile_state');

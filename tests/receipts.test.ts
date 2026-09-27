@@ -6,7 +6,7 @@
  * swappable responder keyed by path.
  */
 
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
@@ -58,6 +58,9 @@ function stubClient(responder: Responder = () => null): ReceiptClient & { calls:
   const calls: RecordedCall[] = [];
   return {
     calls,
+    // The store is keyed by the acting account's token file (#1385). A stub
+    // that named no account used to be filed under the default one.
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, arg: params });
       return responder(path, params) as T | null;
@@ -108,7 +111,7 @@ describe('issueReceipt playlist_items', () => {
       { method: 'GET', path: '/playlists/pl1/items', arg: { limit: '100', offset: '0' } },
     ]);
     // Stored and retrievable.
-    assert.deepEqual(verifyReceipt(r.receipt_id), r);
+    assert.deepEqual(verifyReceipt(r.receipt_id, DEFAULT_TOKEN_FILE), r);
   });
 
   it('counts duplicate occurrences across pages', async () => {
@@ -223,7 +226,7 @@ describe('issueReceipt library', () => {
     assert.equal(r.verified, false);
     assert.deepEqual(r.missing, ['spotify:track:c7', 'spotify:track:c99']);
     assert.equal(r.after, 118);
-    assert.deepEqual(verifyReceipt(r.receipt_id)?.missing, r.missing);
+    assert.deepEqual(verifyReceipt(r.receipt_id, DEFAULT_TOKEN_FILE)?.missing, r.missing);
   });
 
   it('verifies when all uris are saved', async () => {
@@ -275,13 +278,13 @@ describe('receipt store', () => {
     for (let i = 0; i < 101; i++) {
       issued.push(await issueReceipt(client, { kind: 'library', uris: [`spotify:track:f${i}`] }));
     }
-    assert.equal(verifyReceipt(issued[0].receipt_id), undefined); // evicted
-    assert.ok(verifyReceipt(issued[1].receipt_id)); // now the oldest survivor
-    assert.ok(verifyReceipt(issued[100].receipt_id)); // newest retained
+    assert.equal(verifyReceipt(issued[0].receipt_id, DEFAULT_TOKEN_FILE), undefined); // evicted
+    assert.ok(verifyReceipt(issued[1].receipt_id, DEFAULT_TOKEN_FILE)); // now the oldest survivor
+    assert.ok(verifyReceipt(issued[100].receipt_id, DEFAULT_TOKEN_FILE)); // newest retained
   });
 
   it('verifyReceipt returns undefined for unknown ids', () => {
-    assert.equal(verifyReceipt('rcpt_99999999'), undefined);
+    assert.equal(verifyReceipt('rcpt_99999999', DEFAULT_TOKEN_FILE), undefined);
   });
 });
 
@@ -334,6 +337,7 @@ describe('playlist_items absence direction (#133-era receipts)', () => {
   it('reports survivors as missing and counts remaining occurrences', async () => {
     const calls: Array<{ path: string; arg?: Record<string, string> }> = [];
     const client = {
+      tokenFile: DEFAULT_TOKEN_FILE,
       get: async (path: string, arg?: Record<string, string>) => {
         calls.push({ path, arg });
         // Page shows uri-keep survived (2 occurrences), uri-gone is absent.
@@ -366,6 +370,7 @@ describe('playlist_items absence direction (#133-era receipts)', () => {
 
   it('reports verified when every uri is confirmed absent', async () => {
     const client = {
+      tokenFile: DEFAULT_TOKEN_FILE,
       get: async () => ({
         items: [],
         total: 0,
@@ -1212,7 +1217,12 @@ function runReceiptChild(
     const { issueReceipt, verifyReceipt } = await import(
       new URL('src/receipts.ts', 'file://' + process.cwd() + '/').href
     );
+    // The store is keyed by the acting account's token file (#1385). This
+    // child is a fresh process, so it cannot import the parent's fixture — it
+    // rebuilds the same DEFAULT account from the inherited (hermetic) HOME.
+    const tokenFile = process.env.HOME + '/.spotify-mcp/tokens.json';
     const client = {
+      tokenFile,
       get: async (path) =>
         path === '/me/library/contains'
           ? (process.env.CHILD_URIS ?? '').split(',').map(() => true)
@@ -1223,7 +1233,7 @@ function runReceiptChild(
       uris: (process.env.CHILD_URIS ?? '').split(','),
     });
     const stale = process.env.CHILD_ID
-      ? (verifyReceipt(process.env.CHILD_ID) ?? null)
+      ? (verifyReceipt(process.env.CHILD_ID, tokenFile) ?? null)
       : null;
     process.stdout.write(JSON.stringify({ fresh, stale }));
   `;
@@ -1289,7 +1299,7 @@ describe('receipts across a restart (#587)', () => {
             '--input-type=module',
             '-e',
             `const { issueReceipt } = await import(new URL('src/receipts.ts', 'file://' + process.cwd() + '/').href);
-             const client = { get: async () => [true] };
+             const client = { tokenFile: process.env.HOME + '/.spotify-mcp/tokens.json', get: async () => [true] };
              const r = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:OLD'] });
              process.stdout.write(JSON.stringify(r));`,
           ],
@@ -1311,7 +1321,7 @@ describe('receipts across a restart (#587)', () => {
   it('the miss message names the session scope and the retention rule when persistence is off', () => {
     withTempDataDir(PERSIST_OFF, () => {
       __resetReceiptStoreForTests();
-      const message = receiptMissMessage('rcpt_gone-1');
+      const message = receiptMissMessage('rcpt_gone-1', process.env, DEFAULT_TOKEN_FILE);
       assert.match(message, /Unknown or expired receipt "rcpt_gone-1"/);
       assert.match(message, /session-scoped/);
       assert.match(message, /not persisted to disk/);
@@ -1323,7 +1333,7 @@ describe('receipts across a restart (#587)', () => {
   it('the miss message names the on-disk trail when persistence is on', async () => {
     await withTempDataDir(PERSIST_ON, (dir) => {
       __resetReceiptStoreForTests();
-      const message = receiptMissMessage('rcpt_gone-1');
+      const message = receiptMissMessage('rcpt_gone-1', process.env, DEFAULT_TOKEN_FILE);
       assert.ok(message.includes(join(dir, 'receipts.jsonl')), message);
       assert.match(message, new RegExp(`${MAX_RECEIPTS} most recent mutations`));
     });
@@ -1341,7 +1351,7 @@ describe('receipts across a restart (#587)', () => {
       __resetReceiptStoreForTests();
       const client = stubClient((_p, arg) => (arg?.uris ?? '').split(',').map(() => true));
       const receipt = await issueReceipt(client, { kind: 'library', uris: ['spotify:track:ephemeral'] });
-      assert.ok(verifyReceipt(receipt.receipt_id));
+      assert.ok(verifyReceipt(receipt.receipt_id, DEFAULT_TOKEN_FILE));
       assert.throws(() => readFileSync(join(dir, 'receipts.jsonl')));
     });
   });
@@ -1360,11 +1370,11 @@ describe('receipt retention on disk (#587)', () => {
       assert.equal(trailLines.length, MAX_RECEIPTS + 1, 'every issue is appended before a compaction');
 
       __resetReceiptStoreForTests(); // restart
-      const reloaded = getAllReceipts();
+      const reloaded = getAllReceipts(DEFAULT_TOKEN_FILE);
       assert.equal(reloaded.length, MAX_RECEIPTS);
-      assert.equal(verifyReceipt(issued[0].receipt_id), undefined, 'the FIFO-oldest receipt is gone');
-      assert.deepEqual(verifyReceipt(issued[1].receipt_id)?.uris, issued[1].uris);
-      assert.deepEqual(verifyReceipt(issued[MAX_RECEIPTS].receipt_id)?.uris, [
+      assert.equal(verifyReceipt(issued[0].receipt_id, DEFAULT_TOKEN_FILE), undefined, 'the FIFO-oldest receipt is gone');
+      assert.deepEqual(verifyReceipt(issued[1].receipt_id, DEFAULT_TOKEN_FILE)?.uris, issued[1].uris);
+      assert.deepEqual(verifyReceipt(issued[MAX_RECEIPTS].receipt_id, DEFAULT_TOKEN_FILE)?.uris, [
         `spotify:track:f${MAX_RECEIPTS}`,
       ]);
     });
@@ -1384,7 +1394,7 @@ describe('receipt retention on disk (#587)', () => {
       assert.deepEqual(receipt.affected, [{ uri: 'spotify:track:a', positions: [2] }]);
 
       __resetReceiptStoreForTests(); // restart
-      const reloaded = verifyReceipt(receipt.receipt_id);
+      const reloaded = verifyReceipt(receipt.receipt_id, DEFAULT_TOKEN_FILE);
       assert.deepEqual(reloaded?.affected, [{ uri: 'spotify:track:a', positions: [2] }]);
       assert.deepEqual(reloaded?.occurrences, { 'spotify:track:a': 2 });
       assert.deepEqual(reloaded, JSON.parse(JSON.stringify(receipt)) as Receipt);
@@ -1400,7 +1410,7 @@ describe('receipt retention on disk (#587)', () => {
       }
       const lines = readFileSync(join(dir, 'receipts.jsonl'), 'utf8').trim().split('\n');
       assert.ok(lines.length <= MAX_RECEIPTS * 2, `trail grew to ${lines.length} lines`);
-      assert.equal(getAllReceipts().length, MAX_RECEIPTS);
+      assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, MAX_RECEIPTS);
     });
   });
 
@@ -1423,9 +1433,9 @@ describe('receipt retention on disk (#587)', () => {
       writeFileSync(file, aged.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 });
 
       __resetReceiptStoreForTests(); // restart
-      assert.equal(verifyReceipt(receipt.receipt_id), undefined);
-      assert.equal(getAllReceipts().length, 0);
-      assert.match(receiptMissMessage(receipt.receipt_id), /Unknown or expired/);
+      assert.equal(verifyReceipt(receipt.receipt_id, DEFAULT_TOKEN_FILE), undefined);
+      assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, 0);
+      assert.match(receiptMissMessage(receipt.receipt_id, process.env, DEFAULT_TOKEN_FILE), /Unknown or expired/);
     });
   });
 
@@ -1445,9 +1455,9 @@ describe('receipt retention on disk (#587)', () => {
       );
 
       __resetReceiptStoreForTests(); // restart
-      assert.ok(verifyReceipt('rcpt_legacy-1'), 'TTL 0 means no expiry');
-      assert.ok(verifyReceipt('rcpt_untimed-1'), 'an unknown age is not an expired one');
-      assert.equal(verifyReceipt(receipt.receipt_id), undefined, 'the overwritten id is simply gone');
+      assert.ok(verifyReceipt('rcpt_legacy-1', DEFAULT_TOKEN_FILE), 'TTL 0 means no expiry');
+      assert.ok(verifyReceipt('rcpt_untimed-1', DEFAULT_TOKEN_FILE), 'an unknown age is not an expired one');
+      assert.equal(verifyReceipt(receipt.receipt_id, DEFAULT_TOKEN_FILE), undefined, 'the overwritten id is simply gone');
     });
   });
 });

@@ -75,14 +75,15 @@ export interface ReceiptClient {
   /**
    * The acting account's token file, which is what the store is keyed by.
    *
-   * Optional so the test doubles that predate account switching keep
-   * compiling; when it is absent the receipt is filed under the DEFAULT
-   * account, which is the same store an unidentified client would have used
-   * before. The real `SpotifyClient` always sets it — a `string` field
-   * assigned in its constructor and re-pointed by `switchAccount` — so this
-   * fallback is reachable only by a stub that never said which account it is.
+   * Required (#1385). It was optional so that test doubles predating account
+   * switching would keep compiling, and the absence then resolved to the
+   * DEFAULT account's store — the one store that must never be shared. That
+   * made an unwired caller fail OPEN into a cross-account merge; it is now a
+   * compile error for a stub and a throw from `accountStoreKey` at runtime.
+   * The real `SpotifyClient` always sets it — a `string` field assigned in its
+   * constructor and re-pointed by `switchAccount`.
    */
-  tokenFile?: string;
+  tokenFile: string;
 }
 
 type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
@@ -323,7 +324,7 @@ export function isReceiptsPersistent(env: NodeJS.ProcessEnv = process.env): bool
  */
 export function receiptsFilePath(
   env: NodeJS.ProcessEnv = process.env,
-  tokenFile = '',
+  tokenFile: string,
 ): string {
   return join(receiptsDir(env), accountFileName(RECEIPT_FILE, tokenFile));
 }
@@ -379,7 +380,7 @@ export function receiptRetentionLabel(env: NodeJS.ProcessEnv = process.env): str
 export function receiptMissMessage(
   receiptId: string,
   env: NodeJS.ProcessEnv = process.env,
-  tokenFile = '',
+  tokenFile: string,
 ): string {
   const scope = isReceiptsPersistent(env)
     ? `persisted in ${receiptsFilePath(env, tokenFile)}`
@@ -548,13 +549,13 @@ export function isPlausibleReceiptId(id: string): boolean {
  * unbound one is an authority transfer, so an id minted under another account
  * resolves to `undefined` rather than to that account's contents (#1364).
  */
-export function verifyReceipt(receiptId: string, tokenFile = ''): Receipt | undefined {
+export function verifyReceipt(receiptId: string, tokenFile: string): Receipt | undefined {
   const state = ensureLoaded(process.env, tokenFile);
   pruneExpired(state, Date.now(), receiptTtlMs());
   return state.store.get(receiptId);
 }
 /** The acting account's receipts in insertion order (for undo). */
-export function getAllReceipts(tokenFile = ''): Receipt[] {
+export function getAllReceipts(tokenFile: string): Receipt[] {
   const state = ensureLoaded(process.env, tokenFile);
   pruneExpired(state, Date.now(), receiptTtlMs());
   return [...state.store.values()];
@@ -943,7 +944,12 @@ export async function issueReceipt(
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
     issued_at: Date.now(),
   };
-  const tokenFile = client.tokenFile ?? '';
+  // No `?? ''` fallback (#1385): an absent tokenFile is a caller that never
+  // said which account it is, and defaulting it to `''` filed the receipt in
+  // the DEFAULT account's store — a receipt then verifiable across accounts.
+  // `ReceiptClient.tokenFile` is required, and `accountStoreKey` throws if a
+  // loosely-typed client still arrives without one.
+  const tokenFile = client.tokenFile;
   const state = ensureLoaded(process.env, tokenFile);
   state.store.set(receipt.receipt_id, receipt);
   if (state.store.size > MAX_RECEIPTS) {

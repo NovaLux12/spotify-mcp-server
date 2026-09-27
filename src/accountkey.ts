@@ -25,6 +25,29 @@
  * and writes. That is what makes this change shippable with no migration: see
  * the backward-compatibility section of `tests/account-keyed-stores.test.ts`.
  *
+ * ## An EMPTY token file is refused, not treated as the default account
+ *
+ * The default account reaches the empty key by a real PATH ending in
+ * `tokens.json`. It never reaches it by being handed `''`: `client.tokenFile`
+ * is `opts.tokenFile ?? getTokenFilePath()` (`src/client.ts`), so it is always
+ * a path, and every profile's path is derived by `getTokenFile` from the one
+ * config root. An empty `tokenFile` therefore carries no information at all —
+ * it can only mean the caller never said which account it is acting as.
+ *
+ * Returning `''` for it was fail-open (#1385): the empty key is the DEFAULT
+ * account's key, so an unwired caller silently read and wrote the one store
+ * that must never be shared, and re-merged the accounts #1364 separated — with
+ * no error, because a receipt minted under one account still verified under
+ * the other. This throws instead. A missing account becomes a loud failure at
+ * the point of construction rather than a silent data-integrity bug, and the
+ * companion change makes `tokenFile` REQUIRED on the stores and registrars
+ * that key by account, so the common case is a compile error rather than a
+ * throw.
+ *
+ * The two are not the same input and must not be conflated again: the default
+ * account is `~/.spotify-mcp/tokens.json` → `''`, and no real caller
+ * produces the `''` that is refused here.
+ *
  * ## Collision safety
  *
  * `SPOTIFY_MCP_TOKEN_FILE` is operator-supplied and this value goes into a
@@ -54,9 +77,23 @@ const EDGE_PUNCTUATION = /^[-.]+|[-.]+$/g;
  * Returns `''` for the default account (whose stores stay un-keyed) and the
  * profile name for a named one, e.g. `'work'`. The value is a bare filename
  * segment: no separator, no traversal, never empty for a non-default account.
+ *
+ * Throws when `tokenFile` is empty or not a string. The empty KEY is reserved
+ * for the default account and is reached only by naming that account's actual
+ * token file, so an empty argument is not "the default account" — it is a
+ * caller that never identified itself, and answering it with the default
+ * account's key is the cross-account merge this whole module exists to
+ * prevent (#1385). See the module header for the full argument.
  */
 export function accountStoreKey(tokenFile: string): string {
-  if (!tokenFile) return '';
+  if (typeof tokenFile !== 'string' || tokenFile.trim() === '') {
+    throw new Error(
+      'Refusing to derive an account store key from an empty token file. ' +
+        'Pass the acting account\'s token file (`client.tokenFile`), which is always a path. ' +
+        'The default account is identified by its own `tokens.json` path, not by an empty string — ' +
+        'answering an unidentified caller with the default account\'s store silently merges accounts (#1385).',
+    );
+  }
   const base = basename(tokenFile);
   if (base === '' || base === 'tokens.json') return '';
 

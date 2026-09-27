@@ -24,7 +24,7 @@
  * Run: node --import tsx --test tests/history-write-failures.test.ts
  */
 
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -121,11 +121,11 @@ async function waitFor(check: () => boolean, what: string): Promise<void> {
 
 /** Read the ledger, waiting for the fire-and-forget append to land. */
 async function ledgerRecords(): Promise<HistoryRecord[]> {
-  let records = await readHistory();
+  let records = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   let guard = 0;
   while (records.length === 0 && guard++ < 5_000) {
     await nextTick();
-    records = await readHistory();
+    records = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   }
   return records;
 }
@@ -220,7 +220,7 @@ describe('#591 mutation-ledger write failures', () => {
     assert.equal(second.isError, undefined, '…on the second mutation either');
     assert.ok(first.text.includes('Playback started'), `unexpected result: ${first.text}`);
 
-    await waitFor(() => historyWriteStatus().failures >= 2, 'both lost appends to be counted');
+    await waitFor(() => historyWriteStatus(process.env, DEFAULT_TOKEN_FILE).failures >= 2, 'both lost appends to be counted');
 
     const lines = historyWarnLines();
     assert.equal(lines.length, 1, `exactly one warning per process, got: ${JSON.stringify(lines)}`);
@@ -228,7 +228,7 @@ describe('#591 mutation-ledger write failures', () => {
     assert.match(lines[0]!, /history[/\\]mutations\.jsonl/);
     assert.match(lines[0]!, /audit trail incomplete/);
 
-    const status = historyWriteStatus();
+    const status = historyWriteStatus(process.env, DEFAULT_TOKEN_FILE);
     assert.equal(status.failures, 2, 'every lost append is counted, not just the first');
     assert.equal(status.enabled, true);
     assert.match(status.last_failure ?? '', /^EACCES on /);
@@ -242,9 +242,9 @@ describe('#591 mutation-ledger write failures', () => {
 
     const result = await callPlay();
     assert.equal(result.isError, undefined);
-    await waitFor(() => historyWriteStatus().failures >= 1, 'the lost append to be counted');
+    await waitFor(() => historyWriteStatus(process.env, DEFAULT_TOKEN_FILE).failures >= 1, 'the lost append to be counted');
 
-    const status = historyWriteStatus();
+    const status = historyWriteStatus(process.env, DEFAULT_TOKEN_FILE);
     assert.equal(status.failures, 1);
     assert.match(status.last_failure ?? '', /^ENOTDIR on /);
     assert.equal(historyWarnLines().length, 1);
@@ -271,7 +271,7 @@ describe('#591 mutation-ledger write failures', () => {
   it('turns the doctor history row red and the report not-ok once a write is lost', async () => {
     const unwritable = await unwritableHistoryDir();
     await callPlay();
-    await waitFor(() => historyWriteStatus().failures >= 1, 'the lost append to be counted');
+    await waitFor(() => historyWriteStatus(process.env, DEFAULT_TOKEN_FILE).failures >= 1, 'the lost append to be counted');
 
     const report = await collectDoctorReport(new SpotifyClient());
     const row = report.rows.find((r) => r.id === 'history');

@@ -7,7 +7,7 @@
  * filter, and — the rule this repo lives by — that a store which could not be
  * read reports an unknown total rather than a zero.
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -43,6 +43,9 @@ function harness(): SearchHarness {
     },
   } as unknown as McpServer;
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: async () => null,
     post: async () => null,
     put: async () => null,

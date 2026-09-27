@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -37,7 +37,7 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory() {
+async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 
@@ -2479,7 +2479,7 @@ test('a typed search records exactly one history entry, not one per registered t
   // one entry, and the other six must record nothing.
   assert.equal(registered.filter((t) => t.name.startsWith('search_')).length, 7);
   await invoke(findTool(registered, 'search_tracks'), { query: 'hello' });
-  const entries = await readHistory();
+  const entries = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.query, 'hello');
   assert.deepEqual(entries[0]!.types, ['track']);
@@ -2493,7 +2493,7 @@ test('a typed search records its market, offset and limit scope (#766)', async (
   // MARKET_CODE uppercases before the handler runs; this harness calls the
   // handler directly, so pass the normalised form the MCP layer would deliver.
   await invoke(findTool(registered, 'search_artists'), { query: 'queen', market: 'DE', offset: 30, limit: 4 });
-  const [entry] = await readHistory();
+  const [entry] = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.equal(entry!.market, 'DE');
   assert.equal(entry!.offset, 30);
   assert.equal(entry!.limit, 4);
@@ -2505,7 +2505,7 @@ test('a typed search in json mode still records the search (#766)', async () => 
     getResponse: (p) => (p === '/search' ? { albums: { items: [{ id: 'al1', name: 'Album', uri: 'spotify:album:al1' }], total: 1 } } : undefined),
   });
   await invoke(findTool(registered, 'search_albums'), { query: 'a night', response_format: 'json' });
-  const entries = await readHistory();
+  const entries = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.equal(entries.length, 1);
   assert.deepEqual(entries[0]!.types, ['album']);
 });

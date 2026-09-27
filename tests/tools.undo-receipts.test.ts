@@ -33,7 +33,7 @@
  */
 // Must precede every other import: this redirects HOME for the whole process,
 // so anything resolved at module-load time sees the sandbox, not the real one.
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 import { describe, it, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -210,6 +210,8 @@ function stubClient(): StubAccount {
     (new URLSearchParams(path.split('?')[1] ?? '').get('uris') ?? '').split(',').filter(Boolean);
 
   const client = {
+    // The receipt store is keyed by the acting account's token file (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get(path: string, params?: Record<string, string>): Promise<unknown> {
       calls.push({ method: 'GET', path, arg: params });
       if (path === '/me/library/contains') {
@@ -303,7 +305,10 @@ async function verifyReceiptTool(): Promise<CapturedTool> {
   const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
   assert.ok(module, 'the receipts module must be in the registrar manifest');
   for (const loaded of await loadManifestRegistrars([module], context)) {
-    registerManifestModule(server, undefined as unknown as SpotifyClient, loaded, context);
+    // A real client, not `undefined` (#1385): the receipt store is keyed by
+    // client.tokenFile, so registering without one is now a hard failure rather
+    // than a silent read of the default account's store.
+    registerManifestModule(server, { tokenFile: DEFAULT_TOKEN_FILE } as unknown as SpotifyClient, loaded, context);
   }
   const tool = tools.find((t) => t.name === 'verify_receipt');
   assert.ok(tool, 'verify_receipt must be registered by the receipts manifest module');
@@ -312,6 +317,9 @@ async function verifyReceiptTool(): Promise<CapturedTool> {
 
 /** A minimal read-only client — enough for `issueReceipt`'s verification walk. */
 const readOnlyClient = (rows: (path: string, params?: Record<string, string>) => unknown): ReceiptClient => ({
+  // Named account: the receipt store is keyed by it (#1385), so a stub that
+  // declared none used to be filed under the default account.
+  tokenFile: DEFAULT_TOKEN_FILE,
   async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
     return rows(path, params) as T | null;
   },
@@ -415,7 +423,7 @@ describe('#658 undo_mutation arguments and the happy path', () => {
     const newReceipt = out.structuredContent?.receipt as { receipt_id?: string; verified?: boolean } | null;
     assert.ok(newReceipt?.receipt_id, 'the rollback hands back a receipt of its own');
     assert.equal(newReceipt.verified, true, 'and it is a VERIFIED one — the reads below confirm it');
-    assert.equal(getAllReceipts().length, 2, 'the ledger grew by exactly one entry');
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, 2, 'the ledger grew by exactly one entry');
   });
 });
 
@@ -482,18 +490,18 @@ describe('#658 undo_mutation misses: unknown and evicted receipt ids', () => {
     const { tools } = harness(account);
     const ghost = 'rcpt_zzzzzzzz-4242';
 
-    assert.equal(verifyReceipt(ghost), undefined, 'precondition: the ledger holds no such id');
+    assert.equal(verifyReceipt(ghost, DEFAULT_TOKEN_FILE), undefined, 'precondition: the ledger holds no such id');
 
     const out = await invoke(tools, 'undo_mutation', { receipt_id: ghost, dry_run: false });
 
     assert.equal(out.structuredContent?.ok, false);
     assert.equal(out.structuredContent?.reason, 'unknown_receipt');
-    assert.equal(textOf(out), receiptMissMessage(ghost),
+    assert.equal(textOf(out), receiptMissMessage(ghost, process.env, DEFAULT_TOKEN_FILE),
       'the miss message must be the shared one, naming the store scope');
     assert.match(textOf(out), /session-scoped/,
       'a miss says something about the LOOKUP; it must not read as a verdict on the write');
     assert.deepEqual(writes(account.calls), [], 'an unknown id is not a licence to delete something');
-    assert.equal(getAllReceipts().length, 0, 'and it issues no receipt');
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, 0, 'and it issues no receipt');
   });
 
   it('refuses an id whose ledger entry has been evicted — without resolving it to a later mutation', async () => {
@@ -515,9 +523,9 @@ describe('#658 undo_mutation misses: unknown and evicted receipt ids', () => {
 
     // Preconditions, asserted so the test cannot pass while measuring nothing.
     assert.ok(savedBefore > 0, 'precondition: there are live rows a stray write would destroy');
-    assert.equal(getAllReceipts().length, MAX_RECEIPTS, 'the ledger is capped, not unbounded');
-    assert.equal(verifyReceipt(firstId), undefined, 'the oldest receipt really was evicted');
-    assert.equal(verifyReceipt(lastId)?.receipt_id, lastId, 'the newest receipt really survived');
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, MAX_RECEIPTS, 'the ledger is capped, not unbounded');
+    assert.equal(verifyReceipt(firstId, DEFAULT_TOKEN_FILE), undefined, 'the oldest receipt really was evicted');
+    assert.equal(verifyReceipt(lastId, DEFAULT_TOKEN_FILE)?.receipt_id, lastId, 'the newest receipt really survived');
 
     const out = await invoke(tools, 'undo_mutation', { receipt_id: firstId, dry_run: false });
 
@@ -593,11 +601,11 @@ describe('#658 undo_last_mutation selects the newest REVERSIBLE receipt', () => 
 
     // Preconditions, asserted so the test cannot pass while measuring nothing.
     assert.deepEqual(
-      getAllReceipts().map((r) => r.receipt_id),
+      getAllReceipts(DEFAULT_TOKEN_FILE).map((r) => r.receipt_id),
       [oldest.receipt_id, chosen.receipt_id, meta.receipt_id, empty.receipt_id],
       'precondition: the ledger is in the order this test reasons about',
     );
-    assert.equal(getAllReceipts().at(-1)?.receipt_id, empty.receipt_id,
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).at(-1)?.receipt_id, empty.receipt_id,
       'precondition: the zero-uri entry really is the newest, so the guard is load-bearing');
 
     const out = await invoke(tools, 'undo_last_mutation', { dry_run: false });
@@ -619,7 +627,7 @@ describe('#658 undo_last_mutation selects the newest REVERSIBLE receipt', () => 
     const { tools } = harness(account);
     await issueReceipt(readOnlyClient(() => ({ uri: 'spotify:playlist:pl1' })),
       { kind: 'playlist_meta', id: 'pl1', uris: [track('a')] });
-    assert.equal(getAllReceipts().length, 1, 'precondition: the ledger is not empty');
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, 1, 'precondition: the ledger is not empty');
 
     const out = await invoke(tools, 'undo_last_mutation', { dry_run: false });
 
@@ -632,7 +640,7 @@ describe('#658 undo_last_mutation selects the newest REVERSIBLE receipt', () => 
   it('reports no_reversible on an empty ledger rather than inventing a target', async () => {
     const account = stubClient();
     const { tools } = harness(account);
-    assert.equal(getAllReceipts().length, 0, 'precondition: the ledger really is empty');
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, 0, 'precondition: the ledger really is empty');
 
     const out = await invoke(tools, 'undo_last_mutation', { dry_run: false });
 
@@ -680,7 +688,7 @@ describe('#658 a partial undo reports the partial, and issues no receipt', () =>
     const receipt = await issueReceipt(readOnlyClient((path) =>
       path === '/me/library/contains' ? fortyOne.map(() => true) : {}),
     { kind: 'library', uris: fortyOne, expectPresent: true });
-    const ledgerBefore = getAllReceipts().length;
+    const ledgerBefore = getAllReceipts(DEFAULT_TOKEN_FILE).length;
 
     const out = await invoke(tools, 'undo_mutation', { receipt_id: receipt.receipt_id, dry_run: false });
 
@@ -697,7 +705,7 @@ describe('#658 a partial undo reports the partial, and issues no receipt', () =>
     // The account is genuinely half-changed — which is why the tool says so.
     assert.equal(account.saved.size, 1, 'only the first chunk was applied; the rest are still saved');
 
-    assert.equal(getAllReceipts().length, ledgerBefore,
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, ledgerBefore,
       'a failed rollback issues NO receipt: nothing here may certify a half-applied state');
     const published = JSON.stringify(out);
     for (const secret of ['SENTINEL', 'api.spotify.com', '502']) {
@@ -715,7 +723,7 @@ describe('#658 a partial undo reports the partial, and issues no receipt', () =>
     const receipt = await issueReceipt(readOnlyClient((path) =>
       path === '/me/library/contains' ? fortyOne.map(() => true) : {}),
     { kind: 'library', uris: fortyOne, expectPresent: true });
-    const ledgerBefore = getAllReceipts().length;
+    const ledgerBefore = getAllReceipts(DEFAULT_TOKEN_FILE).length;
 
     const out = await invoke(tools, 'undo_mutation', { receipt_id: receipt.receipt_id, dry_run: false });
 
@@ -724,7 +732,7 @@ describe('#658 a partial undo reports the partial, and issues no receipt', () =>
     assert.equal(out.structuredContent?.completed_requests, 0);
     assert.equal(out.structuredContent?.attempted_requests, 1,
       'the request was ATTEMPTED — that is what distinguishes it from a rollback that never started');
-    assert.equal(getAllReceipts().length, ledgerBefore);
+    assert.equal(getAllReceipts(DEFAULT_TOKEN_FILE).length, ledgerBefore);
     assert.equal(account.saved.size, 41, 'nothing was removed');
   });
 
@@ -740,7 +748,7 @@ describe('#658 a partial undo reports the partial, and issues no receipt', () =>
     { kind: 'library', uris: [track('a')], expectPresent: true });
 
     await invoke(tools, 'undo_mutation', { receipt_id: receipt.receipt_id, dry_run: false });
-    assert.equal(verifyReceipt(receipt.receipt_id)?.receipt_id, receipt.receipt_id,
+    assert.equal(verifyReceipt(receipt.receipt_id, DEFAULT_TOKEN_FILE)?.receipt_id, receipt.receipt_id,
       'the original receipt survives the failed rollback, so the agent can still inspect it');
   });
 });
@@ -770,7 +778,7 @@ describe('#658 verify_receipt at the tool level', () => {
   it('isError on an id that was never issued — a failed LOOKUP, not a verdict on the write', async () => {
     const tool = await verifyReceiptTool();
     const ghost = 'rcpt_zzzzzzzz-9';
-    assert.equal(verifyReceipt(ghost), undefined, 'precondition: the ledger holds no such id');
+    assert.equal(verifyReceipt(ghost, DEFAULT_TOKEN_FILE), undefined, 'precondition: the ledger holds no such id');
 
     const out = await tool.handler(tool.validate({ receipt_id: ghost }));
 
@@ -780,7 +788,7 @@ describe('#658 verify_receipt at the tool level', () => {
     assert.equal(out.structuredContent?.receipt_id, ghost);
     assert.equal(out.structuredContent?.reason, 'unknown');
     assert.equal(out.structuredContent?.receipts_kept, MAX_RECEIPTS);
-    assert.equal(textOf(out), receiptMissMessage(ghost));
+    assert.equal(textOf(out), receiptMissMessage(ghost, process.env, DEFAULT_TOKEN_FILE));
   });
 
   it('isError on an EVICTED id, and the same for its undo — both fail the same way', async () => {
@@ -792,8 +800,8 @@ describe('#658 verify_receipt at the tool level', () => {
       readOnlyClient((path) => (path === '/me/library/contains' ? [true] : {})),
       { kind: 'library', uris: [track(`o${i}`)], expectPresent: true },
     ));
-    assert.equal(verifyReceipt(firstId), undefined, 'precondition: the oldest receipt was evicted');
-    assert.equal(verifyReceipt(lastId)?.receipt_id, lastId, 'precondition: the newest survived');
+    assert.equal(verifyReceipt(firstId, DEFAULT_TOKEN_FILE), undefined, 'precondition: the oldest receipt was evicted');
+    assert.equal(verifyReceipt(lastId, DEFAULT_TOKEN_FILE)?.receipt_id, lastId, 'precondition: the newest survived');
 
     const verified = await verify.handler(verify.validate({ receipt_id: firstId }));
     assert.equal(verified.isError, true);
@@ -873,7 +881,10 @@ describe('#658 undo is annotated as a destructive write', () => {
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
     for (const loaded of await loadManifestRegistrars([module], context)) {
-      registerManifestModule(server, undefined as unknown as SpotifyClient, loaded, context);
+      // A real client, not `undefined` (#1385): the receipt store is keyed by
+    // client.tokenFile, so registering without one is now a hard failure rather
+    // than a silent read of the default account's store.
+    registerManifestModule(server, { tokenFile: DEFAULT_TOKEN_FILE } as unknown as SpotifyClient, loaded, context);
     }
     applyToolAnnotations(server);
     const registry = (server as unknown as {
@@ -889,7 +900,7 @@ describe('#658 undo is annotated as a destructive write', () => {
 
 describe('#658 the tests never touch the developer ledger', () => {
   it('resolves the receipt trail inside the throwaway directory, not ~/.spotify-mcp', () => {
-    const path = receiptsFilePath();
+    const path = receiptsFilePath(process.env, DEFAULT_TOKEN_FILE);
     assert.equal(path.startsWith(ledgerDir), true,
       `the ledger path must be sandboxed, got ${path}`);
     assert.notEqual(path, REAL_HOME_LEDGER,

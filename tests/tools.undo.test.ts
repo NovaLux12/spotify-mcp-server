@@ -7,7 +7,7 @@
  *
  * Run: node --import tsx --test tests/tools.undo.test.ts
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -73,6 +73,9 @@ function stubClient(): {
   };
 
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get(path: string, params?: Record<string, string>): Promise<unknown> {
       calls.push({ method: 'GET', path, arg: params });
       if (path === '/me/library/contains') {

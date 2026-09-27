@@ -114,7 +114,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 <!-- BEGIN:generated module-map -->
 | File | Responsibility | LOC |
 |---|---|---:|
-| `src/accountkey.ts` | The account key that separates per-account on-disk stores. (0 registered tools) | 123 |
+| `src/accountkey.ts` | The account key that separates per-account on-disk stores. (0 registered tools) | 160 |
 | `src/accounts.ts` | The account registry (#602): which local accounts exist, and which one this session is acting as. (0 registered tools) | 491 |
 | `src/actingaccount.ts` | The acting-account echo (#602). (0 registered tools) | 187 |
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | 148 |
@@ -133,16 +133,16 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/derivedanalytics.ts` | The derived-listening-analytics opt-in (#695). (0 registered tools) | 137 |
 | `src/devices.ts` | The one device line, shared by the `get_devices` tool and the `spotify://player/devices` resource (#603). (0 registered tools) | 46 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family, classified from Spotify's February 2026 changelog and its endpoint reference pages. (0 registered tools) | 419 |
-| `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 492 |
+| `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 512 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 356 |
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 460 |
-| `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 1088 |
+| `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 1098 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 614 |
 | `src/positionbase.ts` | One vocabulary for playlist position bases (#883). (0 registered tools) | 131 |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
 | `src/prompts/index.ts` | Runtime module for src/prompts/index.ts. (0 registered tools) | 418 |
-| `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 1008 |
+| `src/receipts.ts` | Mutation receipts (#112 idea 11). (0 registered tools) | 1014 |
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 257 |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | 279 |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 1240 |
@@ -152,7 +152,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 264 |
 | `src/tools/accounts.ts` | `list_accounts` and `switch_account` (#602). (2 registered tools) | 347 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (3 registered tools) | 524 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2756 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2790 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 950 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
 | `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 273 |

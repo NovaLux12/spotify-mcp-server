@@ -919,6 +919,20 @@ export interface GatedSurface {
  */
 export type ModuleRegistrar = (server: McpServer, client?: SpotifyClient) => void;
 
+/**
+ * A registrar that cannot be called without the client (#1385).
+ *
+ * `ModuleRegistrar` makes `client` optional because several modules take no
+ * client at all. A registrar that keys a store BY ACCOUNT has no such luxury:
+ * with no client it has no account, and the `?? ''` it used to reach answered
+ * with the default account's store — a cross-account merge with no error. This
+ * is the shape those registrars declare instead, so omitting the client is a
+ * compile error at the manifest entry rather than a silent fallback at runtime.
+ * `localModule` and `lazyModule` both accept it and store it as a
+ * `ModuleRegistrar`, exactly as they already do for imported registrars.
+ */
+export type ClientBoundRegistrar = (server: McpServer, client: SpotifyClient) => void;
+
 export interface RegistrarSpec {
   /**
    * Repo-relative source path, used in budget-breach messages and in the
@@ -987,8 +1001,15 @@ export function lazyModule(
  * goes through the same field so the manifest has exactly one shape and
  * `registerManifestModules` needs no special case for it.
  */
-export function localModule(file: string, name: string, registrar: ModuleRegistrar): RegistrarSpec {
-  return { file, name, load: async () => registrar };
+export function localModule(
+  file: string,
+  name: string,
+  registrar: ModuleRegistrar | ClientBoundRegistrar,
+): RegistrarSpec {
+  // The cast is what lets a client-bound registrar live in the same field:
+  // `registerManifestModule` always passes a client, so the narrower
+  // signature is satisfied at every call site that matters.
+  return { file, name, load: async () => registrar as ModuleRegistrar };
 }
 
 export interface RegistrarManifestEntry extends RegistrarSpec {
@@ -1063,7 +1084,7 @@ export const manifestEntry = (
  * printed the export a reader can grep for. Naming it costs one declaration and
  * lets `localModule` keep the manifest on a single shape (#906).
  */
-function registerVerifyReceiptTool(server: McpServer, client?: SpotifyClient): void {
+function registerVerifyReceiptTool(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'verify_receipt',
     // Session scope is the single most common way this tool misleads: the
@@ -1086,7 +1107,20 @@ function registerVerifyReceiptTool(server: McpServer, client?: SpotifyClient): v
       // on this machine is a miss rather than an attestation about this one
       // (#1364). The client is the only carrier of that identity here; the
       // registrar used to discard it, which is how the store ended up global.
-      const tokenFile = client?.tokenFile ?? '';
+      //
+      // The client is REQUIRED and carries a required `tokenFile` (#1385).
+      // This line used to be `client?.tokenFile ?? ''`, and that `?? ''` was
+      // the fail-open this issue is about: a registrar called without a client
+      // read the default account's store, so a receipt minted under a profile
+      // verified as the default account's own. `registerManifestModule` has
+      // always passed a client, so this costs nothing in production and closes
+      // the branch.
+      //
+      // The `?.` is NOT the fallback it replaced — it is here so that a caller
+      // which bypasses the required type lands in `accountStoreKey` and gets
+      // the one canonical "no account was named" error, instead of a TypeError
+      // about reading a property of undefined. `verifyReceipt` calls it below.
+      const tokenFile = client?.tokenFile;
       const receipt = verifyReceipt(args.receipt_id, tokenFile);
       if (!receipt) {
         // A miss is a failed lookup, not a successful one. Without isError

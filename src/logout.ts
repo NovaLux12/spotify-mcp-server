@@ -160,7 +160,14 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     // `resolve` is the single-file answer, correct on a machine with one
     // account; `expand` is what actually runs, because a machine with profiles
     // has one ledger per profile and leaving those behind would orphan them.
-    resolve: (env) => historyFilePath(env),
+    //
+    // It keys off `resolveTokenFile(env)`, the same resolver the credential
+    // store above uses (#1385). Naming no token file resolved to the DEFAULT
+    // account's ledger, so on `SPOTIFY_MCP_PROFILE=work` this would have
+    // reported the default account's file as the active account's mutation
+    // history. `expand` masked it by always winning, but the answer was wrong
+    // and the store no longer tolerates an unnamed account.
+    resolve: (env) => historyFilePath(env, resolveTokenFile(env)),
     expand: (env) => historyFilePaths(env),
   },
   {
@@ -170,7 +177,10 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     envVar: 'SPOTIFY_MCP_RECEIPTS_DIR',
     erasure: 'move',
     // One trail per account, for the same reason as the mutation ledger above.
-    resolve: (env) => receiptsFilePath(env),
+    // Keyed off the same `resolveTokenFile(env)` as that entry, and the same
+    // credential store, so all three name one account rather than three
+    // independent guesses at it (#1385).
+    resolve: (env) => receiptsFilePath(env, resolveTokenFile(env)),
     expand: (env) => receiptsFilePaths(env),
   },
   {
