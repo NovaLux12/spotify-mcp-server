@@ -45,7 +45,7 @@ Still looping? Run `npx -y @novalux12/spotify-mcp@latest doctor` and read the `[
 
 **Symptom:** `403 Forbidden` on lookup tools even with all scopes granted and Premium active.
 
-**Answer:** Spotify denies some endpoints **at the app-registration level**, so what comes back is a property of *your* app registration rather than of your scopes or your subscription. The `403` row below is the `GATED_FAMILIES` set in `src/gating.ts`: every one of those operations is marked `[REMOVED]` in Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026), re-checked against the endpoint reference pages on 2026-09-27. (The `404` and `410` rows are a different condition and are not in that changelog — those endpoints are blocked for app registrations created after November 2024 rather than removed.) A registration without the grant answers `403`, `404` or `410`; a grandfathered one still answers `200`. The server's tools stay exposed either way and return a plain-English explanation instead of crashing.
+**Answer:** Spotify denies some endpoints **at the app-registration level**, so what comes back is a property of *your* app registration rather than of your scopes or your subscription. The `GATED_FAMILIES` set in `src/gating.ts` is the classifier: every one of those operations is marked `[REMOVED]` in Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/web-api/references/changes/february-2026), re-checked against the endpoint reference pages on 2026-09-27. A registration without the grant answers `403`, `404` or `410` — the server treats all three as the same removed-endpoint condition, so that a bare `404` on a gated path is reported as a removal rather than as a missing object — while a grandfathered one still answers `200`. The server's tools stay exposed either way and return a plain-English explanation instead of crashing.
 
 The authoritative list is **generated**, and it is not on this page: see [README → Registration-gated endpoints](../README.md#registration-gated-endpoints), rendered from the `GATED_FAMILIES` array in [`src/gating.ts`](../src/gating.ts), which lists each family next to the shipped tools that actually call it. That table is the one to read. This page keeps no second copy on purpose — a hand-maintained list of this kind has already drifted once, when an earlier version here advertised `/recommendations`, `/me/apps` and `/me/chapters` as responses a caller would see, none of which any shipped tool can produce.
 
@@ -73,23 +73,28 @@ It prints a URL — open it on any machine with a browser, approve, and paste th
 - Multi-account: `SPOTIFY_MCP_PROFILE=<name>` (or `auth --profile <name>`) stores `tokens.<name>.json` sidecars. Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `SPOTIFY_MCP_PROFILE` > default.
 - "Not authenticated" almost always means: tokens file missing (re-run `auth`), wrong profile selected, or redirect URI mismatch at auth time.
 - Ephemeral home directories (containers): mount a volume and point `SPOTIFY_MCP_TOKEN_FILE` at it, or auth expires with the container.
-- To disconnect, run `spotify-mcp logout`. It erases the local stores and prints where to revoke the token; see [Disconnecting](#how-do-i-revoke-access-and-delete-my-local-data).
+- To disconnect, run `spotify-mcp logout`. It erases the Spotify-side local stores and prints where to revoke the token; see [Disconnecting](#how-do-i-revoke-access-and-delete-my-local-data).
 
 ## How do I revoke access and delete my local data?
 
 Run `spotify-mcp logout`. It does the two halves that matter, and it is a CLI
 command rather than a tool so no MCP host can trigger it on your behalf.
 
-**Erasing local data.** Every store this build can write is resolved through the
-module that owns it, then removed. Each removed path is printed, so you can
-check the report against your disk.
+**Erasing local data.** Each Spotify-side store this build can write is resolved
+through the module that owns it, then removed. Each removed path is printed, so
+you can check the report against your disk. One store is not covered: the local
+taste verdicts at `~/.spotify-mcp/taste-feedback.json`, which hold no Spotify
+credentials and no account identity. Delete that file by hand if you want the
+verdicts gone.
 
 Stores are moved rather than deleted: to the freedesktop trash where the
 filesystem allows it, otherwise into a `.spotify-mcp-logout-quarantine-<stamp>`
-directory beside the original. Both are recoverable, and the command prints
-where they went. The one exception is the token file, which is overwritten and
-unlinked — a refresh token that Spotify will not let us revoke must not be left
-readable in a trash directory.
+directory beside the original. Both are recoverable. The command prints each
+erased path, and it prints the destination for a quarantined store; a store that
+went to the trash is reported as `moved to trash` with no path, so empty the
+freedesktop trash if you want those back. The one exception is the token file,
+which is overwritten and unlinked — a refresh token that Spotify will not let us
+revoke must not be left readable in a trash directory.
 
 **Revoking the token.** Spotify publishes no token-revocation API, so no client
 can do this part for you. The official path is
