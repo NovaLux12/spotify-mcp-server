@@ -25,8 +25,12 @@ import {
   truncateItems,
   paginationInfo,
   nextPageLine,
-  listStructuredContent,
   parseSpotifyUri,
+  jsonResult,
+  renderList,
+  renderSingle,
+  severalCounts,
+  unresolvedIdsNote,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { chunk, capFor, type ChunkCapKind } from '../chunk.js';
@@ -460,23 +464,6 @@ function describeFailure(err: unknown, fallback: string): string {
   return fallback;
 }
 
-/**
- * #778: one-line disclosure of the ids a batch could not resolve. Exported
- * since #1224 because the per-id fan-out sites disclose their unreadable ids
- * with the same sentence, and a second wording would drift from #1093.
- */
-export function unresolvedIdsNote(missing: readonly string[]): string {
-  if (missing.length === 0) return '';
-  const shown = missing.slice(0, 10).join(', ');
-  const more = missing.length > 10 ? ', …' : '';
-  return `${missing.length} ${missing.length === 1 ? 'id' : 'ids'} unresolved: ${shown}${more}`;
-}
-
-/** #778: id accounting published in structuredContent and json payloads. */
-function severalCounts(resolved: number, missing: readonly string[]): Record<string, unknown> {
-  return { requested: resolved + missing.length, resolved, missing_ids: [...missing] };
-}
-
 /** #778: a fully-unresolved batch must still name what it could not resolve. */
 function noMatchingSeveral(kind: SeveralKind, missing: readonly string[]): string {
   const note = unresolvedIdsNote(missing);
@@ -512,142 +499,6 @@ function joinArtists(items: { artists?: { name: string }[] }): string {
 }
 
 
-// ------------------------------------------ shared response shaping (#51/#52/#53)
-
-type ShapedToolResult = {
-  [key: string]: unknown;
-  content: Array<{ type: 'text'; text: string }>;
-  structuredContent?: Record<string, unknown>;
-};
-
-/** Read an (optionally dotted) field off a raw API payload, e.g. 'album.release_date'. */
-function field(payload: unknown, path: string): unknown {
-  let cur: unknown = payload;
-  for (const part of path.split('.')) {
-    if (typeof cur !== 'object' || cur === null) return undefined;
-    cur = (cur as Record<string, unknown>)[part];
-  }
-  return cur;
-}
-
-/** Prose rendering of a raw API value; null when the API omitted it. */
-function fmtFieldValue(value: unknown): string | null {
-  if (value === undefined || value === null) return null;
-  if (Array.isArray(value)) {
-    const parts = value.map((v) =>
-      typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v),
-    );
-    return parts.join(', ');
-  }
-  return String(value);
-}
-
-/** #51 json mode: raw API payload as parseable JSON text plus structuredContent. */
-function jsonResult(raw: Record<string, unknown>): ShapedToolResult {
-  return { content: [{ type: 'text', text: JSON.stringify(raw) }], structuredContent: raw };
-}
-
-/**
- * Single-object rendering (#51): concise keeps the existing prose verbatim;
- * detailed appends fields the prose drops (popularity, release dates, …).
- */
-function renderSingle(
-  fmt: ResponseFormatValue | undefined,
-  raw: Record<string, unknown>,
-  concise: string[],
-  detailedKeys: Array<[path: string, label: string]> = [],
-): ShapedToolResult {
-  if (fmt === 'json') return jsonResult(raw);
-  const lines = [...concise];
-  if (fmt === 'detailed') {
-    let headerPushed = false;
-    for (const [path, label] of detailedKeys) {
-      const rendered = fmtFieldValue(field(raw, path));
-      if (rendered === null) continue;
-      if (!headerPushed) {
-        lines.push('', 'More details:');
-        headerPushed = true;
-      }
-      lines.push(`${label}: ${rendered}`);
-    }
-  }
-  return { content: [{ type: 'text', text: lines.join('\n') }] };
-}
-
-/**
- * List rendering (#52/#53): truncates to max_results, appends the shared
- * footer, and emits structuredContent with pagination info.
- */
-function renderList<T>(
-  fmt: ResponseFormatValue | undefined,
-  pageItems: readonly T[],
-  opts: {
-    header: string;
-    line: (item: T, index: number) => string;
-    maxResults?: number;
-    /** Server-side total when the endpoint reports one. */
-    total?: number | null;
-    offset?: number;
-    limit?: number | null;
-    /** False when the list cannot continue server-side (several_* lookups). */
-    continuable?: boolean;
-    /**
-     * Ids the endpoint could not resolve (#778). When present, they are named
-     * in prose and counted in `counts.missing_ids`; an empty array still
-     * publishes `counts`, so "nothing was dropped" is distinguishable from a
-     * lookup that never accounted for the request at all.
-     */
-    unresolved?: readonly string[];
-    /**
-     * #725: present when the lookup fell back from a gated batch endpoint
-     * to per-item GETs. Renders as a `[degraded: ...]` prose footer and
-     * `degraded: true` + `degraded_reason` in structuredContent so callers
-     * can distinguish the per-item round-trip from a clean batch read.
-     */
-    degraded?: { reason: string };
-  },
-): ShapedToolResult {
-  const cap = resolveMaxResults(opts.maxResults);
-  const trunc = truncateItems(pageItems, cap);
-  const lines = [opts.header];
-  trunc.items.forEach((item, i) => lines.push(opts.line(item, i)));
-  if (trunc.footer) lines.push('', `(${trunc.footer})`);
-  const extra: Record<string, unknown> = {};
-  if (opts.unresolved) {
-    const missingIds = [...opts.unresolved];
-    extra.counts = severalCounts(pageItems.length, missingIds);
-    const note = unresolvedIdsNote(missingIds);
-    if (note) lines.push('', note);
-  }
-  if (opts.degraded) {
-    extra.degraded = true;
-    extra.degraded_reason = opts.degraded.reason;
-    lines.push('', `[degraded: ${opts.degraded.reason}]`);
-  }
-  const continuable = opts.continuable !== false;
-  const pagination = paginationInfo({
-    total: opts.total ?? trunc.total,
-    offset: opts.offset,
-    limit: opts.limit ?? null,
-    returned: trunc.items.length,
-  });
-  if (!continuable) {
-    pagination.next_offset = null;
-  } else if (!trunc.truncated && pagination.next_offset !== null) {
-    const left =
-      pagination.total !== null ? pagination.total - pagination.next_offset : null;
-    lines.push(
-      '',
-      `More pages available — pass offset=${pagination.next_offset}${
-        left !== null ? ` (${left} items left)` : ''
-      }`,
-    );
-  }
-  return {
-    content: [{ type: 'text', text: lines.join('\n') }],
-    structuredContent: listStructuredContent(trunc.items, pagination, extra),
-  };
-}
 export function registerCatalogTools(server: McpServer, client: SpotifyClient): void {
   // get_track
   server.tool(
