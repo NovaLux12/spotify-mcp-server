@@ -194,7 +194,7 @@ than maintained.
 | saveddedupe | 1 | 1,438 | 1 | 1,438 | 2 | 1,582 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
-| backup | 2 | 1,632 | 2 | 1,632 | 3 | 1,796 |
+| backup | 2 | 1,724 | 2 | 1,724 | 3 | 1,897 |
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
 | restore | 1 | 2,072 | 1 | 2,072 | 2 | 2,280 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
@@ -229,7 +229,7 @@ than maintained.
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
 | swarm3playback | 17 | 10,006 | 17 | 10,006 | 18 | 11,007 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
-| swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
+| swarm3snapshots | 24 | 23,829 | 24 | 23,829 | 25 | 26,212 |
 | swarm4playlists | 18 | 23,228 | 18 | 23,228 | 19 | 25,551 |
 <!-- END:generated schema-budget-table -->
 

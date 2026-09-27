@@ -148,7 +148,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     const dry = harness({ totalItems: 300 });
     const plan = await dry.invoke('take_playlist_snapshot', {
       playlist: '4uLU6hMCjMI75M1A2tKUQC',
-      max_results: 100,
+      item_cap: 100,
       dry_run: true,
     });
     const planned = plan.structuredContent as { item_walk_cap: number };
@@ -158,7 +158,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     const commit = harness({ totalItems: 300 });
     const out = await commit.invoke('take_playlist_snapshot', {
       playlist: '4uLU6hMCjMI75M1A2tKUQC',
-      max_results: 100,
+      item_cap: 100,
       dry_run: false,
     });
     const done = out.structuredContent as { item_walk_cap: number };
@@ -176,7 +176,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     const commit = harness({ totalItems: 300 });
     const out = await commit.invoke('take_playlist_snapshot', {
       playlist: '4uLU6hMCjMI75M1A2tKUQC',
-      max_results: 100,
+      item_cap: 100,
       dry_run: false,
     });
     const done = out.structuredContent as { track_count: number; cap_reached: boolean; item_walk_cap: number };
@@ -200,7 +200,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     const commit = harness({ totalItems: 40 });
     const out = await commit.invoke('take_playlist_snapshot', {
       playlist: '4uLU6hMCjMI75M1A2tKUQC',
-      max_results: 100,
+      item_cap: 100,
       dry_run: false,
     });
     const done = out.structuredContent as { track_count: number; cap_reached: boolean };
@@ -212,7 +212,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     assert.doesNotMatch(prose, /TRUNCATED/);
   });
 
-  it('bounds the commit walk at the configured fetch-all cap when max_results is omitted', async () => {
+  it('bounds the commit walk at the configured fetch-all cap when item_cap is omitted', async () => {
     const plan = harness({ totalItems: 5_000 });
     const planned = (
       await plan.invoke('take_playlist_snapshot', { playlist: '4uLU6hMCjMI75M1A2tKUQC', dry_run: true })
@@ -235,7 +235,7 @@ describe('take_playlist_snapshot walk cap (#878)', () => {
     const commit = harness({ totalItems: 300, dropEvery: 2 });
     const out = await commit.invoke('take_playlist_snapshot', {
       playlist: '4uLU6hMCjMI75M1A2tKUQC',
-      max_results: 100,
+      item_cap: 100,
       dry_run: false,
     });
     const done = out.structuredContent as { track_count: number; cap_reached: boolean };

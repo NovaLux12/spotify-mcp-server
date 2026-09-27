@@ -337,7 +337,7 @@ describe('backup_library', () => {
     assert.ok(Number(seqB) === Number(seqA) + 1, `${files[1]} should follow ${files[0]}`);
   });
 
-  it('caps walks at SPOTIFY_MCP_FETCH_ALL_CAP and honors max_results override', async () => {
+  it('caps walks at SPOTIFY_MCP_FETCH_ALL_CAP and honors walk_cap override', async () => {
     initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '3' });
     assert.equal(getConfig().fetchAllCap, 3);
 
@@ -357,9 +357,9 @@ describe('backup_library', () => {
     assert.equal(trackGets.length, 2);
     assert.equal(trackGets.length < 3, true, 'walk must stop at the cap, not drain all pages');
 
-    // Explicit max_results wins over the configured cap.
+    // Explicit walk_cap wins over the configured cap.
     const sc2 = (
-      await h.invoke('backup_library', { response_format: 'concise', max_results: 2 })
+      await h.invoke('backup_library', { response_format: 'concise', walk_cap: 2 })
     ).structuredContent as Record<string, unknown>;
     assert.equal((sc2.counts as Record<string, number>).liked_tracks, 2);
   });
@@ -370,7 +370,7 @@ describe('backup_library', () => {
         ? offsetPages('/me/tracks', [0, 1, 2].map((i) => savedRow('track', i)))(params)
         : baseResponder(path, params),
     );
-    const exactOut = await exact.invoke('backup_library', { response_format: 'json', max_results: 3 });
+    const exactOut = await exact.invoke('backup_library', { response_format: 'json', walk_cap: 3 });
     const exactSnap = JSON.parse(textOf(exactOut)) as LibraryBackup;
     assert.equal(exactSnap._meta.collections.liked_tracks.fetched, 3);
     assert.equal(exactSnap._meta.collections.liked_tracks.cap, 3);
@@ -382,7 +382,7 @@ describe('backup_library', () => {
         ? offsetPages('/me/tracks', [0, 1, 2, 3].map((i) => savedRow('track', i)))(params)
         : baseResponder(path, params),
     );
-    const overOut = await over.invoke('backup_library', { response_format: 'json', max_results: 3 });
+    const overOut = await over.invoke('backup_library', { response_format: 'json', walk_cap: 3 });
     const overSnap = JSON.parse(textOf(overOut)) as LibraryBackup;
     assert.equal(overSnap._meta.collections.liked_tracks.fetched, 3);
     assert.equal(overSnap._meta.collections.liked_tracks.truncated, true);
@@ -651,7 +651,7 @@ describe('backup_library dry_run + quota', () => {
   it('dry_run returns would_walk breakdown without API calls', async () => {
     let calls = 0;
     const h = harness(() => { calls++; return { items: [], total: 0, limit: 50, offset: 0, next: null }; });
-    const out = await h.invoke('backup_library', { dry_run: true, max_results: 100 });
+    const out = await h.invoke('backup_library', { dry_run: true, walk_cap: 100 });
     assert.equal(calls, 0);
     const sc = out.structuredContent as Record<string, unknown>;
     assert.equal(sc.dry_run, true);
@@ -663,7 +663,7 @@ describe('backup_library dry_run + quota', () => {
     const { SpotifyApiError } = await import('../src/client.js');
     // make /me/tracks throw 429 so collectSnapshot fails
     const h = harness((_path) => { throw new SpotifyApiError(429, 'quota', 60); });
-    const out = await h.invoke('backup_library', { max_results: 10 });
+    const out = await h.invoke('backup_library', { walk_cap: 10 });
     const sc = out.structuredContent as Record<string, unknown>;
     assert.equal(sc.quota_hit, true);
     assert.equal(sc.retry_after, 60);
@@ -911,7 +911,7 @@ describe('snapshot completeness disclosure (#735)', () => {
   });
 
   it('marks a truncated snapshot partial at the top level and a complete one not', async () => {
-    const capped = await harness(baseResponder).invoke('backup_library', { response_format: 'concise', max_results: 3 });
+    const capped = await harness(baseResponder).invoke('backup_library', { response_format: 'concise', walk_cap: 3 });
     const cappedSnap = JSON.parse(await readFile((capped.structuredContent as { file: string }).file, 'utf8')) as Record<string, unknown>;
     assert.equal(cappedSnap._partial, true);
 

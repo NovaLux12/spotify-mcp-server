@@ -91,7 +91,25 @@ export const ResponseFormat = z
   .describe("'concise' = human prose, 'detailed' = more fields in prose, 'json' = raw API object");
 export type ResponseFormatValue = z.infer<typeof ResponseFormat>;
 
-/** Optional per-call truncation override for list-type tools (#53). */
+/**
+ * Optional per-call truncation override for list-type tools (#53).
+ *
+ * ONE meaning, and only this one (#886): how many ROWS to render from a result
+ * set the tool has already produced. It is a display cap and never a work cap.
+ * A tool that must bound how much it FETCHES declares its own, correctly named
+ * parameter for that — `item_cap` (a snapshot walk), `walk_cap` (a backup
+ * walk), `fetch_all_cap`, `max_removals` — because a caller's reflex for
+ * shrinking a response is to lower `max_results`, and a walk cap wearing this
+ * name silently truncates durable output (a snapshot file, a backup file)
+ * rather than a page of prose.
+ *
+ * This is the canonical DECLARATION, but not every tool uses it: several
+ * modules declare `max_results` locally with a shorter wording of the same
+ * rule, which is left alone. The rule is not about wording but about flow, so
+ * it is enforced where it can be checked mechanically — see
+ * `tests/max-results-contract.test.ts`, which fails if any `maxItems` in
+ * `src/tools/` takes its value from `max_results`.
+ */
 export const MaxResults = z
   .number()
   .int()
@@ -99,6 +117,31 @@ export const MaxResults = z
   .max(2000)
   .optional()
   .describe(`Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or ${DEFAULT_MAX_ITEMS})`);
+
+/**
+ * A cap on how much a tool WALKS, for a tool whose result is a durable file
+ * rather than a page of rows (#886).
+ *
+ * Named to match what it bounds, and described as what it is: a caller who
+ * wants a smaller ANSWER has `max_results` for that. Someone reaching for this
+ * parameter is deliberately bounding the work, and the description has to say
+ * so — the whole defect was one name carrying both jobs.
+ *
+ * @param subject What the walk covers, in the tool's own words ("playlist items").
+ * @param capEnv  The env var naming the default, for the description.
+ */
+export function walkCap(subject: string, capEnv: string) {
+  return z
+    .number()
+    .int()
+    .positive()
+    .max(2000)
+    .optional()
+    .describe(
+      `Cap on ${subject} walked for THIS call (default: ${capEnv}). `
+      + 'Bounds what is READ, not rows rendered — use max_results to shrink the response.',
+    );
+}
 
 /** Opt-in preview mode for destructive operations (#57). */
 export const DryRun = z

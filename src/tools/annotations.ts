@@ -1685,7 +1685,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1438], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1724], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backupdelete', 'library', lazyModule('./backup_delete.js', 'registerBackupDeleteTools'), [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
   // #708: descriptions only, same 1 tool and same input schema. The baseline in
   // the entry below moved because restore_library_snapshot's description now
@@ -1937,7 +1937,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // their result records the snapshot source, the file-declared date and the
   // use — and that neither tool gates — so an agent can tell a recorded
   // purpose from an approved one.
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23731], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23829], { scopeKey: 'playlists' }),
   // Two description changes, measured together on the merged tree: #708's
   // provenance wording and #1388's disclosure wording. Neither side's number
   // survives the merge — each was measured on a tree that lacked the other's
