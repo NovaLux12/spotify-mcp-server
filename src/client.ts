@@ -1,6 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
-import { LruTtlCache, ValidatorStore, shouldBypassCache, cacheKey, invalidationPlan } from './cache.js';
+import {
+  LruTtlCache,
+  ValidatorStore,
+  shouldBypassCache,
+  cacheKey,
+  invalidationPlan,
+  type InvalidationPlan,
+} from './cache.js';
 import {
   cachePersistEnabled,
   cachePersistPath,
@@ -20,6 +27,23 @@ const BASE_URL = 'https://api.spotify.com/v1';
  * short enough that a session that ends shortly after a read still persists.
  */
 const CACHE_PERSIST_DEBOUNCE_MS = 250;
+
+/**
+ * How many recent invalidations the read/write race guard can reason about
+ * (#1249 review). A read that raced an invalidation older than this window is
+ * treated as invalidated rather than reasoned about, so the bound trades a
+ * possible lost cache fill for never serving a stale body.
+ */
+const INVALIDATION_LOG_LIMIT = 64;
+
+/** One recorded invalidation: which epoch, and exactly what it dropped. */
+interface InvalidationEvent {
+  readonly epoch: number;
+  /** A full clear — exempts no key. */
+  readonly all: boolean;
+  readonly payload: readonly string[];
+  readonly validators: readonly string[];
+}
 import type { TokenData, SpotifyPaged } from './types/spotify.js';
 
 /**
@@ -405,6 +429,8 @@ interface RateLimitStatus {
   /** Persist failures and allowlist refusals, so a dead cache is visible (#893). */
   cachePersistFailed?: number;
   cachePersistRefused?: number;
+  /** Entries dropped for exceeding the persisted byte cap (#1249). */
+  cachePersistOversize?: number;
   /** Requests currently open in the funnel (#892). */
   inFlight: number;
   /** The funnel's concurrency ceiling for this process (#892). */
@@ -743,6 +769,7 @@ class CachePersistController {
   private restoredCount = 0;
   private failed = 0;
   private refused = 0;
+  private oversize = 0;
   private loaded: Promise<void> | null = null;
   private pendingSave: ReturnType<typeof setTimeout> | null = null;
 
@@ -753,8 +780,8 @@ class CachePersistController {
   ) {}
 
   /** What the persistence layer did, for `spotify_doctor`. */
-  stats(): { restored: number; failed: number; refused: number } {
-    return { restored: this.restoredCount, failed: this.failed, refused: this.refused };
+  stats(): { restored: number; failed: number; refused: number; oversize: number } {
+    return { restored: this.restoredCount, failed: this.failed, refused: this.refused, oversize: this.oversize };
   }
 
   /**
@@ -803,6 +830,7 @@ class CachePersistController {
       savePersistedCache(entries, { ...this.opts, file: this.file }).then(
         (stats) => {
           this.refused += stats.refused;
+          this.oversize += stats.oversize;
         },
         () => {
           this.failed += 1;
@@ -872,13 +900,17 @@ export class SpotifyClient {
    */
   private _invalidationEpoch = 0;
   /**
+   * What the recent invalidations actually dropped, keyed by the epoch that
+   * produced them (#1249). Bounded, and consulted only when the epoch has
+   * moved — see {@link invalidatedSince}, which fails closed.
+   */
+  private readonly _invalidationLog: InvalidationEvent[] = [];
+  /**
    * Optional cross-process persistence for the catalog cache (#893). Null
    * unless `SPOTIFY_MCP_CACHE_PERSIST=1`. Only ever holds allowlisted,
    * non-`/me` catalog reads — see {@link isPersistableKey}.
    */
   private readonly _persist: CachePersistController | null;
-  /** Pending debounced save, so N mutations in a burst cost one write. */
-  private _persistTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly fetchAllCap: number;
   /**
    * Ceiling on requests in flight at once (#892). Read once at construction,
@@ -974,7 +1006,7 @@ export class SpotifyClient {
    */
   private cachePersistStats(): Pick<
     RateLimitStatus,
-    'cachePersist' | 'cacheRestored' | 'cachePersistFailed' | 'cachePersistRefused'
+    'cachePersist' | 'cacheRestored' | 'cachePersistFailed' | 'cachePersistRefused' | 'cachePersistOversize'
   > {
     if (!this._persist) return this.cache ? { cachePersist: false } : {};
     const stats = this._persist.stats();
@@ -983,6 +1015,7 @@ export class SpotifyClient {
       cacheRestored: stats.restored,
       cachePersistFailed: stats.failed,
       cachePersistRefused: stats.refused,
+      cachePersistOversize: stats.oversize,
     };
   }
 
@@ -1071,10 +1104,59 @@ export class SpotifyClient {
       for (const prefix of plan.payload) this.cache?.deleteByPrefix(prefix);
       for (const prefix of plan.validators) this.validators?.deleteByPrefix(prefix);
     }
+    this.recordInvalidation(plan);
     // A mutation also re-shapes what is worth persisting, so a save queued
     // before it must not write the dropped entries back to disk.
     this._persist?.scheduleSave(this.cache);
     void this.recordMutation(method, path, response);
+  }
+
+  /**
+   * Remember what this invalidation actually dropped (#1249).
+   *
+   * The epoch alone answers "has anything been invalidated since this request
+   * went out?", which is too blunt to be the whole question: a
+   * `POST /me/player/queue` drops ZERO payload prefixes, and a global answer of
+   * "yes" made it discard catalog reads that landed after it — which is the
+   * exact cost the scoped-invalidation change claims to remove. This log lets
+   * a racing read ask the narrower question instead.
+   */
+  private recordInvalidation(plan: InvalidationPlan): void {
+    this._invalidationLog.push({
+      epoch: this._invalidationEpoch,
+      all: plan.scope === 'all',
+      payload: plan.scope === 'all' ? [] : [...plan.payload],
+      validators: plan.scope === 'all' ? [] : [...plan.validators],
+    });
+    if (this._invalidationLog.length > INVALIDATION_LOG_LIMIT) {
+      this._invalidationLog.splice(0, this._invalidationLog.length - INVALIDATION_LOG_LIMIT);
+    }
+  }
+
+  /**
+   * Did anything invalidate `key` since this read started? FAILS CLOSED.
+   *
+   * The prefixes are the same boundary-aware ones the invalidation itself used
+   * to delete keys, so "would this key have been dropped?" is answered by the
+   * identical comparison rather than by a second, subtler notion of matching.
+   *
+   * Two ways to answer "yes" without evidence, both deliberately:
+   *   - the log no longer reaches back to this read, so an invalidation it
+   *     raced has been evicted and cannot be reasoned about;
+   *   - the invalidation was a full clear, which exempts nothing.
+   * Losing a cache fill is recoverable; serving a stale body is not.
+   */
+  private invalidatedSince(epoch: number, key: string): boolean {
+    if (this._invalidationEpoch === epoch) return false;
+    const log = this._invalidationLog;
+    if (log.length === 0 || log[0].epoch > epoch + 1) return true;
+    for (const event of log) {
+      if (event.epoch <= epoch) continue;
+      if (event.all) return true;
+      if (event.payload.some((prefix) => key.startsWith(prefix))) return true;
+      if (event.validators.some((prefix) => key.startsWith(prefix))) return true;
+    }
+    return false;
   }
 
   private getTokens(): Promise<TokenData> {
@@ -1830,7 +1912,7 @@ export class SpotifyClient {
           // body is unchanged", which is only true of the world the validator
           // was taken from. A mutation that landed mid-request makes the
           // "unchanged" claim refer to the past.
-          if (this._invalidationEpoch === epochAtRequest) {
+          if (!this.invalidatedSince(epochAtRequest, key)) {
             if (cacheable) this.cache!.set(key, validator.value, { bytes: this.bodyBytes(validator.value) });
             this.validators?.set(key, validator.value, validator.etag);
           }
@@ -1861,13 +1943,16 @@ export class SpotifyClient {
       opts?.priority,
     );
     if (servedFrom304) return result;
-    // Do not write a body into shared state if anything was invalidated while
-    // this request was in flight (#893). Without this, a read issued before a
-    // mutation re-seeds the entry that mutation dropped, and the stale body is
-    // then served from cache for the full TTL while looking perfectly fresh.
-    // The caller still gets `result` — this is a truthful answer to the read it
-    // made; only the cache write is withheld.
-    if (this._invalidationEpoch !== epochAtRequest) return result;
+    // Do not write a body into shared state if anything that could have
+    // changed THIS key was invalidated while the request was in flight (#893).
+    // Without this, a read issued before a mutation re-seeds the entry that
+    // mutation dropped, and the stale body is then served from cache for the
+    // full TTL while looking perfectly fresh. The scope is the plan's own
+    // prefixes (#1249), so a write that drops none of them — a player command,
+    // which is the whole point of scoping — no longer discards a catalog read
+    // that merely overlapped it. The caller still gets `result`: a truthful
+    // answer to the read it made; only the shared-state write is withheld.
+    if (this.invalidatedSince(epochAtRequest, key)) return result;
     if (cacheable && result !== null) {
       this.cache!.set(key, result, { bytes: this.bodyBytes(result) });
       this._persist?.scheduleSave(this.cache);
