@@ -42,6 +42,7 @@ import { REGISTRAR_MANIFEST, registerManifestModules } from '../src/tools/annota
 import {
   DEFAULT_SCOPE_PROFILE,
   KNOWN_SPOTIFY_SCOPES,
+  type KnownScope,
   SCOPE_PROFILE_NAMES,
   isReadScope,
   renderEnvHelp,
@@ -233,7 +234,11 @@ describe('the opt-in spellings all reach the write tools', () => {
 
 describe('the profiles are derived, so they cannot contradict each other', () => {
   it('nests read ⊆ core ⊆ write ⊆ full', () => {
-    let previous: string[] = [];
+    // `KnownScope[]`, not `string[]`: `scopes` is a `KnownScope[]`, and
+    // annotating the accumulator any wider makes `scopes.includes(scope)` below
+    // a type error — the test claimed the values were `string` when they never
+    // were. The values compared are unchanged.
+    let previous: KnownScope[] = [];
     for (const name of SCOPE_PROFILE_NAMES) {
       const scopes = [...scopesForProfile(name)];
       for (const scope of previous) {
