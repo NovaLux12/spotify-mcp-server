@@ -24,11 +24,12 @@ import { installProgressContextBoundary, installProgressNotifications } from './
 import { installActingAccountBoundary, resolveActingAccount } from './actingaccount.js';
 import { installCancellationContextBoundary } from './cancellation.js';
 import { BRANDING_NOTICE, NON_AFFILIATION_NOTICE } from './branding.js';
+import { SERVER_INSTRUCTIONS } from './serverinstructions.js';
 
 const { version } = createRequire(import.meta.url)('../package.json') as { version: string };
 
 /**
- * The `instructions` a host receives in the `initialize` response (#705).
+ * The `instructions` a host receives in the `initialize` response (#705, #690).
  *
  * This is the only surface an agent that never sees the README, the npm page
  * or the repository gets: a host that launches the server over stdio and
@@ -38,13 +39,22 @@ const { version } = createRequire(import.meta.url)('../package.json') as { versi
  * docs/compliance.md) is only defensible if an unaffiliated user cannot be
  * left to infer otherwise.
  *
- * The wording is `BRANDING_NOTICE`, not a hand-typed copy: the sibling units
- * that own host-orientation guidance extend this string rather than editing
- * the notice. `tests/branding-notice-guard.test.ts` reads the instructions
- * back off a spawned server, so dropping the constant here fails a test rather
- * than shipping a silent gap.
+ * #705 supplied that notice and nothing else. #690 appends the host guidance
+ * — the discovery trio, the `dry_run` convention, the two toolset knobs and
+ * the receipt lifetime — so a host that reads only `initialize` and
+ * `tools/list` can find the preview convention instead of inferring it from
+ * 555 KiB of tool schemas. The string itself, and the reasoning for what is
+ * kept out of it, live in `src/serverinstructions.ts`; this comment stays on
+ * the call site because the call site is the half that can regress silently.
+ *
+ * The wording is `BRANDING_NOTICE`, not a hand-typed copy: this unit is the
+ * sibling #705 was waiting on, and it appends to the notice rather than
+ * re-authoring or re-ordering it. `tests/branding-notice-guard.test.ts` and
+ * `tests/server-instructions.test.ts` both read the instructions back off a
+ * spawned server, so dropping the constant here — the exact regression the
+ * `{ instructions }` argument below can introduce — fails a test rather than
+ * shipping a silent gap.
  */
-const SERVER_INSTRUCTIONS = BRANDING_NOTICE;
 
 /**
  * The registration half of `startMcpServer`, as a factory.
