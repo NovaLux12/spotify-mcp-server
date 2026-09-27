@@ -21,10 +21,30 @@
  * not because this file says so. A name that stops resolving to `tmpdir()`
  * drops out of the derived set and its call sites become hits.
  *
- * Comments and string bodies are blanked before the search, so a test that
+ * Two properties of that derivation are load-bearing, and both came from the
+ * gate reporting a clean tree over the defect it exists to catch:
+ *
+ *  - It is **per file**, not pooled. `tests/store-bounds.test.ts` defines its
+ *    own `const ROOT = await mkdtemp(join(tmpdir(), …))`; pooled across the
+ *    tree, that name licensed `join(ROOT, …)` everywhere, which is the #1383
+ *    call site. See `tmpdirDerivedRoots`.
+ *  - It **follows relative imports** rather than rejecting them.
+ *    `tests/helpers/stdio-child.ts` roots a child home at the imported
+ *    `HERMETIC_ROOT`, which is correct — that home has to live under the
+ *    hermetic root for the helper's own cleanup to remove it. "Fixing" it to a
+ *    bare `tmpdir()` would be changing working code to satisfy a gate.
+ *
+ * A bare import specifier, or one that leaves `tests/`, stays unproven and its
+ * call sites become hits. That is the conservative direction: a false positive
+ * costs one edit, a false negative costs an agent a hand-edit of a generated
+ * block.
+ *
+ * Comments and string bodies are blanked before the call scan, so a test that
  * documents this defect — or embeds a child's source in a template — is not a
  * hit. `${…}` holes stay visible, so a call smuggled into an interpolation is
- * still caught.
+ * still caught. The *import* scan deliberately reads raw source, because the
+ * specifier it needs is a string literal and blanking erases exactly that; see
+ * `tmpdirDerivedRoots`.
  *
  * `--check-fixture <path>` runs the same collector over one file and exits
  * non-zero on a hit, so the gate can be proved to fire rather than assumed to.
