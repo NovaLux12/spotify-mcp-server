@@ -109,6 +109,25 @@ export async function checkManifest({ schema, manifest }) {
 }
 
 /**
+ * A JSON Schema document is an object. Anything else is a body that happened to
+ * parse — `JSON.parse('null')` succeeds and yields `null`, so a proxy, cache or
+ * CDN answering `200` with an empty body arrives here as a *successful* fetch.
+ *
+ * @param {unknown} body
+ * @returns {boolean}
+ */
+function isSchemaDocument(body) {
+  return typeof body === 'object' && body !== null && !Array.isArray(body);
+}
+
+/** Name the shape that arrived, so the message says what was received and not only what was wanted. */
+function describeBody(body) {
+  if (body === null) return 'the body was JSON null';
+  if (Array.isArray(body)) return 'the body was a JSON array';
+  return `the body was a JSON ${typeof body}`;
+}
+
+/**
  * Fetch the schema a manifest declares.
  *
  * Returns the parsed schema or throws with a message that says which URL failed
@@ -136,11 +155,22 @@ export async function fetchSchema(url, { fetchImpl = fetch, timeoutMs = SCHEMA_F
   } catch (error) {
     throw new Error(`could not read the body of ${url} (${error instanceof Error ? error.message : String(error)}); server.json was NOT validated`);
   }
+  let body;
   try {
-    return JSON.parse(text);
+    body = JSON.parse(text);
   } catch (error) {
     throw new Error(`${url} did not return JSON (${error instanceof Error ? error.message : String(error)}); server.json was NOT validated`);
   }
+  // `200` is not a schema. Returning a non-object here let `ajv.compile(null)`
+  // fail downstream, which is reported as "the registry schema did not
+  // compile" — i.e. as a fault in `server.json`, the one file that is not at
+  // fault. A CDN answering an empty body is an ordinary outage shape, and this
+  // gate's whole reason to exist is that "the question was not answered" must
+  // not read as either a pass or a violation (#1491).
+  if (!isSchemaDocument(body)) {
+    throw new Error(`${url} did not return a JSON Schema document (${describeBody(body)}); server.json was NOT validated`);
+  }
+  return body;
 }
 
 /** Read and parse a JSON file, with the path in the error so a typo is obvious. */
