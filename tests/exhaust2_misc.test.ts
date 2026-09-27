@@ -13,7 +13,7 @@ import { saveMiscStore } from '../src/tools/exhaust2_misc.js';
 import { classifyToolAnnotations } from '../src/tools/annotations.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from '../src/tools/catalog.js';
 import { finalInputSchema } from '../src/shaping.js';
-import { StubSpotifyClient } from './helpers/stub-client.js';
+import { StubSpotifyClient, type StubCall } from './helpers/stub-client.js';
 import type { SpotifyClient } from '../src/client.js';
 import { issueReceipt } from '../src/receipts.js';
 
@@ -952,7 +952,11 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     }));
     if (opts.pageTotal === 'omit') {
       stub.get_('/playlists/pl/items', {
-        respond: (call) => {
+        // `get_` takes a `Route` whose T defaults to `unknown`, so
+        // `respond: StubResponder<T> | T` collapses to `unknown` and the
+        // parameter gets no contextual type. Annotate it, as the other
+        // function responders in the suite do.
+        respond: (call: StubCall) => {
           const arg = (call.arg ?? {}) as Record<string, string>;
           const offset = Number(arg.offset ?? 0) || 0;
           const limit = Number(arg.limit ?? 100) || 100;

@@ -3581,6 +3581,42 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
+        "hash": "cdbb458d1339e0d7",
+        "label": "The playlist total in exportplaylistjson (#1533)"
+      },
+      {
+        "hash": "fdda8e62b52140b8",
+        "label": "exportplaylistjson is a durable document format: its out…"
+      },
+      {
+        "hash": "524b3a81ffcf1e05",
+        "label": "It used to be the deprecated tracks.total alone, with it…"
+      },
+      {
+        "hash": "9e36074a859e7417",
+        "label": "The total now comes from playlistItemTotal, in the prece…"
+      },
+      {
+        "hash": "9d6753c9fa09182d",
+        "label": "| Source | What it is | |---|---| | walk.reportedTotal |…"
+      },
+      {
+        "hash": "1ce359c966f6f5b5",
+        "label": "Neither being a number is null. A length Spotify did not…"
+      },
+      {
+        "hash": "20b9369f8bad7def",
+        "label": "The two truncations are different caps and have differen…"
+      },
+      {
+        "hash": "02349d3299c9ecdd",
+        "label": "A whole read is unchanged — itemstruncated: false, trunc…"
+      },
+      {
+        "hash": "0979ba694f87f6aa",
+        "label": "Not a migration. No call that succeeded before fails now…"
+      },
+      {
         "hash": "7576077206abbd74",
         "label": "moveitemsbetweenplaylists Bulk rehome items between play…"
       },

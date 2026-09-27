@@ -106,8 +106,8 @@ const ALLOWED_TOOL_COUNT_LINES = [
   },
   {
     file: 'src/tools/annotations.ts',
-    contains: '[27, 24434] measured from the real registrar (tools: 592). #896 moved the',
-    why: 'dated: the 24,434B baseline beside it, measured over 592 tools; #1550 re-measured the module and left the 592-tool figure the same',
+    contains: '[27, 24664] measured from the real registrar (tools: 556). The +230B over',
+    why: 'dated: the 24,664B baseline beside it, measured over 556 tools on the rebased tree',
   },
   {
     file: 'src/tools/annotations.ts',

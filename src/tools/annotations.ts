@@ -2020,7 +2020,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // carries both changes. The 23 -> 22 step and the byte rise have different
   // causes, and quoting either side's number would attribute both to one.
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
-  // [27, 24546] measured from the real registrar (tools: 556). The +230B over
+  // [27, 24664] measured from the real registrar (tools: 556). The +230B over
   // #896's 24,316B is #1533: `export_playlist_json`'s description now names
   // the item walk's cap, the two truncation keys, and what `total_tracks` is
   // (and is not) — a description that only held on a whole read has to say
@@ -2030,8 +2030,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // Tool count is unchanged at 27 across both — new INPUT properties and
   // description text, not new tools — so this is a re-measure of the same
   // surface, not a ceiling raise to make a breach pass. The derived ceiling
-  // follows the baseline (ceil(24546 * 1.1) = 27001B).
-  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24546], { scopeKey: 'library' }),
+  // follows the baseline (ceil(24664 * 1.1) = 27131B).
+  //
+  // The 24,664B is measured on this tree after the rebase onto main, not
+  // carried over from either side of the conflict: main quoted 24,434B over
+  // 592 tools and this branch quoted 24,546B over 556, and the surface here
+  // matches neither. A baseline is a measurement of the tree it sits in.
+  manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24664], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
   // what the playlist walk costs per ref and that a capped walk reports
