@@ -1006,15 +1006,14 @@ function registerVerifyReceiptTool(server: McpServer): void {
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // #638, RE-MEASURED on the post-rebase tree. The pre-rebase branch figures
-  // (library [13,12546], following [3,2507]) were measured before main moved,
-  // and main had since reworded these descriptions — so carrying either side's
-  // number forward would put a lie in a hand-maintained baseline the startup
-  // gate treats as ground truth, and a slightly-stale value usually still sits
+  // for library and following were measured before main moved, and main had
+  // since reworded these descriptions — so carrying either side's number
+  // forward would put a lie in a hand-maintained baseline the startup gate
+  // treats as ground truth, and a slightly-stale value usually still sits
   // under its own derived ceiling, so no gate would catch it. Every module this
-  // commit's diff touches under src/tools/ was re-measured the same way: set
-  // the baseline to [0, 0] so the derived ceiling is 0, let the startup gate
-  // fail loudly with the real figure, then write that figure back. No ceiling
-  // was raised.
+  // commit's diff touches under src/tools/ was re-measured the same way: zero
+  // the baseline so the derived ceiling is 0, let the startup gate fail loudly
+  // with the real figure, then write that figure back. No ceiling was raised.
   manifestEntry('search', 'search', lazyModule('./search.js', 'registerSearchTools'), [1, 1821], { readOnlySafe: true }),
   manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26883], { readOnlySafe: true }),
   manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12521]),
