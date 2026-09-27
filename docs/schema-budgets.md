@@ -20,7 +20,11 @@ The production `tools/list` boundary, module measurements, and aggregate gate al
 use the same finalized input-schema projection: SDK-compatible normalization,
 input-direction JSON Schema, `additionalProperties: false`, and no `$schema`
 key. The aggregate gate runs after annotations and final boundary metadata are
-applied, so its budget covers the payload hosts actually receive.
+applied, so it measures the payload after every finalizer that shapes it. It is
+still not the whole payload: the gate does not charge `outputSchema`, which is
+the one field the wire can carry and the gate cannot see. What it bounds is
+stated in full under
+[the aggregate ceiling](#aggregate-ceiling-and-the-payload-it-guards).
 
 Annotations, tool names, resources, and prompts are intentionally excluded from
 this module-attribution measurement. A module is `active`, `toolset_trimmed`,
@@ -89,11 +93,29 @@ above either ceiling fails CI and server startup.
 
 The per-module ceilings above bound one module each. A second gate bounds the
 whole default surface: `AGGREGATE_SURFACE_LIMITS` in `src/tools/annotations.ts`
-caps the total serialized `tools/list` payload a host session receives. It is
+caps the serialized `tools/list` payload a host session receives. It is
 **not** a description-plus-inputSchema figure — each tool is serialized as
 `{name, title, description, inputSchema, annotations, execution, _meta}`, so a
 measurable share of the budgeted bytes are names, titles and metadata that the
 per-module table excludes. Size a raise against the aggregate number.
+
+**What that field list is, and the one field in it that is not charged.** The
+list above is the literal in `collectAggregateSurfaceMeasurement`
+(`src/tools/annotations.ts`), and it is the same projection the `tools/list`
+boundary in `installToolErrorBoundary` serves, field for field — *except* for
+`outputSchema`, which the boundary emits and the gate omits. A tool declaring
+one is charged nothing for bytes every host receives, so the gate is enforced
+against a payload that cannot contain the field it is blind to ([#1396]).
+
+That is a statement about the gate's reach, not about the figures above. **No
+tool on this tree declares an `outputSchema`**, so today the measured payload
+and the wire payload are the same bytes and every number on this page is
+complete. The two stop being the same on the day one is declared, which is why
+the omission is recorded here rather than left to be discovered: a ceiling that
+silently stops covering part of the payload is worse than one that never
+claimed to, because it prints a confident number. Do not read a passing gate as
+evidence that an `outputSchema` was counted. #1393 fixes the measurement;
+until it merges, the honest scope of this gate is the field list above.
 
 <!-- BEGIN:generated aggregate-budget -->
 | Figure | Value | Where it comes from |
