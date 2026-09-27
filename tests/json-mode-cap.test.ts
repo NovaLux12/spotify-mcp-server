@@ -100,6 +100,14 @@ function harness(
   });
   register(fakeServer, client);
   return {
+    /**
+     * The stub itself, so a test can assert on the requests the tool ACTUALLY
+     * issued. A disclosure test that can only read the response cannot tell a
+     * full write from a capped one — which is the whole defect in #1517, where
+     * the reported rows and the deleted rows disagreed and only the write
+     * recorded the difference.
+     */
+    client,
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
@@ -589,6 +597,142 @@ describe('dead_library_finder (#895)', () => {
     assert.equal(sections!.candidates.total, out.structuredContent!.count,
       'sections.candidates.total and count are the same number, not two guesses');
     assert.notEqual(textOf(out), JSON.stringify(out.structuredContent, null, 2));
+  });
+
+  // -------------------------------------------------------------------------
+  // #1517 — the cap must not be the only record of what was DELETED.
+  //
+  // The test above cannot catch that class of bug: an EMPTY library produces
+  // zero candidates, so no cap ever fires and every assertion here is about
+  // the envelope, not about a row list that was cut down. This block fires the
+  // cap on purpose and then checks the two things that have to stay in step —
+  // the rows the tool reports, and the URIs it actually sent to
+  // DELETE /me/library.
+  // -------------------------------------------------------------------------
+
+  /** A library of `n` tracks that are all old, unplayed and unlisted. */
+  const deadLibraryResponder = (n: number): Responder => (path: string) => {
+    if (path === '/me/tracks') {
+      return {
+        items: Array.from({ length: n }, (_, i) => ({
+          added_at: '2020-01-01T00:00:00Z',
+          track: { uri: `spotify:track:dead${i}`, name: `Dead ${i}` },
+        })),
+        total: n, limit: 50, offset: 0, next: null,
+      };
+    }
+    if (path === '/me/player/recently-played') return { items: [], next: null };
+    if (path === '/me/playlists') return { items: [], total: 0 };
+    if (path.startsWith('/playlists/')) return { items: [], total: 0 };
+    if (path.startsWith('/me/library')) return { ok: true };
+    return null;
+  };
+
+  /** Every URI the handler actually deleted, decoded out of the DELETE calls. */
+  const deletedUris = (client: StubFromResponder): string[] =>
+    client.calls
+      .filter((c) => c.method === 'DELETE' && c.path.startsWith('/me/library'))
+      .flatMap((c) => decodeURIComponent(c.path.split('uris=')[1] ?? '').split(',').filter(Boolean));
+
+  const DEAD = 500;
+  const CAP = 10;
+  const allDeadUris = Array.from({ length: DEAD }, (_, i) => `spotify:track:dead${i}`);
+
+  it('deletes every eligible track and says so, in every response format', async () => {
+    // The write is `max_results`-independent by contract: `MaxResults` is
+    // documented as a cap on what is RETURNED, and the deletion is not a
+    // return. If this ever starts deleting `CAP` rows, the tool silently
+    // unsaves fewer tracks than the scan found — a caller who lowered
+    // `max_results` to shrink a reply would have changed their library.
+    const seen: string[][] = [];
+    for (const rf of ['concise', 'detailed', 'json'] as const) {
+      const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+      const out = await h.invoke('dead_library_finder', { dry_run: false, max_results: CAP, response_format: rf });
+      assert.equal(out.structuredContent!.count, DEAD, `${rf}: the eligible set is the whole library`);
+      assert.equal(out.structuredContent!.removed, DEAD, `${rf}: and all of it was removed`);
+      seen.push(deletedUris(h.client));
+    }
+    for (const uris of seen) {
+      assert.deepEqual(uris, allDeadUris, 'DELETE /me/library received every dead track, in order');
+    }
+  });
+
+  it('withholds the deleted-track record from the prose modes and names where to get it', async () => {
+    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+    const out = await h.invoke(
+      'dead_library_finder',
+      { dry_run: false, max_results: CAP, response_format: 'concise' },
+    );
+    const sections = out.structuredContent!.sections as Record<string, {
+      returned: number; total: number; truncated: boolean; withheld?: boolean; available_via?: string;
+    }>;
+
+    // The audit trail is gone from THIS payload, and the payload says so in the
+    // helper's own vocabulary rather than by omission.
+    assert.equal('details' in out.structuredContent!, false, 'a withheld key is deleted, not sliced');
+    assert.equal(sections.details.withheld, true);
+    assert.equal(sections.details.returned, 0, 'nothing of the record shipped here');
+    assert.equal(sections.details.total, DEAD, 'the exact pre-cap count is still the truth');
+    assert.equal(sections.details.available_via, "response_format: 'json'");
+    assert.equal(out.structuredContent!.truncated, true, 'rows were withheld from THIS payload');
+
+    // `candidates` stays capped rather than withheld: same rows as `details`,
+    // same slice, so the human-facing modes keep a sample without the
+    // disclosure being published twice.
+    assert.equal(rows(out, 'candidates').length, CAP, 'the sample is still bounded by max_results');
+    assert.equal(sections.candidates.returned, CAP);
+    assert.equal(sections.candidates.total, DEAD);
+    assert.equal(sections.candidates.withheld, undefined, 'a capped section is not a withheld one');
+  });
+
+  it('returns the whole deleted-track record under response_format: json', async () => {
+    // This is the assertion the pre-fix tree fails. Before #1517 `details` was
+    // capped here too, so `max_results: 10` shipped 10 of 500 rows and named
+    // no way to get the other 490 — the exact shape #1517 reports.
+    const h = harness(registerExhaust2MiscTools, deadLibraryResponder(DEAD));
+    const out = await h.invoke(
+      'dead_library_finder',
+      { dry_run: false, max_results: CAP, response_format: 'json' },
+    );
+    const sections = out.structuredContent!.sections as Record<string, {
+      returned: number; total: number; truncated: boolean; withheld?: boolean;
+    }>;
+
+    const detail = rows(out, 'details') as Array<{ uri: string; name: string }>;
+    assert.equal(detail.length, DEAD, 'the record of what was removed is reachable in full');
+    assert.deepEqual(detail.map((d) => d.uri), allDeadUris, 'and it is the set that was deleted');
+    assert.equal(sections.details.returned, DEAD, 'the envelope agrees rather than restating the cap');
+    assert.equal(sections.details.total, DEAD);
+    assert.equal(sections.details.truncated, false, 'a complete record is marked complete');
+    assert.equal(out.structuredContent!.truncated, false, 'nothing was withheld from this payload');
+
+    // The #895 envelope still ships in json — a reader of this tool's json
+    // output has always found `sections` here, and dropping it to match
+    // `saveddedupe`'s `bulk ||` short-circuit would be a second breaking shape
+    // change on top of the one #1517 already requires.
+    assert.ok(sections.candidates, 'sections is published in json as well as the prose modes');
+  });
+
+  it('does not claim a truncation when the scan found nothing to withhold', async () => {
+    // `capRowSections` reports `{ withheld: true, truncated: true, total }` for
+    // any key it is handed, including an EMPTY array. Withholding an empty
+    // `details` would tell a caller that rows were withheld from a scan that
+    // found none — #803 again, in the flag rather than the value, and one this
+    // call site would have introduced by being the first to pass a `withhold`
+    // list that could be empty.
+    for (const rf of ['concise', 'json'] as const) {
+      const h = harness(registerExhaust2MiscTools, deadLibraryResponder(0));
+      const out = await h.invoke('dead_library_finder', { dry_run: false, response_format: rf });
+      const sections = out.structuredContent!.sections as Record<string, {
+        returned: number; total: number; truncated: boolean; withheld?: boolean;
+      }>;
+
+      assert.equal(sections.details.total, 0, `${rf}: nothing was eligible`);
+      assert.equal(sections.details.withheld, undefined, `${rf}: nothing was withheld, so nothing is claimed withheld`);
+      assert.equal(sections.details.truncated, false, `${rf}: an empty scan is not a truncated one`);
+      assert.equal(out.structuredContent!.truncated, false, `${rf}: the payload flag agrees`);
+      assert.deepEqual(deletedUris(h.client), [], `${rf}: and nothing was deleted`);
+    }
   });
 });
 
