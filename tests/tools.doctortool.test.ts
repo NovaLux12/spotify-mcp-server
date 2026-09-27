@@ -51,6 +51,7 @@ interface DoctorSurface {
   unknown_enable_overrides: string[];
   unknown_disable_overrides: string[];
   read_only: boolean;
+  prompts_without_resources: boolean;
 }
 
 interface RegisteredTool {
@@ -496,6 +497,63 @@ describe('spotify_doctor', () => {
       surface.exposed_modules.length,
       surface.active_modules.length - surface.hidden_by_scopes.length - surface.hidden_by_readonly.length,
     );
+  });
+
+  /**
+   * #715: a deployment that trimmed the `resources` toolset still serves
+   * prompts, and their resource hints are degraded to in-error guidance. The
+   * prompts work, so nothing else in the report moves — a host that asked for
+   * prompts and lost the reads has to be TOLD, or it infers a capability
+   * difference from a silence it cannot interpret.
+   */
+  it('reports prompts served without resources, and says so in the surface row (#715)', async () => {
+    await writeTokenFile(VALID_TOKENS());
+
+    // The control: the default configuration registers both surfaces.
+    const defaultReport = await harness({ seededTools: 1 }).invoke({ response_format: 'json' });
+    assert.equal(
+      defaultReport.structuredContent?.surface.prompts_without_resources,
+      false,
+      'the control for this test: the default server registers resources',
+    );
+
+    // Both measured mechanisms, asserted separately — a set-level trim and a
+    // per-key disable are different code paths with the same consequence.
+    for (const [label, env] of [
+      ['set-level trim', { SPOTIFY_MCP_TOOLSETS: 'prompts' }],
+      ['per-key disable', { SPOTIFY_MCP_TOOLSETS: 'all', SPOTIFY_MCP_DISABLE_TOOLS: 'resources' }],
+    ] as const) {
+      process.env.SPOTIFY_MCP_TOOLSETS = env.SPOTIFY_MCP_TOOLSETS;
+      if ('SPOTIFY_MCP_DISABLE_TOOLS' in env) {
+        process.env.SPOTIFY_MCP_DISABLE_TOOLS = env.SPOTIFY_MCP_DISABLE_TOOLS as string;
+      }
+      const res = await harness({ seededTools: 1 }).invoke({ response_format: 'json' });
+      assert.equal(
+        res.structuredContent?.surface.prompts_without_resources,
+        true,
+        `${label}: prompts are registered and resources are not, so the doctor must report it`,
+      );
+      const row = res.structuredContent?.rows.find((candidate) => candidate.id === 'surface');
+      assert.match(
+        row?.summary ?? '',
+        /WITHOUT resources/,
+        `${label}: the summary must carry it — renderDoctorProse prints detail lines only when verbose`,
+      );
+      assert.match(row?.detail ?? '', /prompts_without_resources=true/);
+    }
+  });
+
+  /**
+   * The converse must stay FALSE: trimming the PROMPTS while resources are
+   * registered loses no resource hint, because the hint lives in the prompt.
+   * Reporting that as degraded would be the same class of lie in reverse — a
+   * field warning about something that is not wrong.
+   */
+  it('does not report a resource loss when only the prompts were trimmed (#715)', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    process.env.SPOTIFY_MCP_TOOLSETS = 'resources';
+    const res = await harness({ seededTools: 1 }).invoke({ response_format: 'json' });
+    assert.equal(res.structuredContent?.surface.prompts_without_resources, false);
   });
 
   it('names unknown-only trimming instead of implying a healthy full surface', async () => {
