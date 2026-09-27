@@ -76,13 +76,17 @@ function normalise(figure: string): number {
   return Number(figure.replace(/[,_]/g, ''));
 }
 
-function byteFigures(text: string): { value: number; raw: string }[] {
+function byteFigures(
+  text: string,
+  pattern: RegExp = BYTE_FIGURE,
+  floor: number = FIGURE_FLOOR,
+): { value: number; raw: string }[] {
   const out: { value: number; raw: string }[] = [];
-  BYTE_FIGURE.lastIndex = 0;
+  pattern.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = BYTE_FIGURE.exec(text)) !== null) {
+  while ((match = pattern.exec(text)) !== null) {
     const value = normalise(match[1]);
-    if (Number.isFinite(value) && value >= FIGURE_FLOOR) out.push({ value, raw: match[1] });
+    if (Number.isFinite(value) && value >= floor) out.push({ value, raw: match[1] });
   }
   return out;
 }
@@ -174,6 +178,8 @@ export function findLiveConstantQuotes(
   files: { path: string; source: string }[],
   allowed: { file: string; contains: string; why: string }[] = ALLOWED,
   datedTree: RegExp = DATED_TREE,
+  figurePattern: RegExp = BYTE_FIGURE,
+  figureFloor: number = FIGURE_FLOOR,
 ): { quotes: Quote[]; deadAllowances: string[] } {
   const codeValues = new Map<number, string[]>();
   const quotes: Quote[] = [];
@@ -194,7 +200,7 @@ export function findLiveConstantQuotes(
     let match: RegExpExecArray | null;
     while ((match = digits.exec(source)) !== null) {
       const value = normalise(match[0]);
-      if (!Number.isFinite(value) || value < FIGURE_FLOOR) continue;
+      if (!Number.isFinite(value) || value < figureFloor) continue;
       const survived = /\d/.test(masked.slice(match.index, match.index + match[0].length));
       if (survived) continue; // comment text, judged in the second pass
       const line = source.slice(0, match.index).split('\n').length;
@@ -214,7 +220,7 @@ export function findLiveConstantQuotes(
       // sentence back apart and lose the anchor sitting on its first line.
       for (const sentence of blockSentences(block)) {
         if (datedTree.test(sentence.text)) continue;
-        for (const figure of byteFigures(sentence.text)) {
+        for (const figure of byteFigures(sentence.text, figurePattern, figureFloor)) {
           const definedAt = codeValues.get(figure.value);
           if (!definedAt) continue;
           const text = sentence.text.trim();
@@ -334,5 +340,133 @@ describe('#1332 — the detector can actually reject', () => {
       [{ file: 'src/quote.ts', contains: 'a line that was deleted', why: 'stale' }],
     );
     assert.deepEqual(deadAllowances, ['src/quote.ts: a line that was deleted']);
+  });
+});
+
+/**
+ * #1350 — why the shipped pattern has no `%` arm.
+ *
+ * The reasoning lives in `annotations.ts` as a decision record, and a decision
+ * record that nothing can check is the same rot this file exists to stop: raise
+ * `FIGURE_FLOOR` or widen `BYTE_FIGURE` and the prose's claim that widening does
+ * not help goes quietly false. So the claim is driven here instead of trusted.
+ *
+ * The counterfactual is a REGEX, not a guess at intent. These do not assert
+ * that widening is bad forever; they assert that TODAY's evidence says so, and
+ * they fail loudly when the evidence moves. The last test in the block is the
+ * regression test for the fix itself and is the only one that goes red when
+ * `annotations.ts` is reverted — the first four describe why the fix was the
+ * right shape, and a suite in which all of them passed on the unfixed tree
+ * would be the §6 failure this repository keeps making.
+ */
+describe('#1350 — the % arm was measured, declined, and the reason is executable', () => {
+  /** The proposed widening: byte units plus a percent sign. */
+  const WITH_PERCENT =
+    /(\d{1,3}(?:[,_]\d{3})+|\d+(?:\.\d+)?)\s*(B\b|bytes?\b|byte\b|KB\b|kB\b|MB\b|GB\b|KiB\b|MiB\b|%)/g;
+
+  it('the shipped pattern has no % arm — the coverage hole is real, not a misreading', () => {
+    // Bound to the PATTERN, not to the detector's verdict. The first draft of
+    // this test drove `findLiveConstantQuotes` and asserted "no quotes", which
+    // stayed green when a `%` arm was actually added to `BYTE_FIGURE` — the
+    // floor swallows the difference, so it could not tell a widened detector
+    // from an unwidened one and proved nothing (verified by mutation). Asserting
+    // on the regex itself is the only way this goes red on a widening.
+    assert.ok(
+      !BYTE_FIGURE.source.includes('%'),
+      'BYTE_FIGURE has gained a % arm — re-measure the #1350 decision record in annotations.ts against the new pattern',
+    );
+    // The unit really is the discriminator, not a general blindness: with the
+    // floor dropped so a figure can qualify at all, a byte unit matches and a
+    // percent sign does not.
+    assert.equal(byteFigures('620,000B', BYTE_FIGURE, 0).length, 1, 'the byte arm must still match');
+    assert.equal(byteFigures('2.1%', BYTE_FIGURE, 0).length, 0, 'the shipped pattern must not match a percentage');
+    assert.equal(byteFigures('2.1%', WITH_PERCENT, 0).length, 1, 'the proposed widening would match it — that is the change being declined');
+  });
+
+  it('a % arm would not have caught the figure it was added for', () => {
+    // The load-bearing measurement. `FIGURE_FLOOR` is 1,000 and a percentage is
+    // structurally below it, so a % arm cannot match the 2.1% that motivated the
+    // change. The numerator here IS a live constant and the percentage is in an
+    // unanchored sentence, so the only reason it goes uncaught is the floor.
+    const { quotes } = findLiveConstantQuotes(
+      [
+        { path: 'src/a.ts', source: '// the surface would have to grow 2.1% to breach.\n' },
+        { path: 'src/b.ts', source: 'export const CEIL = 620_000;\nexport const NARROW = 2.1;\n' },
+      ],
+      [],
+      DATED_TREE,
+      WITH_PERCENT,
+    );
+    assert.deepEqual(quotes, [], '2.1 IS a constant and 620,000B matches, yet nothing was caught — re-measure the record');
+  });
+
+  it('a % arm reaches only arithmetic coincidence, which is why it was declined', () => {
+    // The cost side, on a shape that actually appears in `src/`. The floor is
+    // dropped to 0 HERE and only here: at the shipped floor a `%` arm is inert
+    // (the previous test), and these collisions are what appears the moment
+    // someone lowers the floor to make it work. `0%` is innocent prose whose
+    // integer happens to equal a `0` literal in unrelated code, and each hit
+    // would need an ALLOWED entry — the allowlist growth the record cites.
+    // Asserted rather than assumed, so "coincidence" stays a measured property
+    // of this tree and not a belief in a comment.
+    const { quotes } = findLiveConstantQuotes(
+      [
+        { path: 'src/a.ts', source: '// trims 0% of the tools without shrinking startup.\n' },
+        { path: 'src/b.ts', source: 'export const M = Math.max(0, 1);\n' },
+      ],
+      [],
+      DATED_TREE,
+      WITH_PERCENT,
+      0,
+    );
+    assert.equal(quotes.length, 1, 'expected exactly the 0% coincidence');
+    assert.equal(quotes[0].value, 0);
+  });
+
+  it('at the shipped floor a % arm is inert on the same tree', () => {
+    // The control for the test above, and the reason the floor is not simply
+    // lowered: with `FIGURE_FLOOR` intact the widened pattern finds nothing at
+    // all. A wider net that must also dismantle the floor to find anything is
+    // not a wider net.
+    const { quotes } = findLiveConstantQuotes(
+      [
+        { path: 'src/a.ts', source: '// trims 0% of the tools without shrinking startup.\n' },
+        { path: 'src/b.ts', source: 'export const M = Math.max(0, 1);\n' },
+      ],
+      [],
+      DATED_TREE,
+      WITH_PERCENT,
+    );
+    assert.deepEqual(quotes, [], 'a % arm at the shipped floor must find nothing here');
+  });
+
+  it('the SWEEP-2026-09 block states the mechanism, not a derived figure', () => {
+    // The regression test for the fix itself, and the only test here that goes
+    // red when `annotations.ts` is reverted. The others pin the REASONING; those
+    // pass on the unfixed tree, which is precisely the "a test that cannot fail"
+    // shape §6 warns about. This one reads the actual comment.
+    const annotations = readFileSync(join(ROOT, 'src/tools/annotations.ts'), 'utf8');
+    const start = annotations.indexOf('WARRANT SWEEP-2026-09:');
+    const sweep = annotations.slice(start, annotations.indexOf('defaultMaxBytes: 620_000'));
+    assert.ok(sweep.length > 0, 'could not locate the SWEEP-2026-09 block');
+
+    // 1. No present-tense open-issue tally. Scoped to the SWEEP block, because
+    // the distinction that matters is exactly this one: a DATED count in the
+    // decision log is legitimate, a present-tense one is not.
+    assert.ok(
+      !/\b\d[\d,_]*\s+open issues?\b/i.test(sweep),
+      'the SWEEP block carries a present-tense open-issue tally — the figure #1350 removed cannot come back',
+    );
+    // 2. No derived growth percentage — the sentence the fix rewrote.
+    assert.ok(
+      !/would have to grow[^.]*\d+(\.\d+)?\s*%/.test(sweep),
+      'the SWEEP block restates a growth percentage — state the mechanism instead (#1350)',
+    );
+    // 3. The mechanism is actually present, so this cannot be satisfied by
+    // deleting the sentences outright.
+    assert.ok(
+      /small surplus/.test(sweep),
+      'the replacement sentence is missing — this test must not pass on an emptied block',
+    );
   });
 });
