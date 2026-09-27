@@ -385,6 +385,18 @@ for (const module of REGISTRAR_MANIFEST) {
 ```
 For errors, throw an `Error` — the SDK converts it to an MCP error response automatically. Do not return error strings inside `content`.
 
+**Cross-cutting boundaries** — `src/index.ts` wraps every registered tool callback in a fixed set of boundaries rather than asking each of ~60 tool modules to remember them. They install in the order below, so the LAST one installed is the OUTERMOST and the last thing to see a finished result:
+
+| Installed | Boundary | What it does to a result |
+|---|---|---|
+| 1 | `installCancellationContextBoundary` | Puts the caller's `extra.signal` in scope, so `notifications/cancelled` aborts the walk. |
+| 2 | `installProgressContextBoundary` | Puts the caller's progress token in scope for the same walks. |
+| 3 | `installTruncationBoundary` | Caps the response and appends the truncation footer and `truncated` metadata. |
+| 4 | `installActingAccountBoundary` | Stamps `account_id` / `display_name` into `structuredContent`. |
+| 5 | `installAttributionBoundary` | Appends the Spotify attribution footer and the per-row `open.spotify.com` link to the **text block** (#696; §5.17). Reads `SPOTIFY_MCP_ATTRIBUTION` once, at install. |
+
+The last two are **disjoint** — one writes `structuredContent`, the other writes the text block — so the order between them is not load-bearing. It is stated rather than left to be inferred because "outermost, sees the finished result" is the property worth having, and because a boundary added later must not be able to bypass a compliance line by being installed after it.
+
 **Local sidecar corruption (#839).** The JSON sidecars under `~/.spotify-mcp` are user data. A file that
 exists but cannot be turned back into a store — an unreadable path, invalid JSON, or a well-formed
 document of the wrong shape — is never reported as an empty store. The shared policy lives in
@@ -683,6 +695,7 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
   So the duplication is real but small, and the one entry that is a true alias pair (`id`) is a case where the call works either way today. Folding it is worth doing under the deprecation path — it would also remove one advertised property from every `tools/list` for those five tools — but it is a separate change from the encoding contract, because it changes what the schema **says** rather than what a value may be spelled as.
 - **`response_format`** (`'concise' | 'detailed' | 'json'`, default `'concise'`) — `'concise'` renders human-readable prose, `'detailed'` appends fields the concise view drops, and `'json'` returns the raw API payload as JSON text. The one exception is a call site routed through `emitOnce` (row cap and emit-once, below), where the payload rides in `structuredContent` and the text block is a bounded summary rather than a second serialization of the same object.
 - **`structuredContent`** — every result attaches its machine-readable payload as MCP structuredContent alongside the human-readable text.
+- **Attribution and the link back to Spotify (#696)** — every non-error text block ends with `Music data supplied by Spotify.` exactly once, and every `spotify:` URI in it is followed inline by its `https://open.spotify.com/<kind>/<id>`. `structuredContent` keeps the bare URI, `json` text blocks and `isError` results are untouched, and `SPOTIFY_MCP_ATTRIBUTION=0` removes both. §5.17 is the contract, the reasoning and the exceptions; it is the only entry here that changes what a text block *says* rather than what it contains.
 - **`outputSchema` (#687)** — a tool that **publishes** an output schema declares it on the wire, so a host can type the result it gets back instead of parsing prose. The declaration is applied after registration by `applyToolOutputSchemas` in `src/tools/annotations.ts`, for the same reason annotations are: `McpServer.tool()`'s positional form cannot carry one, and the tools/list boundary already projects whatever the registry entry holds.
 
   The rollout is **deliberately partial**, and the reason is a correctness constraint rather than budget. The SDK — and this server's own output validation — **refuse** a result that declares an output schema and returns no `structuredContent`, so declaring one on a tool with a prose-only path converts a working response into an error on every call that takes that path. Every tool module is therefore in exactly one of three states, and startup fails on a module in none of them:
@@ -2352,6 +2365,32 @@ Eight registered tools read `GET /me/player/queue`. Two are left; the other six 
 | `predict_next_tracks` | `peek_next` with `count` for the item list; `get_queue` with `include: ["runtime"]` for the ETA | Every field. `items[]` is `runtime.timeline` — same rows, same cumulative `plays_at_ms`, widened with the album/show/artist context and not capped. `current_track_remaining_ms` is `runtime.current_track_remaining_ms`. |
 
 **These six are deliberately NOT reachable through `SPOTIFY_MCP_LEGACY_ALIASES=1`.** The eight `taste_*` aliases that flag restores were argument-identical to their canonical tools, so rewriting the name preserved the call. None of these six is: `queue_runtime_report` sends no arguments and its answer is the runtime analysis, while `get_queue` with no arguments answers with the raw queue. A name-only rewrite would return a different, entirely plausible answer under a name that used to be right — the same defect class as #803 and #830. The flag means "same call, new name", not "same name, different question".
+
+### 5.17 Attribution and the link back to Spotify (#696)
+
+**This is a rendered-output contract, and it is the only one in this document that changes what a result's text block says.** Everything else here describes what a result *contains*; this describes the last line of it and the shape of every row on it. A caller that string-matches a tool's prose, or that renders it in a fixed-height panel, will see different bytes from 3.0 onward. Nothing on the machine-readable side changes.
+
+| Applies to | Result |
+|---|---|
+| The **text block** of every non-error tool result | Gains a final line, exactly once: `Music data supplied by Spotify.` |
+| Every `spotify:<kind>:<id>` **in the text block** | Gains ` (https://open.spotify.com/<kind>/<id>)` immediately after it |
+| **`structuredContent`** | Unchanged. It keeps the bare `spotify:` URI. |
+| **`response_format: 'json'`** text block | Unchanged, byte-for-byte. |
+| An **`isError: true`** result | Unchanged. |
+
+**Why the two policy clauses, and why they land in different places.** Developer Policy Sec. II.4.a — *"If you display any Spotify Content you must clearly attribute the content as being supplied and made available by Spotify"* — is a footer, and the wording is `CONTENT_ATTRIBUTION_NOTICE` in `src/branding.ts`, beside the non-affiliation notices, because it is the same kind of asset: a sentence this project must not spell two ways. Sec. II.4.b — displayed metadata must link back to the applicable entity — is per row, and a bare `spotify:` URI does not satisfy it: that is an internal handle, not something a reader can open.
+
+**The row link is emitted INLINE, not collected at the end of the line.** A batch summary carries three URIs on one line, and one trailing list of three URLs beside a list of three URIs is a correspondence only the reader can reconstruct. Inline, the pairing needs no inference. Each link is emitted beside its own URI, in parentheses.
+
+**`json` mode is untouched, and that is the contract rather than an omission.** `response_format: 'json'` promises the raw API payload as JSON text (the `response_format` bullet above), and the response byte cap goes out of its way to keep that text parseable — *"It needs no appended note: … the text stays valid JSON."* A footer appended to a JSON document breaks `JSON.parse` for every host that relies on the promise, and would make the payload no longer the API's own response. The Sec. II.4.b link-back is still met in that mode, and by something better than a reconstruction: the raw payload carries Spotify's own `external_urls` on every entity, which is the canonical link, straight from the source. The test that pins this is in `tests/attribution.test.ts` and drives a real registered tool.
+
+**An error result carries no footer.** A validation refusal names this project's own schema; a "no active device" line names a local state. A footer that appears on everything is a footer a reader learns to skip, which is how an attribution stops being an attribution. It goes on results — that is, on rendered content.
+
+**A URI that cannot be resolved is left exactly as it was.** `spotify:track:trk1` is not a 22-character base62 entity id, so it gets no link and the row is unchanged; so does an unknown kind. Validation goes through `classifySpotifyReference`, the single Spotify URI grammar in `src/refs.ts`, so a second regex here would be a second definition of what a Spotify URI is. Fabricating a path for a shape that looks like one is the #803 failure — a value that could not be read replaced by a plausible one.
+
+**`SPOTIFY_MCP_ATTRIBUTION` turns both off, and it is the one opt-OUT switch in this server.** `0`, `false`, `no` and `off` remove the footer and the links. Unset, and any value outside that list, leaves them on — including `enabled`, which reads as "on" for `SPOTIFY_MCP_READONLY`. The direction is deliberate: the default is the legally required state, so a value this server cannot interpret must not be the one that removes a mandatory disclosure. An unrecognised value prints a stderr line naming the accepted spellings, because an operator who set the variable and saw nothing change would otherwise have no way to tell a typo from a deliberate setting.
+
+**One boundary, not sixty edits.** `installAttributionBoundary` in `src/attribution.ts` wraps `server.tool` / `server.registerTool` exactly as the truncation and acting-account boundaries do, and `src/index.ts` installs it LAST so it is the outermost wrapper and the last thing to touch a text block. The ordering against the acting-account echo is not load-bearing — that one writes `structuredContent`, this one writes the text block, so they are disjoint — and it is stated rather than left to be inferred. Sixty module-local edits would be sixty ways for the next module to ship uncredited rows; the boundary is the property that stops that.
 
 
 ## 6. Resources

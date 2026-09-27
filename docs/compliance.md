@@ -102,6 +102,75 @@ Text-only hosts do not need any of this: the attribution requirement is met in
 prose, not with a picture. A host that renders images must apply the rules
 above on its own surface; this repository supplies the policy, not the pixels.
 
+## Attribution on rendered rows
+
+The section above says a text-only host satisfies the requirement "in prose".
+This is that prose, and until [#696](https://github.com/NovaLux12/spotify-mcp-server/issues/696)
+landed it did not exist: every tool result this server rendered was uncredited
+Spotify metadata. The two rules above were both being met — no third-party mark
+was shipped, and the non-affiliation notice was on every surface — while the
+obligation in Rule 2's first half was not, and an unofficial client denying
+endorsement while displaying uncredited content is in breach, not compliant.
+
+**What is emitted.** Two things, both required by Developer Policy, in two
+different places:
+
+| Clause | Requirement | What this server emits |
+|---|---|---|
+| Sec. II.4.a | *"If you display any Spotify Content you must clearly attribute the content as being supplied and made available by Spotify."* | One line on the last line of every non-error result: `Music data supplied by Spotify.` |
+| Sec. II.4.b | Displayed metadata must link back to the applicable album / content / playlist. | Every `spotify:<kind>:<id>` in a rendered row is followed inline by `https://open.spotify.com/<kind>/<id>`. |
+
+The footer is the constant `CONTENT_ATTRIBUTION_NOTICE` in `src/branding.ts`,
+not a string typed at a call site, for the reason that module exists: it is the
+one place that owns this project's compliance wording, and hand-typed variants
+are how it ends up on five surfaces that disagree. The mechanics — when the
+line is emitted, what it is emitted next to, and the switch that turns it off —
+are `src/attribution.ts`; the wire contract is SPEC §5.17.
+
+**The two notices are not alternatives, and one does not substitute for the
+other.** The non-affiliation notice denies a relationship; the footer credits
+content. Shipping the first while dropping the second is the specific failure
+this section exists to end, so the footer is on by default and a separate
+variable, `SPOTIFY_MCP_ATTRIBUTION`, is what turns it off.
+
+**Why the footer is the only mark involved.** `docs/compliance.md`'s own
+"Visual attribution" section above rules out vendoring, redrawing or
+recolouring the logo, and says in words that a text-only host is met in prose.
+The footer is nominative plain text: it names the service whose content is
+being displayed, which is what Sec. II.4.a asks for and what the Branding
+Guidelines extend to metadata — *"If you use any Spotify metadata (including
+artist, album and track names, album artwork, and audio playback) it must always
+be accompanied by the Spotify brand."* It is not a reproduction of the brand,
+so it does not collide with `tests/third-party-marks-guard.test.ts` (#698), and
+a host that renders images should still apply the full-logo rules above on its
+own surface.
+
+**Three places the obligation is met without a footer, and why each is a
+decision rather than an omission.** All three are pinned by
+`tests/attribution.test.ts`, so none of them can quietly become a fourth:
+
+- **`json` mode.** `response_format: 'json'` returns the raw API payload as
+  JSON text, and hosts parse it. Appending to a JSON document breaks the
+  contract the mode exists to honour. Sec. II.4.b is met there by the payload's
+  own `external_urls`, which is Spotify's canonical link rather than one this
+  server reconstructed.
+- **Error results.** A validation refusal names this project's schema and a
+  "no active device" line names a local state. A line printed on everything is
+  a line nobody reads by the time it matters.
+- **`structuredContent`.** It keeps the bare `spotify:` URI, because that is
+  what a programmatic consumer matches on. The two channels are allowed to
+  differ: the text block is read by a person, the structured one by code.
+
+**Why it is one boundary and not sixty edits.** Every row renderer in this
+server is a module-local template and there are roughly sixty modules; editing
+them is not an option twice, because the second time it is sixty edits that can
+disagree. `installAttributionBoundary` wraps every registered tool callback the
+way the truncation and acting-account boundaries already do, so the modules
+inherit it and a new one inherits it for free. The link-back is also *refused*
+rather than guessed where a URI cannot be resolved: a short id or an unknown
+kind is left byte-for-byte alone, because a fabricated `open.spotify.com` path
+is a link that leads nowhere and reads as though it did not.
+
 ## Outbound `User-Agent`
 
 Every request to a third-party service carries a `User-Agent`. Naming that

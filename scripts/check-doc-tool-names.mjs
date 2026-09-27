@@ -88,6 +88,14 @@ const parameterAllowlist = new Set([
   // field the API no longer sends. Same category as `available_markets` above:
   // a removed API field, never a tool and never a request parameter.
   'album_group', 'explicit_content', 'linked_from',
+  // #696: the one API field SPEC.md §5.17 and docs/compliance.md name when they
+  // say where the link back to Spotify comes from in `response_format: 'json'`
+  // mode — `external_urls`, and specifically its `spotify` member, is the
+  // canonical link every entity object already carries. A response field, never
+  // a tool and never a request parameter: the same category as
+  // `available_markets` above, named because a doc has to say where the link
+  // comes from when it declines to construct one.
+  'external_urls',
   // #639: the coverage keys the removed-field rollups publish alongside their
   // buckets, so a census that could only group some of its rows says how many
   // it actually reached instead of reporting a total that does not add up.

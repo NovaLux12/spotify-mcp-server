@@ -96,6 +96,19 @@ export interface SpotifyMcpConfig {
    * `src/derivedanalytics.ts`.
    */
   experimentalAnalytics: boolean;
+  /**
+   * Whether rendered tool results carry the Spotify attribution footer and the
+   * link back to Spotify (#696). On unless `SPOTIFY_MCP_ATTRIBUTION` is
+   * explicitly falsy.
+   *
+   * On the snapshot for the `readonly` reason — the doctor row must not be able
+   * to print a state the boundary did not act on — and read back through
+   * `attributionEnv` at install time for the `experimentalAnalytics` reason: the
+   * boundary is installed once per session, and consulting the snapshot from
+   * inside a registration would mean the answer depended on a config object the
+   * caller has not finished building.
+   */
+  attribution: boolean;
 }
 
 export const DEFAULT_MAX_ITEMS = 50;
@@ -553,6 +566,53 @@ export function readOnlyEnv(env: NodeJS.ProcessEnv = process.env): boolean {
  */
 export function legacyAliasesEnv(env: NodeJS.ProcessEnv = process.env): boolean {
   return truthyEnv(env.SPOTIFY_MCP_LEGACY_ALIASES);
+}
+
+/**
+ * Whether rendered results carry the Spotify attribution footer and the
+ * link back to Spotify (#696). **On unless the value is explicitly falsy.**
+ *
+ * The direction is the opposite of every other switch in this file, and it is
+ * not a mistake. `SPOTIFY_MCP_READONLY` is an opt-IN, so an unreadable value
+ * must read as off or the server writes when the operator expected it not to.
+ * This one is an opt_OUT, because the default is the compliant behaviour: an
+ * unset or unrecognised value leaves attribution ON, which is also the
+ * direction a typo should fail. `SPOTIFY_MCP_ATTRIBUTION=enabled` — the exact
+ * mistake that reads as "on" everywhere else in this file — therefore keeps the
+ * footer, rather than silently stripping a disclosure Developer Policy
+ * Sec. II.4.a makes mandatory.
+ *
+ * It is `falsyEnv` and not `truthyEnv` for the same reason, and that is why
+ * `parseAttribution` below warns on an unrecognised value rather than staying
+ * silent: the operator who set this expected a change, and a change that did
+ * not happen is a support question. The line says which direction it fell.
+ *
+ * Read once per process, by the boundary installer in `src/attribution.ts` —
+ * the same process-level derivation argument as `readOnly` and
+ * `experimentalAnalytics`: every session of one server shares one environment.
+ */
+export function attributionEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !falsyEnv(env.SPOTIFY_MCP_ATTRIBUTION);
+}
+
+/**
+ * The same decision, plus the loud half (#696).
+ *
+ * An unrecognised value leaves attribution ON — the safe direction, since ON is
+ * the default and the legally required state — but saying nothing would let an
+ * operator who set the variable believe a footer had been removed when it had
+ * not. The line names the value, the accepted spellings and the direction, so
+ * a deliberate `off` reads differently from a typo.
+ */
+export function parseAttribution(raw: string | undefined): boolean {
+  if (unrecognisedBooleanEnv(raw)) {
+    console.error(
+      `[spotify-mcp] SPOTIFY_MCP_ATTRIBUTION "${raw?.trim()}" names no boolean; attribution stays ON. `
+        + `Accepted: ${FALSY_ENV_VALUES.join(', ')} to turn it OFF; any other value leaves it on. `
+        + 'If you meant to remove the footer, use one of the values above.',
+    );
+  }
+  return !falsyEnv(raw);
 }
 
 /**
@@ -1137,6 +1197,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     statsfmUserId: parseStatsfmUserId(env.STATSFM_USER_ID),
     readonly: parseReadOnly(env.SPOTIFY_MCP_READONLY),
     experimentalAnalytics: parseExperimentalAnalytics(env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS),
+    attribution: parseAttribution(env.SPOTIFY_MCP_ATTRIBUTION),
   };
 }
 
@@ -1327,6 +1388,17 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
     name: 'SPOTIFY_MCP_CONFIRM',
     summary: 'Set to exactly `never` to skip destructive-operation confirmation. Automation only.',
     default: null,
+    inHelp: true,
+  },
+  {
+    // The one opt-OUT switch in this registry, so its summary has to say which
+    // values turn it off — a reader who sees only "set to 1 to enable" would
+    // set the compliant default and think they had done something. The default
+    // is declared, not null, because `tests/docs.env-parity.test.ts` holds
+    // `--help` to stating the value of every registry entry that has one.
+    name: 'SPOTIFY_MCP_ATTRIBUTION',
+    summary: `Append the "Music data supplied by Spotify" line and an open.spotify.com link to every rendered row (${FALSY_ENV_VALUES.join('/')} turns it OFF; the default is ON, and only a value in that list reads as OFF).`,
+    default: 'on',
     inHelp: true,
   },
   {
