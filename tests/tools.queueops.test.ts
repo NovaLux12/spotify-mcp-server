@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerQueueOpsTools } from '../src/tools/queueops.js';
+import { installGatedPathContract } from '../src/gating.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
 
@@ -11,10 +12,22 @@ function episode(id: string) { return { uri: `spotify:episode:${id}`, type: 'epi
 
 function harness(overrides: Partial<{
   playlistItems: any[]; albumTracks: any[]; topTracks: any[];
+  artistAlbums: Array<{ id: string }>;
+  /** Thrown by the `/artists/{id}/top-tracks` read (the gated family, #1225). */
+  topTracksError?: Error;
+  /** Thrown by the `/artists/{id}/albums` read — a missing artist, say. */
+  artistAlbumsError?: Error;
+  /**
+   * Whether `src/gating.ts`'s contract is installed on the fake client. It is
+   * on every real client; `false` reproduces a host that skipped it, where the
+   * gated 403 arrives un-annotated.
+   */
+  installContract?: boolean;
   queueData: any; meResponse: any; createPlaylistResponse: any;
   postErrorFor?: (path: string, index: number) => Error | undefined;
 }> = {}) {
   const registered: any[] = []; const posts: string[] = []; const postBodies: any[] = [];
+  const getCalls: string[] = [];
   // Rows a write actually landed, keyed by playlist id. The playlist writers
   // now re-read /playlists/{id}/items to verify themselves (#879), so a stub
   // that answered nothing there would make a committed write look dropped.
@@ -23,11 +36,19 @@ function harness(overrides: Partial<{
   const fakeServer = { tool(name: string, _d: string, schema: any, handler: any) { registered.push({ name, schema, handler }); } } as unknown as McpServer;
   const client = {
     async get(path: string) {
+      getCalls.push(path);
       if (path === '/me/player/queue') return overrides.queueData ?? { currently_playing: track('cur'), queue: [track('q1'), track('q2')] };
       if (path === '/me' && overrides.meResponse) return overrides.meResponse;
       if (path === '/me') return { id: 'user123' } as any;
+      if (path.includes('/top-tracks')) {
+        if (overrides.topTracksError) throw overrides.topTracksError;
+        return { tracks: overrides.topTracks ?? [track('tt1')] } as any;
+      }
+      if (path.includes('/artists/') && path.endsWith('/albums')) {
+        if (overrides.artistAlbumsError) throw overrides.artistAlbumsError;
+        return { items: overrides.artistAlbums ?? [], total: (overrides.artistAlbums ?? []).length } as any;
+      }
       if (path.startsWith('/albums/')) return { items: overrides.albumTracks ?? [track('t1'), track('t2')], total: 2 } as any;
-      if (path.includes('/top-tracks')) return { tracks: overrides.topTracks ?? [track('tt1')] } as any;
       const items = itemsPath?.exec(path);
       if (items) {
         const list = rows.get(decodeURIComponent(items[1])) ?? [];
@@ -68,12 +89,17 @@ function harness(overrides: Partial<{
     async put(path: string) { throw Object.assign(new Error('no endpoint'), { status: 404 }); },
     async delete(path: string) { throw Object.assign(new Error('no endpoint'), { status: 404 }); },
   };
+  // The real client is wrapped by src/gating.ts at construction, so a gated
+  // 403 arrives ANNOTATED. Tests that assert on the gated class need that
+  // annotation to be present, or they would only be exercising the fallback
+  // predicate's status check.
+  if (overrides.installContract !== false) installGatedPathContract(client as unknown as SpotifyClient);
   registerQueueOpsTools(fakeServer, client as unknown as SpotifyClient);
   const find = (n: string) => registered.find((r: any) => r.name === n);
   const invoke = async (name: string, args: any) => {
     const t = find(name); assert.ok(t, `tool ${name} not found`); const parsed = z.object(t.schema).parse(args); return t.handler(parsed);
   };
-  return { registered, posts, postBodies, invoke };
+  return { registered, posts, postBodies, getCalls, invoke };
 }
 
 describe('queueops', () => {
@@ -130,6 +156,114 @@ describe('queueops', () => {
     assert.match(out.content[0].text, /dominant: 429 rate limited/);
     assert.match(out.content[0].text, /spotify:track:a2/);
     assert.match(out.content[0].text, /spotify:track:a4/);
+  });
+
+  // #1225 — /artists/{id}/top-tracks is app-registration-gated (src/gating.ts).
+  // Whether it answers is a property of the registration, not of the artist, so
+  // a gated/removed answer must reach the albums fallback that already sits
+  // under the read -- and must be disclosed, because an album-derived queue
+  // reported as a top-tracks selection is the #803 class.
+  const gated = (extra: Record<string, unknown> = {}) => ({
+    artistAlbums: [{ id: 'al1' }],
+    albumTracks: [track('alt1'), track('alt2')],
+    ...extra,
+  });
+
+  it('#1225 falls back to the albums walk when artist top-tracks is registration-gated', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(403, 'Forbidden') }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    assert.ok(h.getCalls.includes('/artists/ar1/albums'), 'the albums fallback must actually run');
+    assert.deepEqual(h.posts, ['/me/player/queue?uri=spotify%3Atrack%3Aalt1', '/me/player/queue?uri=spotify%3Atrack%3Aalt2']);
+    const structured = out.structuredContent as { ok: boolean; queued: number; resolved_via: string | null } | undefined;
+    assert.equal(structured?.ok, true);
+    assert.equal(structured?.queued, 2);
+    assert.equal(structured?.resolved_via, 'albums');
+  });
+
+  it('#1225 discloses which read failed, in prose and in the payload', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(403, 'Forbidden') }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    const structured = out.structuredContent as { note: string | null } | undefined;
+    assert.ok(structured?.note, 'a failed read must carry a note, not report as a plain top-tracks pick');
+    assert.match(structured.note, /\/artists\/\{id\}\/top-tracks/);
+    assert.match(structured.note, /403/);
+    // The note has to say the tracks did NOT come from top-tracks, or the
+    // reader cannot tell a fallback apart from a real selection.
+    assert.match(structured.note, /NOT from a top-tracks read/);
+    assert.match(out.content[0].text, /NOT from a top-tracks read/);
+  });
+
+  it('#1225 carries the same disclosure through a dry run', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(403, 'Forbidden') }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append', dry_run: true });
+    assert.match(out.content[0].text, /dry run/i);
+    assert.match(out.content[0].text, /NOT from a top-tracks read/);
+    assert.equal(h.posts.length, 0);
+  });
+
+  it('#1225 a bare, un-annotated 403 is the same class as an annotated one', async () => {
+    // A host that somehow skipped src/gating.ts still gets a plain 403 from
+    // this path. It must not be the one case that hard-fails.
+    const h = harness(gated({ topTracksError: new SpotifyApiError(403, 'Forbidden'), installContract: false }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    assert.equal((out.structuredContent as { resolved_via: string | null })?.resolved_via, 'albums');
+  });
+
+  it('#1225 the removed-endpoint answer (404/410) also reaches the fallback', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(410, 'Gone') }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    const structured = out.structuredContent as { resolved_via: string | null; note: string | null } | undefined;
+    assert.equal(structured?.resolved_via, 'albums');
+    assert.match(structured?.note ?? '', /410/);
+    assert.match(structured?.note ?? '', /REMOVED/);
+  });
+
+  it('#1225 an unrelated failure still throws — the fallback is not a blanket catch', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(500, 'Boom') }));
+    await assert.rejects(
+      () => h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' }),
+      /Boom/,
+    );
+    assert.equal(h.getCalls.includes('/artists/ar1/albums'), false, 'a 500 must not be degraded into the fallback');
+    assert.equal(h.posts.length, 0);
+  });
+
+  it('#1225 a genuinely missing artist still surfaces (the albums read 404s too)', async () => {
+    const h = harness(gated({ topTracksError: new SpotifyApiError(404, 'Not Found'), artistAlbumsError: new SpotifyApiError(404, 'Not Found') }));
+    await assert.rejects(
+      () => h.invoke('queue_playlist', { source_uri: 'spotify:artist:nope', mode: 'append' }),
+      /Not Found/,
+    );
+    assert.equal(h.posts.length, 0, 'a missing artist must not queue an empty queue');
+  });
+
+  it('#1225 an unreadable top-tracks read is never reported as 0 top tracks', async () => {
+    // The empty-but-200 answer DOES mean "the artist has no top tracks here",
+    // so it walks the albums with no note. Only a failed read carries one --
+    // that difference is the whole disclosure.
+    const h = harness(gated({ topTracks: [] }));
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    const structured = out.structuredContent as { resolved_via: string | null; note: string | null } | undefined;
+    assert.equal(structured?.resolved_via, 'albums');
+    assert.equal(structured?.note, null);
+    assert.doesNotMatch(out.content[0].text, /top-tracks/);
+  });
+
+  it('#1225 a healthy top-tracks read reports top_tracks and no note', async () => {
+    const h = harness({ topTracks: [track('tt1'), track('tt2')] });
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:artist:ar1', mode: 'append' });
+    const structured = out.structuredContent as { resolved_via: string | null; note: string | null } | undefined;
+    assert.equal(structured?.resolved_via, 'top_tracks');
+    assert.equal(structured?.note, null);
+    assert.equal(h.getCalls.includes('/artists/ar1/albums'), false, 'a healthy read must not pay for the fallback');
+  });
+
+  it('#1225 a non-artist source is untouched by the gating fallback', async () => {
+    const h = harness({ playlistItems: [{ item: track('p1') }] });
+    const out = await h.invoke('queue_playlist', { source_uri: 'spotify:playlist:pl1', mode: 'append' });
+    const structured = out.structuredContent as { resolved_via: string | null; note: string | null } | undefined;
+    assert.equal(structured?.resolved_via, null);
+    assert.equal(structured?.note, null);
   });
   it('queue_playlist handles album source', async () => {
     const h = harness({ albumTracks: [track('al1'), track('al2')] });

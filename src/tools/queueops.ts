@@ -11,6 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
 import { PlaybackDryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
+import { graceful403Message, isRemovedEndpointFailure } from '../gating.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
 
@@ -105,13 +106,62 @@ export function formatQueueFailures(failed: QueueFailure[]): string {
   return `${failed.length} failed (dominant: ${dominant}; ${shown}${remainder})`;
 }
 
-async function resolveUris(client: SpotifyClient, sourceUri: string, limit: number): Promise<{ uris: string[]; sourceType: string; total: number }> {
+/** The app-registration-gated read the artist branch of `queue_playlist` starts from (#1225). */
+const TOP_TRACKS_ENDPOINT = '/artists/{id}/top-tracks';
+
+/**
+ * Why a gated or removed answer to the artist top-tracks read falls back to
+ * the albums walk, and what the caller has to be told about it.
+ *
+ * Whether that call answers at all is a property of the app registration, not
+ * of the artist: the live OpenAPI schema still publishes the path flagged
+ * `deprecated: true` with a documented 403, while Spotify's February 2026
+ * changelog lists the same path as [REMOVED] with no replacement — the
+ * three-way disagreement SPEC.md §`get_artist_top_tracks` records. So the
+ * albums walk beneath that read is the right answer either way.
+ *
+ * But falling through *silently* would report an album-derived queue as an
+ * artist top-tracks selection, which is this repo's own #803 class: a
+ * correctly named field that lies about a read that never happened. So the
+ * note names which read failed and where the tracks actually came from.
+ */
+function topTracksUnavailableNote(err: unknown): string {
+  const status = err instanceof SpotifyApiError ? err.status : undefined;
+  const why = status === 403
+    ? graceful403Message(TOP_TRACKS_ENDPOINT, err as SpotifyApiError)
+    : (
+      `Spotify answered ${status} for ${TOP_TRACKS_ENDPOINT}, the shape a removed endpoint returns: the February 2026 ` +
+      'Web API changelog lists this path as [REMOVED] with no replacement named, while the current OpenAPI schema ' +
+      'still publishes it flagged `deprecated: true`.'
+    );
+  return (
+    `${why} Either way it is the app registration rather than the artist, so that call returned no tracks at all — ` +
+    'the tracks queued below come from the artist’s most recent albums, NOT from a top-tracks read.'
+  );
+}
+
+/** Which read actually produced the URIs, for an artist source (#1225). */
+type ArtistResolveVia = 'top_tracks' | 'albums';
+
+interface ResolvedUris {
+  uris: string[];
+  sourceType: string;
+  total: number;
+  /** Artist sources only: which read supplied the URIs. */
+  via?: ArtistResolveVia;
+  /** Set only when a read failed and a fallback supplied the URIs. */
+  note?: string;
+}
+
+async function resolveUris(client: SpotifyClient, sourceUri: string, limit: number): Promise<ResolvedUris> {
   const parsed = parseSpotifyUri(sourceUri);
   if (!parsed) throw new Error(`Invalid Spotify URI: ${sourceUri}`);
   const type = parsed.type;
   const id = parsed.id;
   let uris: string[] = [];
   let total = 0;
+  let via: ArtistResolveVia | undefined;
+  let note: string | undefined;
   if (type === 'playlist') {
     const items = await client.getAllPages<{ item?: SpotifyTrack | null; track?: SpotifyTrack | null }>(
       `/playlists/${id}/items`, { limit: '100' }, { maxItems: limit },
@@ -126,10 +176,25 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
     uris = items.map((t) => t.uri).filter(Boolean).slice(0, limit);
     total = page?.total ?? uris.length;
   } else if (type === 'artist') {
-    const top = await client.get<{ tracks: SpotifyTrack[] }>(`/artists/${id}/top-tracks`, { market: 'from_token' });
-    uris = (top?.tracks ?? []).map((t) => t.uri).filter(Boolean).slice(0, limit);
-    total = uris.length;
+    via = 'top_tracks';
+    try {
+      const top = await client.get<{ tracks: SpotifyTrack[] }>(`/artists/${id}/top-tracks`, { market: 'from_token' });
+      uris = (top?.tracks ?? []).map((t) => t.uri).filter(Boolean).slice(0, limit);
+      total = uris.length;
+    } catch (err) {
+      // `isRemovedEndpointFailure` is the shared predicate from `src/gating.ts`
+      // and is the right one here precisely because the endpoint is
+      // registration-dependent rather than simply gone: it matches the 403 the
+      // installed gating contract annotates AND a bare un-annotated 403 (the
+      // same class, contract simply not installed), plus the 404/410 a removed
+      // path answers with. A genuine missing artist still surfaces, because
+      // the albums walk below 404s on it too. Anything else — 5xx, transport —
+      // rethrows untouched, so an unrelated failure is never degraded away.
+      if (!isRemovedEndpointFailure(err)) throw err;
+      note = topTracksUnavailableNote(err);
+    }
     if (uris.length === 0) {
+      via = 'albums';
       const albums = await client.get<SpotifyPaged<{ id: string }>>(`/artists/${id}/albums`, { limit: String(ARTIST_ALBUM_PAGE_LIMIT) });
       for (const al of (albums?.items ?? []).slice(0, 5)) {
         const tr = await client.get<SpotifyPaged<SpotifyTrack>>(`/albums/${al.id}/tracks`, { limit: '20' });
@@ -145,7 +210,7 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
   } else {
     throw new Error(`Unsupported source type: ${type} — use playlist, album, artist, track or episode`);
   }
-  return { uris, sourceType: type, total };
+  return { uris, sourceType: type, total, via, note };
 }
 
 export function registerQueueOpsTools(server: McpServer, client: SpotifyClient): void {
@@ -170,18 +235,31 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       const cap = Math.min(args.limit ?? 100, 200);
       const parsed = parseSpotifyUri(args.source_uri as string);
       if (!parsed) throw new Error(`Invalid Spotify URI: ${args.source_uri}`);
-      const { uris, sourceType, total } = await resolveUris(client, args.source_uri as string, cap);
+      const { uris, sourceType, total, via, note } = await resolveUris(client, args.source_uri as string, cap);
+      // #1225: a gated/removed top-tracks answer falls back to the artist's
+      // albums, and every exit carries that disclosure — `resolved_via` says
+      // which read produced the list, `note` says why the other one did not.
+      // Without it an album-derived queue would be reported as a top-tracks
+      // selection, which is the #803 class.
+      const sourceDisclosure = {
+        resolved_via: via ?? null,
+        note: note ?? null,
+      };
       if (uris.length === 0) {
-        return textResult(`No tracks found for ${args.source_uri} (${sourceType}).`, { ok: true, source_uri: args.source_uri, source_type: sourceType, total: 0, queued: 0 });
+        return textResult(
+          `No tracks found for ${args.source_uri} (${sourceType}).${note ? `\n${note}` : ''}`,
+          { ok: true, source_uri: args.source_uri, source_type: sourceType, total: 0, queued: 0, ...sourceDisclosure },
+        );
       }
       if (args.dry_run) {
         const preview = uris.slice(0, 5);
-        return { content: [{ type: 'text', text: describeDryRun('queue_playlist', args.source_uri as string, [`${args.mode} ${uris.length} tracks (source: ${sourceType}, total ${total})`, ...preview]) }] };
+        const text = describeDryRun('queue_playlist', args.source_uri as string, [`${args.mode} ${uris.length} tracks (source: ${sourceType}, total ${total})`, ...preview]);
+        return { content: [{ type: 'text', text: note ? `${text}\n${note}` : text }] };
       }
       const { queued, failed } = await addToQueueBatch(client, uris, args.device_id as string | undefined);
       const failureSummary = formatQueueFailures(failed);
-      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failureSummary ? ` — ${failureSummary}` : ''}`;
-      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed, dominant_cause: dominantQueueFailureReason(failed) ?? null }, text);
+      const text = `Queued ${queued}/${uris.length} tracks from ${sourceType} ${args.source_uri} (mode=${args.mode})${failureSummary ? ` — ${failureSummary}` : ''}${note ? `\n${note}` : ''}`;
+      return mutationResult(args.response_format as string | undefined, { ok: true, source_uri: args.source_uri, source_type: sourceType, mode: args.mode, total, queued, failed, dominant_cause: dominantQueueFailureReason(failed) ?? null, ...sourceDisclosure }, text);
     },
   );
 

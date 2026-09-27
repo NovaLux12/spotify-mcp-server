@@ -134,6 +134,11 @@ const parameterAllowlist = new Set([
   // instead of inferring it from the row count. structuredContent keys on the
   // tools that report them, not tools and not parameters.
   'requests_read', 'search_requests_read',
+  // #1225: queue_playlist says which read produced the list it queued —
+  // `top_tracks` or the `albums` fallback that runs when the app registration
+  // is gated off the top-tracks path. A structuredContent key and its enum
+  // members, naming the tool's own result, not a tool and not a parameter.
+  'resolved_via', 'top_tracks',
 ]);
 /** Registration keys are module names, not tools; docs legitimately name them. */
 const registrationKeyNames = new Set(census.registrationKeyNames ?? []);
