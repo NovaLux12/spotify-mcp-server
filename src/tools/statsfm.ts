@@ -1,11 +1,16 @@
 /**
  * stats.fm tools (read-only): listening stats, tops, catalog and social
- * lookups against the public stats.fm API (https://api.stats.fm/api/v1).
+ * lookups against the public stats.fm API.
  *
  * No Spotify auth required — the StatsfmClient does unauthenticated GETs,
  * so this module is never scope-gated and stays visible under
  * SPOTIFY_MCP_READONLY. Registration key: `statsfm` (own toolset, on by
  * default, additive only).
+ *
+ * Reads default to the process-wide client in `lib/statsfm-client.ts` rather
+ * than to a fresh one per registrar call, so this module shares its timeout,
+ * retry and cache with `statsfm_taste.ts` and `taste_composites.ts` (#907).
+ * Passing a client explicitly is a test seam, not a second policy.
  *
  * Endpoint paths verified live 2026-09-05; stats.fm envelopes are
  * `{ item }` for singles and `{ items }` for collections.
@@ -15,6 +20,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   StatsfmClient,
   StatsfmApiError,
+  statsfmClient,
 } from '../lib/statsfm-client.js';
 import {
   ResponseFormat,
@@ -348,7 +354,7 @@ function isFriendCount(lookup: FriendLookup): lookup is FriendCount {
   return 'streams' in lookup;
 }
 
-export function registerStatsfmTools(server: McpServer, client: StatsfmClient = new StatsfmClient()): void {
+export function registerStatsfmTools(server: McpServer, client: StatsfmClient = statsfmClient()): void {
   // 1. statsfm_resolve_user — GET /users/{id}, search fallback on 404.
   server.tool(
     'statsfm_resolve_user',

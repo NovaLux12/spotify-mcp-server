@@ -45,13 +45,23 @@ const BASE = 'https://api.stats.fm/api/v1';
  * The recording is the point. Asserting only the return value would let the
  * query builder emit a malformed URL and every behavioural test below would
  * still pass, because a stub answers whatever it is asked.
+ *
+ * The backoff wait is stubbed to nothing. Since #907 the client retries a 429
+ * or 5xx once, and a stub that answers the same status twice would otherwise
+ * spend the advertised `Retry-After` — 10s for the HTTP-date case below — on
+ * every classification assertion. The wait is not what these tests are about;
+ * how long it is, and that it happens at all, is asserted in
+ * `statsfm-shims.test.ts`.
  */
 function recordingClient(respond: (url: string) => Response | Promise<Response>) {
   const urls: string[] = [];
-  const client = new StatsfmClient(async (url) => {
-    urls.push(url);
-    return await respond(url);
-  });
+  const client = new StatsfmClient(
+    async (url) => {
+      urls.push(url);
+      return await respond(url);
+    },
+    { sleepFn: async () => {} },
+  );
   return {
     client,
     urls,

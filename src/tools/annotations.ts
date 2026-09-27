@@ -1426,6 +1426,15 @@ function statsfmFailure(tool: string, error: StatsfmApiError): ErrorFields {
     reason = safeStatsfmReason(error.reason) ?? 'statsfm_unavailable';
     fix = 'Retry shortly.';
     text = `${tool} could not reach stats.fm because the service is unavailable; retry shortly.`;
+  } else if (error.status === 408) {
+    // Our own deadline, raised by StatsfmClient (#907), not a stats.fm status.
+    // Without this it would fall through to the generic branch and tell the
+    // caller to "inspect protected server diagnostics" for what is a plain
+    // slow upstream. Mirrors the Spotify 408 mapping.
+    kind = 'unavailable';
+    reason = 'statsfm_timeout';
+    fix = 'Retry shortly.';
+    text = `${tool} timed out while waiting for stats.fm; retry shortly.`;
   } else {
     kind = 'internal';
     reason = safeStatsfmReason(error.reason) ?? 'statsfm_error';
