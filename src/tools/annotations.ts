@@ -537,21 +537,6 @@ export const READ_ONLY_OVERRIDES: ReadonlySet<string> = new Set(
 );
 
 /**
- * The gate for SPOTIFY_MCP_READONLY. Every read-only decision — module gating,
- * the doctor report, the freshness watermark hold, `whats_new` annotation —
- * must agree, or one env value yields two contradictory safety states (modules
- * visible but the watermark frozen, say).
- *
- * It reads process.env LIVE rather than the config snapshot on purpose. It is
- * consulted once at registration and again on every write-capable call, and
- * `spotify_doctor` builds a registry in-process to report a surface — a
- * snapshot bound at startup would answer for a different moment than the gate
- * that actually ran. Delegating to config's `readOnlyEnv` keeps the PARSE in
- * one place (#611) without freezing the ANSWER.
- *
- * The CLI doctor therefore reports this function's value, not the snapshot's,
- * so the disclosure is what the registry acted on rather than a field that
- * could drift from it. `tests/config-readonly.test.ts` pins the two to agree.
  * Tools in OVERRIDES whose entry declares destructiveHint: true — the
  * destructive-side mirror of READ_ONLY_OVERRIDES, and the audited set a name
  * must appear in to be advertised as destructive without a mutating verb.
@@ -574,11 +559,23 @@ export const DESTRUCTIVE_OVERRIDES: ReadonlySet<string> = new Set(
 );
 
 /**
- * The single reader of SPOTIFY_MCP_READONLY. Every read-only decision — module
- * gating, the doctor report, the freshness watermark hold, `whats_new`
- * annotation — must agree, or one env value yields two contradictory safety
- * states (modules visible but the watermark frozen, say).
+ * The gate for SPOTIFY_MCP_READONLY. Every read-only decision — module gating,
+ * the doctor report, the freshness watermark hold, `whats_new` annotation —
+ * must agree, or one env value yields two contradictory safety states (modules
+ * visible but the watermark frozen, say).
+ *
+ * It reads process.env LIVE rather than the config snapshot on purpose. It is
+ * consulted once at registration and again on every write-capable call, and
+ * `spotify_doctor` builds a registry in-process to report a surface — a
+ * snapshot bound at startup would answer for a different moment than the gate
+ * that actually ran. Delegating to config's `readOnlyEnv` keeps the PARSE in
+ * one place (#611) without freezing the ANSWER.
+ *
+ * The CLI doctor therefore reports this function's value, not the snapshot's,
+ * so the disclosure is what the registry acted on rather than a field that
+ * could drift from it. `tests/config-readonly.test.ts` pins the two to agree.
  */
+
 export function readOnlyModeEnabled(): boolean {
   return readOnlyEnv();
 }
