@@ -345,14 +345,121 @@ function braceSpans(code: string): BraceSpan[] {
 }
 
 /**
+ * Anything that can make a `structuredContent` write conditional.
+ *
+ * Matched against one STATEMENT at a time rather than the whole body, because a
+ * `?` three statements away says nothing about the one being classified. Every
+ * one of these routes is a place where a payload can be withheld, so a
+ * statement containing any of them is treated as conditional even when the
+ * route turns out not to reach this particular write. Erring that way keeps a
+ * module reported; erring the other way declares a module that breaks on its
+ * prose path.
+ */
+const CONDITIONAL_STATEMENT =
+  /\?|&&|\|\||\?\?|\b(?:if|else|while|for|switch|catch|do)\b/;
+
+/**
+ * The statement containing offset `at`, walking outward with bracket depth so
+ * the `;` and `}` inside a literal are not mistaken for the end of it.
+ *
+ * The backward walk deliberately does not stop at a `(`: in
+ * `structured && (out.structuredContent = structured)` that paren opens AFTER
+ * the `&&`, so stopping there would hide the only guard in the statement and
+ * report a conditional write as an unconditional one — the exact inversion this
+ * rule exists to prevent. Running the depth negative instead keeps the `&&` in
+ * the returned text, where `CONDITIONAL_STATEMENT` can see it.
+ */
+function statementBounds(code: string, at: number): { start: number; end: number } {
+  let start = 0;
+  let depth = 0;
+  for (let i = at - 1; i >= 0; i--) {
+    const c = code[i]!;
+    if (c === ')' || c === ']' || c === '}') { depth++; continue; }
+    if (c === '(' || c === '[' || c === '{') {
+      // A `{` at depth 0 opens a block the statement starts inside.
+      if (depth === 0 && c === '{') { start = i + 1; break; }
+      depth--;
+      continue;
+    }
+    if (depth <= 0 && c === ';') { start = i + 1; break; }
+  }
+  let end = code.length;
+  depth = 0;
+  for (let i = at; i < code.length; i++) {
+    const c = code[i]!;
+    if (c === '(' || c === '[' || c === '{') { depth++; continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) { end = i; break; }
+      depth--;
+      continue;
+    }
+    if (depth === 0 && c === ';') { end = i; break; }
+  }
+  return { start, end };
+}
+
+/** Whether `body` binds `name` to a literal it can point at as a whole. */
+function boundToLiteral(body: string, name: string): boolean {
+  for (const m of body.matchAll(new RegExp(`\\b(?:const|let|var)\\s+${name}\\b[^=]*=\\s*`, 'g'))) {
+    const value = body.slice(m.index + m[0].length);
+    const open = value.length - value.trimStart().length;
+    if (value[open] !== '{' && value[open] !== '[') continue;
+    const end = spanEnd(value, open);
+    // `const payload = cond ? {a: 1} : undefined` is a literal in the source and
+    // no payload at all at runtime; the ternary is the whole difference, and it
+    // is the same distinction this rule makes on the right-hand side.
+    if (CONDITIONAL_STATEMENT.test(end < 0 ? value : value.slice(open, end + 1))) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Whether the body attaches a payload it has already built, at a site nothing
+ * guards — the `const out = { content: … }; out.structuredContent = { … };`
+ * shape that is the most ordinary thing a new tool module can look like.
+ *
+ * This is a SECOND route to `always`, not a weaker one. `always` already means
+ * "no call site of this emitter is prose-only", and the shared-literal route
+ * established that meaning by asking whether `content` and `structuredContent`
+ * are keys of one literal. That question has a false answer for the
+ * two-statement form, where the two keys are in different literals and neither
+ * is conditional: the emitter writes a payload on every single call, and the
+ * arity rule has no question to ask. Left as `conditional`, `payloadIndex`
+ * finds no parameter to name and the module is reported as unclassifiable —
+ * which is what made this shape a false positive, and what made "0
+ * unclassified of 73" an accident of current style rather than a result.
+ *
+ * The guard test is what keeps the blindness fix intact. `if (structured)
+ * out.structuredContent = structured` is the `textOut` shape, its write IS
+ * conditional, and it has to stay in the `conditional` bucket so the arity rule
+ * can find its parameter. A rule that only asked "is there a literal here?" would
+ * reclassify that emitter as `always` and every payload-less call site in the
+ * tree would read as prose-safe, which is #1495 arriving by another route.
+ */
+function attachesBuiltPayload(body: string): boolean {
+  for (const m of body.matchAll(/\bstructuredContent\s*[:=]\s*/g)) {
+    const at = m.index;
+    const { start, end } = statementBounds(body, at);
+    if (CONDITIONAL_STATEMENT.test(body.slice(start, end))) continue;
+    const value = body.slice(at + m[0].length, end).trim();
+    if (value.startsWith('{') || value.startsWith('[')) return true;
+    if (/^[A-Za-z_$][\w$]*$/.test(value) && boundToLiteral(body, value)) return true;
+  }
+  return false;
+}
+
+/**
  * A module-local function that builds a tool result, and whether the payload
  * it attaches is optional.
  *
  * `never` attaches no payload at all, so every call site is prose-only.
- * `always` puts `content` and `structuredContent` in the same literal, so no
- * call site is. `conditional` — the `textOut` shape, and the one #1495 is
- * about — attaches the payload from a PARAMETER, so a call that omits that
- * parameter returns prose.
+ * `always` attaches a payload on every call, so no call site is prose-only —
+ * whether it shares one literal with `content` (the `return { content,
+ * structuredContent }` form) or writes the payload as a literal of its own
+ * (`attachesBuiltPayload`). `conditional` — the `textOut` shape, and the one
+ * #1495 is about — attaches the payload from a PARAMETER, so a call that omits
+ * that parameter returns prose.
  */
 interface LocalEmitter {
   readonly name: string;
@@ -389,7 +496,7 @@ function localEmitters(code: string, spans: readonly BraceSpan[]): LocalEmitter[
     const sharesLiteral = own.some((s) => s.keys.includes('content') && s.keys.includes('structuredContent'));
     const kind: LocalEmitter['kind'] = !/structuredContent/.test(body)
       ? 'never'
-      : sharesLiteral
+      : sharesLiteral || attachesBuiltPayload(body)
         ? 'always'
         : 'conditional';
     let payloadIndex = -1;
@@ -956,6 +1063,130 @@ describe('#1495 "I could not classify this" is a failure, not a safe verdict', (
     assert.ok(found);
     assert.notDeepEqual(found.unclassified, []);
     assert.match(found.unclassified.join(' '), /no parameter the scanner can name/);
+  });
+
+  // -------------------------------------------------------------------------
+  // The `unclassified` arm must not fire on ordinary code.
+  //
+  // An earlier cut of this file classified an emitter `conditional` whenever
+  // `content` and `structuredContent` were not keys of the SAME literal. That
+  // missed the most ordinary shape a new tool module can have — build the
+  // result, then attach the payload in a second statement — and sent it down the
+  // `payloadIndex` arm, which found no parameter to name and reported the module
+  // as unclassifiable. The identical module with the payload inlined into the
+  // `return` literal was silent, so the only difference was one intermediate
+  // `const`, and "0 unclassified of 73" measured the tree's current style rather
+  // than the scanner's reach. That is the gate AGENTS.md §3 warns about: one
+  // that punishes ordinary work gets routed around within a week, and a
+  // routed-around gate catches nothing.
+  //
+  // Every fixture below is a module that attaches a payload on EVERY call. The
+  // last one is the load-bearing half — it differs from the others only by a
+  // guard, and it is the shape #1495 exists for. Fixing the false positive by
+  // asking "is there a literal?" rather than "is this write guarded?" would turn
+  // that module prose-safe, so both halves are asserted here rather than one.
+  // -------------------------------------------------------------------------
+
+  it('a module that attaches its payload in a second statement is classified, not unclassified', () => {
+    const [found] = only('attached-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          out.structuredContent = { probes: rows };
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.deepEqual(
+      found.unclassified,
+      [],
+      'a module that plainly attaches a payload is classifiable; reporting it as unclassifiable is a false '
+      + 'positive that teaches authors to route around this gate',
+    );
+    assert.equal(found.proseOnly, false, 'every call attaches a payload, so there is no prose-only path');
+  });
+
+  it('the same payload written through a local const, or spread, is still classifiable', () => {
+    // Two more spellings of the same fact, each of which a rule keyed only on
+    // "a literal appears after `=`" would get wrong in opposite directions: the
+    // const is a literal the scanner has to resolve one step, and the spread is
+    // a literal that is not the first character.
+    const sources = new Map([
+      ['via-const.ts', `
+        export function registerProbeTools(server: McpServer): void {
+          server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+            const rows = [{ name: args.name }];
+            const payload = { probes: rows };
+            const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+            out.structuredContent = payload;
+            return out;
+          });
+        }
+      `],
+      ['via-spread.ts', `
+        export function registerProbeTools(server: McpServer): void {
+          server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+            const rows = [{ name: args.name }];
+            const meta = { total: rows.length };
+            const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+            out.structuredContent = { ...meta, probes: rows };
+            return out;
+          });
+        }
+      `],
+    ]);
+    for (const [name, source] of sources) {
+      const [found] = scanToolSources(new Map([[name, source]]));
+      assert.ok(found, `${name} is scanned`);
+      assert.deepEqual(found.unclassified, [], `${name} attaches a payload on every call`);
+      assert.equal(found.proseOnly, false, `${name} has no prose-only path`);
+    }
+  });
+
+  it('a GUARDED literal payload is still unclassified — the fix may not reach this', () => {
+    // Identical to the fixture above, plus `if (rows.length)`. The payload can
+    // be withheld, the condition is a local rather than a parameter, so no arity
+    // rule can say which call sites lose it, and the honest answer is the
+    // failing one. This is the assertion that keeps the false positive above
+    // from being closed by weakening the gate instead of by reading the guard.
+    const [found] = only('guarded-literal-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          if (rows.length) out.structuredContent = { probes: rows };
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(
+      found.unclassified,
+      [],
+      'a conditional write of a literal is still a payload the scanner cannot trace to a parameter',
+    );
+    assert.match(found.unclassified.join(' '), /no parameter the scanner can name/);
+  });
+
+  it('a payload built by a call is still unclassified, guarded or not', () => {
+    // `shape(rows)` is a literal to nobody. Whether it can return nothing is a
+    // question about `shape`, and the scanner reads one file at a time, so it
+    // cannot answer it. Widening the match to "anything after `=`" would answer
+    // it by guessing, which is the under-reporting that costs a production call.
+    const [found] = only('called-payload.ts', `
+      export function registerProbeTools(server: McpServer): void {
+        server.tool('get_probe', 'gets a probe.', {}, async (args: { name: string }): ToolOut => {
+          const rows = [{ name: args.name }];
+          const out: ToolOut = { content: [{ type: 'text' as const, text: rows.map((r) => r.name).join('\\n') }] };
+          out.structuredContent = shape(rows);
+          return out;
+        });
+      }
+    `);
+    assert.ok(found);
+    assert.notDeepEqual(found.unclassified, [], 'a call the scanner cannot resolve is not a payload it can vouch for');
   });
 
   it('the real tree has no module the scanner cannot classify', () => {
