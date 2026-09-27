@@ -986,8 +986,17 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const op = args.op ?? 'strip_noise';
-      if (op === 'prefix' && !args.prefix) throw new Error('prefix op requires --prefix');
-      if (op === 'suffix' && !args.suffix) throw new Error('suffix op requires --suffix');
+      // #887: name the schema parameter, not a CLI flag. This server is
+      // reached over MCP — there is no argv — so `--prefix` names something
+      // the caller cannot pass. Each name below is a key of this tool's own
+      // inputSchema, and the parenthetical restates that key's own describe()
+      // rather than inventing a default or a bound the schema does not state.
+      if (op === 'prefix' && !args.prefix) {
+        throw new Error('playlist_names_bulk_normalize: op="prefix" requires the `prefix` param (text to prepend to each name, e.g. "[mix] ")');
+      }
+      if (op === 'suffix' && !args.suffix) {
+        throw new Error('playlist_names_bulk_normalize: op="suffix" requires the `suffix` param (text to append to each name, e.g. " (2026 mix)")');
+      }
       const playlists = await client.getAllPages<SpotifyPlaylistSimple>(
         '/me/playlists',
         { limit: '50' },
@@ -1089,10 +1098,14 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const p = await loadPlaylistFull(client, args.playlist_id);
       const keepUris = new Set<string>();
       if (args.keep_by === 'uris') {
-        if (!args.values?.length) throw new Error('keep_by=uris requires --values');
+        if (!args.values?.length) {
+          throw new Error('playlist_keep_only: keep_by=uris requires a non-empty `values` param (the track URIs to keep; every item left out is dropped)');
+        }
         args.values.forEach((u) => keepUris.add(u));
       } else if (args.keep_by === 'artist') {
-        if (!args.artist) throw new Error('keep_by=artist requires --artist');
+        if (!args.artist) {
+          throw new Error('playlist_keep_only: keep_by=artist requires the `artist` param (an artist ID/URI or name; only tracks by that artist are kept)');
+        }
         const wanted = normalizeArtistRef(args.artist).toLowerCase();
         for (const { artists, row } of rowArtists(p.items)) {
           if (
@@ -1105,7 +1118,9 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         const t = args.type ?? 'track';
         for (const r of toRows(p.items)) if (r.kind === t) keepUris.add(r.uri);
       } else {
-        if (!args.query) throw new Error('keep_by=query requires --query');
+        if (!args.query) {
+          throw new Error('playlist_keep_only: keep_by=query requires the `query` param (items are kept when their name contains this substring)');
+        }
         const q = args.query.toLowerCase();
         for (const r of toRows(p.items)) if (r.name.toLowerCase().includes(q)) keepUris.add(r.uri);
       }
@@ -1479,7 +1494,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       const medianAge = medianYear ? nowYear - medianYear : null;
       const verdict =
         years.length === 0
-          ? 'UNKNOWN — no release dates resolved (try --market)'
+          ? 'UNKNOWN — no release dates resolved (pass the `market` param, e.g. "GB", to refetch the items in that market so album release dates resolve)'
           : medianAge != null && medianAge <= 5
             ? 'CURRENT'
             : medianAge != null && medianAge <= 15
