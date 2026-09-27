@@ -37,12 +37,16 @@ jobs:
         run: npx tsc --noEmit
 
       - name: Test-tree typecheck budget
-        # #1408. `tsconfig.json` includes only `src`, so the typecheck above has
-        # never seen a test file, and `tsx` strips types rather than checking
-        # them — a test naming a symbol that does not exist runs and passes.
-        # The count is baselined rather than zero: this fails only on an
-        # INCREASE (in total, or in any single file), so the debt can only fall
-        # and each landed fix ratchets the baseline down with --write.
+        # #1408, #1478. `tsconfig.json` includes only `src`, so the typecheck
+        # above has never seen a test file, and `tsx` strips types rather than
+        # checking them — a test naming a symbol that does not exist runs and
+        # passes. The count is baselined rather than zero, and the baseline is
+        # required to be a CURRENT measurement of this tree: above it is a
+        # regression, below it is slack nobody can spend (a one-directional
+        # comparison is what let three dead entries accumulate to the "5 to
+        # give back" this job kept reporting as a pass). Re-baseline with
+        # `npm run check:tests-typecheck -- --write`; widening the budget takes
+        # `--allow-increase "<reason>"`.
         run: npm run check:tests-typecheck
 
       - name: Payload-shape guard (no `as any` under src/tools)
