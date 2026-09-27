@@ -45,6 +45,7 @@ import {
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
+import { encodingPlanFor, type EncodingPlan } from './encoding.js';
 
 /**
  * v2 registry policy (#909/#918). Prefix allowances are a frozen baseline, not
@@ -3362,6 +3363,56 @@ function singleLine(value: string | undefined, cap: number): string | undefined 
   return oneLine.length > cap ? `${oneLine.slice(0, cap - 1).trimEnd()}…` : oneLine;
 }
 
+/**
+ * Apply {@link encodingPlanFor} to one call's arguments (#694).
+ *
+ * The per-field verification is the whole safety argument, so it is done here
+ * rather than inside the plan: a candidate value is written back only after the
+ * FIELD'S OWN schema accepts it. A guess that does not hold therefore costs the
+ * caller nothing — the raw value is kept and the boundary's normal refusal runs
+ * against it, naming the parameter and what it expected. Splitting `"a,b,c"`
+ * into three entries and having entry two fail the field's pattern is exactly
+ * the case that must not turn into a confusing partial error, and it does not:
+ * the split is discarded whole.
+ *
+ * `shape` is the tool's zod object shape, so this validates a candidate against
+ * the same schema the whole-object parse will. A field the shape does not know
+ * (which the unknown-parameter check has already refused by this point) keeps
+ * its raw value rather than being rewritten on the plan's word alone.
+ *
+ * Returns the original object identity when nothing changed, which is the
+ * common case: a call that already encodes its arguments correctly is handed to
+ * `safeParseAsync` exactly as it was before this layer existed.
+ */
+async function encodingTolerantArgs(
+  plan: EncodingPlan,
+  shape: Record<string, AnySchema> | undefined,
+  args: Readonly<Record<string, unknown>>,
+): Promise<Readonly<Record<string, unknown>>> {
+  let out: Record<string, unknown> | undefined;
+  for (const [name, value] of Object.entries(args)) {
+    const coercion = plan[name];
+    if (!coercion || value === undefined || !shape || !Object.hasOwn(shape, name)) continue;
+    let candidate: unknown;
+    try {
+      candidate = coercion(value);
+    } catch {
+      continue;
+    }
+    if (candidate === value) continue;
+    let accepted = false;
+    try {
+      accepted = (await safeParseAsync(shape[name], candidate)).success;
+    } catch {
+      accepted = false;
+    }
+    if (!accepted) continue;
+    out ??= { ...args };
+    out[name] = candidate;
+  }
+  return out ?? args;
+}
+
 async function invokeHandler(entry: RegistryEntry, args: unknown, extra: unknown): Promise<unknown> {
   const handler = entry.handler;
   if (typeof handler === 'function') {
@@ -3477,10 +3528,18 @@ export function installToolErrorBoundary(server: McpServer): number {
     const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
     if (unknown) return unknownParamResult(tool, unknown, knownParams);
 
+    // #694: one encoding contract, in front of validation on every call. After
+    // the unknown-key check, because a tolerated encoding is a VALUE and never a
+    // key — a call carrying a genuinely unknown argument is still refused above,
+    // which is the interaction the strict-schema unit asked to be guarded.
+    const tolerantArgs = entry.inputSchema
+      ? await encodingTolerantArgs(encodingPlanFor(entry.inputSchema), shape, args)
+      : args;
+
     let parsedArgs: unknown;
     try {
       if (entry.inputSchema) {
-        const parsed = await safeParseAsync(entry.inputSchema, args);
+        const parsed = await safeParseAsync(entry.inputSchema, tolerantArgs);
         if (!parsed.success) return validationResult(tool, shape, parsed.error);
         parsedArgs = parsed.data;
       }
@@ -3627,9 +3686,16 @@ export function installPromptErrorBoundary(server: McpServer): number {
 
     if (!entry.argsSchema) return await Promise.resolve(entry.callback(undefined as never, extra)) as ServerResult;
 
+    // #694: the same encoding contract as `tools/call`, so the two surfaces
+    // cannot disagree about the same value. It matters most here because EVERY
+    // prompt argument arrives as a string — MCP's own request schema is
+    // `z.record(z.string(), z.string())` — so a numeric or enum argument from a
+    // host is a quoted scalar by construction, not by that host's mistake.
+    const tolerantArgs = await encodingTolerantArgs(encodingPlanFor(entry.argsSchema), shape, args);
+
     let outcome: { ok: true; args: unknown } | { ok: false; message: string };
     try {
-      const parsed = await safeParseAsync(entry.argsSchema, args);
+      const parsed = await safeParseAsync(entry.argsSchema, tolerantArgs);
       outcome = parsed.success
         ? { ok: true, args: parsed.data }
         : { ok: false, message: promptValidationText(requested, shape, parsed.error) };
