@@ -24,6 +24,8 @@
  * AGENTS.md §3; that caught the symptom while the gate itself stayed blind, and
  * its own comment records the limitation. This one targets the gate.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

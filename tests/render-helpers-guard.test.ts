@@ -16,6 +16,8 @@
  * `src/markets.ts`), so `getWithMarketFallback` is guarded here too — the
  * acceptance criterion is a single definition across `src/` for all four.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';

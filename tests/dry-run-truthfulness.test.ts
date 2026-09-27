@@ -16,6 +16,8 @@
  * Stub MCP server + stub SpotifyClient — no network, no token file access.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync } from 'node:fs';
