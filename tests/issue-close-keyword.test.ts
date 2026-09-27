@@ -22,6 +22,8 @@
  * closed. Those are the three things whose absence produced the eight.
  */
 
+import './helpers/hermetic.js';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, statSync } from 'node:fs';
