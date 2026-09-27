@@ -31,7 +31,7 @@
  *
  * The home and the store directory are kept **distinct**, which is what a real
  * machine looks like (`HOME` holds `.spotify-mcp`) and what makes these tests
- * independent of the "directory that holds every other store" rule. It also
+ * independent of the "a directory that contains another store" rule. It also
  * isolates the defect: with the stores *inside* the declared home, the nesting
  * rule keeps that directory and the home-directory refusal is never reached.
  */
@@ -76,6 +76,7 @@ function sandbox(): Box {
     USERPROFILE: home,
     SPOTIFY_MCP_DATA_DIR: data,
     SPOTIFY_MCP_TOKEN_FILE: join(data, 'tokens.json'),
+    SPOTIFY_MCP_ACCOUNTS_FILE: join(data, 'accounts.json'),
     SPOTIFY_MCP_HISTORY_DIR: join(data, 'history'),
     SPOTIFY_MCP_RECEIPTS_DIR: join(data, 'receipts'),
     SPOTIFY_MCP_SCENES_FILE: join(data, 'scenes.json'),
@@ -83,6 +84,7 @@ function sandbox(): Box {
     SPOTIFY_MCP_PLAYBACKEXT_FILE: join(data, 'playback-ext.json'),
     SPOTIFY_MCP_SEARCH_HISTORY_FILE: join(data, 'search-history.json'),
     SPOTIFY_MCP_FRESHNESS_STATE: join(data, 'freshness.json'),
+    SPOTIFY_MCP_TASTE_FEEDBACK_FILE: join(data, 'taste-feedback.json'),
     SPOTIFY_MCP_EXHAUST2_MISC_FILE: join(data, 'exhaust2-misc.json'),
     SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE: join(data, 'exhaust2-playback.json'),
     SPOTIFY_MCP_BACKUP_DIR: join(data, 'backups'),

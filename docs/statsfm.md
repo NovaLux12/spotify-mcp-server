@@ -86,7 +86,7 @@ Recorded verdicts are **written to disk**, not held in process memory. They live
 
 A verdict is not uploaded to stats.fm and never leaves the machine through this tool. `taste_to_playlist` does not read this store; it builds its picks from the stats.fm API.
 
-To remove the store, delete the file. It is **not** erased by `spotify-mcp logout` — see [PRIVACY.md](../PRIVACY.md) for the full local-store table.
+To remove the store, run `spotify-mcp logout` (which moves it aside recoverably and prints the path) or delete the file. See [PRIVACY.md](../PRIVACY.md) for the full local-store table.
 
 ## Ranges
 

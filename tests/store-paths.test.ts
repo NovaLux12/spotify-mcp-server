@@ -28,7 +28,12 @@
  *
  * The declared `$HOME` and the store root are kept DISTINCT, which is both what
  * a real machine looks like and what makes these tests independent of the
- * "a directory that holds every other store is kept, not erased" rule.
+ * "a directory that CONTAINS another store is kept, not erased" rule. That
+ * rule is about the parent/child relationship between two resolved store paths,
+ * not about how many stores share a directory: in this file's own fixture every
+ * `_FILE`/`_DIR` variable points into `box.data`, so the data directory happens
+ * to hold them all, which is exactly the coincidence that made `src/logout.ts`
+ * describe it as a superset when it is a parent.
  */
 
 import './helpers/hermetic.js';
@@ -91,19 +96,21 @@ const LOGOUT_ONLY: Record<string, string> = {
 /**
  * Stores the registry lists that `logout` does NOT enumerate at all, and why.
  *
- * Both are a genuine gap in logout's coverage — real local stores holding user
- * data. Reported rather than fixed here, because widening what a destructive
- * command deletes is a product decision and not a refactor, and this change
- * must not quietly make it.
+ * EMPTY, and that is the point (#1434). It used to carry `accounts` and
+ * `taste-feedback`: real local stores holding user data, which this list
+ * recorded rather than fixed. The record made the gap VISIBLE, which is what
+ * it was for — but a gap named in a test is still a gap, and the suite stayed
+ * green on the strength of the difference being declared. `logout` reported a
+ * clean sweep while leaving behind the record of which accounts exist on this
+ * machine, and every stats.fm verdict the user had accumulated.
+ *
+ * The map is kept, empty, because the failure mode it was built for is still
+ * live: `cache` and `cache-pending-marker` legitimately resolve through a
+ * module `config.ts` may not import, and that difference has to be sayable. It
+ * is `LOGOUT_ONLY` above that now carries it, and a store that appears here
+ * again has to come with a reason that survives review.
  */
-const NOT_ERASED_BY_LOGOUT: Record<string, string> = {
-  accounts:
-    'The account registry holds profile names and token-file paths, and logout deliberately leaves '
-    + 'it so a re-auth does not have to re-register. Erasing it is defensible too; it is a choice.',
-  'taste-feedback':
-    'stats.fm verdicts are listening data the user accumulated, not session state. logout deleting '
-    + 'them would be data loss beyond disconnecting an account.',
-};
+const NOT_ERASED_BY_LOGOUT: Record<string, string> = {};
 
 /**
  * Stores `logout` DOES enumerate, and then deliberately keeps.
@@ -111,14 +118,21 @@ const NOT_ERASED_BY_LOGOUT: Record<string, string> = {
  * A different fact from the map above: these are planned and reported under
  * "Not erased", and the reason is the nesting rule rather than a coverage gap.
  * With `SPOTIFY_MCP_DATA_DIR` set, `playlist-health-snapshots` resolves to the
- * data directory that holds every other store, and erasing it would take the
- * lot — the opposite of the enumerate-then-remove promise the command makes.
- * The stores inside it are erased individually.
+ * data directory itself, which is the PARENT of the stores that variable
+ * relocates. Erasing it would take those with it, the opposite of the
+ * enumerate-then-remove promise the command makes. It is a parent of those
+ * stores, not a superset of all of them; the rest resolve under
+ * `~/.spotify-mcp/` either way.
+ *
+ * No list, and no count: how many stores the variable happens to relocate moves
+ * with every store added to the registry, and the reason string the user is
+ * shown computes it at runtime. Restating either here is what made
+ * `src/logout.ts` claim a superset that did not exist (#1426).
  */
 const KEPT_AS_CONTAINER: Record<string, string> = {
   'playlist-health-snapshots':
-    'Resolves to SPOTIFY_MCP_DATA_DIR itself, so it holds every other store. The nesting rule '
-    + 'keeps a container rather than erasing the lot.',
+    'Resolves to SPOTIFY_MCP_DATA_DIR itself, so it is the parent directory of the stores that '
+    + 'variable relocates. The nesting rule keeps a container rather than erasing the lot.',
 };
 
 interface Box {
@@ -571,6 +585,112 @@ describe('the registry and logout agree on what there is to erase', () => {
     }
   });
 
+  it('leaves no registered store outside logout, and the gap map says so', () => {
+    // The half of the #1434 contract that is about the FUTURE rather than the
+    // two stores it was filed for. The delta assertion above already fails when
+    // a store is added to the registry alone — but only if whoever adds it also
+    // thinks to update `NOT_ERASED_BY_LOGOUT`, which is the move that turns a
+    // coverage gap into a reviewed decision. Asserting the map is EMPTY removes
+    // that move: there is now no way to widen the gap without a failing test
+    // that names the store.
+    assert.deepEqual(
+      Object.keys(NOT_ERASED_BY_LOGOUT),
+      [],
+      'a store is excluded from logout again. That is a product decision, not a '
+      + 'default: erase it, and if it really must survive, delete this assertion '
+      + 'deliberately rather than adding a key that makes it pass.',
+    );
+  });
+
+  it('erases the account registry and the taste-feedback file (#1434)', async () => {
+    // The regression. `logout` exists to remove this machine's local state, and
+    // both of these are stores it writes: `accounts.json` through `switch_account`
+    // and `auth --profile`, `taste-feedback.json` through `record_feedback`. A
+    // store logout does not know about is one it leaves behind SILENTLY — it is
+    // not in the report, not in the confirmation prompt, and not in the exit
+    // code, so the run reads as a clean sweep.
+    //
+    // The observable consequence, which is what makes this a bug rather than a
+    // tidiness point: `accounts.json` is not derived data. It is this machine's
+    // record of which local accounts exist, their profile names, and the
+    // absolute path of each one's token file. A user who runs `logout` to
+    // disconnect — or who hands the machine to someone else — expects that gone,
+    // and the only evidence it survived is opening the file. `taste-feedback.json`
+    // is the same shape: up to 500 accumulated stats.fm verdicts, left behind
+    // with nothing in the output to say so.
+    //
+    // Asserted through the real command rather than through `localStorePaths`,
+    // because "logout enumerates it" and "logout erases it" are different claims
+    // and only the second one is the bug.
+    const box = sandbox();
+    const accounts = join(box.data, 'accounts.json');
+    const taste = join(box.data, 'taste-feedback.json');
+    // A real registry document, so this fails for the right reason if the file
+    // is left behind rather than passing because the seed was malformed.
+    await fs.writeFile(
+      accounts,
+      JSON.stringify({
+        version: 1,
+        accounts: [
+          { accountId: 'acct-1', profile: 'default', tokenFile: join(box.data, 'tokens.json') },
+          { accountId: 'acct-2', profile: 'work', tokenFile: join(box.data, 'tokens.work.json') },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    await fs.writeFile(
+      taste,
+      JSON.stringify({ entries: [{ id: 1, at: 1, subject_type: 'artist', subject: 'x', rating: 'like', note: null }] }),
+      { mode: 0o600 },
+    );
+
+    const output: string[] = [];
+    const io: LogoutIo = {
+      isInteractive: true,
+      ask: async () => 'y',
+      write: (text) => output.push(text),
+    };
+    const code = await runLogout([], io, {
+      env: box.env,
+      cwd: box.root,
+      allowGioTrash: false,
+    });
+    const report = output.join('\n');
+
+    assert.equal(code, 0, `logout failed: ${report}`);
+    for (const [id, path] of [['accounts', accounts], ['taste-feedback', taste]] as const) {
+      assert.equal(
+        (await fs.lstat(path).catch(() => null)) === null,
+        true,
+        `logout reported a clean sweep but left ${path} on disk. The store "${id}" is `
+        + 'one this server writes, so a user running logout to disconnect has no way to '
+        + 'learn it survived: it is absent from the report, the prompt and the exit code.',
+      );
+      // Named, not merely gone. A store erased without appearing in the report
+      // is indistinguishable from one that was never considered. The report
+      // row is `  <id> erased <how> <label> — <detail>` (see `storeLine`), so
+      // the id and the verb are asserted together: an id that merely appears
+      // elsewhere in the prose would not satisfy this.
+      assert.match(
+        report,
+        new RegExp(`^ {2}${id} +erased +`, 'm'),
+        `logout erased ${id} without naming it, so the report cannot be checked against the disk`,
+      );
+    }
+
+    // And the erasure is the reversible one, not the credential one. Neither
+    // file holds token material, so both are MOVED; if either were shredded the
+    // report row would read "erased  <label> — overwritten and unlinked" and a
+    // mistyped logout would become unrecoverable for a file that held nothing
+    // secret. The label sits between the verb and the mechanism (`storeLine`),
+    // so the pattern has to carry it.
+    assert.doesNotMatch(
+      report,
+      /^ {2}(accounts|taste-feedback) +erased +(Account registry|stats\.fm taste feedback) — overwritten and unlinked/m,
+      'a store holding no token material was shredded; only the token file is',
+    );
+  });
+
   it('labels every store logout erases the way the registry labels it', () => {
     // The report a user reads before approving an erase comes from logout; the
     // documentation table comes from the registry. Two names for one store is
@@ -829,7 +949,7 @@ describe('erasing through the registry is still contained (#711 did not weaken t
         assert.notEqual(
           (await fs.lstat(resolved).catch(() => null)) === null,
           true,
-          `${store.id} was the container holding every other store and was erased anyway`,
+          `${store.id} was the parent of the stores that variable relocates, and was erased anyway`,
         );
         assert.match(
           report,
@@ -854,10 +974,13 @@ describe('erasing through the registry is still contained (#711 did not weaken t
     }
 
     // The control, stated as its own assertion so a failure names the store:
-    // the two logout does NOT claim to erase are still exactly where they were.
-    // Both are inside the sandbox, so this checks the *decision* rather than
-    // protecting a real file — but it is the assertion that would catch a
-    // change that quietly widened what `logout` deletes.
+    // anything logout does NOT claim to erase is still exactly where it was.
+    // Inside the sandbox, so this checks the *decision* rather than protecting
+    // a real file — but it is the assertion that would catch a change that
+    // quietly widened what `logout` deletes. Vacuous while
+    // `NOT_ERASED_BY_LOGOUT` is empty, and deliberately so: it is the brake for
+    // the day a store is excluded again, and the emptiness is asserted
+    // separately above so a re-added entry cannot pass unnoticed.
     for (const [id, why] of Object.entries(NOT_ERASED_BY_LOGOUT)) {
       const spec = LOCAL_STORES.find((s) => s.id === id)!;
       const path = resolve(spec.resolve(box.env));
