@@ -68,6 +68,12 @@ import {
 } from '../src/receipts.js';
 import { appendHistory, historyFilePath, readHistory } from '../src/history.js';
 import { localStorePaths } from '../src/logout.js';
+import type { SpotifyClient } from '../src/client.js';
+import {
+  loadManifestRegistrars,
+  registerManifestModule,
+  REGISTRAR_MANIFEST,
+} from '../src/tools/annotations.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -392,6 +398,93 @@ describe('the mutation ledger is account-keyed (#1364)', () => {
       await appendHistory({ method: 'DELETE', path: '/me/library' }, work);
       const raw = readFileSync(join(dir, 'mutations.work.jsonl'), 'utf8').trim();
       assert.equal((JSON.parse(raw) as { account?: string }).account, 'work');
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The shipped wiring, not just the store API
+// ---------------------------------------------------------------------------
+
+describe('verify_receipt is account-keyed through the shipped manifest wiring', () => {
+  /**
+   * The `receipts` manifest row, registered the way `src/index.ts` registers
+   * it. `registerVerifyReceiptTool` is private in `src/tools/annotations.ts`,
+   * so going through the manifest is the only way to reach the registration
+   * that actually ships.
+   *
+   * The `client` argument is the point of this test. An earlier version of the
+   * registrar dropped it, and a test that registered with `undefined` as the
+   * client could not have told the difference: every account would read as the
+   * default one and the suite would stay green over the defect.
+   */
+  async function verifyReceiptToolFor(tokenFile: string): Promise<{
+    name: string;
+    handler: (args: Record<string, unknown>) => Promise<{
+      content: Array<{ type: string; text: string }>;
+      isError?: boolean;
+      structuredContent?: Record<string, unknown>;
+    }>;
+  }> {
+    const tools: Array<{
+      name: string;
+      handler: (args: Record<string, unknown>) => Promise<never>;
+    }> = [];
+    const server = {
+      tool: (
+        name: string,
+        _description: string,
+        _shape: unknown,
+        handler: (args: Record<string, unknown>) => Promise<never>,
+      ) => {
+        tools.push({ name, handler });
+        return { name };
+      },
+    };
+
+    const context = {
+      readOnly: false,
+      isModuleActive: () => true,
+      scopeBlocked: () => false,
+    };
+    const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
+    assert.ok(module, 'the receipts module must be in the registrar manifest');
+    for (const loaded of await loadManifestRegistrars([module], context)) {
+      registerManifestModule(
+        server as never,
+        // Only the `tokenFile` matters to this tool, and it is the same field
+        // the real `SpotifyClient` carries and re-points on `switchAccount`.
+        { tokenFile } as unknown as SpotifyClient,
+        loaded,
+        context,
+      );
+    }
+    const tool = tools.find((t) => t.name === 'verify_receipt');
+    assert.ok(tool, 'verify_receipt must be registered by the receipts manifest module');
+    return tool as never;
+  }
+
+  it('refuses another account\'s receipt id instead of attesting to it', async () => {
+    await withAccounts(PERSIST_OFF, async ({ def, work }) => {
+      const issued = await issueReceipt(stubClient(work), {
+        kind: 'library',
+        uris: ['spotify:track:private-to-work'],
+      });
+
+      const asWork = await verifyReceiptToolFor(work);
+      const asDefault = await verifyReceiptToolFor(def);
+
+      const own = await asWork.handler({ receipt_id: issued.receipt_id });
+      assert.equal(own.isError, undefined, 'the issuing account still resolves its own receipt');
+      assert.equal(own.structuredContent?.found, true);
+
+      // This is the assertion that fails against the unwired registrar: with
+      // the client dropped, both tools read the same default-account store and
+      // the second call would answer `found: true` with work's receipt.
+      const foreign = await asDefault.handler({ receipt_id: issued.receipt_id });
+      assert.equal(foreign.isError, true, 'another account\'s receipt id is a miss, not an attestation');
+      assert.equal(foreign.structuredContent?.found, false);
+      assert.equal(foreign.structuredContent?.reason, 'unknown');
     });
   });
 });
