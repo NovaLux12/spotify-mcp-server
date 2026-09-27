@@ -518,6 +518,37 @@ or its deprecation status. Both endpoints are data, not the authoritative
 answer — reading one row off either and calling it "the published version" is
 the mistake, not a shortcut.
 
+### Closing the issue is a separate step from landing the fix
+
+Only `Closes #N` / `Fixes #N` / `Resolves #N` close an issue. A subject line
+reading `fix(#N)` or `Refs #N` — both of which read like a closing reference
+and are not — leaves the issue open after a merge that fixed it. This has
+happened at least eight times: #1332, #1338, #1350, #1358, #1359, #1362, #1364
+and #722 all landed fully fixed and stayed open.
+
+The failure is silent in the worst way. `gh pr merge` prints no issue lines
+when it matched nothing, which reads as success — the merge genuinely did
+succeed, and the work genuinely is on `main`, and the issue is still open. The
+next person reads the open issue, does the work again, and merges a second PR
+for a fix that shipped hours earlier.
+
+So after the merge:
+
+```
+scripts/close-issues-from-pr.sh <pr-number> [issue ...]
+```
+
+It re-reads the body, closes what is still open, and **exits non-zero unless
+every issue it was told about is verifiably closed** — which is the part that
+matters, because the failure mode it exists for is a close that reports success
+without happening. Pass the issue numbers explicitly; a squash subject that says
+only `Refs #N` gives the script nothing to reconcile from.
+
+Closing on the merge signal alone is not enough. Verify the fix is in the
+merged tree first — two issues in this repo (#1207, #883) were closed on
+verified substance rather than on a commit message, which is the only reason
+that is the rule.
+
 ---
 
 ## 6. Lessons that cost us a bug
@@ -619,3 +650,6 @@ cannot write the failing case, the check is not wired to anything.
 - Behavior changes have a regression test that fails without the fix.
 - Conventional Commit title; a `Closes #NNN` footer per issue you actually
   fixed. The changelog is generated — do not write it.
+- After merging, `scripts/close-issues-from-pr.sh <pr>` has been run and every
+  issue it names is verifiably closed. See §5.5 — a squash-merged PR does not
+  close what its subject only *references*.
