@@ -24,6 +24,7 @@ import {
   paginationInfo,
 } from '../shaping.js';
 import { capFor } from '../chunk.js';
+import { resolveStatsfmUserId } from '../lib/statsfm-client.js';
 import { normalizeStreams } from './statsfm_taste.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import {
@@ -134,7 +135,7 @@ export function registerTastePlaylistTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const seed = args.seed ?? 'mixed';
       const n = args.track_count ?? 20;
       const dryRun = args.dry_run ?? true;

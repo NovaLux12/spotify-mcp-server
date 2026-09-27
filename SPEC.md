@@ -1715,7 +1715,9 @@ List another Spotify user's public playlists.
 
 ### 5.10 stats.fm (v2 — implemented)
 
-Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm public API (`https://api.stats.fm/api/v1`, no auth). Network-backed stats.fm tools are read-only; the local feedback tools mutate only process memory. They pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
+Second upstream: long-range listening history, cross-range top lists, and taste aggregates from the stats.fm public API (`https://api.stats.fm/api/v1`, no auth). Network-backed stats.fm tools are read-only; the local feedback tools mutate only a bounded local sidecar, never the network. They pair with the Spotify write tools above (see `docs/cookbook.md` recipe 1 and `docs/taste.md`). Setup, ranges, limits, and privacy: `docs/statsfm.md`.
+
+**Identity.** stats.fm has no OAuth: a user-scoped read needs only a public profile id. The endpoint tools declare `user_id` and the taste tools and composites declare `statsfm_user`; both accept an id or a customId, and both default to `STATSFM_USER_ID` when it is set. Precedence is explicit argument > `STATSFM_USER_ID` > error, and the error names both ways to supply the id (`no stats.fm user id: pass user_id or set STATSFM_USER_ID`). With neither, a user-scoped call fails rather than defaulting to a profile: a guessed id returns a well-formed answer about the wrong account, which is worse than a refusal. Catalog lookups, `statsfm_search` and `statsfm_genre_artists` take no identity argument, and `statsfm_record_feedback`/`record_feedback` is local-only.
 
 Three registration keys are default ON: `statsfm` (endpoint tools in `src/tools/statsfm.ts` over `src/lib/statsfm-client.ts`), `taste` (canonical taste-intelligence tools in `src/tools/statsfm_taste.ts`), and `tastecomposites` (composite tools in `src/tools/taste_composites.ts`). Structured failures use `{kind, reason, fix, text, status?, retryAfterSec?}`: stats.fm 401 maps to `auth`, 403 to `forbidden`, 404 to `not_found` with a bounded `statsfm_resource_not_found` reason, 429 to `rate_limited` with `retryAfterSec`, and 503 to `unavailable`. No `PRIVATE_PROFILE` code is emitted.
 
@@ -1728,6 +1730,26 @@ Three registration keys are default ON: `statsfm` (endpoint tools in `src/tools/
 Canonical tools are `statsfm_taste_profile`, `statsfm_artist_affinity`, `statsfm_exposure_check`, `statsfm_listening_eras`, `statsfm_listening_sessions`, `statsfm_forgotten_favorites`, `statsfm_taste_recommendations`, and `statsfm_record_feedback`. The corresponding `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, and `record_feedback` names are legacy aliases. `statsfm_record_feedback`/`record_feedback` store local-only verdicts (love/like/mixed/boring/dislike) and never touch the network. Since #905 the store is a capped sidecar (`<SPOTIFY_MCP_DATA_DIR>/taste-feedback.json`, default `~/.spotify-mcp`), not process memory, so verdicts survive a restart.
 
 It is bounded three ways, because no one bound is sufficient alone: one record (`subject` ≤ 200 chars, `note` ≤ 500, everything else an enum or a timestamp), a record count (`SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES`, default 500), and a byte size (`SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES`, default 1 MiB). Eviction is oldest-first until all three hold, and the lifetime `recorded`/`evicted` counters are persisted so a capped store never reads as an empty one. Retention is a ring buffer, not a TTL: a TTL cannot bound a store an agent fills within one session, while the count cap also bounds the read response.
+
+#### Wave-2 composite tools (`taste_*`; `tastecomposites` key)
+
+Ten composites register in `src/tools/taste_composites.ts` and an eleventh, `taste_to_playlist`, in `src/tools/taste_playlist.ts` — split because it is the one writer in the family (it creates a Spotify playlist) and so carries its own `readOnlySafe: false` manifest row. The eleven rows below are that whole surface, measured by registering both modules (`docs/wave2-composites.md` is the per-tool contract). Three other `taste_*` names are deliberately absent: `taste_shift_report` and `taste_checkpoint` are registered by `src/tools/analytics.ts` and `taste_checkpoint_diff` by `src/tools/exhaust2_misc.ts`, so they are not this key's tools and are not covered by the identity contract below — they read the Spotify account's own top lists, not a stats.fm profile.
+
+`statsfm_user` is the identity argument on all eleven, and it is optional on every one: with neither the argument nor `STATSFM_USER_ID`, each of the eleven refuses rather than resolving an identity.
+
+| Tool | What it returns |
+|---|---|
+| `taste_daily_brief` | Yesterday (or a given date): top-3 tracks, 2 revival picks, novelty share vs the lifetime core. |
+| `taste_weekly_recap` | Week in review: stream count, top artists/tracks of the window, busiest day, novelty share. |
+| `taste_listening_clock` | Day-part split (UTC), peak window, and a sequencing note for playlist order. |
+| `taste_novelty_loyalty` | Loyalty-vs-novelty report: top-5 share, recent-outside-core share, and a verdict. |
+| `taste_obsession_ladder` | Artists ranked by stream share, each with an exposure tier. |
+| `taste_genre_bridge` | Picks spanning two genres, with evidence and risk per pick. |
+| `taste_forgotten_bangers` | Lifetime tops missing from the recent sample, ranked with a revival pick. |
+| `taste_diamond_rotation` | Mid-tier lifetime tracks (rank ~20–60) absent from recent streams. |
+| `taste_era_playlist` | A listening era selected by window, as a representative track list. |
+| `taste_revival_queue` | Ordered re-listen queue from forgotten favorites + dormant-affinity artists. |
+| `taste_to_playlist` | Taste profile → Spotify playlist. Previews by default; writes only with `dry_run: false`. |
 
 `action=list` takes an optional `limit` (default 20, max 500) and returns a bounded page of the newest verdicts plus `returned`, `retained`, `truncated`, the retained, recorded, evicted and cap counts; it no longer returns the whole store. A store that cannot be read is returned as `{ok: false, reason: 'store_unreadable', error}` with the corrupt bytes preserved at `<file>.corrupt[N]` (shared `src/sidecar.ts` policy, #839/#1051) rather than reset, and a write that cannot land is returned as `{ok: false, reason: 'store_unwritable', path, error}` rather than reported as a recorded verdict. Writes are atomic (unique temp file, `fsync`, `rename(2)`) and serialised, because the store is a single JSON document: an in-place rewrite that died mid-write would lose every record, not one line. `spotify_doctor` reports both this store and the mutation-history ledger's sizes, cap and record count.
 
