@@ -24,10 +24,13 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import {
+  StatefulPlaylistClient,
   StubSpotifyClient,
-  UnexpectedCallError,
   UnexpectedArgumentError,
+  UnexpectedCallError,
+  trackUris,
 } from './helpers/stub-client.js';
+import type { PlaylistItemObject } from '../src/types/spotify.js';
 // #1274: a store default resolving through homedir() must never land in the
 // real $HOME. Imported for its side effect, as every test file must.
 import './helpers/hermetic.js';
@@ -302,5 +305,165 @@ describe('StubSpotifyClient — a real regression guard', () => {
     );
     void capped;
     initConfig(process.env);
+  });
+});
+
+/**
+ * Contract tests for {@link StatefulPlaylistClient} (#881).
+ *
+ * The same discipline as the rest of this file, applied to the one property
+ * that separates a stateful mock from a fixed-response stub: **the state has
+ * to actually change, and an id nobody seeded has to fail rather than come
+ * back empty.** A mock whose PUT recorded a body and left the rows alone would
+ * let every "the commit landed" assertion in the destructive-replace suite
+ * pass while proving nothing, which is #236's shape again with better manners.
+ */
+describe('StatefulPlaylistClient — the state is real', () => {
+  const PL = 'pl-stateful';
+
+  it('a PUT replaces the rows, and a later read sees the replacement', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a', 'spotify:track:b', 'spotify:track:c'] });
+
+    await stub.put(`/playlists/${PL}/items`, { uris: ['spotify:track:c', 'spotify:track:a'] });
+
+    assert.deepEqual(stub.urisOf(PL), ['spotify:track:c', 'spotify:track:a']);
+    assert.deepEqual(stub.logOf(PL).replaces, [{ uris: ['spotify:track:c', 'spotify:track:a'] }]);
+    // And the READ, not just the mock's own field: an independent walk.
+    const walked = await stub.getAllPages<PlaylistItemObject>(`/playlists/${PL}/items`, { limit: '100' });
+    assert.deepEqual(
+      walked.map((r) => r.item?.uri),
+      ['spotify:track:c', 'spotify:track:a'],
+    );
+  });
+
+  it('a POST appends, so a multi-chunk write ends in the order the tool asked for', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a'] });
+
+    await stub.put(`/playlists/${PL}/items`, { uris: ['spotify:track:b'] });
+    await stub.post(`/playlists/${PL}/items`, { uris: ['spotify:track:c'] });
+    await stub.post(`/playlists/${PL}/items`, { uris: ['spotify:track:d'] });
+
+    assert.deepEqual(stub.urisOf(PL), ['spotify:track:b', 'spotify:track:c', 'spotify:track:d']);
+    assert.deepEqual(stub.writtenUris(PL), ['spotify:track:b', 'spotify:track:c', 'spotify:track:d']);
+  });
+
+  it('an empty-uris PUT is a real clear, and the count read agrees', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a', 'spotify:track:b'] });
+
+    await stub.put(`/playlists/${PL}/items`, { uris: [] });
+
+    assert.deepEqual(stub.rowsOf(PL), []);
+    const meta = await stub.get<{ items: { total: number } }>(`/playlists/${PL}`);
+    assert.equal(meta?.items.total, 0, 'the metadata total must follow the rows, or a "read the whole playlist" proof is a fiction');
+  });
+
+  it('a DELETE splices the named positions out, so a descending sweep really removes them', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a', 'spotify:track:b', 'spotify:track:c', 'spotify:track:d'] });
+
+    // Highest first, the order the tool commits in. If the mock ignored the
+    // positions, this would leave three rows instead of two.
+    await stub.delete(`/playlists/${PL}/items`, { tracks: [{ positions: [3] }] });
+    await stub.delete(`/playlists/${PL}/items`, { tracks: [{ positions: [1] }] });
+
+    assert.deepEqual(stub.urisOf(PL), ['spotify:track:a', 'spotify:track:c']);
+    assert.deepEqual(stub.logOf(PL).deletes, [[3], [1]], 'the positions must be recorded in the order they were sent');
+  });
+
+  it('an unavailable row is served as item:null and survives a no-op read', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a', null] });
+
+    const rows = await stub.getAllPages<PlaylistItemObject>(`/playlists/${PL}/items`, { limit: '100' });
+    assert.equal(rows.length, 2);
+    assert.equal(rows[0]?.item?.uri, 'spotify:track:a');
+    assert.equal(rows[1]?.item, null, 'the second row must be the unavailable one');
+  });
+
+  it('an unseeded playlist id fails loudly instead of answering as an empty playlist', async () => {
+    // The permissive-default bug in a stateful outfit: a mock that invented an
+    // empty playlist would make "the tool read the wrong id" indistinguishable
+    // from "the tool found an empty playlist".
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a'] });
+
+    await assert.rejects(
+      () => stub.get(`/playlists/some-other-id/items`),
+      /was never seeded/,
+    );
+  });
+
+  it('a malformed write body is rejected rather than read as an empty replace', async () => {
+    // `{ uris: [] }` clears a playlist. A body that carries no `uris` at all
+    // must NOT clear it — that is the difference between a clear and a wipe.
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a', 'spotify:track:b'] });
+
+    await assert.rejects(
+      () => stub.put(`/playlists/${PL}/items`, { tracks: [{ positions: [0] }] }),
+      UnexpectedArgumentError,
+    );
+    assert.deepEqual(stub.rowsOf(PL), ['spotify:track:a', 'spotify:track:b'], 'a rejected body must not have mutated the store');
+  });
+
+  it('the item read pages the LIVE rows, so a 600-row fixture hits the PRODUCTION cap', async () => {
+    // This is the property #881's acceptance criterion is about. The mock
+    // never names a cap: it hands back a real envelope whose `total` is the
+    // live row count, and the INHERITED walk stops where it always stops.
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: trackUris(600) });
+
+    const walked = await stub.getAllPagesWithTruncation<PlaylistItemObject>(
+      `/playlists/${PL}/items`,
+      { limit: '100' },
+    );
+
+    assert.equal(walked.reportedTotal, 600, 'the server total must be the LIVE row count');
+    assert.equal(walked.items.length, 500, 'the default SPOTIFY_MCP_FETCH_ALL_CAP is 500, and a 600-row fixture must hit it');
+    assert.equal(walked.truncated, true, 'hitting the cap is a truncation the caller must be able to report');
+    assert.equal(walked.truncatedByCap, true, 'and the verdict must name the cap as the cause, not a short page');
+    assert.equal(stub.logOf(PL).itemPageReads, 5, '500 rows at 100 per page is five page reads, and the count is the mock\'s');
+    assert.equal(walked.items[0]?.item?.uri, 'spotify:track:t0');
+
+    // A caller that asks for more gets more, off the same live rows.
+    const all = await stub.getAllPages<PlaylistItemObject>(`/playlists/${PL}/items`, { limit: '100' }, { maxItems: 600 });
+    assert.equal(all.length, 600, 'maxItems is a cap on the walk, not a cap on the store');
+  });
+
+  it('a write with no readable receipt hands back a null snapshot_id, like a 204', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a'], receiptReadable: false });
+
+    const res = await stub.put<{ snapshot_id?: string }>(`/playlists/${PL}/items`, { uris: [] });
+    assert.equal(res?.snapshot_id ?? null, null, 'an unreadable receipt must be null, never a synthesised id');
+    assert.deepEqual(stub.rowsOf(PL), [], 'the clear still happened — an unreadable receipt is a lost RESPONSE, not a failed mutation');
+  });
+});
+
+describe('StatefulPlaylistClient — snapshot ids move when the playlist does', () => {
+  const PL = 'pl-snap';
+
+  it('a write moves the snapshot the metadata read reports', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a'], snapshots: ['snap-1', 'snap-2'] });
+
+    const before = await stub.get<{ snapshot_id: string }>(`/playlists/${PL}`);
+    assert.equal(before?.snapshot_id, 'snap-1');
+
+    await stub.put(`/playlists/${PL}/items`, { uris: ['spotify:track:b'] });
+
+    const after = await stub.get<{ snapshot_id: string }>(`/playlists/${PL}`);
+    assert.equal(after?.snapshot_id, 'snap-2', 'a stale snapshot id would make optimistic concurrency unobservable');
+    assert.deepEqual(stub.urisOf(PL), ['spotify:track:b']);
+  });
+
+  it('a playlist with no readable receipt reports a null snapshot, not a stale one', async () => {
+    const stub = new StatefulPlaylistClient();
+    stub.seedPlaylist(PL, { rows: ['spotify:track:a'], receiptReadable: false });
+    const meta = await stub.get<{ snapshot_id: string | null }>(`/playlists/${PL}`);
+    assert.equal(meta?.snapshot_id, null, 'null means "no snapshot", which is the answer a caller must be able to see');
   });
 });
