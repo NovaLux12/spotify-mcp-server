@@ -21,6 +21,27 @@ const tools = new Set(census.toolNames);
 const prompts = new Set(census.promptNames);
 const resources = new Set(census.resourceUris);
 /**
+ * Tool names the SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS opt-in withholds (#695).
+ *
+ * These are NOT in `census.toolNames` and not in `retiredToolNames`, and the
+ * distinction matters. A retired name was deleted; a gated one is still
+ * shipped and still callable — it is simply not part of the DEFAULT surface,
+ * which is the surface this gate validates docs against. So `docs/compliance.md`
+ * and SPEC.md have to be able to name them while explaining the gate, and the
+ * README must be able to stop naming them.
+ *
+ * The list is MEASURED, not declared: the census registers every module twice
+ * and diffs the two name sets (see `measureGatedToolNames`). A hand-typed copy
+ * would outlive a rename and keep validating a name for a tool that no longer
+ * exists — the same failure mode `parameterAllowlist` was rebuilt to avoid
+ * (#1283), which is why real parameters come from `census.parameterNames`.
+ *
+ * A missing key degrades to an empty set, so a census file generated before
+ * this field existed fails the gate loudly on the first backticked gated name
+ * rather than silently accepting it.
+ */
+const gatedToolNames = (registry = census) => registry.gatedToolNames ?? [];
+/**
  * Names a doc may backtick that are NOT production tool parameters: auth/OAuth
  * field names, doctor/report row keys, and env-var fragments. Real parameters
  * are not listed — they come from `census.parameterNames`, so a parameter that
@@ -466,7 +487,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
 
 function checkBacktickToolNames(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames, ...gatedToolNames(registry)]);
   for (const match of source.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) {
     const name = match[1];
     if (knownTools.has(name) || knownNonTools.has(name)) continue;
@@ -704,7 +725,7 @@ function checkDocumentedEnumMembers(at, line, tool, field, property, typeCell) {
  * in backticks nor in a json fence nor in an Inputs table.
  */function checkModuleMapEntries(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames, ...gatedToolNames(registry)]);
   const lines = source.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const entry = /^\s*(?:[│|├└─\s])*([a-z0-9_]+\.ts)\s+#\s*(.+?)\s*$/.exec(lines[index]);

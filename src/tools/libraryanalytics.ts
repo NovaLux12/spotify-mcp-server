@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { derivedAnalyticsToolServer } from '../derivedanalytics.js';
 import type { SavedTrackItem, SavedAlbumItem, SpotifyPaged, RecentlyPlayedResponse, SpotifyPlaylistSimple, PlaylistItemObject } from '../types/spotify.js';
 import {
   ResponseFormat,
@@ -110,6 +111,13 @@ function localDayHour(iso: string, zone: string): { day: number; hour: number } 
 // Registration — 4 tools
 // ---------------------------------------------------------------------------
 export function registerLibraryAnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // #695: `listening_heatmap` buckets recently-played history into 168 hourly
+  // slots and reports a peak and a least hour, so it is withheld unless
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set. The other three tools here report
+  // the shape of the saved library rather than a listening metric and register
+  // either way. See src/derivedanalytics.ts.
+  server = derivedAnalyticsToolServer(server);
+
   // 1. library_coverage_report
   server.tool(
     'library_coverage_report',

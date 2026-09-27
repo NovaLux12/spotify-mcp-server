@@ -286,6 +286,161 @@ document stops containing the words. The same file renders the doctor prose,
 invokes `--help` and the CLI doctor, and compares every metadata and document
 surface against the exported constants.
 
+## Derived listening analytics: the policy and the interpretation
+
+*Added for [#695](https://github.com/NovaLux12/spotify-mcp-server/issues/695).
+This section states a rule the Server follows, the interpretation it relies on,
+and where the line between the two was drawn.*
+
+### The rule, quoted
+
+Spotify's
+[Developer Policy](https://developer.spotify.com/policy), **Sec. III
+"Some prohibited applications", item 13**, retrieved 2026-09-27:
+
+> Do not analyze the Spotify Content or the Spotify Service for any purpose,
+> including without limitation, creating new or derived listenership metrics,
+> benchmarking, functionality, usage statistics, user metrics, or building
+> profiles of users, including for the purpose of targeting them with
+> advertising or marketing.
+
+The clause the issue that prompted this section was written against is the
+tail of that sentence. The sentence does not only forbid profiling *other*
+people for advertising: it opens with "for any purpose", and the list that
+follows names derived listenership metrics on its own. Read literally, it
+reaches a local computation over one person's own history.
+
+### The interpretation the project relies on
+
+This project reads Sec. III.13 as aimed at **analysis that produces a metric
+about someone for someone else's purpose** — a score, segment, benchmark or
+profile that a party other than the listener uses, most obviously to target
+them. Under that reading, a personal client computing a summary of the
+authenticated user's own `/me/top/*` and `/me/player/recently-played` responses
+and showing the result to that same user is not what the clause describes.
+
+**That reading is arguable, and it has not been adjudicated by anyone but
+this project.** It is recorded here rather than asserted as settled, and the
+gate below is the acknowledgement that it might be wrong. Specifically, the
+project relies on four properties holding, and each of them is a fact about the
+implementation rather than about the policy:
+
+1. **The inputs are the account's own.** Every one of the withheld tools reads
+   `/me/top/*` and `/me/player/recently-played` — endpoints Spotify scopes to
+   the token holder. No third party's listening data is available to this
+   server, so no cross-user metric can be built from it.
+2. **The computation is local and in-process.** Scores and histograms are
+   computed in the server process from data it just fetched. Nothing derived is
+   transmitted anywhere, and no derived value is sent to a third party.
+3. **No profile is persisted.** The tools return a value for the call and
+   compute nothing that outlives it. There is no derived-metrics store on disk,
+   so there is no user profile to accumulate. (The local sidecars that do exist
+   — mutation history, receipts, search history, taste feedback — record
+   *actions and calls*, not listening metrics, and are documented separately in
+   [`PRIVACY.md`](../PRIVACY.md).)
+4. **The output goes to the listener.** There is no multi-tenant deployment
+   mode, no export-of-users feature, and no benchmarking of one account against
+   another. The audience for every one of these payloads is the person whose
+   data produced it.
+
+If any of those four stopped being true, the interpretation would stop applying
+and the correct response would be removal rather than opt-in.
+
+### Where the line was drawn, and the gate
+
+The line is drawn on the **output**, not on the module or on the data source.
+A tool is withheld when what it returns is a *derived* metric — a histogram, a
+bucket, a ratio, a score, or a behavioural profile. A tool that re-presents what
+Spotify itself returned is not withheld, however much it reformats it, because
+it adds no measurement that was not already in the API's answer.
+
+**The eleven withheld tools** register only when
+`SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` is set, and are otherwise absent from
+`tools/list`:
+
+| Tool | Module | What it derives |
+|---|---|---|
+| `discovery_ratio` | `swarm3_analytics.ts` | Share of recently-played tracks absent from your top tracks |
+| `listening_clock` | `swarm3_analytics.ts` | 24-bucket hour-of-day histogram, daypart totals, peak and quietest hour |
+| `listening_clock_heatmap` | `swarm3_analytics.ts` | Weekday × hour heatmap with a peak cell |
+| `artist_listening_clock` | `swarm3_analytics.ts` | Hour-of-day profile for one artist |
+| `mood_bucket_report` | `swarm3_analytics.ts` | Daypart × familiarity segmentation |
+| `weekday_listening_report` | `swarm3_analytics.ts` | Per-weekday plays, unique tracks/artists, busiest day |
+| `weekly_rotation_report` | `swarm3_analytics.ts` | Day-by-day rotation and first-heard-this-window tracks |
+| `binge_detector_report` | `swarm3_analytics.ts` | Artists exceeding a repeat-play threshold, ranked by intensity |
+| `listening_recap_brief` | `swarm3_analytics.ts` | Composite of peak hour, busiest weekday and discovery ratio |
+| `listening_report` | `analytics.ts` | Era histogram, discovery ratio, repeat overlap, hour-of-day buckets |
+| `listening_heatmap` | `libraryanalytics.ts` | 168 hourly slots with peak and least hour |
+
+**What stays registered** is everything that re-presents Spotify's own answer.
+`get_top_tracks`, `get_top_artists` and `get_recently_played` were never in
+scope — they live outside the three modules the gate is applied to, and they are
+named here because they are the ungated re-presentation of the same data. The
+rest are the tools those three modules still register:
+`top_artists_by_range`, `taste_shift_report`,
+`listening_streaks`, `top_artist_ranking_delta`, `top_track_ranking_delta`,
+`top_artist_leaderboard`, `top_track_leaderboard`, `artist_velocity_report`,
+`track_rotation_report`, `repeat_listener_report`, `listening_streak_report`,
+`top_genre_census`, `deep_dive_report`, `session_length_report`,
+`listening_gaps_report`, `listening_consistency_score`,
+`era_preference_report`, `listening_history_export`,
+`library_coverage_report`, `library_growth_report` and
+`genre_trends_over_time`.
+
+That split is a judgement, and two of its edges are worth naming rather than
+burying. `era_preference_report` is **not** withheld even though it compares a
+decade mix: it answers "of what you have been playing, which eras appear", with
+no population to compare you against. `listening_history_export` is **not**
+withheld because it is the raw ordered history, which is what an operator needs
+in order to compute the withheld figures locally and decide for themselves —
+that is the alternative path the issue raised, and shipping it ungated is what
+makes that path real.
+
+### Why the default is off, and what "off" means
+
+Sec. III.13 is arguable, and an arguable rule is not a licence to pick the
+permissive reading silently. If the interpretation above is wrong, the exposure
+is worst for the people who never considered the question — and that is
+everyone who installs the package and sets nothing. So **the default is the
+non-analytics path for every operator who has not made the decision
+explicitly.** The tools that could expose the project to Sec. III.13 are the
+ones a user must ask for by name, with the flag, having read this section.
+
+"Off" means the eleven tools are **not registered at all**. That is a
+deliberate choice over the alternative of registering them and returning an
+empty payload, which would be the worse of the two: a caller would read "no
+listening at 3am" out of a gate that is actually switched off, and this
+project's own rule — *if a lookup fails, say so, and never guess* — applies to
+a disabled lookup as much as to a failed one. An absent tool cannot be
+misread as an answer. The cost is that `tools/list` does not advertise the
+capability, so the server says so on stderr at startup, in the
+`spotify-mcp doctor` configuration block, and in the `surface` row of
+`spotify_doctor` (`derived_analytics=false`).
+
+An unrecognised value for the flag — anything that is not `1`, `true`, `yes` or
+`on` — leaves the analytics **off** and prints a warning naming the accepted
+spellings. It never reads as true, and it never fails the startup: the default
+is already the safe path, and taking a working host offline over a typo in an
+opt-in flag would be a worse failure than the one it prevents.
+
+### How this is enforced
+
+- `src/derivedanalytics.ts` holds the withheld-name list and the gate, and its
+  header states the rule, the interpretation and why the list is safe to keep
+  by hand.
+- `tests/derived-analytics-gate.test.ts` asserts the classification is **total
+  and disjoint** — every tool the three modules register with the opt-in on must
+  be either withheld or named as retained, so a new derived tool cannot ship
+  registered by default without a decision being recorded.
+- `tests/analytics-optin-registry.test.ts` drives the real server over stdio
+  with the flag unset, `1`, and a value naming no boolean, and checks what
+  reaches `tools/list` in each case.
+- `scripts/surface-census.mjs` **measures** the withheld set — it registers
+  every module twice and diffs the two name sets — rather than reading it from
+  a list, so the documentation gate and the registry pin cannot drift from the
+  source of truth.
+- `docs/configuration.md` carries the operator-facing form of all of this.
+
 ## Provenance
 
 `NOTICE` records that this project is an independent implementation, and that

@@ -32,6 +32,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
+import { derivedAnalyticsToolServer } from '../derivedanalytics.js';
 import { fetchArtistsPerId } from './catalog.js';
 import type {
   SpotifyPaged,
@@ -308,6 +309,13 @@ function median(nums: number[]): number {
 // ---------------------------------------------------------------------------
 
 export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // #695: nine of the twenty-four tools here compute derived listening metrics
+  // (hour/daypart/era buckets, weekday profiles, discovery ratio, binge scores)
+  // and are withheld unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set. The
+  // names and the reasoning are in src/derivedanalytics.ts; the gate itself is
+  // a proxy, so the twenty-four registrations below stay a flat list.
+  server = derivedAnalyticsToolServer(server);
+
   // 1. top_artist_ranking_delta — rank movement between two top-artist windows
   server.tool(
     'top_artist_ranking_delta',

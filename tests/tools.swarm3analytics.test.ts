@@ -2,6 +2,17 @@ import './helpers/hermetic.js';
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+
+// #695: these files exercise the tools' BEHAVIOUR, and the derived listening
+// metrics this file calls are withheld from the default registry unless
+// SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set. The opted-in surface is therefore
+// what is under test here, and it is the surface that ships unchanged. The
+// default — that these tools are NOT registered at all — is pinned in
+// tests/derived-analytics-gate.test.ts (in-process) and
+// tests/analytics-optin-registry.test.ts (real server over stdio), so opting in
+// here does not leave the gate itself unverified.
+process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = '1';
+
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';

@@ -143,7 +143,6 @@
       "get_top_tracks"
     ],
     "analytics": [
-      "listening_report",
       "listening_streaks",
       "taste_shift_report",
       "top_artists_by_range"
@@ -228,8 +227,7 @@
     "libraryanalytics": [
       "genre_trends_over_time",
       "library_coverage_report",
-      "library_growth_report",
-      "listening_heatmap"
+      "library_growth_report"
     ],
     "portability": [
       "export_all_playlists",
@@ -574,20 +572,13 @@
       "spotify_uri_stats"
     ],
     "swarm3analytics": [
-      "artist_listening_clock",
       "artist_velocity_report",
-      "binge_detector_report",
       "deep_dive_report",
-      "discovery_ratio",
       "era_preference_report",
-      "listening_clock",
-      "listening_clock_heatmap",
       "listening_consistency_score",
       "listening_gaps_report",
       "listening_history_export",
-      "listening_recap_brief",
       "listening_streak_report",
-      "mood_bucket_report",
       "repeat_listener_report",
       "session_length_report",
       "top_artist_leaderboard",
@@ -595,9 +586,7 @@
       "top_genre_census",
       "top_track_leaderboard",
       "top_track_ranking_delta",
-      "track_rotation_report",
-      "weekday_listening_report",
-      "weekly_rotation_report"
+      "track_rotation_report"
     ],
     "swarm3library": [
       "added_on_this_day",
@@ -766,7 +755,6 @@
     "artist_genres_compact",
     "artist_latest_release_report",
     "artist_latest_releases",
-    "artist_listening_clock",
     "artist_live_albums_finder",
     "artist_name_disambiguator",
     "artist_reissue_detector",
@@ -789,7 +777,6 @@
     "balance_playlist_pairs",
     "batch_add_to_playlist",
     "batch_add_to_queue",
-    "binge_detector_report",
     "browse_category_deepdive",
     "cancel_wind_down",
     "canonicalize_spotify_uri",
@@ -835,7 +822,6 @@
     "diff_since_snapshot",
     "discover_weekly_diff",
     "discovery_digest",
-    "discovery_ratio",
     "duplicate_saved_versions",
     "episode_bookmark",
     "episode_context_bundle",
@@ -970,16 +956,11 @@
     "list_scenes",
     "list_sessions",
     "list_show_episodes",
-    "listening_clock",
-    "listening_clock_heatmap",
     "listening_consistency_score",
     "listening_eras",
     "listening_gaps_report",
-    "listening_heatmap",
     "listening_history_export",
     "listening_journal_append",
-    "listening_recap_brief",
-    "listening_report",
     "listening_session_close",
     "listening_session_report",
     "listening_session_start",
@@ -996,7 +977,6 @@
     "merge_playlists_plan",
     "merge_snapshot_changes_plan",
     "monthly_listening_report",
-    "mood_bucket_report",
     "morning_briefing",
     "most_replayed",
     "move_items_between_playlists",
@@ -1307,8 +1287,6 @@
     "watch_artists",
     "week_in_review_playlist",
     "weekday_heatmap",
-    "weekday_listening_report",
-    "weekly_rotation_report",
     "whats_new",
     "where_was_i",
     "wind_down_status",

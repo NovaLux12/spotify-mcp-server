@@ -1221,7 +1221,16 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3027], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
-  manifestEntry('analytics', 'personalization', lazyModule('./analytics.js', 'registerAnalyticsTools'), [4, 2817], { readOnlySafe: true }),
+  // #695: baseline is the DEFAULT surface (3 tools). `listening_report` is a
+  // derived listening aggregate and registers only under
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS, so the opted-in surface is declared
+  // here and the ceiling is sized for the larger of the two — otherwise the
+  // gate refuses to START the opted-in server while CI, which measures the
+  // default, stays green. See `gatedSurface` and #1128.
+  manifestEntry('analytics', 'personalization', lazyModule('./analytics.js', 'registerAnalyticsTools'), [3, 1908], {
+    readOnlySafe: true,
+    gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 4, schemaBytes: 2817 },
+  }),
 
   // #720: the range parameter description now names its accepted values, and
   // statsfm_taste/taste_composites share the one exported schema. Tool counts
@@ -1306,7 +1315,14 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
   manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
-  manifestEntry('libraryanalytics', 'libraryanalytics', lazyModule('./libraryanalytics.js', 'registerLibraryAnalyticsTools'), [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
+  // #695: baseline is the DEFAULT surface (3 tools); `listening_heatmap` is a
+  // derived listening-clock metric and registers only under
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS. Sized for the larger surface.
+  manifestEntry('libraryanalytics', 'libraryanalytics', lazyModule('./libraryanalytics.js', 'registerLibraryAnalyticsTools'), [3, 2498], {
+    readOnlySafe: true,
+    scopeKey: 'library',
+    gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 4, schemaBytes: 3351 },
+  }),
   // +151B: import_profile_state's description now says the mutation ledger is
   // export-only, so a caller does not expect its history to be restored (#629).
   // The tool count is unchanged.
@@ -1421,7 +1437,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // [19, 19443]
   manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19443], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17473], { scopeKey: 'playback' }),
+  // #695 moved two words in this module's descriptions: `most_replayed` and
+  // `weekday_heatmap` no longer point at `listening_report` / `listening_heatmap`
+  // by name, because those are derived analytics the default registry does not
+  // serve and a description must not advertise a tool that is absent. +45B.
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17518], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 22547], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
@@ -1461,8 +1481,20 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 20147], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 22103], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
-  // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
-  manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
+  // The figures this module used to carry — 24 tools, 18951B, measured
+  // post-#1004 (top_genre_census reads /artists/{id} now) — are now its
+  // `gatedSurface` below rather than its baseline. Written without bracket
+  // notation on purpose: this comment is scanned for [n, m] pairs and a
+  // quoted pair here would read as a claim about the baseline.
+  // #695: baseline is the DEFAULT surface (15 tools). Nine of these 24 compute
+  // derived listening metrics and register only under
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS. Sized for the larger surface, so the
+  // opted-in server passes the same startup budget gate the default one does.
+  manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [15, 12030], {
+    readOnlySafe: true,
+    scopeKey: 'personalization',
+    gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 18951 },
+  }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),

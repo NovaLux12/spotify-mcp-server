@@ -111,9 +111,11 @@ There is no cross-user taste-comparison tool. Use the registered social and per-
 
 > Risk: `save_scene` writes to the local sidecar at `~/.spotify-mcp/scenes.json`. The tool does NOT accept `dry_run`, so explicit human approval is the only gate — do not call it without a "yes" on the latest suggestion.
 
+> Step 2 uses the ungated re-presentations on purpose. `listening_report` and the other derived listening metrics register only under `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`; if the host has that set, `listening_report` gives the same totals in one call.
+
 ```text
 1. Call taste_listening_clock with `statsfm_user: "<your-statsfm-user-id>"` and `response_format: "json"`.
-2. Call listening_report with `time_range: "long_term"` for the Spotify-side totals.
+2. Call get_recently_played with `limit: 50` for the Spotify-side plays, and read the `played_at` timestamps yourself.
 3. Compare: note where the two counters agree and where they diverge (different windows — say so).
 4. If the clock shows heavy 23:00–01:00 listening, suggest that scene to the human. Only after they approve the local sidecar write, call save_scene with `name: "late-night-low"`, `volume: 40`, `shuffle: false`, and `repeat: "off"`.
 ```
@@ -127,7 +129,7 @@ Safe to run on someone else's account or a shared screen — zero writes.
 ```text
 1. Set SPOTIFY_MCP_READONLY=1 (or use a host config with it set) before starting.
 2. Call get_me; resolve the guest's public stats.fm identity with `statsfm_resolve_user`, passing their stats.fm user id or customId as `user_id`; then call statsfm_taste_profile with `statsfm_user` set to that same id.
-3. Call listening_report and preview whats_new with `dry_run: true` for live color; neither step writes.
+3. Call get_recently_played and preview whats_new with `dry_run: true` for live color; neither step writes.
 4. Narrate the taste: genres, anchors, and clock. Offer recipe 1 as the follow-up — on their own account.
 ```
 

@@ -395,6 +395,17 @@ const aggregateSurfaceFacts = Object.freeze({
   metadataOverheadBytes: aggregateSurface.schemaBytes - perModuleSchemaBytesTotal,
   metadataOverheadPercent: ((aggregateSurface.schemaBytes - perModuleSchemaBytesTotal) / aggregateSurface.schemaBytes) * 100,
 });
+/**
+ * The opt-in surface, measured (#695) — registered twice, diffed.
+ *
+ * Hoisted to module scope because the gated scan needs it too: eleven tools are
+ * written literally in their module and registered only under the flag, so a
+ * static scan of `src/tools` finds a `server.tool('x', …)` the default
+ * `tools/list` this script reads never served. The measurement is the
+ * authority for "that registration is real, it is conditional", computed once
+ * so the emitted census and the gate cannot disagree.
+ */
+const measuredGatedToolNames = await measureGatedToolNames();
 const result = {
   tools: census.toolNames.length,
   toolModuleFiles,
@@ -404,6 +415,10 @@ const result = {
   prompts: census.promptNames.length,
   toolNames: census.toolNames,
   manifestToolNames,
+  // Measured, never declared (#695). The default surface is what every table
+  // above reports, so the opt-in's eleven names have to be derived by
+  // registering both ways; see `measureGatedToolNames`.
+  gatedToolNames: measuredGatedToolNames,
   parameterNames: census.parameterNames,
   toolInputSchemas: census.toolInputSchemas,
   toolDefinitions: census.toolDefinitions,
@@ -661,6 +676,66 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
   } finally {
     await server.close().catch(() => undefined);
   }
+}
+
+/**
+ * MEASURE which tool names the SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS opt-in adds
+ * (#695), rather than reading them off a list.
+ *
+ * The census deliberately blanks every SPOTIFY_* variable, so the surface it
+ * reports — and every generated table built from it — is the DEFAULT one. That
+ * is right for the budget baselines, and it means the eleven withheld tool names
+ * appear nowhere in the census output. Two consumers need them anyway:
+ * `tests/registry-pin.test.ts` and `scripts/check-doc-tool-names.mjs`, both of
+ * which would otherwise have to carry a hand-typed copy of a list the source
+ * already owns. A hand-typed copy is exactly the thing that goes stale: a
+ * renamed tool would keep validating as a known name for a tool that no longer
+ * exists.
+ *
+ * So the list is derived the only honest way — register everything twice, once
+ * with the opt-in off and once with it on, and take the difference. The env
+ * flip is restored in a `finally` because the census runs in-process and a
+ * leaked `1` would silently resize every number printed after this.
+ */
+async function measureGatedToolNames() {
+  const { McpServer } = await import('@modelcontextprotocol/sdk/server/mcp.js');
+  const clientStub = {
+    get: async () => null,
+    post: async () => null,
+    put: async () => null,
+    delete: async () => null,
+    getAllPages: async () => [],
+    getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
+  };
+  const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const namesFor = async () => {
+    const server = new McpServer({ name: 'gated-census', version: '0.0.0' });
+    try {
+      for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, censusContext)) {
+        registerManifestModule(server, clientStub, module, censusContext);
+      }
+      return Object.keys(server._registeredTools ?? {});
+    } finally {
+      await server.close().catch(() => undefined);
+    }
+  };
+
+  const prior = process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS;
+  let optedIn;
+  let off;
+  try {
+    delete process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS;
+    off = new Set(await namesFor());
+    process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = '1';
+    optedIn = new Set(await namesFor());
+  } finally {
+    if (prior === undefined) delete process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS;
+    else process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = prior;
+  }
+  // Only names the opt-in ADDS are gated. A name missing from both passes is a
+  // manifest bug and is reported by the attribution cross-check above, not
+  // silently absorbed into this list.
+  return [...optedIn].filter((name) => !off.has(name)).sort();
 }
 
 function serializedFinalizedSchemaBytes(tool) {
@@ -1747,7 +1822,19 @@ function checkDocReachability() {
 function checkGatedScanCoverage(hits) {
   const errors = [];
   const toolsDir = join(ROOT, 'src', 'tools');
+  // A `server.tool('x', …)` line is a REGISTRATION, and this scan exists to
+  // catch a name that is not one. Since #695 some registrations are
+  // conditional: eleven tools are written literally in their module and
+  // registered only when SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set, so they
+  // are absent from the default `tools/list` this scan reads.
+  //
+  // They are joined to the known set rather than excepted by hand. The set is
+  // the MEASURED one (`gatedToolNames`, above — the census registers every
+  // module both ways and diffs), so a genuinely phantom name still fails and a
+  // renamed tool cannot linger here as a stale exception. An `excepted` list
+  // would be exactly the hand-typed copy this avoids elsewhere.
   const registered = new Set(census.toolNames);
+  const conditionallyRegistered = new Set(measuredGatedToolNames);
   const files = readdirSync(toolsDir).filter((name) => name.endsWith('.ts')).sort();
   let registrations = 0;
   const phantoms = [];
@@ -1755,11 +1842,13 @@ function checkGatedScanCoverage(hits) {
     const source = readFileSync(join(toolsDir, file), 'utf8');
     for (const span of registrationSpans(lexSource(source))) {
       registrations += 1;
-      if (span.name !== null && !registered.has(span.name)) phantoms.push(`${file}: ${span.name}`);
+      if (span.name !== null && !registered.has(span.name) && !conditionallyRegistered.has(span.name)) {
+        phantoms.push(`${file}: ${span.name}`);
+      }
     }
   }
   for (const phantom of phantoms) {
-    errors.push(`gated scan coverage: read tool name ${phantom}, which is not in the finalized production registry — the scan is matching something that is not a registration`);
+    errors.push(`gated scan coverage: read tool name ${phantom}, which is in neither the finalized production registry nor the measured opt-in surface — the scan is matching something that is not a registration`);
   }
   const exceptionsFor = (familyId, file) => GATED_SCAN_EXCEPTIONS.some(
     (entry) => entry.family === familyId && entry.file === file,
@@ -1767,8 +1856,8 @@ function checkGatedScanCoverage(hits) {
   for (const hit of hits) {
     if (hit.tools.length > 0) {
       for (const tool of hit.tools) {
-        if (!registered.has(tool)) {
-          errors.push(`gated scan coverage: attributed the gated call at ${hit.file}:${hit.line} to ${tool}, which is not in the finalized production registry`);
+        if (!registered.has(tool) && !conditionallyRegistered.has(tool)) {
+          errors.push(`gated scan coverage: attributed the gated call at ${hit.file}:${hit.line} to ${tool}, which is in neither the finalized production registry nor the measured opt-in surface`);
         }
       }
       continue;

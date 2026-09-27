@@ -561,7 +561,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The finalized default MCP registry exposes **589 tools** (all 589 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
+The finalized default MCP registry exposes **578 tools** (all 578 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -2216,7 +2216,7 @@ spotify-mcp/
 │   ├── history.ts            # Opt-in mutation history JSONL writer
 │   ├── shaping.ts            # Shared response shaping (response_format, max_results, pagination)
 │   ├── tools/
-│   │   ├── analytics.ts      # listening_report
+│   │   ├── analytics.ts      # listening_streaks, top_artists_by_range, taste_shift_report, listening_report (opt-in)
 │   │   ├── artistwatch.ts    # get_artist_discography, resolve_artist, save_artist_new_releases, watch_artists, check_artist_releases, artist_release_digest
 │   │   ├── audiobooks.ts     # get_audiobook, get_audiobook_chapters, get_chapter, get_saved_audiobooks
 │   │   ├── audiobookcopilot.ts # list_all_chapters, jump_to_chapter, where_was_i
@@ -2229,7 +2229,7 @@ spotify-mcp/
 │   │   ├── following.ts      # get_followed_artists, check_following_artists, following_analytics
 │   │   ├── freshness.ts      # whats_new (new-release radar)
 │   │   ├── import.ts         # import_playlist (M3U/CSV)
-│   │   ├── libraryanalytics.ts # library_coverage_report, listening_heatmap, library_growth_report, genre_trends_over_time
+│   │   ├── libraryanalytics.ts # library_coverage_report, library_growth_report, genre_trends_over_time, listening_heatmap (opt-in)
 │   │   ├── libraryhygiene.ts # library_hygiene
 │   │   ├── libraryinsights.ts # library_genre_report, filter_by_genre, tag_management
 │   │   ├── library.ts        # get_saved_tracks, get_saved_albums, get_saved_shows, get_saved_episodes, get_saved_audiobooks, get_saved_counts, save_to_library, remove_from_library, check_in_library
@@ -2283,7 +2283,63 @@ SPOTIFY_MCP_MAX_ITEMS=50      # default per-call truncation cap for list tools
 SPOTIFY_MCP_FETCH_ALL_CAP=500 # ceiling for fetch_all pagination walks
 SPOTIFY_MCP_HISTORY=1         # opt-in mutation history JSONL logging
 SPOTIFY_MCP_HISTORY_DIR=      # history directory override (default ~/.spotify-mcp/history)
+SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1 # opt-in derived listening analytics (default OFF)
 ```
+
+### Derived listening analytics are opt-in (#695)
+
+Eleven tools compute a derived listening metric — an hour-of-day or daypart
+histogram, a weekday profile, a discovery ratio, an era histogram, a binge or
+listening-consistency score, a behavioural recap — out of the account's own
+`/me/top/*` and `/me/player/recently-played` responses. Spotify's Developer
+Policy Sec. III.13 prohibits analysing Spotify Content to create "new or derived
+listenership metrics … or building profiles of users", and those outputs are
+the shape it names. The interpretation this project relies on, and the reason
+it is a gate rather than a deletion, is recorded in `docs/compliance.md`.
+
+**The default is the non-analytics path.** These tools are not registered at
+all unless `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` is set, so a host that sets
+nothing never sees these names in `tools/list`. The registry total is in the
+generated inventory at the top of this file; this section does not restate it,
+because a figure written here would be wrong the next time a tool lands:
+
+| Module | Withheld (opt-in only) |
+|---|---|
+| `analytics.ts` | `listening_report` |
+| `libraryanalytics.ts` | `listening_heatmap` |
+| `swarm3_analytics.ts` | `discovery_ratio`, `listening_clock`, `listening_clock_heatmap`, `artist_listening_clock`, `mood_bucket_report`, `weekday_listening_report`, `weekly_rotation_report`, `binge_detector_report`, `listening_recap_brief` |
+
+With the flag set the registry is byte-for-byte what it was before this change,
+and each of the eleven returns the same payload it always did.
+
+**A value that names no boolean is OFF, and says so.** The flag is parsed
+through the shared `truthyEnv` convention (#611), so `1`, `true`, `yes` and `on`
+enable it (case-insensitive, trimmed) and `0`, `false`, `no` and `off` do not.
+Anything else — `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=enabled` — leaves the
+analytics OFF and prints a line on stderr naming the accepted spellings, rather
+than failing to start or quietly reading as true. This is the same trap and the
+same treatment `SPOTIFY_MCP_READONLY` has since #611, and the direction of the
+failure is why the warning matters here too: the default is already the safe
+path, so a typo would otherwise leave an operator believing they had enabled
+eleven tools that are not registered.
+
+**This gate is not the read-only gate.** `SPOTIFY_MCP_READONLY` hides
+write-capable *modules*; this hides individual read-only *tools* inside modules
+that are otherwise fully active. They are independent in both directions — a
+read-only host may still hold derived analytics, and an analytics-opted-in host
+is still fully writable — so neither implies the other and neither reports the
+other's state. The startup log, the `spotify-mcp doctor` configuration block
+and the `surface` row of `spotify_doctor` each disclose the flag separately.
+
+**Nothing is silently zeroed.** The eleven tools are absent rather than
+returning an empty result, so no caller can read "no hourly listening" out of a
+gate that is actually off. Re-presentations of the account's own data are
+unaffected and stay registered by default: `get_top_artists`, `get_top_tracks`,
+`get_recently_played`, `top_artists_by_range`, `taste_shift_report`,
+`listening_history_export` and the rest of the leaderboard and rank-delta tools.
+`taste_shift_report` in particular still serves the track/artist window
+comparison that `listening_report` used to be the only way to get, which is why
+the aggregate is withheld whole rather than partly.
 
 ### Token storage
 `~/.spotify-mcp/tokens.json` by default (path overridable via the `SPOTIFY_MCP_TOKEN_FILE` environment variable) — created on first auth, file permissions set to 600 (owner read/write only).

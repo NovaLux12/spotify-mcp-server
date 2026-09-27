@@ -31,6 +31,7 @@ import {
   resolveToolsets,
 } from '../toolsets.js';
 import { moduleBlockedByScopes } from '../scopefilter.js';
+import { derivedAnalyticsEnabled } from '../derivedanalytics.js';
 import { historyWriteStatus, historyLedgerStats } from '../history.js';
 import { BRANDING_NOTICE } from '../branding.js';
 
@@ -113,6 +114,17 @@ export interface DoctorSurface {
    * decide registration, so the two cannot disagree.
    */
   prompts_without_resources: boolean;
+  /**
+   * Whether the derived-listening-analytics opt-in (#695) is on, read from the
+   * registration gate so the disclosure is the answer the registry acted on.
+   *
+   * Deliberately NOT folded into `read_only` or into `hidden_by_*`. Those name
+   * MODULES withheld by a gate that hides whole registration keys; this gate
+   * withholds eleven individual tools inside three modules that are otherwise
+   * fully active, so folding it in would report the modules as hidden and make
+   * a read-only host look like it lost `personalization` entirely.
+   */
+  derived_analytics: boolean;
 }
 
 
@@ -618,6 +630,10 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
     unknown_disable_overrides: overrides.unknown.disable,
     read_only: readOnly,
     prompts_without_resources: promptsActive && !resourcesActive,
+    // Read from the GATE, not from the config snapshot: this is a disclosure
+    // and must state what module registration actually acted on. It is NOT a
+    // module-level gate, so it contributes no `hidden_by_*` count.
+    derived_analytics: derivedAnalyticsEnabled(),
   };
 }
 
@@ -638,6 +654,10 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
     `disable_overrides=${surface.disable_overrides.join(',') || '(none)'}`,
     `read_only=${surface.read_only}`,
     `prompts_without_resources=${surface.prompts_without_resources}`,
+    // Named explicitly rather than folded into a `hidden_by_*` count: it is a
+    // per-TOOL gate, so "N modules hidden" would be the wrong unit and would
+    // overstate what was withheld.
+    `derived_analytics=${surface.derived_analytics}`,
   ];
   if (surface.prompts_without_resources) {
     // The prompts still work — they degrade to guidance the failed tool call

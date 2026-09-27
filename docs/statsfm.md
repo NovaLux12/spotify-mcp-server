@@ -118,7 +118,7 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 ## Gotchas
 
 - **Lifetime lies before import.** A new account with no history import can return near-empty lifetime results. `statsfm_streams_stats` can confirm that aggregate history is present, but it cannot establish import completeness.
-- **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `listening_report` or Spotify Wrapped. Different counters, different windows.
+- **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `get_recently_played` (or `listening_report`, if the host sets `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`) or Spotify Wrapped. Different counters, different windows.
 - **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify. Use them as search seeds, not Spotify genre IDs.
 - **Clock buckets are UTC in the taste tools.** Exact-hour claims depend on the timestamps returned by stats.fm.
 - **Identity is per call by default.** User-scoped endpoint tools take `user_id`; network-backed taste tools take `statsfm_user`. Setting `STATSFM_USER_ID` supplies the default for both, but an explicit per-call argument always wins and, with neither, the call fails rather than assuming a profile. Catalog search and entity-lookup tools need no user identity either way.

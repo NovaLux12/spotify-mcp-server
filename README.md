@@ -10,7 +10,7 @@ Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affilia
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see [Registration-gated endpoints](#registration-gated-endpoints) for the generated list.
 
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **589 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+The finalized default MCP registry exposes **578 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ---
@@ -50,6 +50,7 @@ The finalized default MCP registry exposes **589 tools**, **17 fixed resources**
 |---|---|
 | **Complete** | Playback, search, catalog, library, playlists, following, plus extras like duplicate cleanup, M3U/CSV import-export, podcast sessions, snapshot diffing, listening analytics, market checks, stats.fm taste reads, and taste composite briefs, playlists, and reports. |
 | **Safe** | `dry_run` previews on writes, receipts that prove what landed, human confirmation for bulk deletes, and `READONLY` to hide write-capable modules. |
+| **Honest about the surface** | Tools that turn your listening history into derived metrics — hourly histograms, weekday profiles, discovery ratios — are off unless you ask for them with `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1`, because Spotify's Developer Policy Sec. III.13 prohibits building derived listenership metrics. The rest of the analytics surface, which re-presents your own data, is always on. See [docs/compliance.md](docs/compliance.md#derived-listening-analytics-the-policy-and-the-interpretation). |
 | **Honest** | No tool claims to work when it cannot. Gated endpoints keep their wrappers, read replacements where one exists, and explain the 403 in plain English instead of crashing — see [Registration-gated endpoints](#registration-gated-endpoints), generated from `src/gating.ts`. |
 | **Polished** | Paginated (up to 500), podcasts first-class, device-aware playback, `spotify_doctor` self-diagnosis, real test suite. |
 
