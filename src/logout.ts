@@ -54,7 +54,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-import { cachePendingPath, cachePersistPath, cachePersistPaths } from './cachepersist.js';
+import { cachePendingPath, cachePendingPaths, cachePersistPath, cachePersistPaths } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
 import { historyFilePath } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
@@ -264,7 +264,13 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     kind: 'file',
     envVar: 'SPOTIFY_MCP_DATA_DIR',
     erasure: 'move',
+    // `expand` for the same reason the cache above has it (#1356). With only
+    // `resolve`, logout named the ACTIVE profile's marker and left every other
+    // profile's behind — and a marker that outlives the cache it describes is
+    // read by the next start of that profile as a session that died mid-save,
+    // which reports a loss of data the operator just deliberately erased.
     resolve: (env) => cachePendingPath(env),
+    expand: (env) => cachePendingPaths(env),
   },
   {
     id: 'exports',
