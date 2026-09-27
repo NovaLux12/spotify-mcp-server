@@ -79,7 +79,13 @@ function harness(
     ) {
       registered.push({
         name,
-        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        // `z.ZodType` unparameterized parses to `unknown`, which is the honest
+        // default for an arbitrary schema but not for THIS one: a tool's
+        // `inputSchema` is always an object schema, so its output is the args
+        // object. Naming the output parameter states that, where the bare cast
+        // left the value arriving as `unknown` and every reader had to cast
+        // again.
+        validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args),
         handler,
       });
     },

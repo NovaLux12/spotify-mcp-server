@@ -983,13 +983,21 @@ export interface SectionCap {
  * `truncated_by_cap`, which is a different quantity about a different read, and
  * a call site that reports both must pass the walk's flag in under that name
  * rather than letting this one overwrite it.
+ *
+ * The return type states BOTH fields the envelope writes, rather than only
+ * `sections`. Omitting `truncated` made the return type a partial description
+ * of the object actually returned, which is the §6 failure one level up: a
+ * caller reading `capped.truncated` had to widen the type at the call site, and
+ * a test asserting the flag had to cast past the signature that the truncation
+ * boundary in this same file reads (`markedTruncated`). It is written on every
+ * return path, so it belongs in the type.
  */
 export function capRowSections<T extends JsonObject>(
   payload: T,
   arrays: readonly string[],
   maxResults: number,
   withhold: readonly string[] = [],
-): T & { sections: Record<string, SectionCap> } {
+): T & { truncated: boolean; sections: Record<string, SectionCap> } {
   const sections: Record<string, SectionCap> = {};
   const next: JsonObject = { ...payload };
   for (const key of arrays) {
@@ -1028,7 +1036,7 @@ export function capRowSections<T extends JsonObject>(
   // statement — one boolean cannot say WHICH section lost rows.
   next.truncated = Object.values(sections).some((section) => section.truncated);
   next.sections = sections;
-  return next as T & { sections: Record<string, SectionCap> };
+  return next as T & { truncated: boolean; sections: Record<string, SectionCap> };
 }
 
 /**

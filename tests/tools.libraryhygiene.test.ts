@@ -20,6 +20,7 @@ import type { LegacyResponder } from './helpers/stub-client.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../src/types/spotify.js';
 import { registerLibraryHygieneTools } from '../src/tools/libraryhygiene.js';
+import type { SectionCap } from '../src/shaping.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing
@@ -80,6 +81,39 @@ function harness(responder: Responder = () => null) {
 }
 
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
+
+// ---------------------------------------------------------------------------
+// structuredContent readers
+//
+// `structuredContent` is `Record<string, unknown>` on the wire, so a field read
+// off it is `unknown` until it is checked. These narrow at runtime and THROW
+// when the check fails, which is the point: the cast they replace
+// (`payload.groups as AlbumGroup[]`) would have asserted a shape the payload
+// might not carry, and a test that dies on `undefined.length` says less about
+// which field broke than one that names it. An absent or wrongly-typed field is
+// unanswered, which is not the same as empty — the #803 rule, in the reader.
+// ---------------------------------------------------------------------------
+
+const objectAt = (payload: Record<string, unknown>, key: string): Record<string, unknown> =>
+  recordOf(payload[key], `payload.${key}`);
+
+const arrayAt = (payload: Record<string, unknown>, key: string): unknown[] =>
+  rowsOf(payload[key], `payload.${key}`);
+
+/** Narrow an `unknown` to a record, naming the field when it is not one. */
+function recordOf(value: unknown, label: string): Record<string, unknown> {
+  assert.ok(
+    value !== null && typeof value === 'object' && !Array.isArray(value),
+    `${label} should be an object, got ${value === null ? 'null' : typeof value}`,
+  );
+  return value as Record<string, unknown>;
+}
+
+/** Narrow an `unknown` to an array, naming the field when it is not one. */
+function rowsOf(value: unknown, label: string): unknown[] {
+  assert.ok(Array.isArray(value), `${label} should be an array, got ${typeof value}`);
+  return value;
+}
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -525,8 +559,9 @@ describe('library_hygiene edges and shapes', () => {
     ]);
     assert.equal(parsed.requests_made, 0);
     assert.equal(parsed.ok, true);
-    assert.equal(parsed.groups.length, 1);
-    const group = parsed.groups[0];
+    const groups = arrayAt(parsed, 'groups');
+    assert.equal(groups.length, 1);
+    const group = recordOf(groups[0], 'groups[0]');
     for (const key of [
       'album_id',
       'album_name',
@@ -541,10 +576,11 @@ describe('library_hygiene edges and shapes', () => {
     ]) {
       assert.ok(key in group, `group missing ${key}`);
     }
-    assert.equal(parsed.groups[0].liked_tracks[0].id, 't1');
-    assert.equal(parsed.near_complete.length, 1);
+    assert.equal(recordOf(rowsOf(group.liked_tracks, 'group.liked_tracks')[0], 'group.liked_tracks[0]').id, 't1');
+    const nearComplete = arrayAt(parsed, 'near_complete');
+    assert.equal(nearComplete.length, 1);
     assert.deepEqual(
-      Object.keys(parsed.near_complete[0]).sort(),
+      Object.keys(recordOf(nearComplete[0], 'near_complete[0]')).sort(),
       [
         'album_id',
         'album_name',
@@ -558,7 +594,7 @@ describe('library_hygiene edges and shapes', () => {
         'total_tracks',
       ],
     );
-    assert.equal(parsed.orphaned_singles.length, 0);
+    assert.equal(arrayAt(parsed, 'orphaned_singles').length, 0);
   });
 
   it('prose totals stay accurate under max_results truncation', async () => {
@@ -593,7 +629,11 @@ describe('library_hygiene edges and shapes', () => {
     const payload = out.structuredContent!;
     assert.equal((payload.near_complete as unknown[]).length, 2);
     assert.equal(payload.truncated, true);
-    const sections = payload.sections as Record<string, { returned: number; total: number }>;
+    // The real `SectionCap`, not a locally invented subset: the previous
+    // `{ returned; total }` shape had no `withheld`, so the assertion below
+    // could not name it without widening the type at the read site. A
+    // hand-written shadow of a published type is a second declaration of it.
+    const sections = objectAt(payload, 'sections') as Record<string, SectionCap>;
     assert.equal(sections.near_complete.returned, 2);
     assert.equal(sections.near_complete.total, 3);
     // The raw scan is withheld, and its exact size is stated rather than
