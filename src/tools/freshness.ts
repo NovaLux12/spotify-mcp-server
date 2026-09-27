@@ -8,8 +8,13 @@
  * A local watermark file (SPOTIFY_MCP_FRESHNESS_STATE,
  * default ~/.spotify-mcp/freshness.json) supports since='last-check' so
  * agents can ask "everything since I last checked" without tracking dates
- * themselves. After a successful non-dry run the watermark advances to
- * today (UTC) — but only when the scan completed without cap truncation (#239).
+ * themselves. The watermark is tracked PER KIND (#724): a single global mark
+ * meant an albums-only scan advanced the mark a podcast scan reads, so the
+ * podcast scan saw nothing new purely because the album scan ran first. After a
+ * successful non-dry run each scanned kind's mark advances to today (UTC) — but
+ * only when that kind's scan completed without cap truncation (#239), and never
+ * when the caller passed an explicit `since` date, because an explicit window is
+ * a question and not a checkpoint.
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -37,7 +42,7 @@ import {
   ARTIST_RELEASE_PROBE_GROUPS,
 } from '../artistreleases.js';
 import { readOnlyModeEnabled } from './annotations.js';
-import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -151,53 +156,110 @@ export function watermarkFilePath(env: NodeJS.ProcessEnv = process.env): string 
     join(homedir(), '.spotify-mcp', 'freshness.json')
   );
 }
+type FreshnessKind = 'albums' | 'podcasts';
+
+const FRESHNESS_KINDS: readonly FreshnessKind[] = ['albums', 'podcasts'];
+
 /**
- * Read the stored watermark ({ last_check: "YYYY-MM-DD" }), or null.
+ * The on-disk watermark state.
  *
- * A hand-edited or corrupted state file can hold a day that does not exist
- * ("2026-02-30"). Using it as the cutoff would scan a window the caller never
- * asked for, so such a value is rejected by name rather than coerced; only a
- * genuinely absent/unreadable file falls back to `days_back`.
+ * `kinds` holds one checkpoint per kind and is the only thing the *scan* logic
+ * reads. A kind missing from the map has no checkpoint of its own — the file
+ * records what was actually scanned, not what a caller once asked about.
+ *
+ * `hasKinds` distinguishes a file this code wrote from a pre-#724 flat
+ * `{"last_check": "..."}` file. On a flat file the single global mark is used
+ * as a shared read fallback for kinds that have no entry of their own, which
+ * preserves the position a user had before the upgrade; the mark is never
+ * copied into `kinds` for a kind that has not completed a scan, so it cannot
+ * mark an unscanned kind as caught up. The first write converts the file to
+ * the per-kind shape, after which the fallback is gone and each kind depends
+ * only on its own scans.
+ *
+ * `last_check` is read only on that flat path. On a per-kind file it is a
+ * derived compatibility field (the most recent day any kind advanced to) that
+ * an older build still reads; a corrupt value there must not fail a call whose
+ * cutoff comes from `kinds`, which is why the two are read on separate paths.
  */
-async function readWatermark(): Promise<string | null> {
-  let raw: string;
-  const file = watermarkFilePath();
-  try {
-    // #623: a server-owned store, so the root is its own directory. The
-    // regular-file check is the one that earns its keep — a FIFO planted at
-    // freshness.json would otherwise hang this read forever — and the size cap
-    // stops an oversized file being buffered. The catch below already means
-    // "no usable watermark", so a refusal falls into it unchanged.
-    const parsed: unknown = JSON.parse(
-      await readLocalFile({ roots: ownStoreRoots(file), tool: 'freshness', target: file }),
-    );
-    if (
-      parsed &&
-      typeof parsed === 'object' &&
-      typeof (parsed as { last_check?: unknown }).last_check === 'string'
-    ) {
-      raw = (parsed as { last_check: string }).last_check;
-    } else {
-      return null;
-    }
-  } catch {
-    return null;
-  }
-  const why = describeImpossibleDate(raw);
+interface WatermarkState {
+  legacyLastCheck: string | null;
+  hasKinds: boolean;
+  kinds: Partial<Record<FreshnessKind, string>>;
+}
+
+const EMPTY_STATE: WatermarkState = { legacyLastCheck: null, hasKinds: false, kinds: {} };
+
+/** Reject a stored day that is not a real calendar day, naming file and key. */
+function storedDate(path: string, key: string, value: string): string {
+  const why = describeImpossibleDate(value);
   if (why) {
     throw new Error(
-      `Stored watermark in ${watermarkFilePath()} is not a real calendar date: `
-      + `"${raw}" — ${why}. Fix or delete that file, or pass an explicit since=YYYY-MM-DD.`,
+      `Stored watermark in ${path} is not a real calendar date: `
+      + `"${value}" at ${key} — ${why}. Fix or delete that file, or pass an explicit since=YYYY-MM-DD.`,
     );
   }
-  return raw;
+  return value;
 }
 
 /**
- * Atomically advance the watermark to `date`. Temp-file + rename keeps the
- * update crash-safe; the temp file is created 0600 and re-asserted after
- * the write (#1084: a `mode` argument only applies at creation), so the
- * final file is too.
+ * Read the stored watermark state. An absent, unreadable or non-object file is
+ * an empty state, not an error — the caller falls back to `days_back`.
+ *
+ * A hand-edited or corrupted file can hold a day that does not exist
+ * ("2026-02-30"). Using it as the cutoff would scan a window the caller never
+ * asked for, so such a value is rejected by name rather than coerced.
+ */
+async function readWatermarkState(): Promise<WatermarkState> {
+  const path = watermarkFilePath();
+  let parsed: unknown;
+  try {
+    // #1285's bounded read, re-applied across the #724 rebase. The per-kind
+    // restructure replaced the call that #1285 had hardened, so resolving this
+    // conflict in favour of #724's structure would otherwise have silently
+    // reverted the hardening: `readFile` on a FIFO planted at this path hangs
+    // the read forever, and an oversized file gets buffered whole. #1285's
+    // comment on the superseded `readWatermark` explains why the regular-file
+    // check and the size cap are the parts that earn their keep.
+    parsed = JSON.parse(
+      await readLocalFile({ roots: ownStoreRoots(path), tool: 'freshness', target: path }),
+    );
+  } catch {
+    return EMPTY_STATE;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return EMPTY_STATE;
+  }
+  const obj = parsed as Record<string, unknown>;
+  const rawKinds = obj.kinds;
+  const hasKinds = rawKinds !== null && typeof rawKinds === 'object' && !Array.isArray(rawKinds);
+  if (!hasKinds) {
+    const legacy = obj.last_check;
+    return typeof legacy === 'string'
+      ? { legacyLastCheck: storedDate(path, 'last_check', legacy), hasKinds: false, kinds: {} }
+      : EMPTY_STATE;
+  }
+  const source = rawKinds as Record<string, unknown>;
+  const kinds: Partial<Record<FreshnessKind, string>> = {};
+  for (const kind of FRESHNESS_KINDS) {
+    const value = source[kind];
+    // A non-string entry is ignored (treated as no checkpoint) rather than
+    // fatal, matching how a non-string `last_check` read before #724. Only an
+    // impossible *date* is worth stopping for.
+    if (typeof value === 'string') kinds[kind] = storedDate(path, `kinds.${kind}`, value);
+  }
+  return { legacyLastCheck: null, hasKinds: true, kinds };
+}
+
+/** The checkpoint a kind reads, or null when it has none. */
+function watermarkFor(state: WatermarkState, kind: FreshnessKind): string | null {
+  return state.kinds[kind] ?? (state.hasKinds ? null : state.legacyLastCheck);
+}
+
+/**
+ * Persist the per-kind state, atomically. Temp-file + rename keeps the update
+ * crash-safe; the temp file is created 0600 and re-asserted after the write
+ * (#1084: a `mode` argument only applies at creation), so the final file is
+ * too.
  *
  * The temp name MUST be unique per writer. A fixed `${target}.tmp` is a race
  * between concurrent writers on a shared state path: both create it, the
@@ -205,8 +267,28 @@ async function readWatermark(): Promise<string | null> {
  * not only a test-suite problem — two server processes, or a server and a
  * CLI run, share `~/.spotify-mcp/freshness.json` by default. Follows the
  * same idiom as the token sidecar in `auth.ts`.
+ *
+ * `last_check` is written as the most recent day any kind holds, so a build
+ * that predates the per-kind shape still resumes from a real checkpoint. It is
+ * never read back for a kind on a per-kind file (see `WatermarkState`).
+ *
+ * A writer that lost a concurrent read-modify-write drops the *other* kind's
+ * freshest mark and keeps the older one, which widens the next window rather
+ * than hiding items in it. The losing direction would be the dangerous one,
+ * so this is left unguarded.
  */
-async function writeWatermark(date: string): Promise<void> {
+async function writeWatermarkState(state: WatermarkState): Promise<void> {
+  const kinds: Record<string, string> = {};
+  let newest: string | null = null;
+  for (const kind of FRESHNESS_KINDS) {
+    const value = state.kinds[kind];
+    if (!value) continue;
+    kinds[kind] = value;
+    if (newest === null || value > newest) newest = value;
+  }
+  // Nothing to record: writing here would replace a file that still holds a
+  // legacy mark with an empty per-kind one, discarding the user's position.
+  if (newest === null) return;
   const target = watermarkFilePath();
   const tmp = `${target}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
   await mkdir(dirname(target), { recursive: true });
@@ -215,7 +297,9 @@ async function writeWatermark(date: string): Promise<void> {
   // temps this call created, so clear the old name here the way auth.ts does.
   await rm(`${target}.tmp`, { force: true }).catch(() => {});
   try {
-    await writeFile(tmp, `${JSON.stringify({ last_check: date }, null, 2)}\n`, { mode: 0o600 });
+    await writeFile(tmp, `${JSON.stringify({ last_check: newest, kinds }, null, 2)}\n`, {
+      mode: 0o600,
+    });
     // #1084: re-assert 0600 after the write — a `mode` argument only applies at
     // creation, and a leftover tmp from a previous run could carry a looser
     // mode that would otherwise ride the rename into the final file.
@@ -392,7 +476,9 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         .optional()
         .describe(
           "Only include releases on/after this date (YYYY-MM-DD), or 'last-check' to resume from "
-            + "the stored watermark file (default path ~/.spotify-mcp/freshness.json)",
+            + "the stored per-kind watermark file (default path ~/.spotify-mcp/freshness.json). "
+            + "Tracked per kind, so a call scoped to one kind never moves the other kind's mark. "
+            + "An explicit date never writes this file; 'last-check' and a days_back window do.",
         ),
       days_back: z
         .number()
@@ -454,15 +540,57 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
       const freshnessBudget = args.max_artists ?? getConfig().freshnessBudget;
 
       // ---- Cutoff resolution -------------------------------------------------
+      // The watermark is tracked per kind (#724). One global mark meant an
+      // albums-only scan advanced the mark a podcasts scan reads, so the
+      // podcast scan reported "nothing new" purely because the album scan ran
+      // first — no error, and nothing in the payload to say so.
+      let state: WatermarkState = EMPTY_STATE;
       let previousWatermark: string | null = null;
       let cutoff: string;
+      let cutoffReason: string;
+      // Marks resolved for EVERY kind, not just the requested ones, so the
+      // prose can name the mark an unscanned kind is holding.
+      const marks: Partial<Record<FreshnessKind, string>> = {};
+      // An explicit window is a question, not a checkpoint, so it must not move
+      // the incremental mark (#724). `since` is validated above, so a non-null
+      // value that is not the sentinel is always an explicit YYYY-MM-DD.
+      const explicitSince = typeof args.since === 'string' && args.since !== 'last-check';
+
       if (args.since === 'last-check') {
-        previousWatermark = await readWatermark();
-        cutoff = previousWatermark ?? daysBack(args.days_back ?? 30);
+        state = await readWatermarkState();
+        const unmarked: FreshnessKind[] = [];
+        for (const kind of FRESHNESS_KINDS) {
+          const mark = watermarkFor(state, kind);
+          if (mark) marks[kind] = mark;
+        }
+        for (const kind of kinds) {
+          if (!marks[kind]) unmarked.push(kind);
+        }
+        if (unmarked.length === 0) {
+          // The OLDEST requested mark is the safe merged cutoff. Taking the
+          // newest would hide everything released since it, for whichever
+          // requested kind happens to be furthest behind.
+          previousWatermark = kinds.map((k) => marks[k] as string).sort()[0];
+          cutoff = previousWatermark;
+          cutoffReason =
+            `resumed from the stored ${kinds.length > 1 ? 'oldest of the per-kind' : 'per-kind'} `
+            + `watermark${kinds.length > 1 ? 's' : ''} for ${kinds.join(', ')}`;
+        } else {
+          // At least one requested kind has never completed a scan. Falling
+          // back to the marks that do exist would hide this kind's items behind
+          // a window they were never filtered against, so the whole call goes
+          // back to days_back.
+          cutoff = daysBack(args.days_back ?? 30);
+          cutoffReason =
+            `no stored watermark yet for ${unmarked.join(' and ')} — falling back to `
+            + `days_back (${args.days_back ?? 30})`;
+        }
       } else if (args.since) {
         cutoff = args.since;
+        cutoffReason = `explicit since=${cutoff}`;
       } else {
         cutoff = daysBack(args.days_back ?? 30);
+        cutoffReason = `days_back (${args.days_back ?? 30}), no since given`;
       }
 
       // ---- dry_run: describe the plan, make zero API calls -------------------
@@ -479,7 +607,12 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
           plan.push(`list saved shows via GET /me/shows (${SHOWS_PAGE_SIZE} per page, bounded at max_artists=${freshnessBudget})`);
           plan.push(`GET /shows/{id}/episodes?limit=${ENTITY_PAGE_SIZE} for up to ${freshnessBudget} saved shows (budget max_artists=${freshnessBudget})`);
         }
-        plan.push(`advance watermark to ${todayUtc()} (${watermarkFilePath()}) — only if scan completes without cap truncation or quota hit; otherwise watermark held`);
+        plan.push(
+          `advance the ${kinds.join(' and ')} watermark${kinds.length > 1 ? 's' : ''} to `
+          + `${todayUtc()} (${watermarkFilePath()}) — each kind only, and only if that kind's scan `
+          + 'completes without cap truncation or quota hit; otherwise that kind is held. An explicit '
+          + 'since date holds every kind.',
+        );
         // Cost line required by #242. dry_run makes zero API calls, so nothing
         // here is measured: the figure is arithmetic over the budget, and the
         // walk's own pager is part of it. The old wording charged one follow
@@ -516,8 +649,16 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
           ok: true,
           dry_run: true,
           cutoff,
+          cutoff_reason: cutoffReason,
           kinds,
           previous_watermark: previousWatermark,
+          // Each kind's current mark, so a caller planning an alternating
+          // albums/podcasts schedule can see the two positions differ. Whether
+          // a real run would advance is not knowable before the walk, so the
+          // plan line states the rule rather than a per-kind verdict here.
+          watermarks: Object.fromEntries(
+            FRESHNESS_KINDS.map((kind) => [kind, { previous: marks[kind] ?? null }]),
+          ),
           cost_estimate: costEstimate,
           cost,
           max_artists: freshnessBudget,
@@ -646,6 +787,11 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         }
       }
 
+      // #724: completion is per kind. Captured here, BEFORE the podcast walk,
+      // so a quota wall inside the podcast walk cannot retroactively mark the
+      // album walk as unfinished (and vice versa).
+      const albumsCompleted = wantAlbums && !followTruncatedByCap && !quotaHit;
+
       // ---- Podcasts path: saved shows → newest episode page per show --------
       const episodes: NewReleaseHit[] = [];
       let showLookups = 0;
@@ -734,6 +880,21 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         }
       }
 
+      // #724: the podcast walk is complete only if it ran at all. `quotaHit`
+      // covers both a wall inside this walk and one in the album walk, which
+      // skips this walk entirely (`if (wantPodcasts && !quotaHit)` above) —
+      // either way these shows were not read to the end, so the podcast mark
+      // must not move. `showListingTruncated` counts too (#1255): a saved-shows
+      // listing that stopped short of the library is a partial read of the
+      // source, and the episodes of the shows past the cap are absent from the
+      // result entirely, so advancing past it would skip them for good.
+      const podcastsCompleted = wantPodcasts && !quotaHit && !showsTruncatedByCap && !showListingTruncated;
+      // #1255: the podcasts leg is partial if EITHER the saved-shows listing
+      // stopped short of the library or the per-show episode loop ran into the
+      // lookup cap. Both mean shows past that point contributed no episodes to
+      // the result, so the disclosure below has to say the source was cut short.
+      const podcastsPartial = showListingTruncated || showsTruncatedByCap;
+
       // ---- Merge, sort newest-first (name as tiebreaker), truncate ----------
       const merged = [...albums, ...episodes].sort((a, b) =>
         a.date_key === b.date_key ? a.name.localeCompare(b.name) : b.date_key.localeCompare(a.date_key),
@@ -746,31 +907,96 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         limit: maxResults,
       });
 
-      // ---- Watermark handling (#239) -----------------------------------------
-      // Only advance when scan completed WITHOUT cap truncation and WITHOUT
-      // quota hit. Truncated scans hold the watermark so next 'since=last-check'
-      // does not permanently skip unreached releases. A saved-shows listing that
-      // stopped short of the library truncates the podcasts leg the same way a
-      // half-walked follow list truncates the albums one (#679) — the result is
-      // built from whatever the listing returned, so advancing past it would
-      // skip the shows it never read.
-      const podcastsPartial = showListingTruncated || showsTruncatedByCap;
-      const truncated = followTruncatedByCap || podcastsPartial || quotaHit;
-      let watermarkAdvanced = false;
-      let newWatermark: string | null = null;
-      let watermarkReason: string | null = null;
+      // ---- Watermark handling (#239, per kind as of #724) -------------------
+      // A kind advances only if all of the following hold:
+      //   1. it was requested and its walk ran to the end — no cap truncation
+      //      and no quota wall, because an unreached release must never be
+      //      skipped. A saved-shows listing that stopped short of the library
+      //      holds the podcasts kind the same way a half-walked follow list
+      //      holds the albums one (#679, #1255): the result is built from
+      //      whatever the listing returned, so advancing past it would skip the
+      //      shows it never read.
+      //   2. READONLY is off, so an auto-approved read cannot move local state;
+      //   3. the caller did not pass an explicit `since` date, because an
+      //      explicit window is a question about the past, not a claim that
+      //      everything up to today has been seen (#724).
+      // `since: "last-check"` and a plain `days_back` window both still
+      // advance: both return everything released since the mark, so the user
+      // really has seen the whole window up to today.
       const readOnly = readOnlyModeEnabled();
-      if (!truncated && !readOnly) {
-        newWatermark = todayUtc();
-        await writeWatermark(newWatermark);
-        watermarkAdvanced = true;
-      } else if (readOnly) {
-        watermarkReason = 'READONLY mode is active — watermark held so an auto-approved read cannot change local freshness state';
-      } else if (quotaHit) {
-        watermarkReason = 'quota exceeded mid-walk — partial results returned, watermark held so next since=last-check retries unscanned artists';
-      } else {
-        watermarkReason = 'scan truncated by cap — watermark held so next since=last-check does not skip unreached releases; raise max_artists or use an explicit since date to continue';
+      const today = todayUtc();
+      const heldByScan = (completed: boolean): string | null => {
+        if (completed) return null;
+        if (quotaHit) {
+          return 'quota exceeded mid-walk — partial results returned, watermark held so the next '
+            + 'since=last-check retries the unscanned sources';
+        }
+        return 'scan truncated by cap — watermark held so the next since=last-check does not skip '
+          + 'unreached releases; raise max_artists to finish the walk';
+      };
+      const heldByMode = (): string | null => {
+        if (readOnly) {
+          return 'READONLY mode is active — watermark held so an auto-approved read cannot change '
+            + 'local freshness state';
+        }
+        if (explicitSince) {
+          return `explicit since=${cutoff} — watermark held, because an explicit window is a `
+            + 'question about the past and not a claim that everything up to today has been seen';
+        }
+        return null;
+      };
+
+      interface KindWatermark {
+        scanned: boolean;
+        previous: string | null;
+        next: string | null;
+        advanced: boolean;
+        held_reason: string | null;
       }
+      const byKind = {} as Record<FreshnessKind, KindWatermark>;
+      const advancedKinds: FreshnessKind[] = [];
+      for (const kind of FRESHNESS_KINDS) {
+        const requested = kind === 'albums' ? wantAlbums : wantPodcasts;
+        const previous = marks[kind] ?? null;
+        if (!requested) {
+          byKind[kind] = { scanned: false, previous, next: previous, advanced: false, held_reason: null };
+          continue;
+        }
+        const reason = heldByMode() ?? heldByScan(kind === 'albums' ? albumsCompleted : podcastsCompleted);
+        if (reason) {
+          byKind[kind] = { scanned: false, previous, next: previous, advanced: false, held_reason: reason };
+          continue;
+        }
+        byKind[kind] = { scanned: true, previous, next: today, advanced: true, held_reason: null };
+        advancedKinds.push(kind);
+      }
+
+      // Only write when a mark actually moved. A held scan leaves the file
+      // byte-for-byte alone, so a pre-#724 flat file survives a held call and
+      // still supplies the legacy fallback to the next one.
+      if (advancedKinds.length > 0) {
+        const next: WatermarkState = {
+          legacyLastCheck: null,
+          hasKinds: true,
+          kinds: { ...state.kinds },
+        };
+        for (const kind of advancedKinds) next.kinds[kind] = today;
+        await writeWatermarkState(next);
+      }
+
+      const watermarkAdvanced = advancedKinds.length > 0;
+      const newWatermark = watermarkAdvanced ? today : null;
+      // The one-line summary keeps the pre-#724 wording for the two cases it
+      // already covered; per-kind detail is a separate line below.
+      const watermarkReason: string | null = watermarkAdvanced
+        ? null
+        : readOnly
+          ? 'READONLY mode is active — watermark held so an auto-approved read cannot change local freshness state'
+          : explicitSince
+            ? `explicit since=${cutoff} — an explicit window is a question, not a checkpoint, so the watermark was not moved`
+            : quotaHit
+              ? 'quota exceeded mid-walk — partial results returned, watermark held so the next since=last-check retries the unscanned sources'
+              : 'scan truncated by cap — watermark held so the next since=last-check does not skip unreached releases; raise max_artists or use an explicit since date to continue';
 
       // ---- Per-source scan + cost disclosure (#679) ---------------------------
       // The quota wall can land on either leg, and the walk stops at the first
@@ -969,16 +1195,54 @@ export function registerFreshnessTools(server: McpServer, client: SpotifyClient)
         // Always mention that truncated/quota scans did NOT advance
         lines.push(`watermark_advanced: false, watermark_held: true`);
       }
+      // Per kind (#724). A one-kind call must say which mark moved and that
+      // the other did not, or a caller cannot tell a real "nothing new" from
+      // one caused by a sibling kind's scan having moved the shared mark.
+      const kindClauses: string[] = [];
+      for (const kind of kinds) {
+        const w = byKind[kind];
+        if (w.advanced) {
+          kindClauses.push(
+            `${kind} watermark advanced${w.previous ? ` from ${w.previous}` : ''} to ${w.next}`,
+          );
+        } else if (w.scanned) {
+          kindClauses.push(`${kind} watermark held at ${w.next ?? '(none)'}`);
+        } else {
+          kindClauses.push(
+            w.held_reason
+              ? `${kind} watermark held at ${w.next ?? w.previous ?? '(none)'} — ${w.held_reason}`
+              : `${kind} not scanned this call — its watermark is unchanged at ${w.next ?? w.previous ?? '(none)'}`,
+          );
+        }
+      }
+      for (const kind of FRESHNESS_KINDS) {
+        if (kinds.includes(kind)) continue;
+        const w = byKind[kind];
+        kindClauses.push(
+          `${kind} not scanned this call — its watermark is unchanged at ${w.next ?? w.previous ?? '(none)'}`,
+        );
+      }
+      lines.push(`Watermark per kind: ${kindClauses.join('; ')}.`);
 
       const extra: Record<string, unknown> = {
         ok: true,
         cutoff,
+        cutoff_reason: cutoffReason,
         kinds,
         previous_watermark: previousWatermark,
         watermark: newWatermark,
         watermark_advanced: watermarkAdvanced,
         watermark_held: !watermarkAdvanced,
         ...(watermarkReason ? { watermark_reason: watermarkReason } : {}),
+        // Per-kind detail (#724). The scalar fields above stay as they were so
+        // existing readers keep working; `watermarks` is where a caller that
+        // cares which mark moved should look.
+        watermarks: byKind,
+        // Disclose a pre-#724 flat file the first time it is read, so the
+        // switch to per-kind marks is visible rather than silent.
+        ...(state.legacyLastCheck !== null && !state.hasKinds
+          ? { legacy_watermark_migrated_from: state.legacyLastCheck }
+          : {}),
         counts: { albums: albums.length, episodes: episodes.length },
         ...quotaDelta(client, snapshot),
         ...(shrinkNote ? { requests_planned: cost.planned.max_requests, budget_shrunk: true } : {}),

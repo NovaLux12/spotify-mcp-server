@@ -16,7 +16,9 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -761,6 +763,226 @@ describe('whats_new', () => {
     }
   });
 });
+// ---------------------------------------------------------------------------
+// #724 — per-kind watermark, and no advance on an explicit `since`
+// ---------------------------------------------------------------------------
+
+describe('#724 per-kind watermark', () => {
+  const today = () => new Date().toISOString().slice(0, 10);
+
+  /** One album and one episode, both released after any seeded watermark. */
+  const radarResponder = (path: string): unknown => {
+    if (path === '/me/following') return followedPage(['a1'], null);
+    if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'New LP', '2026-09-10']]);
+    if (path === '/me/shows') return { items: [showEntry('s1', 'Pod')], total: 1 };
+    if (path === '/shows/s1/episodes') return episodesOf('s1', [['ep1', 'New Episode', '2026-09-12']]);
+    throw new Error(`unexpected path ${path}`);
+  };
+
+  const withState = async (
+    state: unknown,
+    fn: (statePath: string) => Promise<void>,
+    env: Record<string, string> = {},
+  ): Promise<string> => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-724-'));
+    const statePath = join(dir, 'freshness.json');
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    try {
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: statePath, ...env }, async () => {
+        await fn(statePath);
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+    return statePath;
+  };
+
+  const readKinds = async (statePath: string): Promise<{ last_check: string; kinds: Record<string, string> }> =>
+    JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string; kinds: Record<string, string> };
+
+  it('an albums-only scan leaves the podcast watermark where it was', async () => {
+    // The defect: one global mark, so a scan of albums advanced the mark a
+    // podcast scan reads and the podcast scan then reported "nothing new"
+    // purely because the album scan had run first.
+    let firstCutoff: string | null = null;
+    await withState(
+      { last_check: '2026-09-26', kinds: { albums: '2026-09-26', podcasts: '2026-08-01' } },
+      async (statePath) => {
+        const h = harness(radarResponder);
+        const albumsOut = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+        assert.equal(
+          (albumsOut.structuredContent as { cutoff: string }).cutoff,
+          '2026-09-26',
+          'the albums scan resumed from the albums mark',
+        );
+
+        const afterAlbums = await readKinds(statePath);
+        assert.equal(afterAlbums.kinds.albums, today(), 'the albums mark advanced');
+        assert.equal(
+          afterAlbums.kinds.podcasts,
+          '2026-08-01',
+          'an albums-only scan must not move the podcast mark',
+        );
+
+        const podcastsOut = await h.invoke('whats_new', { since: 'last-check', kinds: ['podcasts'] });
+        const payload = podcastsOut.structuredContent as {
+          cutoff: string;
+          previous_watermark: string;
+          watermarks: Record<string, { previous: string; advanced: boolean }>;
+        };
+        firstCutoff = payload.cutoff;
+        assert.equal(
+          payload.cutoff,
+          '2026-08-01',
+          'the podcast cutoff is the podcast mark, not the day the album scan ran',
+        );
+        assert.notEqual(payload.cutoff, today());
+        assert.equal(payload.watermarks.albums.advanced, false, 'albums was not scanned by this call');
+        assert.equal(payload.watermarks.podcasts.advanced, true);
+        // The episode released 2026-09-12 is inside the podcast window and
+        // must actually be reported.
+        assert.match(textOf(podcastsOut), /New Episode/);
+      },
+    );
+    assert.ok(firstCutoff, 'the podcast scan must have produced a cutoff');
+  });
+
+  it('an explicit since date writes no state file at all', async () => {
+    // A one-off historical query is a question, not a checkpoint: moving the
+    // incremental mark forward would hide everything released after it.
+    await withState(
+      { last_check: '2026-09-01', kinds: { albums: '2026-09-01', podcasts: '2026-09-01' } },
+      async (statePath) => {
+        const before = await readFile(statePath, 'utf8');
+        const beforeMtime = (await stat(statePath)).mtimeMs;
+
+        const h = harness(radarResponder);
+        const out = await h.invoke('whats_new', { since: '2026-01-01' });
+        const payload = out.structuredContent as {
+          watermark_advanced: boolean;
+          watermark_held: boolean;
+          watermarks: Record<string, { advanced: boolean; held_reason: string }>;
+        };
+
+        assert.equal(payload.watermark_advanced, false);
+        assert.equal(payload.watermark_held, true);
+        for (const kind of ['albums', 'podcasts']) {
+          assert.equal(payload.watermarks[kind].advanced, false, `${kind} must not advance`);
+          assert.match(payload.watermarks[kind].held_reason, /explicit since/);
+        }
+
+        assert.equal(await readFile(statePath, 'utf8'), before, 'the state file must be byte-identical');
+        assert.equal(
+          (await stat(statePath)).mtimeMs,
+          beforeMtime,
+          'the state file must not even have been rewritten',
+        );
+      },
+    );
+  });
+
+  it('prose names which watermark advanced on a single-kind call', async () => {
+    await withState({ last_check: '2026-09-10', kinds: { albums: '2026-09-10', podcasts: '2026-08-01' } }, async () => {
+      const h = harness(radarResponder);
+      const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+      const text = textOf(out);
+      assert.match(text, /albums watermark advanced from 2026-09-10 to \d{4}-\d{2}-\d{2}/);
+      assert.match(text, /podcasts not scanned this call — its watermark is unchanged at 2026-08-01/);
+    });
+  });
+
+  it('migrates a legacy flat watermark without losing the checkpoint, and without marking unscanned kinds', async () => {
+    await withState({ last_check: '2026-07-01' }, async (statePath) => {
+      const h = harness(radarResponder);
+      const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+      const payload = out.structuredContent as {
+        cutoff: string;
+        previous_watermark: string;
+        legacy_watermark_migrated_from: string;
+      };
+
+      // The checkpoint survives: the legacy mark is still the cutoff, so the
+      // user's incremental position is not silently reset.
+      assert.equal(payload.cutoff, '2026-07-01');
+      assert.equal(payload.previous_watermark, '2026-07-01');
+      assert.equal(payload.legacy_watermark_migrated_from, '2026-07-01');
+
+      // …and it is not copied across to a kind that never completed a scan.
+      const stored = await readKinds(statePath);
+      assert.equal(stored.kinds.albums, today(), 'the scanned kind got its own mark');
+      assert.equal(
+        stored.kinds.podcasts,
+        undefined,
+        'a kind that was not scanned must not be recorded as scanned',
+      );
+    });
+  });
+
+  it('falls back to days_back when a requested kind has no mark of its own', async () => {
+    // Using the marks that do exist would hide the unmarked kind's items
+    // behind a window they were never filtered against.
+    await withState({ last_check: '2026-09-26', kinds: { albums: '2026-09-26' } }, async () => {
+      const h = harness(radarResponder);
+      const out = await h.invoke('whats_new', { since: 'last-check' });
+      const payload = out.structuredContent as {
+        cutoff: string;
+        previous_watermark: string | null;
+        cutoff_reason: string;
+      };
+      const expected = (() => {
+        const d = new Date();
+        d.setUTCDate(d.getUTCDate() - 30);
+        return d.toISOString().slice(0, 10);
+      })();
+      assert.equal(payload.cutoff, expected, 'a kind with no mark must widen the whole call');
+      assert.equal(payload.previous_watermark, null);
+      assert.match(payload.cutoff_reason, /no stored watermark yet for podcasts/);
+    });
+  });
+
+  it('resumes a both-kinds call from the OLDEST per-kind mark', async () => {
+    // Taking the newest would hide everything released since it, for whichever
+    // requested kind happens to be furthest behind.
+    await withState({ last_check: '2026-09-01', kinds: { albums: '2026-09-20', podcasts: '2026-09-10' } }, async () => {
+      const h = harness(radarResponder);
+      const out = await h.invoke('whats_new', { since: 'last-check' });
+      assert.equal((out.structuredContent as { cutoff: string }).cutoff, '2026-09-10');
+    });
+  });
+
+  it('a quota wall in the podcast walk does not hold the album mark', async () => {
+    // Per-kind completion, not per-call: the album walk finished cleanly, so
+    // its mark may move even though the podcast walk hit the wall.
+    await withState({ last_check: '2026-09-01', kinds: { albums: '2026-09-01', podcasts: '2026-09-01' } }, async (statePath) => {
+      const h = harness((path) => {
+        if (path === '/me/following') return followedPage(['a1'], null);
+        if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'New LP', '2026-09-10']]);
+        if (path === '/me/shows') return { items: [showEntry('s1', 'Pod')], total: 1 };
+        if (path === '/shows/s1/episodes') {
+          throw Object.assign(new Error('quota'), {
+            status: 429,
+            reason: 'QUOTA_EXCEEDED',
+            retryAfterSec: 60,
+          });
+        }
+        throw new Error(`unexpected path ${path}`);
+      });
+      const out = await h.invoke('whats_new', { since: 'last-check' });
+      const payload = out.structuredContent as {
+        quota_hit: boolean;
+        watermarks: Record<string, { advanced: boolean; held_reason: string | null }>;
+      };
+      assert.equal(payload.quota_hit, true);
+      assert.equal(payload.watermarks.albums.advanced, true, 'the album walk completed');
+      assert.equal(payload.watermarks.podcasts.advanced, false);
+      assert.match(String(payload.watermarks.podcasts.held_reason), /quota exceeded/);
+
+      const stored = await readKinds(statePath);
+      assert.equal(stored.kinds.albums, today());
+      assert.equal(stored.kinds.podcasts, '2026-09-01', 'the podcast mark is untouched by the album walk');
+    });
+  });
+});
 
 // ---------------------------------------------------------------------------
 // #679 — the cost estimate and the per-source scan counters
@@ -1250,12 +1472,16 @@ describe('watermark write concurrency', () => {
           throw new Error(`unexpected path ${path}`);
         });
 
-        // Every one of these reaches writeWatermark. Before the fix at least
-        // one rejected with ENOENT; assert.rejects would not be right here,
-        // because the point is that NONE of them may fail.
+        // Every one of these reaches writeWatermarkState. Before the fix at
+        // least one rejected with ENOENT; assert.rejects would not be right
+        // here, because the point is that NONE of them may fail.
+        //
+        // `since` is 'last-check', not a date: an explicit window holds the
+        // watermark (#724) and therefore writes nothing at all, so a date here
+        // would stop exercising the write path entirely.
         const results = await Promise.allSettled(
           Array.from({ length: 16 }, () =>
-            h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] }),
+            h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] }),
           ),
         );
 
@@ -1300,12 +1526,61 @@ describe('watermark write concurrency', () => {
           if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-08-15']]);
           throw new Error(`unexpected path ${path}`);
         });
-        await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
+        // 'last-check' rather than a date, so the scan actually writes and the
+        // stranded-temp reclaim is on the path under test (#724).
+        await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
       });
 
       assert.equal(existsSync(legacy), false, 'the stranded pre-fix temp must be reclaimed');
       const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
       assert.equal(stored.last_check, new Date().toISOString().slice(0, 10), 'the watermark still advanced');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bounded read, pinned across the #724 rebase (#1285)
+// ---------------------------------------------------------------------------
+// #1285 hardened this read to `readLocalFile` — a regular-file check, so a FIFO
+// planted at the watermark path cannot block the open, plus a size cap.
+// #724 restructured that same function into per-kind state, and the raw
+// `readFile` it replaced is what a careless rebase conflict resolution would
+// have put back: the resolution that keeps #724's shape can silently revert
+// #1285's hardening, and nothing in the tree would say so.
+//
+// `local-read-bounds.test.ts` names this watermark among the readers it covers,
+// but every FIFO case in it targets a different tool — true of the comment,
+// not of the coverage. This is the case for this file.
+describe('the freshness watermark read is bounded, not a raw readFile (#1285 across #724)', () => {
+  const execFileAsync = promisify(execFile);
+
+  it('refuses a FIFO planted at the watermark path instead of blocking on it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-fifo-'));
+    const fifo = join(dir, 'freshness.json');
+    try {
+      await execFileAsync('mkfifo', [fifo]);
+      assert.ok(lstatSync(fifo).isFIFO(), 'fixture really is a FIFO');
+
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: fifo }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-07-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+
+        // No writer is ever attached to the FIFO. If this read opened it, the
+        // await below would block until the test timeout rather than returning
+        // — so the mutation is a hang, not a false pass.
+        const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+        const payload = out.structuredContent as { previous_watermark: string | null };
+        assert.equal(
+          payload.previous_watermark,
+          null,
+          'an unreadable watermark must read as "no checkpoint" — not hang, and not invent one',
+        );
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
