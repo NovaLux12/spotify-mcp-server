@@ -20,6 +20,7 @@ import {
   resolveMaxResults,
   truncateItems,
   paginationInfo,
+  unresolvedIdsNote,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -29,7 +30,7 @@ import type { ArtistReleaseProbe } from '../artistreleases.js';
 // Two imports from the same module, deliberately: `artist-albums-limit-guard.test.ts`
 // pins the first as an exact statement, and a merged import would silently fail it.
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
-import { MARKET_CODE, fetchAlbumsPerId, unresolvedIdsNote, type PerIdUnresolved } from './catalog.js';
+import { MARKET_CODE, fetchAlbumsPerId, type PerIdUnresolved } from './catalog.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + local plumbing (mirrors exhaust2 house helpers)
