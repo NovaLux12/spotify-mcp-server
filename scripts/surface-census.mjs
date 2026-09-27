@@ -9,11 +9,13 @@
  * names must equal the finalized `tools/list` names exactly.
  *
  * Plain `node scripts/surface-census.mjs` prints JSON. `--write` refreshes
- * generated documentation blocks and `--check` guards them in CI.
+ * generated documentation blocks and `--check` guards them in CI. `--out <path>`
+ * writes the JSON to a file and installs it only if the run succeeded, so the
+ * file's existence means generation succeeded (#1487).
  */
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -166,13 +168,124 @@ const GATED_SCAN_EXCEPTIONS = [
   },
 ];
 
+/**
+ * `--out <path>`: write the census to a file, and only if the run succeeded (#1487).
+ *
+ * CI used to capture this with a shell redirect, which truncates the target
+ * before the command runs. A failed census therefore left an artifact behind,
+ * and the three gates that read it carry `!cancelled()` (#1473), so all three
+ * read it anyway. Two distinct second-order failures follow from that, and
+ * they are not the same string:
+ *
+ *  - a run that fails before printing leaves a **zero-byte** file, and every
+ *    reader reports `SyntaxError: Unexpected end of JSON input`;
+ *  - a run that prints and *then* fails — `--check` drift, a refusal — leaves a
+ *    file that **parses** and is not a census, so the reader gets past
+ *    `JSON.parse` and dies later on an absent field instead
+ *    (`TypeError: Cannot read properties of undefined (reading 'filter')`).
+ *
+ * The second is the worse of the two: an artifact that exists and parses is a
+ * plausible value for a value that was never produced, which is the whole of
+ * AGENTS.md §6's class. So the invariant this flag establishes is not "the
+ * census wrote something" but "**the file exists if and only if this run
+ * succeeded**" — one writer, holding the child's real exit status, decides
+ * whether the file is installed at all. Enforcing that means removing a file an
+ * *earlier* run left behind, not only declining to write one: a self-hosted
+ * runner keeps its working directory between jobs, and a stale census is a
+ * plausible value for a value that was never produced.
+ *
+ * The install is a temp file plus a `rename` rather than one `writeFileSync`,
+ * because a `writeFileSync` that dies mid-write leaves a truncated artifact —
+ * the same defect one layer down, and `rename` is atomic within a filesystem,
+ * which is why the temp file is a sibling of the target rather than under
+ * `os.tmpdir()`.
+ *
+ * The child's stdout is captured rather than inherited so it can be gated on
+ * the exit status. That is also why `maxBuffer` is set: `spawnSync` defaults
+ * to 1 MiB and the census is over 1.5 MB, so the default would kill the child
+ * with ENOBUFS and hand this code an error path that looks like a census
+ * failure.
+ */
+const outFlagIndex = args.indexOf('--out');
+if (outFlagIndex >= 0 && (!args[outFlagIndex + 1] || args[outFlagIndex + 1].startsWith('-'))) {
+  // A value starting with `-` is the next flag, not a path — the same reading
+  // `--retire` takes below, and for the same reason. Without it,
+  // `--out --check` writes a file named `--check` into the working directory
+  // and silently drops the flag the author meant to pass.
+  throw new Error('--out requires a path');
+}
+const outPath = outFlagIndex >= 0 ? resolve(args[outFlagIndex + 1]) : undefined;
+/** `--out` is the parent's flag: the child is handed the census arguments only. */
+const childArgs = outFlagIndex >= 0 ? [...args.slice(0, outFlagIndex), ...args.slice(outFlagIndex + 2)] : args;
+
 if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
-  const child = spawnSync(process.execPath, ['--import', 'tsx/esm', fileURLToPath(import.meta.url), ...args], {
+  const child = spawnSync(process.execPath, ['--import', 'tsx/esm', fileURLToPath(import.meta.url), ...childArgs], {
     cwd: ROOT,
     env: { ...process.env, SPOTIFY_MCP_SURFACE_CENSUS: '1' },
-    stdio: 'inherit',
+    stdio: outPath === undefined ? 'inherit' : ['inherit', 'pipe', 'inherit'],
+    maxBuffer: 64 * 1024 * 1024,
   });
-  process.exit(child.status ?? 1);
+  const status = child.status ?? 1;
+  if (outPath !== undefined) {
+    // A spawn that never ran (`child.error`, no status) and a run that produced
+    // nothing both land here. An empty capture is treated as a failure rather
+    // than installed, because a zero-byte artifact is precisely the file the
+    // consumers cannot read — the one shape `--out` exists to make impossible.
+    if (child.error || status !== 0 || !child.stdout?.length) {
+      // A file left over from an EARLIER run is the one shape this flag cannot
+      // leave to chance. GitHub-hosted runners check out fresh, so the target
+      // does not pre-exist there — but a self-hosted runner keeps its working
+      // directory between jobs, and a local re-run does too. A stale census
+      // from a previous run is a plausible value for a value that was never
+      // produced, which is the failure this whole flag exists to remove, so
+      // the invariant "the file exists if and only if this run succeeded" has
+      // to be enforced against the file that is already there.
+      const stale = existsSync(outPath);
+      if (stale) rmSync(outPath, { force: true });
+      process.stderr.write(
+        `surface census did not succeed (${describeCensusFailure(child)}); no census written to ${outPath}.\n`
+        + (stale
+          ? 'A census left by an earlier run was removed, so it cannot be read as this run\'s.\n'
+          : '')
+        + 'The file is absent so the gates that read it fail on a missing artifact rather than on one that was never generated.\n',
+      );
+      process.exit(status === 0 ? 1 : status);
+    }
+    installCensusArtifact(child.stdout, outPath);
+  }
+  process.exit(status);
+}
+
+/**
+ * Why a census run produced no usable output, for the one message `--out` prints.
+ *
+ * `status` alone cannot distinguish a child that never started from one that
+ * was killed mid-run, and those are different problems for whoever reads the
+ * log.
+ */
+function describeCensusFailure(child) {
+  if (child.error) return `could not run: ${child.error.message}`;
+  if (child.signal) return `killed by ${child.signal}`;
+  return `exit ${child.status}`;
+}
+
+/**
+ * Install a census artifact, atomically and only on the caller's say-so (#1487).
+ *
+ * A failed `writeFileSync` leaves the temp file behind unless it is removed, and
+ * a leftover `.surface-census.json.tmp` in the repository root is the shape
+ * #1383 exists about: an untracked entry that makes `git status --porcelain`
+ * non-empty, which this repo reads as "a generated block is stale".
+ */
+function installCensusArtifact(payload, target) {
+  const temp = `${target}.tmp`;
+  try {
+    writeFileSync(temp, payload);
+    renameSync(temp, target);
+  } catch (error) {
+    rmSync(temp, { force: true });
+    throw error;
+  }
 }
 const CENSUS_ENV = Object.freeze({
   SPOTIFY_CLIENT_ID: 'surface-census',
