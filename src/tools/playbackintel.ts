@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../client.js';
+import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import type { PlaybackState, SpotifyQueue, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
@@ -48,6 +48,50 @@ function parsePosition(input: string): number | null {
   if (parts.length === 2) return (parts[0]*60 + parts[1])*1000;
   if (parts.length === 1) return parts[0]*1000;
   return null;
+}
+
+/**
+ * One market's answer to "is this playable here?".
+ *
+ * `is_playable` is deliberately `boolean | null`, never coerced to a boolean.
+ * In the current OpenAPI schema the field exists on track and episode objects
+ * but NOT on album objects at all, and on a track it is present only when
+ * relinking applied. An absent field is therefore an unanswered question, and
+ * a coerced `false` would be an unavailability the API never stated (#804).
+ */
+type MarketProbe = {
+  market: string;
+  /** The read returned a payload: the entity is not 404 in this market. */
+  available: boolean;
+  /** Spotify's own playability verdict, or null when the response carried none. */
+  is_playable: boolean | null;
+  name?: string;
+  /** Why the probe failed, when it did. */
+  error?: string;
+};
+
+/** Read `is_playable` off a response, keeping "absent" distinct from `false`. */
+function readIsPlayable(data: any): boolean | null {
+  return typeof data?.is_playable === 'boolean' ? data.is_playable : null;
+}
+
+/**
+ * Why one market's probe failed (#851).
+ *
+ * A 404 is the answer — the entity is not available in that market. A 429 or a
+ * transport error is NOT an answer about the market, only about this run, and
+ * saying so keeps a throttled or offline sweep from reading as a clean sweep
+ * of unavailability.
+ */
+function marketProbeFailureReason(err: unknown): string {
+  if (err instanceof SpotifyApiError) {
+    if (err.status === 404) return 'not found in this market (404)';
+    if (err.status === 429) return `rate limited (429, retry after ${err.retryAfterSec ?? 'an unspecified number of'}s)`;
+    if (err.status === 403) return 'forbidden (403)';
+    if (err.status === 401) return 'unauthorized (401) — the token is not valid';
+    return `HTTP ${err.status}`;
+  }
+  return err instanceof Error && err.message ? err.message : 'lookup failed';
 }
 
 export function registerPlaybackIntelTools(server: McpServer, client: SpotifyClient): void {
@@ -480,44 +524,65 @@ export function registerPlaybackIntelTools(server: McpServer, client: SpotifyCli
 
   // market_availability — per-entity multi-market check
   server.tool('market_availability',
-    'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X). Reports per-market available/404 plus full available_markets. 🟡 (N reads, 1-10). Read-only.',
+    'Per-entity multi-market preview — checks if a track/episode/album is playable in each of 1-10 given markets (N× GET /{type}/{id}?market=X, issued concurrently). Reports per-market availability, Spotify\'s own is_playable, and why any probe failed. 🟡 (N reads, 1-10). Read-only.',
     { uri: z.string().min(1).describe('Spotify URI (track/episode/album)'), markets: z.array(MARKET_CODE).min(1).max(10).describe('Market codes to test (1-10, e.g. ["US","JP","DE"])'), response_format: ResponseFormat },
     async (args) => {
       const parsed = parseSpotifyUri(args.uri as string);
       if (!parsed) return textResult(`Invalid URI: ${args.uri}`, { ok:false });
       if (!['track','episode','album'].includes(parsed.type)) return textResult(`market_availability supports track/episode/album, not ${parsed.type}`, { ok:false });
       const markets = args.markets as string[];
-      const perMarket: Array<{ market: string; available: boolean; name?: string }> = [];
-      let fullMarkets: string[] | null = null;
-      let entityName: string | null = null;
-      for (const m of markets) {
+      const path = `/${parsed.type === 'track' ? 'tracks' : parsed.type === 'episode' ? 'episodes' : 'albums'}/${parsed.id}`;
+
+      // Every market is probed in one batch (#851). `client.get` hands each
+      // request to the shared funnel in client.ts, so the process-wide
+      // concurrency ceiling and the shared rate-limit gate still bound what
+      // actually goes out — there is deliberately no second width to set here.
+      // The old loop instead awaited each probe before starting the next, so
+      // ten markets cost ten serialised round-trips and held the funnel for
+      // all of them, starving interactive reads behind the whole walk.
+      const probed = await Promise.all(markets.map(async (m): Promise<MarketProbe> => {
         try {
-          let data: any = null;
-          if (parsed.type==='track') data = await client.get(`/tracks/${parsed.id}`, { market: m });
-          else if (parsed.type==='episode') data = await client.get(`/episodes/${parsed.id}`, { market: m });
-          else if (parsed.type==='album') data = await client.get(`/albums/${parsed.id}`, { market: m });
-          const available = !!data;
-          if (available && entityName === null) entityName = data?.name ?? null;
-          if (available && fullMarkets === null && Array.isArray(data?.available_markets)) fullMarkets = data.available_markets as string[];
-          perMarket.push({ market: m, available, name: data?.name ?? undefined });
-        } catch {
-          perMarket.push({ market: m, available: false });
+          const data = await client.get<any>(path, { market: m });
+          return {
+            market: m,
+            available: data !== null && data !== undefined,
+            is_playable: readIsPlayable(data),
+            name: typeof data?.name === 'string' ? data.name : undefined,
+          };
+        } catch (err) {
+          // A failed probe is its own row, and it says WHY. A 404 (not
+          // available in this market) and a 429 (we were throttled) are both
+          // `available: false` but are not the same finding, and collapsing
+          // them is how a rate-limited run reads as a clean sweep of
+          // unavailability.
+          return { market: m, available: false, is_playable: null, name: undefined, error: marketProbeFailureReason(err) };
         }
-      }
-      if (fullMarkets === null) {
-        try {
-          let data: any = null;
-          if (parsed.type==='track') data = await client.get(`/tracks/${parsed.id}`);
-          else if (parsed.type==='episode') data = await client.get(`/episodes/${parsed.id}`);
-          else data = await client.get(`/albums/${parsed.id}`);
-          if (data) { fullMarkets = data.available_markets ?? []; entityName = data.name ?? entityName; }
-        } catch {}
-      }
+      }));
+
+      // Input order is the caller's order, and Promise.all preserves it, so
+      // the rows below are reported in the order the markets were asked for
+      // regardless of which probe resolved first.
+      const perMarket = probed;
+      const entityName = perMarket.find(p => p.name)?.name ?? null;
       const availableCount = perMarket.filter(p => p.available).length;
+      // is_playable is a three-valued answer, not a boolean. Tracks carry it
+      // only when relinking applied and episodes carry it unconditionally;
+      // albums have no such field at all. A market where the field was absent
+      // is UNKNOWN, and reporting it as `false` would invent an unavailability
+      // the API never stated (#804).
+      const playableCount = perMarket.filter(p => p.is_playable === true).length;
+      const unknownCount = perMarket.filter(p => p.available && p.is_playable === null).length;
       const lines = [`${args.uri}${entityName ? ' — "' + entityName + '"' : ''} — ${availableCount}/${markets.length} markets available:`];
-      for (const pm of perMarket) lines.push(`  ${pm.available ? '✓' : '✗'} ${pm.market}${pm.name ? ' — "' + pm.name + '"' : ''}`);
-      if (fullMarkets) lines.push(`Full available_markets: ${fullMarkets.length} (${fullMarkets.slice(0,20).join(', ')}${fullMarkets.length>20?' … +' + (fullMarkets.length-20) + ' more':''})`);
-      const echo: Record<string, unknown> = { ok:true, uri: args.uri, name: entityName, markets_tested: markets, per_market: perMarket, available_count: availableCount, full_available_markets: fullMarkets, full_count: fullMarkets?.length ?? null };
+      for (const pm of perMarket) {
+        const mark = pm.available ? '✓' : '✗';
+        const detail = pm.is_playable === true ? 'playable'
+          : pm.is_playable === false ? 'not playable'
+            : pm.available ? 'playability not reported for this market' : 'unavailable';
+        lines.push(`  ${mark} ${pm.market}${pm.name ? ' — "' + pm.name + '"' : ''} — ${detail}${pm.error ? ` (${pm.error})` : ''}`);
+      }
+      lines.push(`${playableCount}/${markets.length} confirmed playable by is_playable` + (unknownCount > 0 ? `; ${unknownCount} market(s) returned no is_playable, so availability there is inferred from the read succeeding` : ''));
+      lines.push('The deprecated available_markets field is no longer read — the per-market is_playable above is the API\'s own answer.');
+      const echo: Record<string, unknown> = { ok:true, uri: args.uri, name: entityName, markets_tested: markets, per_market: perMarket, available_count: availableCount, playable_count: playableCount, playable_unknown_count: unknownCount };
       if ((args.response_format as string)==='json') return { content:[{type:'text', text: JSON.stringify(echo,null,2)}], structuredContent: echo };
       return { content:[{type:'text', text: lines.join('\n')}], structuredContent: echo };
     });

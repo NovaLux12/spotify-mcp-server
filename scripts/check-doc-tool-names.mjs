@@ -76,6 +76,13 @@ const parameterAllowlist = new Set([
   // clean batch read. StructuredContent keys on every batch tool, not
   // parameters or tools — the README is naming what the tool returns.
   'degraded_reason',
+  // #851: market_availability now reports Spotify's own per-market
+  // `is_playable` and counts the markets that returned no such field, instead
+  // of the deprecated `available_markets` (allowlisted above). SPEC.md §5.1
+  // documents the three-valued contract, which is exactly why the doc has to
+  // name these two — they are structuredContent keys describing a call's own
+  // result, not parameters and not tools.
+  'is_playable', 'playable_unknown_count', 'available_count', 'playable_count',
   // #865: the chunked-playlist-write partial-state contract. SPEC.md §5
   // names the fields so a caller can resume a failed multi-chunk write;
   // every one is a structuredContent key on the tool that reports it, not a

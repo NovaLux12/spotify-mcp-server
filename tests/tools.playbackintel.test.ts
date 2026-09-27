@@ -4,6 +4,7 @@ import { mkdir, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { registerPlaybackIntelTools } from '../src/tools/playbackintel.js';
+import { SpotifyApiError } from '../src/client.js';
 import { registerPlaybackTools } from '../src/tools/playback.js';
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
@@ -251,9 +252,112 @@ test('play_on does not report a rejected shuffle write as applied, and still pla
   );
 });
 test('market_availability', async()=>{
-  const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', available_markets:['US','GB','DE']}:null });
+  const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', is_playable:true }:null });
   const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1', markets:['US','GB','DE'] });
   assert.match(text(r), /3\/3 markets available/);
+});
+
+test('market_availability issues every market probe concurrently (#851)', async()=>{
+  // The stub REFUSES to resolve any probe until all of them are in flight, so
+  // a sequential implementation cannot pass this: the first awaited probe
+  // would never settle, and the second would never be issued to satisfy the
+  // barrier. Only an implementation that issues the whole batch up front gets
+  // all `markets.length` requests into the air before the first resolve.
+  const markets = ['US','GB','DE','FR','JP'];
+  const inFlight = new Set<string>();
+  let peakInFlight = 0;
+  let releaseBarrier: (() => void) | null = null;
+  const allArrived = new Promise<void>((resolve) => { releaseBarrier = resolve; });
+  // The barrier is raced against a deadline rather than awaited outright: a
+  // sequential implementation never reaches `markets.length` in flight, so
+  // without this the suite would HANG instead of failing. The deadline turns
+  // that into the assertion below naming the real cause.
+  const deadline = new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), 2000));
+  let seen = 0;
+  const observed: string[] = [];
+
+  const registered: RegisteredTool[] = [];
+  const server: any = { tool(name:string, desc:string, schema:any, handler:any){ registered.push({ name, description: desc, schema, handler }); } };
+  const client: any = {
+    get: async (path:string, params?:Record<string,string>) => {
+      const m = String(params?.market);
+      inFlight.add(m); observed.push(m);
+      seen++;
+      if (inFlight.size > peakInFlight) peakInFlight = inFlight.size;
+      // Resolve only once every requested market has a request outstanding.
+      if (seen === markets.length) releaseBarrier!();
+      await Promise.race([allArrived, deadline]);
+      inFlight.delete(m);
+      return { name:'Hit', is_playable:true };
+    },
+    put: async()=>{}, post: async()=>{}, delete: async()=>{}, getAllPages: async()=>[],
+  };
+  registerPlaybackIntelTools(server, client);
+
+  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1', markets });
+  assert.equal(
+    peakInFlight, markets.length,
+    `every market probe must be in flight before any resolves (peak ${peakInFlight} of ${markets.length}; ` +
+    'peak 1 means the implementation awaited each probe before issuing the next)',
+  );
+  assert.deepEqual(observed, markets, 'probes are issued in the caller\'s market order');
+  const per = (r.structuredContent as any).per_market as Array<{ market:string }>;
+  assert.deepEqual(per.map(p => p.market), markets, 'results are reported in input order');
+});
+
+test('market_availability reports is_playable and never coerces an absent field to false (#851)', async()=>{
+  // The schema publishes is_playable on track and episode objects but not on
+  // album objects, and on a track only when relinking applied. An album probe
+  // therefore returns no such field, and that must stay UNKNOWN rather than
+  // becoming an unavailability the API never stated.
+  const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/albums/')?{ name:'Alb' }:null });
+  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:album:alb1', markets:['US','JP'] });
+  const sc = r.structuredContent as any;
+  assert.equal(sc.available_count, 2, 'both reads returned a payload');
+  assert.equal(sc.playable_count, 0);
+  assert.equal(sc.playable_unknown_count, 2, 'an absent is_playable is unknown, not false');
+  for (const pm of sc.per_market) {
+    assert.equal(pm.available, true);
+    assert.equal(pm.is_playable, null, 'absent is_playable must not be reported as false');
+  }
+  assert.match(text(r), /playability not reported for this market/);
+  assert.match(text(r), /no is_playable/);
+});
+
+test('market_availability keeps a false is_playable distinct from a failed probe (#851)', async()=>{
+  // Spotify answered and said not playable — different from the read failing.
+  const registered: RegisteredTool[] = [];
+  const server: any = { tool(name:string, desc:string, schema:any, handler:any){ registered.push({ name, description: desc, schema, handler }); } };
+  const client: any = {
+    get: async (path:string, params?:Record<string,string>) => {
+      if (params?.market === 'JP') return { name:'Hit', is_playable:false };
+      if (params?.market === 'DE') throw new SpotifyApiError(429, 'rate limited', 3);
+      return { name:'Hit', is_playable:true };
+    },
+    put: async()=>{}, post: async()=>{}, delete: async()=>{}, getAllPages: async()=>[],
+  };
+  registerPlaybackIntelTools(server, client);
+  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1', markets:['US','JP','DE'] });
+  const sc = r.structuredContent as any;
+  const byMarket = Object.fromEntries((sc.per_market as any[]).map(p => [p.market, p]));
+  assert.equal(byMarket.US.is_playable, true);
+  assert.equal(byMarket.JP.is_playable, false, 'an explicit false is preserved');
+  assert.equal(byMarket.DE.available, false);
+  assert.match(String(byMarket.DE.error), /rate limited/, 'a failed probe carries a reason');
+  assert.equal(sc.playable_count, 1);
+  assert.match(text(r), /not playable/);
+});
+
+test('market_availability no longer reports the deprecated available_markets field (#851)', async()=>{
+  // available_markets is flagged deprecated:true in the current schema. Even
+  // when a response still carries it, the tool must not present it as the
+  // authoritative answer.
+  const { registered } = makeHarness({ getResponse:(p)=> p.startsWith('/tracks/')?{ name:'Hit', is_playable:true, available_markets:['US','GB','DE'] }:null });
+  const r = await invoke(find(registered,'market_availability'), { uri:'spotify:track:trk1', markets:['US','GB'] });
+  assert.equal((r.structuredContent as any).full_available_markets, undefined);
+  assert.equal((r.structuredContent as any).full_count, undefined);
+  assert.doesNotMatch(text(r), /Full available_markets/);
+  assert.match(text(r), /available_markets field is no longer read/);
 });
 test('playback_compare_states diff (sidecar)', async()=>{
   const dir = join(tmpdir(), `pb-intel-test-${Date.now()}`);

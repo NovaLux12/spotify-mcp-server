@@ -1021,7 +1021,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3536], { scopeKey: 'playback' }),
   manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8178], { scopeKey: 'playback' }),
-  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11837], { scopeKey: 'playback' }),
+  // playbackintel 11,837 -> 11,882B (+45) is #851: market_availability's
+  // description now names the concurrent batch, is_playable, and the
+  // per-market failure reason it reports. Tool count is unchanged at 15 — the
+  // tool is not retired, its return shape is. Measured from the real
+  // `tools/list` over stdio, not estimated.
+  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11882], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5285], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
