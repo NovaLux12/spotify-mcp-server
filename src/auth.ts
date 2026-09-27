@@ -220,6 +220,25 @@ function validateProfileName(name: string): string {
 }
 
 /**
+ * The active profile name, validated, or undefined for the default account.
+ *
+ * Exported so every per-profile artefact resolves it through ONE function.
+ * A second, near-identical profile-resolution implementation is how the
+ * persisted cache came to ignore `--profile` entirely while the token file
+ * honoured it (#1249 review): the cache is then a single file shared by every
+ * account on the box, which serves one account's reads to another.
+ *
+ * A cliProfile of '' is impossible from parseAuthArgs (#617 rejects it), and
+ * the `if (profile)` guard is what makes an empty value mean "no profile" —
+ * so the emptiness check lives in the argv parser, not here.
+ */
+export function activeProfile(cliProfile?: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const profile = cliProfile ?? env.SPOTIFY_MCP_PROFILE;
+  if (!profile) return undefined;
+  return validateProfileName(profile);
+}
+
+/**
  * Resolve token file path. Precedence: SPOTIFY_MCP_TOKEN_FILE > --profile / SPOTIFY_MCP_PROFILE > default.
  * Exported as function for dynamic resolution (tests + multi-profile).
  *
@@ -227,12 +246,11 @@ function validateProfileName(name: string): string {
  * `if (profile)` guard below is what makes an empty value mean "no profile" —
  * so the emptiness check lives in the argv parser, not here.
  */
-export function getTokenFile(cliProfile?: string): string {
-  if (process.env.SPOTIFY_MCP_TOKEN_FILE) return process.env.SPOTIFY_MCP_TOKEN_FILE;
-  const profile = cliProfile ?? process.env.SPOTIFY_MCP_PROFILE;
+export function getTokenFile(cliProfile?: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.SPOTIFY_MCP_TOKEN_FILE) return env.SPOTIFY_MCP_TOKEN_FILE;
+  const profile = activeProfile(cliProfile, env);
   if (profile) {
-    const validated = validateProfileName(profile);
-    return join(homedir(), '.spotify-mcp', `tokens.${validated}.json`);
+    return join(homedir(), '.spotify-mcp', `tokens.${profile}.json`);
   }
   return join(homedir(), '.spotify-mcp', 'tokens.json');
 }

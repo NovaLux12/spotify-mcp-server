@@ -469,11 +469,12 @@ function playlistPrefixes(rawId: string): string[] {
  *    They are NOT a complete no-op, though, and the issue's suggestion that
  *    they be one is unsafe. The ETag validator store serves these paths
  *    deliberately (#601): a 304 there is answered from the stored payload the
- *    tag names. `PUT /me/player/volume` changes what `/me/player/queue`
- *    returns, so leaving that validator in place would let a 304 resurrect a
- *    pre-mutation payload — the exact failure the validator store exists to
- *    prevent. So the player prefixes are dropped from the VALIDATOR store while
- *    the payload cache keeps everything.
+ *    tag names. `POST /me/player/queue` adds a track to the very `queue` array
+ *    `GET /me/player/queue` returns (`QueueObject.queue` in the official
+ *    OpenAPI schema), so leaving that validator in place would let a 304
+ *    resurrect a pre-mutation payload — the exact failure the validator store
+ *    exists to prevent. So the player prefixes are dropped from the VALIDATOR
+ *    store while the payload cache keeps everything.
  * 2. `/me/*` writes that are not the player — library saves/removes, follows.
  *    Every cacheable read of user-owned data is under `/me/`, so one prefix
  *    covers the family. Deliberately coarse: it keeps the whole CATALOG cache

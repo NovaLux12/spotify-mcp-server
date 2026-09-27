@@ -190,29 +190,37 @@ describe('conditional reads (#601)', () => {
     await seedTokens();
     // A volatile path, so every read reaches the network and the header is
     // observable — a cached catalog read would answer from memory instead.
+    //
+    // The bodies are the real `QueueObject` shape from the official OpenAPI
+    // schema: `{currently_playing, queue}` and nothing else. An earlier version
+    // of this mock answered `{queue, volume_percent}`, which is not a shape
+    // `GET /me/player/queue` ever returns; a mock artifact read back as a
+    // platform fact is how the invalidation policy came to justify itself with
+    // a false claim that `PUT /me/player/volume` changes the queue (#1249).
+    // Queue state is changed here by `POST /me/player/queue`, which really does
+    // append to the `queue` array — so the test's premise is true of the API,
+    // not only of the stub.
+    const EMPTY_QUEUE = { currently_playing: null, queue: [] };
+    const QUEUED = { currently_playing: null, queue: [{ id: 'q1', type: 'track', uri: 'spotify:track:q1' }] };
     responder = (url, init) => {
       if (init.method && init.method !== 'GET') return jsonResponse({ snapshot_id: 'snap1' }, 200);
       if (headerOf(init, 'If-None-Match') === '"q1"') return new Response(null, { status: 304 });
       assert.equal(url, 'https://api.spotify.com/v1/me/player/queue');
-      return jsonResponse({ queue: [], volume_percent: 11 }, 200, { etag: '"q1"' });
+      return jsonResponse(EMPTY_QUEUE, 200, { etag: '"q1"' });
     };
 
     const client = new SpotifyClient();
-    assert.deepEqual(await client.get<{ volume_percent: number }>('/me/player/queue'), {
-      queue: [],
-      volume_percent: 11,
-    });
+    assert.deepEqual(await client.get('/me/player/queue'), EMPTY_QUEUE);
     // Control: with no mutation in between, the validator IS offered.
     await client.get('/me/player/queue');
     assert.equal(calls[1].ifNoneMatch, '"q1"');
 
-    await client.put('/me/player/volume', { volume_percent: 55 });
+    await client.post('/me/player/queue', { uri: 'spotify:track:q1' });
 
-    responder = () => jsonResponse({ queue: [], volume_percent: 55 }, 200, { etag: '"q2"' });
-    assert.deepEqual(await client.get<{ volume_percent: number }>('/me/player/queue'), {
-      queue: [],
-      volume_percent: 55,
-    });
+    responder = () => jsonResponse(QUEUED, 200, { etag: '"q2"' });
+    // The mutation genuinely changed this read, so a surviving validator would
+    // have answered 304 with the PRE-mutation (empty) queue — visibly wrong.
+    assert.deepEqual(await client.get('/me/player/queue'), QUEUED);
     const read = calls.filter((c) => c.method === 'GET');
     assert.equal(read[2].ifNoneMatch, null, 'the mutation invalidated every stored validator');
   });
