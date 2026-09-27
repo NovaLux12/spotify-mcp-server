@@ -120,7 +120,7 @@ async function makeHarness(opts: { failPut?: string[]; devices?: unknown; player
   // what turns an unanticipated write into a test failure.
   for (const p of ['/me/player/volume', '/me/player/repeat', '/me/player/shuffle', '/me/player/seek', '/me/player/play']) {
     client.put_(new RegExp(`^${p}(\\?|$)`), {
-      respond: (call) => {
+      respond: (call: StubCall) => {
         if (fail.some((frag) => call.path.startsWith(frag))) {
           throw new Error(`stubbed rejection for PUT ${call.path}`);
         }
@@ -129,7 +129,7 @@ async function makeHarness(opts: { failPut?: string[]; devices?: unknown; player
     });
   }
   client.put_('/me/player', {
-    respond: (call) => {
+    respond: (call: StubCall) => {
       if (fail.includes(call.path)) throw new Error(`stubbed rejection for PUT ${call.path}`);
       return undefined;
     },
