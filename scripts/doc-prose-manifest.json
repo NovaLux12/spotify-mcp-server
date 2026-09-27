@@ -2057,22 +2057,6 @@
         "label": "Quota: 1 read. The per-item ETA the retired predictnextt…"
       },
       {
-        "hash": "0ec1a2064e576595",
-        "label": "Queue-read migration (#847)"
-      },
-      {
-        "hash": "99735d4ceb7d6401",
-        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
-      },
-      {
-        "hash": "15958b39063cb1d3",
-        "label": "| Retired name | Call that replaces it | What moved | |-…"
-      },
-      {
-        "hash": "0d718e4d575069af",
-        "label": "These six are deliberately NOT reachable through SPOTIFY…"
-      },
-      {
         "hash": "b74cd36a3aecdf2c",
         "label": "addtoqueue Add a track or episode to the end of the queu…"
       },
@@ -3623,6 +3607,22 @@
       {
         "hash": "ab62052951deebeb",
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
+      },
+      {
+        "hash": "971ef07e9042ca4a",
+        "label": "5.15 Queue-read migration (#847)"
+      },
+      {
+        "hash": "99735d4ceb7d6401",
+        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
+      },
+      {
+        "hash": "15958b39063cb1d3",
+        "label": "| Retired name | Call that replaces it | What moved | |-…"
+      },
+      {
+        "hash": "0d718e4d575069af",
+        "label": "These six are deliberately NOT reachable through SPOTIFY…"
       },
       {
         "hash": "f3e70de12e2dc0f1",
@@ -5371,6 +5371,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "0ec1a2064e576595",
+      "label": "Queue-read migration (#847)",
+      "date": "2026-09-27",
+      "reason": "#847 promoted the queue-read migration table out of the '#### Queue-read migration (#847)' subsection to '### 5.15 Queue-read migration (#847)'. The doc-name gate attributes a markdown inputs table to the '#### `<tool>`' section it sits in, so a table whose first column lists six RETIRED tool names was being read as six undeclared arguments to peek_next. The section spans four registrar modules, so it does not belong inside 5.1 Playback under a tool heading."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "19fcf320a679a642",
       "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
       "date": "2026-09-27",
@@ -5525,8 +5532,8 @@
     }
   ],
   "provenance": {
-    "head": "f7ef96907cafbf7a421f9f49f139755d2f756ddd",
-    "upstream": "25ef2c287a83b050e0bb345678b43bea84d7273f",
+    "head": "77f35a7af8113ff3c71f9f8b6beae1b9da537eb9",
+    "upstream": "77f35a7af8113ff3c71f9f8b6beae1b9da537eb9",
     "behind": false
   }
 }
