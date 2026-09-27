@@ -1,14 +1,15 @@
 /**
  * exhaust2 playback slice — feature swarm v1.24.0 (issues #358-#379).
  *
- * 23 playback tools owned by the fix/exhaust2-playback builder. All in this
+ * 22 playback tools owned by the fix/exhaust2-playback builder. All in this
  * slice register here and nowhere else. Buckets: timers/volume/sleep
  * (sleep_timer, playback_timer_status, mute, unmute, volume_ramp, room_level, volume_report),
  * devices (switch_device, pause_everywhere), shuffle-play (surprise_me,
  * skip_n, daily_pick), podcasts (episode_bookmark, episode_resume,
- * queue_next_episode), queue honesty (queue_replace_via_playlist,
- * queue_profile), intel (session_stats, most_replayed, last_heard,
- * weekday_heatmap), checkpoints (checkpoint_playback, continue_last).
+ * queue_next_episode), queue honesty (queue_replace_via_playlist), intel
+ * (session_stats, most_replayed, last_heard, weekday_heatmap), checkpoints
+ * (checkpoint_playback, continue_last). #847 retired queue_profile into
+ * `get_queue` include=['profile'].
  *
  * Local sidecar store lives next to the other playback sidecars
  * (~/.spotify-mcp/exhaust2-playback.json, 0600; override with
@@ -1161,61 +1162,12 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     },
   );
 
-  // 17. queue_profile (#374) — composition profile of the current queue
-  server.tool(
-    'queue_profile',
-    'Composition profile of the current queue: unique artists, albums, track-vs-episode mix, longest consecutive block by one artist. Quota: 1 read (GET /me/player/queue), local compute.',
-    { response_format: ResponseFormat },
-    async (args) => {
-      const fmt = args.response_format as ResponseFormatValue | undefined;
-      const q = await client.get<{ currently_playing?: unknown; queue?: Array<Record<string, unknown>> }>('/me/player/queue');
-      const rows = [q?.currently_playing, ...(q?.queue ?? [])].filter(Boolean) as Array<Record<string, unknown>>;
-      if (rows.length === 0) return textResult('Queue is empty.', { ok: true, total: 0 });
-      const artists = new Map<string, number>();
-      const albums = new Set<string>();
-      const shows = new Set<string>();
-      let tracks = 0;
-      let episodes = 0;
-      for (const r of rows) {
-        if (r.type === 'episode') {
-          episodes++;
-          shows.add((r as { show?: { name?: string } }).show?.name ?? 'unknown show');
-        } else {
-          tracks++;
-          for (const a of trackArtists(r)) artists.set(a, (artists.get(a) ?? 0) + 1);
-          const album = (r as { album?: { name?: string } }).album?.name;
-          if (album) albums.add(album);
-        }
-      }
-      let blockArtist = '';
-      let blockLen = 0;
-      let curArtist = '';
-      let curLen = 0;
-      for (const r of rows) {
-        const first = trackArtists(r)[0] ?? '';
-        if (first === curArtist) curLen++;
-        else { curArtist = first; curLen = 1; }
-        if (curLen > blockLen && curArtist) { blockArtist = curArtist; blockLen = curLen; }
-      }
-      const echo = {
-        ok: true,
-        total: rows.length,
-        tracks,
-        episodes,
-        unique_artists: artists.size,
-        unique_albums: albums.size,
-        unique_shows: shows.size,
-        longest_artist_block: blockArtist ? { artist: blockArtist, tracks: blockLen } : null,
-      };
-      const text = [
-        `Queue profile (${rows.length} items):`,
-        `  mix: ${tracks} track(s) / ${episodes} episode(s)`,
-        `  unique artists: ${artists.size} | unique albums: ${albums.size}${shows.size ? ` | unique shows: ${shows.size}` : ''}`,
-        blockArtist ? `  longest block by one artist: ${blockArtist} ×${blockLen}` : '  no single-artist block',
-      ].join('\n');
-      return emit(fmt, echo, text);
-    },
-  );
+  // 17. queue_profile (#374) — REMOVED by #847. It was a composition
+  // profile of one GET /me/player/queue, and `get_queue` with
+  // `include: ['profile']` returns the same numbers — unique artists, albums
+  // and shows, the track-vs-episode mix, and the longest single-artist run —
+  // from that same single read. `trackArtists` stays: four other tools here use
+  // it, and deleting the tool was not a reason to re-derive the helper.
 
   // 18. checkpoint_playback (#375) — auto-named timestamped checkpoint
   server.tool(

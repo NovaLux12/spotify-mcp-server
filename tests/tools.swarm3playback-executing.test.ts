@@ -522,86 +522,24 @@ describe('#668 get_device_volume_report', () => {
 });
 
 // ===========================================================================
-// 8. get_queue_snapshot
+// #847 removed: get_queue_snapshot
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 get_queue_snapshot', () => {
-  const QUEUE = {
-    currently_playing: track(0, 200_000, 'Now Playing'),
-    queue: [track(1, 200_000), track(2, 60_000), episode(3, 120_000)],
-  };
 
-  it('totals the runtime across the whole queue, not just the returned page', async () => {
-    const h = makeHarness({ queue: QUEUE });
-    // max_results 2 over a 3-item queue: the page and the total are different
-    // numbers, so a total summed from the page is visible.
-    const out = await h.invoke('get_queue_snapshot', { max_results: 2 });
-    assert.deepEqual(h.paths('GET'), ['/me/player/queue']);
-    const sc = h.structured(out);
-    assert.equal(sc.total, 3);
-    assert.equal(sc.total_runtime_ms, 380_000, '200_000 + 60_000 + 120_000 — every queued row, not the 2 returned');
-    const items = sc.items as Array<Record<string, unknown>>;
-    assert.equal(items.length, 2, 'the page really is smaller than the queue');
-    assert.deepEqual(items.map((i) => i.position), [1, 2], 'positions are 1-based');
-    assert.deepEqual(sc.pagination, { total: 3, returned: 2, truncated: true });
-    assert.match(h.text(out), /"Now Playing" — Artist/);
-  });
-
-  it('reports an episode in the queue with its show as the subtitle', async () => {
-    const h = makeHarness({ queue: QUEUE });
-    const out = await h.invoke('get_queue_snapshot', { max_results: 3 });
-    const items = h.structured(out).items as Array<Record<string, unknown>>;
-    assert.equal(items[2]?.is_episode, true, 'an item with no `artists` is an episode');
-    assert.equal(items[2]?.subtitle, 'The Show');
-    assert.equal(items[0]?.subtitle, 'Artist');
-  });
-
-  it('reports an empty queue without dividing by zero', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] } });
-    const out = await h.invoke('get_queue_snapshot');
-    const sc = h.structured(out);
-    assert.equal(sc.total, 0);
-    assert.equal(sc.total_runtime_ms, 0);
-    assert.equal(sc.currently_playing, null);
-    assert.match(h.text(out), /\(queue is empty\)/);
-  });
-});
-
+// #847 removed: queue_runtime_report
 // ===========================================================================
-// 9. queue_runtime_report
-// ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 queue_runtime_report', () => {
-  it('computes average, longest, shortest and the current track remaining time', async () => {
-    const h = makeHarness({
-      queue: { currently_playing: track(0, 200_000), queue: [track(1, 300_000), track(2, 60_000), track(3, 120_000)] },
-    });
-    const out = await h.invoke('queue_runtime_report');
-    const sc = h.structured(out);
-    assert.equal(sc.upcoming_count, 3);
-    assert.equal(sc.total_runtime_ms, 480_000);
-    assert.equal(sc.average_runtime_ms, 160_000);
-    assert.equal((sc.longest as Record<string, unknown>).duration_ms, 300_000);
-    assert.equal((sc.shortest as Record<string, unknown>).duration_ms, 60_000);
-    // state().item.duration_ms 200_000 - progress_ms 30_000
-    assert.equal(sc.current_track_remaining_ms, 170_000);
-    assert.equal(sc.estimated_total_wait_ms, 650_000);
-  });
 
-  it('returns null longest/shortest for an empty queue rather than throwing', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] }, state: null });
-    const out = await h.invoke('queue_runtime_report');
-    const sc = h.structured(out);
-    assert.equal(sc.upcoming_count, 0);
-    assert.equal(sc.average_runtime_ms, 0);
-    assert.equal(sc.longest, null);
-    assert.equal(sc.shortest, null);
-    assert.equal(sc.current_track_remaining_ms, 0);
-    assert.match(h.text(out), /Longest:\s+—/);
-  });
-});
-
-// ===========================================================================
 // 10. split_queue_plan
 // ===========================================================================
 
@@ -691,39 +629,15 @@ describe('#668 split_queue_plan', () => {
 });
 
 // ===========================================================================
-// 11. queue_duplicate_check
+// #847 removed: queue_duplicate_check
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['duplicates']`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 queue_duplicate_check', () => {
-  it('groups repeats by uri and counts only the redundant occurrences as wasted', async () => {
-    const h = makeHarness({
-      queue: {
-        currently_playing: null,
-        queue: [track(1, 200_000, 'Alpha'), track(2, 100_000, 'Beta'), track(1, 200_000, 'Alpha'), track(1, 200_000, 'Alpha')],
-      },
-    });
-    const out = await h.invoke('queue_duplicate_check');
-    const sc = h.structured(out);
-    const groups = sc.duplicate_groups as Array<Record<string, unknown>>;
-    assert.equal(groups.length, 1);
-    assert.equal(groups[0]?.name, 'Alpha');
-    assert.equal(groups[0]?.occurrences, 3);
-    assert.deepEqual(groups[0]?.positions, [1, 3, 4], 'queue positions are 1-based');
-    assert.equal(groups[0]?.wasted_runtime_ms, 400_000, 'the first occurrence is the one that plays');
-    assert.equal(sc.total_redundant, 2);
-    assert.equal(sc.wasted_runtime_ms, 400_000);
-  });
 
-  it('says there are no duplicates rather than reporting an empty group', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2)] } });
-    const out = await h.invoke('queue_duplicate_check');
-    assert.deepEqual(h.structured(out).duplicate_groups, []);
-    assert.equal(h.structured(out).total_redundant, 0);
-    assert.match(h.text(out), /No duplicates in the upcoming queue\./);
-  });
-});
-
-// ===========================================================================
 // 12. queue_prune_plan
 // ===========================================================================
 
@@ -768,37 +682,15 @@ describe('#668 queue_prune_plan', () => {
 });
 
 // ===========================================================================
-// 13. predict_next_tracks
+// #847 removed: predict_next_tracks
 // ===========================================================================
+//
+// Retired into `get_queue` with `include: ['runtime']`, whose `runtime.timeline` carries the same per-item rows and cumulative `plays_at_ms`. Its tests moved with it rather than being deleted
+// with the registration: the describe block "#847 the retired tools' coverage,
+// re-pointed at get_queue" in tests/queue.tools.test.ts re-makes every assertion
+// this one made, against the tool that answers now.
 
-describe('#668 predict_next_tracks', () => {
-  it('stamps each item with its cumulative start time after the current track', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1, 200_000), track(2, 100_000)] } });
-    const out = await h.invoke('predict_next_tracks', { count: 2 });
-    const sc = h.structured(out);
-    assert.equal(sc.current_track_remaining_ms, 170_000, '200_000 - 30_000 still to play');
-    const items = sc.items as Array<Record<string, unknown>>;
-    assert.equal(items[0]?.plays_at_ms, 170_000);
-    assert.equal(items[1]?.plays_at_ms, 370_000, 'the second starts after the first finishes');
-  });
 
-  it('defaults to five and never returns more than the queue holds', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2)] } });
-    const out = await h.invoke('predict_next_tracks', {});
-    assert.equal((h.structured(out).items as unknown[]).length, 2);
-    const capped = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2), track(3), track(4), track(5), track(6)] } });
-    assert.equal((capped.structured(await capped.invoke('predict_next_tracks', {})).items as unknown[]).length, 5);
-  });
-
-  it('says predictions are unavailable for an empty queue', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [] } });
-    const out = await h.invoke('predict_next_tracks', { count: 3 });
-    assert.deepEqual(h.structured(out).items, []);
-    assert.match(h.text(out), /queue is empty — predictions unavailable/);
-  });
-});
-
-// ===========================================================================
 // 14. shuffle_state_report
 // ===========================================================================
 
@@ -1123,10 +1015,13 @@ const COVERED_ELSEWHERE = new Set([
 ]);
 
 describe('#668 anti-vacuity', () => {
-  it('registers all 24 playback tools, so a renamed or dropped tool fails here', () => {
+  it('registers all 20 playback tools, so a renamed or dropped tool fails here', () => {
     const names = makeHarness().names();
-    assert.equal(names.length, 24, `expected the module's 24 tools, got ${names.length}: ${names.join(', ')}`);
-    assert.equal(new Set(names).size, 24, 'tool names must be unique');
+    // #847 retired four of them (`get_queue_snapshot`, `queue_runtime_report`,
+    // `queue_duplicate_check`, `predict_next_tracks`), so 24 became 20. The count
+    // stays pinned so the NEXT removal is equally loud.
+    assert.equal(names.length, 20, `expected the module's 20 tools, got ${names.length}: ${names.join(', ')}`);
+    assert.equal(new Set(names).size, 20, 'tool names must be unique');
   });
 
   it('classifies the two mutating playback tools as writes, not reads', async () => {
@@ -1152,5 +1047,8 @@ describe('#668 anti-vacuity', () => {
     );
     const stale = [...COVERED_ELSEWHERE].filter((n) => !names.includes(n));
     assert.deepEqual(stale, [], `COVERED_ELSEWHERE names tools this module no longer registers: ${stale.join(', ')}`);
-    assert.equal(invoked.size, 20, `this file should drive the 20 uncovered tools; it drove ${invoked.size}`);
+    // 20 when #668 measured it; 16 after #847 retired the four queue readers
+    // whose cases moved to tests/queue.tools.test.ts. The assertion is a floor on
+    // COVERAGE, not a record of the old number, so it tracks what is still here.
+    assert.equal(invoked.size, 16, `this file should drive the 16 remaining uncovered tools; it drove ${invoked.size}`);
   });

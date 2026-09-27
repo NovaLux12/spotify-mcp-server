@@ -373,6 +373,19 @@ const retiredToolNames = new Set([
   'forgotten_favorites',
   'taste_recommendations',
   'record_feedback',
+  // #847 — the six queue-read registrations collapsed into `get_queue` and
+  // `peek_next`. Unlike the eight above, these are NOT rewritten by
+  // SPOTIFY_MCP_LEGACY_ALIASES: the survivors take arguments the retired
+  // tools did not, so a name-only rewrite would answer a different question.
+  // A caller gets a typed `retired_tool_alias` refusal naming the exact
+  // replacement call, and a migration table still has to be able to NAME what
+  // it replaced.
+  'describe_queue',
+  'get_queue_snapshot',
+  'queue_runtime_report',
+  'queue_duplicate_check',
+  'queue_profile',
+  'predict_next_tracks',
 ]);
 /**
  * #1287 — parameter names this server published under a deprecation notice and
