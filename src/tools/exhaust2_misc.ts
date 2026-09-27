@@ -59,6 +59,12 @@ import {
   MAX_RECEIPTS,
 } from '../receipts.js';
 import { emit, type EmitOptions } from '../result.js';
+import {
+  confirmViaElicitation,
+  describeConfirmation,
+  requiredConfirmationRefusal,
+  REMOVE_ELICIT_THRESHOLD,
+} from './confirm.js';
 import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
@@ -1056,7 +1062,55 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       // fewer tracks than the scan found. The regression test asserts the
       // DELETE set is identical in every response format, so this cannot be
       // traded back for the disclosure.
-      await modifyLibrary(client, candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string'), 'remove');
+      //
+      // #1544 reads the SAME list, hoisted to `removalUris` so the gate below
+      // can ask about the count the write will actually consume. Gating on
+      // `candidates.length` would be the pre-filter length and would let the
+      // prompt and the mutation disagree.
+      const removalUris = candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string');
+
+      // #1544 — the gate every other removal of this size already has.
+      //
+      // The name is what makes this worth gating rather than renaming: an agent
+      // picking a tool by name reads `dead_library_finder` as a report. The
+      // shape is what the invariant is about. This is `DELETE /me/library` once
+      // per candidate in `library_writes` chunks, over a set bounded by
+      // `fetchAllCap` (500) rather than by anything the caller chose — a
+      // qualifying library reaches that without effort, and `max_results` caps
+      // only the REPORTED rows, not this list. So it is the same operation
+      // `remove_from_playlist` and `remove_duplicate_playlist_items` are gated
+      // for, and it reuses `REMOVE_ELICIT_THRESHOLD` rather than a new constant.
+      //
+      // The prompt lands after the scan because the scan is what produces the
+      // count — the question is then answerable ("unsave 412 tracks?") instead
+      // of blind, and the expensive part is not repeated. Gating on the count
+      // the scan actually found is also why `candidates.length` cannot be the
+      // thing asked about: it is the pre-filter length, and the write consumes
+      // `removalUris`.
+      if (removalUris.length >= REMOVE_ELICIT_THRESHOLD) {
+        const preview = candidates.slice(0, 10);
+        const verdict = await confirmViaElicitation(server, {
+          message: describeConfirmation(
+            `unsave ${removalUris.length} dead track(s) from your saved library`,
+            'your library',
+            [
+              `These ${removalUris.length} track(s) are saved, older than ${args.min_age_days} day(s), and appear in neither your recent plays nor any scanned playlist:`,
+              ...preview.map((c) => `${c.name} (saved ${c.added_at || 'unknown'})`),
+              ...(removalUris.length > preview.length ? [`(…and ${removalUris.length - preview.length} more)`] : []),
+              'They are deleted from your library. Anything absent from the scan is NOT removed.',
+            ],
+          ),
+        });
+        // The shared fail-closed guard — unchanged, and unchanged on purpose. An
+        // unpromptable host and a prompt that dies mid-flight are both
+        // refusals, so both get zero deletes rather than an unprompted 500.
+        // SPOTIFY_MCP_CONFIRM=never (exactly that value) is the only bypass.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return emit(rf, refusal.message, refusal.payload, SUMMARISE_JSON);
+      }
+
+      await modifyLibrary(client, removalUris, 'remove');
+
       // The prose list is bounded by the SAME `capForScan` the `candidates`
       // section went through, so the names a reader sees and
       // `sections.candidates` cannot disagree about how many rows exist. It is
