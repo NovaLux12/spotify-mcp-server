@@ -65,12 +65,6 @@ import {
   MAX_RECEIPTS,
 } from '../receipts.js';
 import { emit, type EmitOptions } from '../result.js';
-import {
-  confirmViaElicitation,
-  describeConfirmation,
-  requiredConfirmationRefusal,
-  REMOVE_ELICIT_THRESHOLD,
-} from './confirm.js';
 import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------

@@ -844,7 +844,7 @@ describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
     const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
     const res = await handler({ response_format: 'concise' });
 
-    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+    assert.equal((client.delete as unknown as { mock: { callCount(): number } }).mock.callCount(), 0,
       'an omitted dry_run unsaved 30 tracks');
     assert.equal(res.structuredContent?.dry_run, true, 'the result must report a preview');
   });
@@ -859,7 +859,7 @@ describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
     registerExhaustMiscTools(server, client);
     const handler = captured.handler as (a: unknown) => Promise<unknown>;
     await handler({ dry_run: false, response_format: 'concise' });
-    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 1);
+    assert.equal((client.delete as unknown as { mock: { callCount(): number } }).mock.callCount(), 1);
   });
 
   it('unsave_orphan_tracks refuses at 10+ when the client cannot be asked', async () => {
@@ -878,7 +878,7 @@ describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
     const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
     const res = await handler({ dry_run: false, response_format: 'concise' });
 
-    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+    assert.equal((client.delete as unknown as { mock: { callCount(): number } }).mock.callCount(), 0,
       '10 orphans unsaved with no way to ask a human');
     assert.equal(res.structuredContent?.reason, 'confirmation_unavailable');
   });
@@ -897,7 +897,7 @@ describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
     registerExhaustMiscTools(server, client);
     const handler = captured.handler as (a: unknown) => Promise<unknown>;
     await handler({ dry_run: false, response_format: 'concise' });
-    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 1);
+    assert.equal((client.delete as unknown as { mock: { callCount(): number } }).mock.callCount(), 1);
   });
 
   it('remove_from_library_by_playlist publishes default:true for dry_run', async () => {
@@ -932,7 +932,7 @@ describe('exhaustmisc — #1550 bulk removal defaults and gate', () => {
     const handler = captured.handler as (a: unknown) => Promise<{ structuredContent?: Record<string, unknown> }>;
     const res = await handler({ playlist_id: 'pl1', dry_run: false, response_format: 'concise' });
 
-    assert.equal((client.delete as { mock: { callCount(): number } }).mock.callCount(), 0,
+    assert.equal((client.delete as unknown as { mock: { callCount(): number } }).mock.callCount(), 0,
       'a 10-track library removal committed without a confirmation');
     assert.equal(res.structuredContent?.reason, 'confirmation_unavailable');
   });

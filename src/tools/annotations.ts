@@ -681,25 +681,22 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // 'confirmed', with `SPOTIFY_MCP_CONFIRM=never` the only bypass.
   switch_account: { readOnlyHint: false, destructiveHint: true },
 
-  // #1550: two bulk LIBRARY REMOVALS whose names match no destructive prefix,
-  // so the name-driven policy advertised them as safe writes. `archive` is in
-  // MUTATING_PREFIXES but not in DESTRUCTIVE_PREFIXES, and `dead` matches
-  // neither list at all — so both reached the fallback and were handed
-  // `destructiveHint: false`.
+  // #1550: `archive_played_episodes` DELETEs up to 500 saved episodes in one
+  // call, and its name matches no destructive prefix — `archive` is in
+  // MUTATING_PREFIXES but not in DESTRUCTIVE_PREFIXES — so the name-driven
+  // fallback reached it and handed the host `destructiveHint: false`, telling
+  // an auto-approving client that erasing saved episodes is a safe no-op.
+  // That is the #1100 failure mode. The handler's own gate is
+  // `ARCHIVE_ELICIT_THRESHOLD` (episodemgmt.ts), so the hint and the handler
+  // now agree.
   //
-  // That is the wrong way round for these two specifically. `archive_played_episodes`
-  // DELETEs up to 500 saved episodes in one call, and `dead_library_finder`
-  // unsaves every saved track absent from the recent window and from every
-  // scanned playlist — uncapped. A host that auto-approves on
-  // `destructiveHint: false` would have waved both through. Both now carry the
-  // #1550 elicitation gate as well, so the hint and the handler agree.
-  //
-  // Overrides on these two names rather than new DESTRUCTIVE_PREFIXES entries,
-  // for the same reason `switch_account` above: `archive_` and `dead_` are
-  // shared first words, and widening the prefix lists would misclassify every
-  // other tool that starts with them.
+  // An override on this one name rather than a new DESTRUCTIVE_PREFIXES entry,
+  // for the same reason `switch_account` above: `archive_` is a shared first
+  // word, and widening the prefix lists would misclassify every other tool
+  // that starts with them. `dead_library_finder` needs the same treatment and
+  // carries its own entry above (#1544) — on its own threshold, since it
+  // unsaves from the library rather than from the episode store.
   archive_played_episodes: { readOnlyHint: false, destructiveHint: true },
-  dead_library_finder: { readOnlyHint: false, destructiveHint: true },
 
   // #1347: two genuine read-only reports whose names carry no read verb, so
   // the name-driven policy advertised them as writes and the live gauntlet
@@ -2023,17 +2020,19 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // carries both changes. The 23 -> 22 step and the byte rise have different
   // causes, and quoting either side's number would attribute both to one.
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
-  // [27, 24316] measured from the real registrar (tools: 592). The +450B over
-  // the previous baseline is #896: `playlist_staleness_report` gained the
-  // shared `DryRunScan` preview and the two scan tools' longer truthful-cost
-  // prose. Tool count is unchanged at 27 — a new INPUT property, not a new
-  // tool — so this is a re-measure of the same surface, not a ceiling raise
-  // to make a breach pass. The derived ceiling follows the baseline
-  // (ceil(24316 * 1.1) = 26748B).
-  // #1550: 27 tools / 24316B -> 27 tools / 24434B (+118B), same 27 tools —
-  // MEASURED off the real `tools/list`. `dead_library_finder` already previewed by
-  // default (#827); this change adds only the missing elicitation gate and the
-  // description clause that tells a caller it is there.
+  // [27, 24434] measured from the real registrar (tools: 592). #896 moved the
+  // byte figure by +450B with the tool count unchanged:
+  // `playlist_staleness_report` gained the shared `DryRunScan` preview and the
+  // two scan tools' longer truthful-cost prose. A new INPUT property, not a new
+  // tool — so a re-measure of the same surface, not a ceiling raise to make a
+  // breach pass. The derived ceiling follows the baseline.
+  // #1550: +118B, same 27 tools — MEASURED off the real `tools/list`.
+  // `dead_library_finder` already previewed by default (#827); this change adds
+  // only the missing elicitation gate and the description clause that tells a
+  // caller it is there. The bracketed figure is the CURRENT baseline, as
+  // `tests/manifest-comment-baseline.test.ts` requires of every figure quoted in
+  // an entry's comment run — a historical number in brackets reads as a claim
+  // about the entry rather than about the past.
   manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24434], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
