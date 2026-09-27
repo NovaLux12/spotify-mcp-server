@@ -117,7 +117,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | 148 |
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 927 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 513 |
-| `src/cachepersist.ts` | Optional cross-process persistence for the immutable read cache (#893, A16-019). (0 registered tools) | 589 |
+| `src/cachepersist.ts` | Optional cross-process persistence for the immutable read cache (#893, A16-019). (0 registered tools) | 644 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 2591 |
 | `src/concurrency.ts` | Bounded-concurrency fan-out for the freshness-radar walks (#783). (0 registered tools) | 169 |
@@ -128,7 +128,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 427 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 282 |
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 423 |
-| `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 841 |
+| `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 871 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 588 |
 | `src/progress.ts` | Ambient progress-token context for MCP `tools/call` requests (#728). (0 registered tools) | 136 |
