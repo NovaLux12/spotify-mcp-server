@@ -16,7 +16,9 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { chmod, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -1387,6 +1389,53 @@ describe('watermark write concurrency', () => {
       assert.equal(existsSync(legacy), false, 'the stranded pre-fix temp must be reclaimed');
       const stored = JSON.parse(await readFile(statePath, 'utf8')) as { last_check: string };
       assert.equal(stored.last_check, new Date().toISOString().slice(0, 10), 'the watermark still advanced');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The bounded read, pinned across the #724 rebase (#1285)
+// ---------------------------------------------------------------------------
+// #1285 hardened this read to `readLocalFile` — a regular-file check, so a FIFO
+// planted at the watermark path cannot block the open, plus a size cap.
+// #724 restructured that same function into per-kind state, and the raw
+// `readFile` it replaced is what a careless rebase conflict resolution would
+// have put back: the resolution that keeps #724's shape can silently revert
+// #1285's hardening, and nothing in the tree would say so.
+//
+// `local-read-bounds.test.ts` names this watermark among the readers it covers,
+// but every FIFO case in it targets a different tool — true of the comment,
+// not of the coverage. This is the case for this file.
+describe('the freshness watermark read is bounded, not a raw readFile (#1285 across #724)', () => {
+  const execFileAsync = promisify(execFile);
+
+  it('refuses a FIFO planted at the watermark path instead of blocking on it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'freshness-fifo-'));
+    const fifo = join(dir, 'freshness.json');
+    try {
+      await execFileAsync('mkfifo', [fifo]);
+      assert.ok(lstatSync(fifo).isFIFO(), 'fixture really is a FIFO');
+
+      await withEnv({ SPOTIFY_MCP_FRESHNESS_STATE: fifo }, async () => {
+        const h = harness((path) => {
+          if (path === '/me/following') return followedPage(['a1'], null);
+          if (path === '/artists/a1/albums') return albumsOf('a1', [['alb', 'Drop', '2026-07-15']]);
+          throw new Error(`unexpected path ${path}`);
+        });
+
+        // No writer is ever attached to the FIFO. If this read opened it, the
+        // await below would block until the test timeout rather than returning
+        // — so the mutation is a hang, not a false pass.
+        const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['albums'] });
+        const payload = out.structuredContent as { previous_watermark: string | null };
+        assert.equal(
+          payload.previous_watermark,
+          null,
+          'an unreadable watermark must read as "no checkpoint" — not hang, and not invent one',
+        );
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
