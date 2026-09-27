@@ -59,6 +59,7 @@ import type {
   SpotifyEpisode,
   SpotifyTrack,
 } from '../types/spotify.js';
+import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
 import { emit, type EmitOptions } from '../result.js';
 import { spotifyRef } from '../refs.js';
@@ -179,18 +180,28 @@ interface LoadedPlaylist {
   name: string | null;
   items: PlaylistItemObject[];
   /**
-   * The playlist's real item count from its metadata, which the walked `items`
-   * cannot be when the walk hit `fetchAllCap`. Removal receipts need it as the
-   * pre-mutation row count: they are compared against the `total` the
+   * The playlist's real item count as Spotify states it, which the walked
+   * `items` cannot be when the walk hit `fetchAllCap`. Removal receipts need it
+   * as the pre-mutation row count: they are compared against the `total` the
    * verification refetch reports, not against the capped walk (#879).
+   *
+   * `undefined` when the metadata read carries no count — a length Spotify did
+   * not state. It is never the row count: that number is the walk's, bounded
+   * by `fetchAllCap`, and handing it over as the playlist's total failed a
+   * receipt for a write that landed (#1529). `receipts.ts` already treats an
+   * absent `before` as "no baseline, fail closed and say so", which is the
+   * honest verdict; a made-up number reads as evidence.
    */
-  total: number;
+  total: number | undefined;
 }
 
 /** Playlist metadata + fully paged items; fails fast on a missing playlist. */
 async function loadPlaylistFull(client: SpotifyClient, ref: string): Promise<LoadedPlaylist> {
   const id = normalizePlaylistRef(ref);
-  const meta = await client.get<{ id?: string; name?: string; tracks?: { total?: number } }>(
+  // The inline type modelled only the deprecated `tracks` page, so the
+  // canonical `items` page was invisible to the compiler and a read that
+  // skipped it type-checked (#1529). `SpotifyPlaylistPage` is both spellings.
+  const meta = await client.get<{ id?: string; name?: string } & SpotifyPlaylistPage>(
     `/playlists/${encodeURIComponent(id)}`,
   );
   if (!meta) throw new Error(`Playlist "${ref}" not found`);
@@ -199,7 +210,7 @@ async function loadPlaylistFull(client: SpotifyClient, ref: string): Promise<Loa
     id,
     name: meta.name ?? null,
     items,
-    total: typeof meta.tracks?.total === 'number' ? meta.tracks.total : items.length,
+    total: playlistItemTotal(meta),
   };
 }
 
@@ -345,6 +356,22 @@ function msToClock(ms: number): string {
 }
 
 /**
+ * The pre-mutation row count the NEXT chunk of a tail-first delete will be
+ * checked against. Tail-first ordering means each chunk's rows are already gone
+ * by the time the next receipt is issued, so the running count is decremented
+ * per chunk.
+ *
+ * An unreadable baseline stays unreadable. `before - removed` on an absent
+ * baseline is `NaN`, and a receipt comparing against `NaN` fails with a
+ * `row count N ≠ expected NaN` sentence that names a number nobody read
+ * (#1529). Returning `undefined` keeps the receipt in the branch that reports
+ * "the caller captured no pre-mutation row count" instead.
+ */
+function nextRowCount(before: number | undefined, removed: number): number | undefined {
+  return before === undefined ? undefined : before - removed;
+}
+
+/**
  * Receipt options for one chunk of a position-targeted delete (#879).
  *
  * `targetedPositions` is what makes the check survivable on a playlist that
@@ -355,21 +382,24 @@ function msToClock(ms: number): string {
  * exactly what this chunk removed rather than every copy of the uri.
  *
  * `before` is equally load-bearing: without a pre-mutation row count the
- * targeted branch has nothing to compare the refetched `total` against and
- * reports VERIFIED unconditionally — a receipt that cannot fail is worse than
- * no receipt, because it tells the agent the write landed.
+ * targeted branch has nothing to compare the refetched `total` against, and
+ * fails closed naming the missing half rather than reporting a mismatch it
+ * manufactured.
  */
 function removalReceiptOpts(
   playlistId: string,
   chunk: readonly OpRow[],
-  before: number,
+  before: number | undefined,
 ): Parameters<typeof issueReceipt>[1] {
   return {
     kind: 'playlist_items',
     id: playlistId,
     uris: chunk.map((r) => r.uri),
     expectPresent: false,
-    before,
+    // An unread baseline is stated as absent, never as a number. The receipt
+    // then names which half of its comparison was missing instead of
+    // reporting a row-count mismatch it invented (#1529).
+    ...(before !== undefined ? { before } : {}),
     targetedPositions: chunk.map((r) => ({ uri: r.uri, position: r.position })),
     // Rows removed can exceed uris when a chunk names the same track twice.
     ...(chunk.length !== new Set(chunk.map((r) => r.uri)).size
@@ -1176,7 +1206,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         });
         requests++;
         receipts.push(await issueReceipt(client, removalReceiptOpts(p.id, chunk, expectedTotal)));
-        expectedTotal -= chunk.length;
+        expectedTotal = nextRowCount(expectedTotal, chunk.length);
       }
       const prose = [
         `Deleted ${doomed.length} item(s) [${from},${to}) from "${p.name ?? p.id}"; ${keptCount} remain. ${requests} delete request(s).`,
@@ -1847,7 +1877,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         });
         requests++;
         allReceipts.push(await issueReceipt(client, removalReceiptOpts(src.id, chunk, sourceTotal)));
-        sourceTotal -= chunk.length;
+        sourceTotal = nextRowCount(sourceTotal, chunk.length);
       }
       const add = await addUrisChunked(client, dst.id, uris);
       requests += add.requests;
@@ -1897,7 +1927,9 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       // Metadata totals, indexed first-wins to match the bucket maps below: a
       // caller may repeat a playlist id, and first-wins is what the `.find`
       // this replaced returned. Built once, not per donating playlist (#903).
-      const totalById = new Map<string, number>();
+      // A playlist whose metadata read carried no count maps to `undefined`,
+      // which reaches `removalReceiptOpts` as an absent baseline (#1529).
+      const totalById = new Map<string, number | undefined>();
       for (const p of loaded) if (!totalById.has(p.id)) totalById.set(p.id, p.total);
       const buckets = loaded.map((p) => {
         const rows = trackRows(p.items).filter((r) => r.uri && (metric === 'count' || r.durationMs != null));
@@ -2004,8 +2036,11 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         const writeCap = capFor('playlist_writes');
         // Tail-first chunks keep each chunk's positions valid; the running row
         // count is the pre-mutation total this chunk's receipt is checked
-        // against (#879).
-        let sourceTotal = totalById.get(srcId) ?? descending.length;
+        // against (#879). An unreadable total stays unreadable: the fallback
+        // this replaces was `descending.length`, the count of rows THIS MOVE
+        // is taking out, which is not the playlist's size and produced a
+        // row-count mismatch for a write that landed (#1529).
+        let sourceTotal = totalById.get(srcId);
         for (let start = 0; start < descending.length; start += writeCap) {
           const chunk = descending.slice(start, start + writeCap);
           await client.delete(`/playlists/${encodeURIComponent(srcId)}/items`, {
@@ -2013,7 +2048,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           });
           requests++;
           allReceipts.push(await issueReceipt(client, removalReceiptOpts(srcId, chunk, sourceTotal)));
-          sourceTotal -= chunk.length;
+          sourceTotal = nextRowCount(sourceTotal, chunk.length);
         }
       }
       for (const recv of receivers) {

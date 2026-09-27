@@ -39,6 +39,7 @@ import { StubFromResponder } from './helpers/stub-client.js';
 import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
 import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.js';
+import { initConfig } from '../src/config.js';
 import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
 
 // ---------------------------------------------------------------------------
@@ -155,6 +156,15 @@ interface StubOptions {
    */
   mutates: boolean;
   playlists: PlaylistState[];
+  /**
+   * Which spelling of the item total `/playlists/{id}` serves (#1529).
+   *
+   *  - `legacy`   — `tracks.total` only (the pre-Feb-2026 shape; the default
+   *                 so every existing fixture keeps its baseline)
+   *  - `canonical`— `items.total` only, the replacement field
+   *  - `none`     — neither; a body that states no count at all
+   */
+  metaPage?: 'legacy' | 'canonical' | 'none';
 }
 
 /**
@@ -163,7 +173,7 @@ interface StubOptions {
  * that returned a bare array would make every receipt look unverified and the
  * passing half of each test would be vacuous.
  */
-function makeStub({ mutates, playlists }: StubOptions) {
+function makeStub({ mutates, playlists, metaPage = 'legacy' }: StubOptions) {
   const byId = new Map(playlists.map((p) => [p.id, p]));
   const writes: Array<{ method: string; id: string; body: any }> = [];
   let nextId = 0;
@@ -200,6 +210,12 @@ function makeStub({ mutates, playlists }: StubOptions) {
       const metaMatch = /^\/playlists\/([^/]+)$/.exec(path);
       if (metaMatch) {
         const p = resolve(decodeURIComponent(metaMatch[1]));
+        // The item total is spelled `items` (canonical since Feb 2026) or
+        // `tracks` (the deprecated page some payloads still carry), and a body
+        // can state neither. Which one is served is a property of the FIXTURE,
+        // not of the tool under test, so it is a stub option (#1529).
+        if (metaPage === 'canonical') return { id: p.id, name: p.name, items: { total: p.uris.length } };
+        if (metaPage === 'none') return { id: p.id, name: p.name };
         return { id: p.id, name: p.name, tracks: { total: p.uris.length } };
       }
       if (path === '/search') {
@@ -249,14 +265,21 @@ function makeStub({ mutates, playlists }: StubOptions) {
         const p = resolve(decodeURIComponent(delMatch[1]));
         writes.push({ method: 'DELETE', id: p.id, body });
         if (mutates) {
-          // Remove from the tail so a chunk's own positions stay valid, the
-          // same order the production code deletes in (#A6-003).
           const doomed: Array<{ uri: string; positions?: number[] }> =
             (body as { tracks?: Array<{ uri: string; positions?: number[] }> }).tracks ?? [];
-          for (const track of [...doomed].reverse()) {
-            if (track.positions?.length) {
-              for (const pos of [...track.positions].sort((a, b) => b - a)) p.uris.splice(pos, 1);
-            } else {
+          // Every `positions` entry in one request refers to the playlist as it
+          // stood BEFORE the request, so the whole set has to come off
+          // tail-first in one pass. This used to splice row-by-row in the
+          // order the body listed them, which was right only for an ASCENDING
+          // body — and the production callers send descending (`doomedDesc`,
+          // #A6-003), so a multi-row chunk silently deleted every other row.
+          // Invisible at one row per chunk, which is all this file used to
+          // send; #1529's multi-chunk case is what exposed it.
+          const byPosition = doomed.flatMap((t) => t.positions ?? []);
+          if (byPosition.length > 0) {
+            for (const pos of byPosition.sort((a, b) => b - a)) p.uris.splice(pos, 1);
+          } else {
+            for (const track of doomed) {
               for (let i = p.uris.length - 1; i >= 0; i--) if (p.uris[i] === track.uri) p.uris.splice(i, 1);
             }
           }
@@ -505,6 +528,145 @@ describe('#879 swarm3_playlistops targeted removals verify by row', () => {
       /row count|still-present|missing/,
       'a failed receipt must say why it failed',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3. #1529 — the playlist total is read, not guessed
+// ---------------------------------------------------------------------------
+
+/**
+ * A capped item walk, so the row count `loadPlaylistFull` returns is
+ * demonstrably NOT the playlist's size. Five rows in the playlist, a walk that
+ * reads two of them, and `SPOTIFY_MCP_FETCH_ALL_CAP=2` to make the cap bind —
+ * the shape of every playlist over 500 items.
+ */
+async function withCappedWalk<T>(fn: () => Promise<T>): Promise<T> {
+  initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '2' });
+  try {
+    return await fn();
+  } finally {
+    initConfig();
+  }
+}
+
+/** Five rows, of which the capped walk reads two. */
+const cappedPlaylist = (): PlaylistState => ({
+  id: 'src',
+  name: 'Source',
+  uris: [1, 2, 3, 4, 5].map(trackUri),
+});
+
+/** Delete row 0. The playlist then holds four rows, which both stubs can prove. */
+const removeFirstRow = { playlist_id: 'src', start: 0, end: 1, dry_run: false, response_format: 'json' } as const;
+
+describe('#1529 swarm3_playlistops reads the playlist total, never the row count', () => {
+  // The two assertions that make these load-bearing: `before` is the
+  // pre-mutation row count the receipt compares the re-read against, and 2 is
+  // the number the capped walk saw. Any implementation that substitutes the
+  // walk's row count puts 2 there — and then the receipt reports
+  // `row count 4 ≠ expected 1` for a delete that landed.
+  it('reads items.total when the body carries only the canonical page', async () => {
+    await withCappedWalk(async () => {
+      const h = harness(registerSwarm3PlaylistopsTools, {
+        mutates: true,
+        playlists: [cappedPlaylist()],
+        metaPage: 'canonical',
+      });
+      const out = await h.invoke('remove_playlist_range', { ...removeFirstRow });
+      const receipts = receiptsOf(out);
+      assert.equal(receipts.length, 1);
+      assert.equal(
+        receipts[0].before,
+        5,
+        'items.total is the playlist size; the walk read 2 and that is not an answer',
+      );
+      assert.equal(receipts[0].after, 4, 'the row really is gone');
+      assert.equal(receipts[0].verified, true, 'a landed write must not be reported as a row-count mismatch');
+      assert.equal(out.structuredContent!.ok, true);
+    });
+  });
+
+  it('still reads the legacy tracks.total when only the deprecated page is served', async () => {
+    await withCappedWalk(async () => {
+      const h = harness(registerSwarm3PlaylistopsTools, {
+        mutates: true,
+        playlists: [cappedPlaylist()],
+        metaPage: 'legacy',
+      });
+      const out = await h.invoke('remove_playlist_range', { ...removeFirstRow });
+      const receipts = receiptsOf(out);
+      assert.equal(receipts[0].before, 5, 'the deprecated page is still a real count when it is the only one served');
+      assert.equal(receipts[0].verified, true);
+    });
+  });
+
+  it('reads NO total when the body states none, instead of the capped row count', async () => {
+    await withCappedWalk(async () => {
+      const h = harness(registerSwarm3PlaylistopsTools, {
+        mutates: true,
+        playlists: [cappedPlaylist()],
+        metaPage: 'none',
+      });
+      const out = await h.invoke('remove_playlist_range', { ...removeFirstRow });
+      const receipts = receiptsOf(out);
+      assert.equal(receipts.length, 1);
+      assert.equal(
+        receipts[0].before,
+        undefined,
+        'the walk read 2 rows; reporting that as the playlist size is the #1529 defect',
+      );
+      assert.ok(!('before' in receipts[0]), 'an unread count is absent, not present-and-undefined');
+      // The write landed, and the receipt says so in the only way that is true:
+      // it could not run its comparison. That is the difference #1529 is about
+      // — "I could not read the total" versus "the write failed".
+      assert.equal(receipts[0].verified, false);
+      assert.match(
+        String(receipts[0].unmet),
+        /no baseline/,
+        'the reason must name the missing baseline, not a row count nobody read',
+      );
+      assert.doesNotMatch(
+        String(receipts[0].unmet),
+        /row count \d+ ≠ expected \d+/,
+        'a row-count mismatch would name a number this body never stated',
+      );
+      assert.equal(receipts[0].after, 4, 'the re-read still reports the real size; only the baseline is missing');
+      assert.deepEqual(h.stub.playlists.get('src')?.uris, [2, 3, 4, 5].map(trackUri), 'the delete landed');
+    });
+  });
+
+  // A tail-first delete decrements the running baseline per chunk. With no
+  // baseline, `undefined - 100` is `NaN`, and `NaN - 100` stays `NaN` — so the
+  // SECOND chunk is where a naive decrement would first be visible, printing
+  // `row count 50 ≠ expected NaN` for a write that landed. 150 doomed rows is
+  // two chunks at the 100-per-request cap.
+  it('does not print NaN as a row count on the second chunk of a multi-chunk delete', async () => {
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '200' });
+    try {
+      const h = harness(registerSwarm3PlaylistopsTools, {
+        mutates: true,
+        playlists: [{ id: 'src', name: 'Source', uris: Array.from({ length: 150 }, (_, i) => trackUri(i)) }],
+        metaPage: 'none',
+      });
+      const out = await h.invoke('remove_playlist_range', {
+        playlist_id: 'src',
+        start: 0,
+        end: 150,
+        dry_run: false,
+        response_format: 'json',
+      });
+      const receipts = receiptsOf(out);
+      assert.equal(receipts.length, 2, '150 rows is two chunks at the playlist_writes cap of 100');
+      for (const [i, r] of receipts.entries()) {
+        assert.equal(r.before, undefined, `chunk ${i} has no baseline to state`);
+        assert.doesNotMatch(String(r.unmet), /NaN/, `chunk ${i} must not name a number arithmetic invented`);
+        assert.match(String(r.unmet), /no baseline/, `chunk ${i} must name the missing baseline`);
+      }
+      assert.equal(h.stub.playlists.get('src')?.uris.length, 0, 'both chunks landed');
+    } finally {
+      initConfig();
+    }
   });
 });
 
