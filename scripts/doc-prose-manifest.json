@@ -1163,6 +1163,10 @@
         "label": "[docs/configuration.md](docs/configuration.md) — all env…"
       },
       {
+        "hash": "7adec66ad4b89e99",
+        "label": "[docs/cli.md](docs/cli.md) — tools, call, watch, export,…"
+      },
+      {
         "hash": "2c12a7d44c04489c",
         "label": "[docs/schema-budgets.md](docs/schema-budgets.md) — per-m…"
       },
@@ -4883,8 +4887,12 @@
         "label": "Retention. SPOTIFYMCPHISTORYRETENTIONDAYS (default 90) i…"
       },
       {
-        "hash": "4a69df3cd6b20d8a",
-        "label": "Pruning runs on every append and once at server startup,…"
+        "hash": "6c6f555af6553868",
+        "label": "Pruning runs on every append and once at startup, across…"
+      },
+      {
+        "hash": "0d526a57a9ce59bf",
+        "label": "\"Startup\" means the point where this installation derive…"
       },
       {
         "hash": "48d8038f30001182",
@@ -6994,9 +7002,9 @@
     }
   ],
   "provenance": {
-    "head": "f4873448646b79d130f97a1f6f13f0c524379033",
-    "base": "218e0bd0f5c27599d068c1bdb2dfc1f279284405",
-    "upstream": "218e0bd0f5c27599d068c1bdb2dfc1f279284405",
+    "head": "cd33d7fc6e2e9e4ce5bca51541134c7f19e612c5",
+    "base": "b6d1203b338fcb6f28e08b2b897efa8e45b1d0e5",
+    "upstream": "b6d1203b338fcb6f28e08b2b897efa8e45b1d0e5",
     "behind": false
   },
   "reanchored": [
@@ -7007,6 +7015,15 @@
       "to": "2045ad170ec882aa",
       "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
       "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "4a69df3cd6b20d8a",
+      "label": "Pruning runs on every append and once at server startup,…",
+      "to": "6c6f555af6553868",
+      "toLabel": "Pruning runs on every append and once at startup, across…",
+      "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
       "date": "2026-09-27"
     }
   ]
