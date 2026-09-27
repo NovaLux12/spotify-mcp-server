@@ -1901,6 +1901,26 @@
         "label": "fetchall (paged reads) — walk every page via client.getA…"
       },
       {
+        "hash": "a79f49fe67e162ac",
+        "label": "Bounded-read disclosure (#1423) — one name, repo-wide. A…"
+      },
+      {
+        "hash": "829bf6b270be53ce",
+        "label": "| Field | Meaning | |---|---| | rowsread | Rows the boun…"
+      },
+      {
+        "hash": "06a129bc66c35460",
+        "label": "with truncated beside them, truncatedbycap when the cap …"
+      },
+      {
+        "hash": "ff1a286fb9b176b8",
+        "label": "Why it is stated once, here. The field was spelled four …"
+      },
+      {
+        "hash": "965bfe849aa9cfbf",
+        "label": "Four neighbours are deliberately not part of this conven…"
+      },
+      {
         "hash": "bb87e423bbd4d413",
         "label": "dryrun (destructive operations) — validate inputs and de…"
       },
@@ -2941,8 +2961,8 @@
         "label": "So it discloses, and the disclosure is the caller's to a…"
       },
       {
-        "hash": "20554d496e1b6580",
-        "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…"
+        "hash": "2d3652ae5bd59a9e",
+        "label": "| Field | Meaning | |---|---| | rowsread | Rows the walk…"
       },
       {
         "hash": "a82895555e5c8faa",
@@ -2957,7 +2977,7 @@
         "label": "The tool description changed with it, and that is the pa…"
       },
       {
-        "hash": "991317132a97dccb",
+        "hash": "f3089cfab14298aa",
         "label": "A playlist at or below the cap is unchanged: truncated: …"
       },
       {
@@ -5325,6 +5345,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "20554d496e1b6580",
+      "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…",
+      "date": "2026-09-27",
+      "reason": "#1423 renamed the bounded-read disclosure fields to rows_read and reported_total across SPEC.md, so the pinned Field/Meaning table row and the at-or-below-the-cap paragraph were deliberately reworded, not lost to a conflict"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "455ba684a6f018a0",
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
@@ -5364,6 +5391,13 @@
       "label": "Every named parameter must be present, and in declaratio…",
       "date": "2026-09-27",
       "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "991317132a97dccb",
+      "label": "A playlist at or below the cap is unchanged: truncated: …",
+      "date": "2026-09-27",
+      "reason": "#1423 renamed the bounded-read disclosure fields to rows_read and reported_total across SPEC.md, so the pinned Field/Meaning table row and the at-or-below-the-cap paragraph were deliberately reworded, not lost to a conflict"
     },
     {
       "file": "SPEC.md",
@@ -5437,8 +5471,8 @@
     }
   ],
   "provenance": {
-    "head": "a2979da577627936091ae0964128ea5b87138a9d",
-    "upstream": "a2979da577627936091ae0964128ea5b87138a9d",
+    "head": "e0fd0bf687d2f324e1a7352ea635b86c1c0b96cd",
+    "upstream": "4187787f9a8c020aa44e36ed003a111970045b57",
     "behind": false
   }
 }
