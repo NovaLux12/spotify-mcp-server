@@ -1680,6 +1680,14 @@ async function measureGatedSurface() {
       assertToolNamingPolicy(names);
       applyToolOutputSchemas(server);
       applyToolAnnotations(server);
+      // And the task-support pass (#600), for the same reason as the two above:
+      // `collectAggregateSurfaceMeasurement` charges for `execution`, so an
+      // off-pass that skipped it would report the eleven task-capable tools as
+      // still `taskSupport: 'forbidden'` and disagree with the ON row by
+      // exactly that field — which is the disagreement the cross-check below
+      // exists to catch, in the one place where a harness measuring a different
+      // surface would be least visible.
+      applyTaskSupport(server);
       return { names, measurement: collectAggregateSurfaceMeasurement(server) };
     } finally {
       await server.close().catch(() => undefined);
