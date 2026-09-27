@@ -36,6 +36,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig, storePath } from '../config.js';
+import { trustedCustomIssue } from '../custom-issues.js';
 import {
   probeArtistReleases,
   ARTIST_RELEASE_PROBE_LIMIT,
@@ -142,10 +143,11 @@ const SinceArg = z
     if (!ISO_DATE_RE.test(value)) return;
     const why = describeImpossibleDate(value);
     if (why) {
-      ctx.addIssue({
-        code: 'custom',
-        message: `since: "${value}" is not a real calendar date — ${why}. Pick an existing day, or use "last-check".`,
-      });
+      // #1518: stamped so the boundary relays this rather than dropping it.
+      ctx.addIssue(trustedCustomIssue(
+        'freshness.sinceCalendarDate',
+        `since: "${value}" is not a real calendar date — ${why}. Pick an existing day, or use "last-check".`,
+      ));
     }
   });
 

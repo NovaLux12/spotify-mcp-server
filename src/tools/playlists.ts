@@ -4,6 +4,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import { getConfig } from '../config.js';
+import { trustedCustomIssue } from '../custom-issues.js';
 import { fetchCoverJpeg, validateCoverJpegBuffer } from '../cover-image.js';
 import {
   DEFAULT_DUPLICATE_MATCH_BY,
@@ -717,11 +718,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         })
         .superRefine((args, ctx) => {
           if (args.public === true && args.collaborative === true) {
+            // #1518: stamped so the boundary relays this rather than dropping it.
             ctx.addIssue({
-              code: 'custom',
-              path: ['collaborative'],
-              message:
+              ...trustedCustomIssue(
+                'playlists.createPlaylistFlags',
                 'A playlist cannot be both public and collaborative. Set public to false when collaborative is true.',
+              ),
+              path: ['collaborative'],
             });
           }
         }),
@@ -1089,11 +1092,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         })
         .superRefine((args, ctx) => {
           if (args.public === true && args.collaborative === true) {
+            // #1518: stamped so the boundary relays this rather than dropping it.
             ctx.addIssue({
-              code: 'custom',
-              path: ['collaborative'],
-              message:
+              ...trustedCustomIssue(
+                'playlists.updatePlaylistFlags',
                 'A playlist cannot be both public and collaborative. Set public to false when collaborative is true.',
+              ),
+              path: ['collaborative'],
             });
           }
         }),

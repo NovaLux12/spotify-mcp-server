@@ -9,6 +9,8 @@
  */
 import { z } from 'zod';
 
+import { trustedCustomIssue } from './custom-issues.js';
+
 export const SPOTIFY_REFERENCE_KINDS = [
   'track',
   'album',
@@ -245,7 +247,10 @@ export function spotifyId(expectedKind?: SpotifyReferenceKind): z.ZodType<string
     z.string().min(1).superRefine((value, context) => {
       const parsed = classifySpotifyReference(value, expectedKind);
       if (!parsed.valid) {
-        context.addIssue({ code: 'custom', message: parsed.error ?? 'invalid Spotify reference' });
+        // #1518: the message is relayed to the caller, not just logged. It
+        // reaches the wire only because `trustedCustomIssue` stamps the issue
+        // this repo's boundary recognises — see `src/custom-issues.ts`.
+        context.addIssue(trustedCustomIssue('refs.spotifyId', parsed.error ?? 'invalid Spotify reference'));
       }
     }).describe(description),
   );
