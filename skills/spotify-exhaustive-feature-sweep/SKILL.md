@@ -163,6 +163,19 @@ Current default production baseline: **587 tools**, **16 fixed resources**, **33
     - Keep batches below the observed quota wall, space them with `INTERVAL`,
       and allow `SWEEP_RETRY_MAX` to cap retries. Inspect the report and resume
       file after each run; the script merges prior records with current results.
+    - Read the loop's exit code rather than its log. `0` every tool recorded,
+      `2` a knob was not an integer or was out of range (node never started),
+      `3` `MAX_BATCHES` reached with every batch accounted for — resumable, so
+      re-run the same command later — `4` another loop holds this report's lock
+      and this one refused to start, `5` a batch died without recording a
+      report. Only `3` means "run it again"; `5` means the gauntlet is failing
+      and re-running it would drive the same failure.
+    - One loop at a time per report directory. A second `sweep:loop` exits `4`
+      rather than interleaving with the first against one Spotify app quota and
+      one report. `INT`/`TERM` stop the loop at once — including mid-pause — and
+      release the lock; a lock naming no owner (a loop `SIGKILL`ed between
+      creating it and recording its pid) is reclaimed by the next run, so a
+      stuck `4` does not need the lock directory removed by hand.
     - For an unattended loop, launch the package script detached, for example
       `setsid nohup npm run sweep:loop > memory/sweep-loop.log 2>&1 &`.
       Confirm a live process with
