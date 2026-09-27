@@ -1131,7 +1131,7 @@ export const StatsfmUserInputFields = {
     .min(1)
     .optional()
     .describe(
-      'stats.fm user id or customId (e.g. "martijn"). Defaults to STATSFM_USER_ID.',
+      'stats.fm user id or customId (e.g. "your-statsfm-handle"). Defaults to STATSFM_USER_ID.',
     ),
   [STATSFM_LEGACY_USER_INPUT]: z
     .string()
