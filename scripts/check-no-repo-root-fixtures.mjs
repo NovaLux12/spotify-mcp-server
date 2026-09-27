@@ -105,11 +105,13 @@ function relativeImports(code) {
 }
 
 /**
- * The relative specifier a file re-exports from, or `''`.
+ * The relative specifier a file re-exports *everything* from, or `''`.
  *
- * `export * from './x.js'` propagates every name, so the local name is the
- * imported one; a named clause can only be resolved by reading the target, which
- * the recursion in `tmpdirDerivedRoots` does through the same map.
+ * `export * from './x.js'` propagates each name the target derives, so the
+ * target is applied as an edge for every name this file binds from a `mkdtemp`.
+ * A *named* re-export (`export { A } from './x.js'`) is not handled: nothing in
+ * this tree uses one for a derived root, and guessing at it would mean
+ * re-parsing the clause for a case with no instance to check against.
  */
 function reexportSpecifier(code) {
   const star = /export\s*\*\s*from\s*['"](\.[^'"]*)['"]/.exec(code);
