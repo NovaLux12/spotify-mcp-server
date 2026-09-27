@@ -26,6 +26,11 @@
 
 import './helpers/hermetic.js';
 
+// Second import of the same module, deliberately: the guard in
+// tests/hermetic-home.test.ts wants the bare side-effect form as the first
+// import, and this file also needs REAL_HOME. Merging them into one named
+// import would satisfy the guard's regex while breaking the convention that
+// makes the redirect obvious at the top of the file.
 import { REAL_HOME } from './helpers/hermetic.js';
 
 import { describe, it, before, after } from 'node:test';
