@@ -6,7 +6,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig, storePath } from '../config.js';
 import { SpotifyApiError } from '../client.js';
-import { DryRun, ResponseFormat } from '../shaping.js';
+import { DryRun, ResponseFormat, readString, playlistRowItem, playlistRowUris } from '../shaping.js';
 import { DuplicateMatchByParam, groupDuplicates, matchableFromPlaylistItems, resolveMatchBy } from '../playlistmatch.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import {
@@ -109,13 +109,13 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       const localPositions: number[] = [];
       for (let i = 0; i < items.length; i++) {
         const row = items[i];
-        const track = row.item as unknown as Record<string, unknown> | null | undefined;
-        if (!track) {
+        const track = playlistRowItem(row);
+        if (track === null) {
           unavailablePositions.push(i);
           continue;
         }
-        const uri = typeof track.uri === 'string' ? (track.uri as string) : null;
-        const isLocal = (track as Record<string, unknown>).is_local === true || (uri !== null && uri.startsWith('spotify:local:'));
+        const uri = readString(track, 'uri');
+        const isLocal = track.is_local === true || (uri !== undefined && uri.startsWith('spotify:local:'));
         if (isLocal) localPositions.push(i);
       }
       if (unavailablePositions.length > 0) {
@@ -267,10 +267,8 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       const data: SnapshotData = {
         playlist_id: args.playlist_id, snapshot_id: snapId, created_at: new Date().toISOString(), total: items.length,
         items: items.map((row, idx) => {
-          const track = row.item as unknown as Record<string, unknown> | null | undefined;
-          const uri = track && typeof track.uri === 'string' ? (track.uri as string) : null;
-          const name = track && typeof track.name === 'string' ? (track.name as string) : null;
-          return { uri, position: idx, name };
+          const track = playlistRowItem(row);
+          return { uri: readString(track, 'uri') ?? null, position: idx, name: readString(track, 'name') ?? null };
         }),
       };
       await ensureSnapshotDir();
@@ -307,10 +305,10 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       // true when the per-URI counts match exactly.
       const snapRows = toDiffRows(snapshot.items.map((it) => ({ uri: it.uri, name: it.name, position: it.position })));
       const currRows = toDiffRows(current.map((row, idx) => {
-        const t = row.item as unknown as Record<string, unknown> | null | undefined;
+        const t = playlistRowItem(row);
         return {
-          uri: t && typeof t.uri === 'string' ? (t.uri as string) : null,
-          name: t && typeof t.name === 'string' ? (t.name as string) : null,
+          uri: readString(t, 'uri') ?? null,
+          name: readString(t, 'name') ?? null,
           position: idx,
         };
       }));
@@ -548,10 +546,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         try {
           const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encodeURIComponent(pl.id)}/items`, { limit: '100' }, { maxItems: cap2 });
           const uris = new Set<string>();
-          for (const it of items) {
-            const u = (it.item as unknown as Record<string, unknown> | null | undefined)?.uri;
-            if (typeof u === 'string') uris.add(u);
-          }
+          for (const u of playlistRowUris(items)) uris.add(u);
           sets.push({ id: pl.id, name: pl.name, uris });
         } catch (e) {
           if (e instanceof SpotifyApiError && e.status === 429) { quotaHit = true; quotaRetryAfter = e.retryAfterSec ?? null; quotaAtPlaylist = pl.id; break; }

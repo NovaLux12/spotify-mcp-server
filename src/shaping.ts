@@ -333,6 +333,45 @@ function readPath(source: unknown, path: string): unknown {
   return cur;
 }
 
+// ---------------------------------------------------------------------------
+// `/playlists/{id}/items` rows (#1202)
+//
+// One helper for the whole family, because the cast it replaces was written out
+// seven times in `exhaustmisc.ts` and four more in `playlisthealth.ts`, each
+// copy independently asserting a shape the compiler never saw. `item` is
+// `SpotifyTrack | SpotifyEpisode | null` and may be absent — and a row can
+// arrive carrying a bare URI string where an object is expected, which a cast
+// waves through and `asRecord` refuses.
+// ---------------------------------------------------------------------------
+
+/** The row shape these readers need; `PlaylistItemObject` satisfies it. */
+type PlaylistItemRow = { item?: unknown };
+
+/** A playlist row's `item` as a record, or `null` when it is not one. */
+export function playlistRowItem(row: PlaylistItemRow): Record<string, unknown> | null {
+  return asRecord(row?.item) ?? null;
+}
+
+/**
+ * Every readable `uri` the rows carry, in row order. A row whose `item` is not
+ * a record, or whose `uri` is absent or not a string, contributes nothing —
+ * nothing here invents a URI to keep a total lined up, and the count of
+ * unreadable rows is the caller's to disclose.
+ */
+export function playlistRowUris(rows: readonly PlaylistItemRow[]): string[] {
+  const uris: string[] = [];
+  for (const row of rows) {
+    const uri = readString(playlistRowItem(row), 'uri');
+    if (uri !== undefined) uris.push(uri);
+  }
+  return uris;
+}
+
+/** As `playlistRowUris`, but track URIs only — an episode row has no track to act on. */
+export function playlistItemTrackUris(rows: readonly PlaylistItemRow[]): string[] {
+  return playlistRowUris(rows).filter((uri) => uri.startsWith('spotify:track:'));
+}
+
 /**
  * The single place a shaped payload enters the MCP result.
  *

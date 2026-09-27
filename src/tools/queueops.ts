@@ -10,7 +10,7 @@ import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../client.js';
 import type { SpotifyClient } from '../client.js';
-import { PlaybackDryRun, describeDryRun, parseSpotifyUri, ResponseFormat } from '../shaping.js';
+import { PlaybackDryRun, describeDryRun, parseSpotifyUri, readString, ResponseFormat } from '../shaping.js';
 import { graceful403Message, isRemovedEndpointFailure } from '../gating.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
@@ -152,11 +152,20 @@ async function resolveUris(client: SpotifyClient, sourceUri: string, limit: numb
   let via: ArtistResolveVia | undefined;
   let note: string | undefined;
   if (type === 'playlist') {
-    const items = await client.getAllPages<{ item?: SpotifyTrack | null; track?: SpotifyTrack | null }>(
+    const items = await client.getAllPages<{ item?: unknown; track?: unknown }>(
       `/playlists/${id}/items`, { limit: '100' }, { maxItems: limit },
     );
-    const tracks = items.map((r: any) => r.item ?? r.track).filter(Boolean) as SpotifyTrack[];
-    uris = tracks.map((t) => t.uri).filter(Boolean);
+    // Feb 2026 renamed the nested playable from `track` to `item`, so both
+    // are read. `readString` is what replaced `(r: any) => r.item ?? r.track`
+    // cast to `SpotifyTrack[]` (#1202): the old line declared a row type and
+    // then threw it away with `any`, so a row whose `item` was a bare URI
+    // string or an object without `uri` produced `t.uri === undefined`,
+    // `.filter(Boolean)` dropped it silently, and `total` reported a number
+    // lower than the row count with nothing saying a row had gone missing.
+    for (const row of items) {
+      const uri = readString(row.item, 'uri') ?? readString(row.track, 'uri');
+      if (uri !== undefined) uris.push(uri);
+    }
     total = uris.length;
     uris = uris.slice(0, limit);
   } else if (type === 'album') {

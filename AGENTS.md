@@ -33,6 +33,34 @@ The fix is to widen the shared shape in `src/types/spotify.ts` — which is owne
 by one file on purpose — or to narrow the read to a typed helper. `as unknown
 as` and `: any` are not covered by that gate.
 
+`as unknown as T` and `: any` are ratcheted separately, by
+`tests/payload-casts.test.ts`, which counts both per file, requires every file
+that still holds one to be listed in its `BASELINE` table with a stated reason,
+and fails on any new one. `as unknown as Record<string, unknown>` is excluded
+and deliberately so: widening a payload to the wire's own type asserts nothing
+the reader did not already believe, and `structuredContent()` in `src/shaping.ts`
+is the blessed form of it. Declaring a payload as a `type` rather than an
+`interface` is what closes the gap the cast was papering over — a `type` alias
+of an object literal type is assignable to `Record<string, unknown>`, an
+`interface` is not, and that difference is the whole reason `as unknown as` was
+needed at all.
+
+**Dead locals.** `tsconfig.json` sets `strict` but not `noUnusedLocals` /
+`noUnusedParameters`. Turning them on was measured for #1202 and is not landed:
+`npx tsc --noEmit --noUnusedLocals --noUnusedParameters` reports **128 errors
+across 128 files** on `main` (f3b6ee80), the large majority unused *imports*
+after module splits. That is a mechanical sweep across a quarter of `src/`, not
+a cast fix, and bundling it here would have buried the six files this change
+actually touches. It wants its own PR, one that does nothing else.
+
+**The two `void _x;` statements.** `src/tools/playlistdna.ts` and
+`src/tools/statsfm_taste.ts` each discard a parameter a shared registrar
+signature requires them to accept. A deliberate verdict rather than a shared
+prefix: these are not dead locals in the #758 sense — the parameter exists
+because `src/index.ts` passes the same arguments to every registrar, and the
+alternative is a signature that lies about what these two tools do. They stay,
+and they say why in a comment on the line.
+
 ### Authorization
 
 - Use **Authorization Code with PKCE** for all user-specific data. This is what

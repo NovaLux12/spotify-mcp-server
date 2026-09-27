@@ -38,6 +38,27 @@ describe('playlist_health_check', () => {
   it('detects unavailable items', async () => { const items = [mkTrack('a'), mkUnavailable(), mkTrack('c')]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' }); const sc = out.structuredContent as { issues: Array<{ type: string; positions: number[] }> }; const unav = sc.issues.find((i) => i.type === 'unavailable')!; assert.ok(unav); assert.deepEqual(unav.positions, [1]); });
   it('detects local files', async () => { const items = [mkTrack('a'), mkLocal()]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' }); const sc = out.structuredContent as { issues: Array<{ type: string }> }; assert.ok(sc.issues.some((i) => i.type === 'local')); });
   it('detects duplicates', async () => { const items = [mkTrack('a'), mkTrack('b'), mkTrack('a')]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' }); const sc = out.structuredContent as { issues: Array<{ type: string; positions: number[] }>; duplicate_groups: unknown[] }; const dup = sc.issues.find((i) => i.type === 'duplicate')!; assert.ok(dup); assert.deepEqual(dup.positions.sort((a,b)=>a-b), [0,2]); assert.equal(sc.duplicate_groups.length, 1); });
+  // #1202: `row.item` came through `row.item as unknown as Record<string, unknown>
+  // | null | undefined`. A row whose `item` is an ARRAY is a record to that
+  // cast — `typeof [] === 'object'` — so it read as a healthy, playable track
+  // with `uri: undefined` and `is_local: false`, and was filed as neither
+  // unavailable nor local. `asRecord` rejects it, and the row is reported as
+  // what it is: an item this run could not read.
+  it('a row whose item is not an object is an unavailable position, not a healthy track', async () => {
+    const items = [
+      mkTrack('a'),
+      { added_at: '2026-01-15T10:00:00Z', item: ['not', 'an', 'object'] } as unknown as PlaylistItemObject,
+      mkTrack('c'),
+    ];
+    const h = makeHarness(() => items);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { issues: Array<{ type: string; positions: number[] }>; healthy: boolean };
+    const unav = sc.issues.find((i) => i.type === 'unavailable');
+    assert.ok(unav, 'the unreadable row is reported as unavailable');
+    assert.deepEqual(unav.positions, [1]);
+    assert.equal(sc.healthy, false);
+  });
   it('empty playlist', async () => { const h = makeHarness(() => []); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' }); const sc = out.structuredContent as { issues: Array<{ type: string }>; healthy: boolean }; assert.equal(sc.healthy, false); assert.ok(sc.issues.some((i) => i.type === 'empty')); });
 });
 describe('get_playlist_followers', () => {

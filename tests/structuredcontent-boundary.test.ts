@@ -367,6 +367,15 @@ describe('#1343 — no payload boundary re-widens untrusted JSON through a bare 
     'src/tools/exhaust2_playback.ts',
     'src/tools/exhaust2_catalog.ts',
     'src/tools/playlistreceipts.ts',
+    // #1202 — added when these three reached zero. `swarm3_analytics.ts` is
+    // the only one of the six whose fix is a type widening rather than a
+    // narrowing read (`RecentlyPlayedItem.track` is now
+    // `SpotifyTrackWithReleaseDate` in src/types/spotify.ts), so it has no
+    // runtime consequence to pin and this static check is its regression
+    // test. The other two read `row.item` through `playlistRowItem` now.
+    'src/tools/swarm3_analytics.ts',
+    'src/tools/swarm3_library.ts',
+    'src/tools/exhaustmisc.ts',
   ];
 
   /**
