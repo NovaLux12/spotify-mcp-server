@@ -31,13 +31,19 @@
  * *Delegating to the shared helper is the remedy, not an exemption.* An earlier
  * draft of this rule accepted "imports `helpers/stdio-child.js`" as an
  * alternative, and that was a hole with a real file in it:
- * `tests/branding-notice-guard.test.ts` imports the module — for
+ * `tests/branding-notice-guard.test.ts` imported the module — for
  * `describeHostPressure` — while hand-rolling its own `spawn(` with its own
  * pending promise. A file can import the correct implementation and still not
  * use it. What makes delegation safe is that a delegating file has no `spawn(`
  * call of its own, so it cannot be in scope, and the helper's own exit listener
  * covers it. `tests/child-exit-gate.test.ts` asserts the helper is itself
  * compliant, which is what closes that loop.
+ *
+ * That file is no longer the example: #1379 consolidated its duplicated
+ * harness, so it delegates now and has no `spawn(` of its own. It remains the
+ * reason the import is not an exemption — the hole was real, and the fix for
+ * it is structural (the call went away) rather than a rule that would have had
+ * to police the import.
  *
  * ## What the rule is not
  *

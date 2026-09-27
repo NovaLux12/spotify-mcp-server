@@ -30,13 +30,11 @@ import './helpers/hermetic.js';
 
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFile } from 'node:child_process';
 import { readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 
 import {
   BRANDING_NOTICE,
@@ -45,14 +43,23 @@ import {
   TRADEMARK_NOTICE,
 } from '../src/branding.js';
 import { renderDoctorProse, type DoctorReport } from '../src/tools/doctortool.js';
-// One vocabulary for "how did the child end", borrowed rather than re-invented:
-// `classifyChild`/`describeOutcome` are #1335's, and `describeHostPressure` is
-// #1366's. A second way to say "killed by SIGKILL" in this repo would be the
-// exact drift these helpers exist to stop.
-import { classifyChild, describeOutcome, stderrTail, type ChildOutcome, type RawChildResult } from './helpers/subprocess-outcome.js';
-import { describeHostPressure } from './helpers/stdio-child.js';
+// Both child harnesses are the shared ones, in `tests/helpers/` (#1379).
+//
+// This file used to hand-roll both child harnesses — an async spawn plus a
+// pending promise for `initialize`, and a promisified `execFile` for the CLI
+// — each with its own copy of the signal handling. The `stdio-child.js`
+// import that used to sit above was for `describeHostPressure` alone: a file
+// can import the correct implementation and still not use it, which is the
+// hole #1404's gate was written against. It now uses both, and spawns nothing
+// of its own.
+//
+// One vocabulary for "how did the child end" is borrowed rather than
+// re-invented: `classifyChild`/`describeOutcome` are #1335's, and
+// `describeHostPressure` is #1366's. A second way to say "killed by SIGKILL" in
+// this repo would be the exact drift those helpers exist to stop.
+import { cliStdout, runCliSubcommand, type CliRun } from './helpers/cli-child.js';
+import { StdioJsonRpcChild } from './helpers/stdio-child.js';
 
-const run = promisify(execFile);
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 const pkg = JSON.parse(readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as {
@@ -151,27 +158,9 @@ function childEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   return { ...env, ...extra };
 }
 
-interface JsonRpc {
-  id?: number;
-  result?: { instructions?: string; serverInfo?: { name?: string; version?: string } };
-  error?: { code: number; message: string };
-}
-
 /**
- * `resolve` and `reject` are optional on purpose. They are typed optional so
- * the shape the first draft of this file actually destructured — a promise plus
- * two wrongly-named properties — is expressible as a `Deferred` at all, which
- * is what lets the regression test below pass one in rather than describe it in
- * a comment. `initializeFrom` checks them before it spawns anything.
- */
-interface Deferred {
-  promise: Promise<string | undefined>;
-  resolve?: (value: string | undefined) => void;
-  reject?: (reason?: unknown) => void;
-}
-
-/**
- * The `initialize` response, read off a real server process.
+ * The `initialize` response, read off a real server process, through the
+ * shared harness.
  *
  * This is the assertion the issue's acceptance criteria ask for, and it is
  * deliberately behavioural. Reading `src/index.ts` for the string would pass
@@ -180,124 +169,48 @@ interface Deferred {
  * and asking is the only version that cannot be fooled.
  *
  * `entry` is a parameter so the harness's own failure paths are reachable from a
- * test — see the "harness" describe block at the bottom. A harness that cannot
- * be pointed at a broken server is a harness whose error reporting is untested.
+ * test — see the "harness" describe block below. A harness that cannot be
+ * pointed at a broken server is a harness whose error reporting is untested.
  *
- * `makeDeferred` is a second seam onto the same idea: it is how a test reaches
- * the failure below without editing this function.
+ * ## What moving to the shared harness changed, and what it did not (#1379)
+ *
+ * The version this replaced hand-rolled the whole path: an async spawn, a
+ * buffer, a `Promise.withResolvers` deferred it owned, and its own `exit` and
+ * `error` listeners. Three properties of it were worth keeping, and each has an exact
+ * counterpart on the surviving side:
+ *
+ * | the hand-rolled copy                             | where it lives now |
+ * |--------------------------------------------------|--------------------|
+ * | pre-spawn shape check on the deferred's callbacks | structurally impossible — the caller no longer owns a deferred at all, and the helper's own handlers run through `guardedHandler`, so a throw is reported (`stdio-child.test.ts`) rather than wedging the runner |
+ * | callback-independent teardown (the watchdog killed the child itself) | `StdioJsonRpcChild.killNow()` — PID-scoped and `isOwnChild`-checked — plus `dispose()`, which also destroys the three stdio streams. The copy killed the child but never released the pipes, so it kept the `PipeWrap` leak #1365 documents. |
+ * | exit handler naming code and signal, with stderr  | the same, via `describeExit`, which additionally carries the pid, #1335's outcome vocabulary and a host-pressure reading |
+ *
+ * The `makeDeferred` seam is the one thing that has no counterpart and does not
+ * need one: it existed so a test could hand the harness the exact broken shape
+ * `{promise, resolveWith, rejectWith}` that caused the #1370 wedge. The
+ * consolidated harness cannot be handed a broken deferred, because it does not
+ * accept one. The class it defended is covered where it now lives — see
+ * "a throw inside an event handler is reported, not fatal (#1366)" in
+ * `tests/stdio-child.test.ts`, which drives a throwing handler body against a
+ * real child and fails if the report goes away.
  */
-function initializeFrom(
-  entry: string,
-  makeDeferred: () => Deferred = () => Promise.withResolvers<string | undefined>(),
-): Promise<string | undefined> {
-  // Checked before the child exists, and in the caller's own stack (#1366).
-  //
-  // `Promise.withResolvers` returns `{ promise, resolve, reject }`. The first
-  // draft of this file destructured `{ promise, resolveWith, rejectWith }`, so
-  // both callbacks were `undefined`, and calling one inside a
-  // `child.stdout.on('data')` handler threw where the test's assertion
-  // machinery cannot see it. A throw on a stream is not a rejected test: the
-  // promise never settled, so the teardown below never ran, the child was
-  // never killed, and its ref'd stdio pipes held the runner open. That is the
-  // 35-minute hang, and it is the whole reason this guard exists.
-  //
-  // A `TypeError` thrown here instead lands in the caller, where `assert.rejects`
-  // and the runner both see it, and no process was ever spawned to leak.
-  const deferred = makeDeferred();
-  const { promise } = deferred;
-  const settle = deferred.resolve;
-  const fail = deferred.reject;
-  if (typeof settle !== 'function' || typeof fail !== 'function') {
-    throw new TypeError(
-      `makeDeferred() returned a deferred with no callbacks (resolve: ${typeof settle}, ` +
-        `reject: ${typeof fail}); the harness would throw inside a stream handler and wedge ` +
-        `the runner instead of failing this test`,
-    );
-  }
-  const baseEnv = childEnv();
-  delete baseEnv.SPOTIFY_SCOPES; // absent, not empty: #617 rejects a set-but-empty value
-  const child = spawn(process.execPath, ['--import', 'tsx/esm', entry], {
+async function initializeFrom(entry: string): Promise<string | undefined> {
+  const env = childEnv();
+  delete env.SPOTIFY_SCOPES; // absent, not empty: #617 rejects a set-but-empty value
+  const child = StdioJsonRpcChild.spawn({
+    label: `branding-guard ${entry}`,
+    command: process.execPath,
+    args: ['--import', 'tsx/esm', entry],
     cwd: ROOT,
-    env: baseEnv,
-    stdio: ['pipe', 'pipe', 'pipe'],
+    env,
+    requestTimeoutMs: CLI_TIMEOUT_MS,
   });
-  let buffer = '';
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stderr.on('data', (c: string) => {
-    stderr += c;
-  });
-  child.stdout.on('data', (chunk: string) => {
-    // Every exit from this handler goes through `fail`, never through a throw.
-    // An exception raised here is an uncaught exception on the stream, not a
-    // rejected test: it tears down the process and reports nothing.
-    try {
-      buffer += chunk;
-      let idx: number;
-      while ((idx = buffer.indexOf('\n')) !== -1) {
-        const line = buffer.slice(0, idx).trim();
-        buffer = buffer.slice(idx + 1);
-        if (!line) continue;
-        const msg = JSON.parse(line) as JsonRpc;
-        if (msg.id === 1) {
-          if (msg.error) fail(new Error(`initialize failed: ${msg.error.code} ${msg.error.message}`));
-          else settle(msg.result?.instructions);
-        }
-      }
-    } catch (err) {
-      fail(new Error(`could not parse a frame from the server's stdout: ${(err as Error).message}\nframe: ${JSON.stringify(buffer)}`));
-    }
-  });
-  // A child that dies before answering must reject with the cause, not sit
-  // until the watchdog fires (#1366: two stdio harnesses here reported a bare
-  // "timeout waiting for initialize" for a child that had already been
-  // SIGKILLed under load, discarding the exit code that would have said so).
-  // First settle wins, so a healthy response is unaffected.
-  child.on('error', (err) => fail(new Error(`could not spawn ${entry}: ${err.message}`)));
-  child.on('exit', (code, signal) =>
-    fail(new Error(`${entry} exited before answering initialize (code=${code} signal=${signal})\nstderr:\n${stderr}`)),
-  );
-  child.stdin.write(
-    `${JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'initialize',
-      params: {
-        protocolVersion: '2024-11-05',
-        capabilities: {},
-        clientInfo: { name: 'branding-guard', version: '1.0.0' },
-      },
-    })}\n`,
-  );
-  // Watchdog only, and last: the server is a separate process whose timers
-  // cannot be faked from here, so a real deadline is the only way to fail fast
-  // instead of wedging the suite. Every other failure has already settled the
-  // promise by the time this can fire.
-  //
-  // It kills the child itself rather than leaning on the settlement path. If
-  // the watchdog's only job were to reject, a harness that could not reject
-  // would leave a live child holding the runner open — which is the wedge
-  // above, one layer down. Teardown must not depend on a callback working.
-  const watchdog = setTimeout(() => {
-    teardown();
-    fail(new Error(`timeout waiting for initialize\nstderr:\n${stderr}`));
-  }, 30_000);
-  watchdog.unref();
-  // The child is external, so tear it down on both outcomes: end stdin so a
-  // healthy server exits on its own, and SIGKILL shortly after so a wedged one
-  // cannot hold the runner open. Idempotent, because both this and the watchdog
-  // above may call it. The `.catch` is load-bearing — `finally()` returns a
-  // *new* promise, and a watchdog rejection with no handler on that derivative
-  // is an unhandled rejection that takes the suite down instead of failing one
-  // assertion.
-  function teardown(): void {
-    clearTimeout(watchdog);
-    child.stdin.end();
-    setTimeout(() => child.kill('SIGKILL'), 1500).unref();
+  try {
+    const init = await child.initialize('branding-guard');
+    return init.result?.instructions as string | undefined;
+  } finally {
+    await child.dispose();
   }
-  void promise.finally(teardown).catch(() => {});
-  return promise;
 }
 
 /** The real server. Thin wrapper so every call site below reads as "the server". */
@@ -307,181 +220,183 @@ const CLI_TIMEOUT_MS = 30_000;
 const CLI_ENTRY = path.join(ROOT, 'src', 'index.ts');
 
 /**
- * What a one-shot CLI run produced.
+ * Run a one-shot CLI subcommand, through the shared harness.
  *
- * `ok: true` means the child **exited** — any code, including a non-zero one,
- * because `doctor` exits 1 whenever any check fails and with the fixture token
- * it always will. Its stdout is the thing under test, and an empty one is a
- * legitimate answer.
+ * The harness itself — the three-way outcome, the re-spelling of an async
+ * `execFile` failure into #1335's vocabulary, and the report that tells a signal
+ * kill from a hang from a child that never started — moved to
+ * `tests/helpers/cli-child.ts` in #1379. What stays here is the two things that
+ * are properties of *this* test and not of the harness: the fixture env, and
+ * the fact that the entry point is the real server.
  *
- * `ok: false` means the child never reached a verdict at all, and `reason` says
- * which of the three ways that happened. The distinction is the whole point:
- * collapsing `ok: false` into `stdout: ''` reports a box that was starved as a
- * product that dropped a compliance notice.
+ * The `options` seam is narrower than the copy's. It had `entry` so the #1378
+ * regression tests could point it at a fixture; those tests moved with the
+ * harness to `tests/cli-child.test.ts`, so the only option left here is the env
+ * override, which the runtime-surface cases below do not use. A seam with no
+ * caller is a second place for the harness's behaviour to live.
  */
-type CliRun =
-  | { readonly ok: true; readonly stdout: string; readonly code: number }
-  | { readonly ok: false; readonly reason: string };
-
-/** Test seams. Production callers pass `args` and nothing else. */
-interface CliOptions {
-  readonly env?: NodeJS.ProcessEnv;
-  /** The module to run. The regression test points this at a fixture. */
-  readonly entry?: string;
-  /** The harness deadline. Shorter in the regression test, which must not wait 30s for a hang. */
-  readonly timeoutMs?: number;
-}
-
-/** The spawn-failure half of the async error, in `classifyChild`'s vocabulary. */
-function spawnFailure(err: { readonly code?: number | string | null; readonly killed?: boolean }): RawChildResult['error'] {
-  // Checked before `signal` for the reason #1335 documents: a timed-out child
-  // carries BOTH a signal (this harness's own `killSignal`) and a deadline, and
-  // `classifyChild` reads `error` first, so the deadline has to be spelled here
-  // or it is lost and the watchdog is filed as an unexplained kill.
-  if (err.killed === true) return { code: 'ETIMEDOUT' };
-  // Async `execFile` reports a fork/exec failure as a *string* `code`
-  // (`'ENOENT'`), where the sync APIs nest it under `error`. Measured, not
-  // assumed — the table in `classifyCliChild` above is reproduced against real
-  // children by the `#1378` describe block at the foot of this file.
-  if (typeof err.code === 'string') return { code: err.code };
-  return undefined;
+function cli(args: string[], options: { readonly env?: NodeJS.ProcessEnv } = {}): Promise<CliRun> {
+  return runCliSubcommand({
+    entry: CLI_ENTRY,
+    cwd: ROOT,
+    env: childEnv(options.env),
+    args,
+    timeoutMs: CLI_TIMEOUT_MS,
+  });
 }
 
 /**
- * Re-spell an async `execFile` failure in the vocabulary `classifyChild` reads.
+ * Does this file build its own child harness, or delegate to `tests/helpers/`?
  *
- * The sync and async APIs do not report the same three events the same way, and
- * the differences are precisely the ones that decide the diagnosis:
+ * ## Why this is a test and not a comment
  *
- * | child outcome         | async `execFile` error                              | `classifyChild` reads   |
- * |-----------------------|------------------------------------------------------|-------------------------|
- * | ran, exited N         | `code: N`, `signal: null`                            | `status: N`             |
- * | killed by a signal    | `code: null`, `signal: 'SIGKILL'`, `killed: false`   | `signal`                |
- * | killed by the deadline| `code: null`, `signal: <killSignal>`, `killed: true` | `error.code: 'ETIMEDOUT'` |
- * | never started         | `code: 'ENOENT'`, `signal: undefined`                | `error.code: 'ENOENT'`  |
+ * #1379 is a *consolidation*, and a refactor has no behaviour to regress — so
+ * the only thing that can go red is the thing being removed. A comment saying
+ * "this file delegates now" is a claim with no teeth; the next person copying a
+ * child-spawning block back in would not notice, and the file would be back to
+ * two harnesses with two copies of the signal handling — which is the state
+ * #1366 was fixed in one place and left alive in the other.
  *
- * The timeout row cannot be passed through. Async `execFile` attaches **no**
- * `error` property at all on any of these paths, so a raw hand-off files the
- * 30 s watchdog as `killed by SIGKILL` — the same conflation #1335 fixed for
- * the sync APIs, re-entering through the async door, and a reader sent to look
- * for an OOM kill that their own deadline caused.
+ * ## What it is deliberately *not*
+ *
+ * This is one predicate about one file. It is not a suite-wide gate, and it
+ * should not grow into one: a general "every test file must delegate" scan is
+ * #1404's gate, on the branch that fixes #1404 and #1405, asking a different
+ * question — does a file that spawns a child *have* a signal-naming `exit`
+ * listener, rather than does it *own* a harness. Two scans with adjacent scope
+ * and different questions are two conventions to keep in step. This one asserts
+ * the single claim #1379 makes about the single file #1379 names.
+ *
+ * ## Why the needles are assembled from parts
+ *
+ * The rule below is run against **this file's own source**, and the negative
+ * fixtures further down have to *contain* the shapes they test for. Written as
+ * literals, each needle would match its own fixture — and the check would be
+ * red forever, for a reason that has nothing to do with the harnesses. So the
+ * two needles are built by joining halves, and no comment in this file may
+ * spell either of them out in full. That is a real constraint on this file, and
+ * it is the price of a self-applicable check.
  */
-function classifyCliChild(err: unknown): { readonly raw: RawChildResult; readonly outcome: ChildOutcome } {
-  const e = err as {
-    readonly code?: number | string | null;
-    readonly signal?: NodeJS.Signals | null;
-    readonly killed?: boolean;
-    readonly stdout?: string;
-    readonly stderr?: string;
-  };
-  const raw: RawChildResult = {
-    error: spawnFailure(e),
-    signal: e.signal ?? null,
-    status: typeof e.code === 'number' ? e.code : null,
-    stdout: e.stdout,
-    stderr: e.stderr,
-  };
-  return { raw, outcome: classifyChild(raw) };
-}
+
+/** The async spawn call, not the synchronous one, and not a method call. */
+const ASYNC_SPAWN = new RegExp(`(^|[^\\w.])${'sp' + 'awn'}\\(`);
+
+/** `execFile` wrapped by `promisify` — the one-shot CLI harness's shape. */
+const PROMISIFIED_EXEC_FILE = new RegExp(`promisify\\(\\s*${'exec' + 'File'}\\s*\\)`);
+
+/** The two modules the harnesses now live in. */
+const DELEGATES_TO = ['./helpers/stdio-child.js', './helpers/cli-child.js'] as const;
 
 /**
- * What kind of death this was, stated so it cannot be read as a defect in the
- * product. Split from the facts above so a message carrying both says each once.
+ * The needles, for the fixtures that have to spell them out.
+ *
+ * Using these keeps a fixture and the rule it is testing in step: the fixture
+ * emits the real text at runtime, and this file never carries it at rest.
  */
-function explainCliFailure(outcome: ChildOutcome, timeoutMs: number): string {
-  if (outcome.kind === 'signalled') {
-    return 'A signal kill is a resource/process failure, NOT a compliance failure. Nothing the CLI could have\n'
-      + 'printed was lost in the product — a signal takes the process with it before it reaches the banner —\n'
-      + 'so the notice assertion that would have run here never got output to judge. Check the host pressure\n'
-      + 'line before concluding the notice is missing from the product.';
+const NEEDLE = {
+  spawn: `${'sp' + 'awn'}(`,
+  promisifiedExec: `promisify(${'exec' + 'File'})`,
+} as const;
+
+/**
+ * The three fault strings.
+ *
+ * Named rather than inlined so the negative fixtures can assert the exact text
+ * the rule produces. A fixture that re-typed the expected string would go stale
+ * the moment a message is reworded, and would then be asserting its own copy
+ * instead of the rule's.
+ */
+const FAULT = {
+  ownsStdio: `calls \`${NEEDLE.spawn}\` itself, so it owns a stdio child harness rather than delegating`,
+  ownsCli: 'wraps execFile in promisify, so it owns a one-shot CLI child harness rather than delegating',
+  missingImport: (specifier: string): string =>
+    `does not import \`${specifier}\`, so it cannot be delegating to the shared harness`,
+} as const;
+
+function childHarnessFaults(source: string): string[] {
+  const faults: string[] = [];
+  if (ASYNC_SPAWN.test(source)) faults.push(FAULT.ownsStdio);
+  if (PROMISIFIED_EXEC_FILE.test(source)) faults.push(FAULT.ownsCli);
+  for (const specifier of DELEGATES_TO) {
+    if (!source.includes(`from '${specifier}'`)) faults.push(FAULT.missingImport(specifier));
   }
-  if (outcome.kind === 'not-started' && outcome.reason === 'ETIMEDOUT') {
-    return `The child ran for the full ${timeoutMs}ms deadline and was ended by this harness's own killSignal.\n`
-      + 'That is a hang, not an unexplained kill, and it is a different thing to go looking for: check whether\n'
-      + 'the child is still booting at this load before reading anything into the notice.';
-  }
-  return `The child never started (${outcome.reason}), so no line of the code under test ever ran. This is a\n`
-    + 'harness/environment failure, not a statement about the notice.';
-}
-
-/** The self-describing report for a CLI child that never reached an exit code. */
-function describeCliFailure(
-  label: string,
-  command: readonly string[],
-  raw: RawChildResult,
-  outcome: ChildOutcome,
-  timeoutMs: number,
-): string {
-  return [
-    `${label}: the CLI child ${describeOutcome(outcome)} `
-      + `(code=${raw.status ?? 'null'} signal=${raw.signal ?? 'null'}), so it produced no output to check.`,
-    explainCliFailure(outcome, timeoutMs),
-    `command: ${command.join(' ')}`,
-    `host pressure: ${describeHostPressure()}`,
-    `child stderr:\n${stderrTail(raw.stderr ?? '')}`,
-  ].join('\n');
-}
-
-/**
- * Run a one-shot CLI subcommand and report **how it ended**, not just what it printed.
- *
- * A non-zero exit is a verdict and is returned as one: `doctor` exits 1 whenever
- * any check fails, and with the fixture token it always will. The notice is
- * printed on the banner *before* the report is collected, so the partial output
- * of a child that ran and failed is genuinely the thing under test.
- *
- * What is **not** returned is the reason the previous version of this function
- * claimed. It said a killed child "returns its stdout instead of an empty
- * string", and that was false as a rule — it held only for a child that had
- * already reached the banner. A child killed earlier, during module load under
- * load, has an `err.stdout` of `''` exactly as a child that printed nothing has,
- * and `e.stdout ?? ''` handed both to the notice assertion as the same empty
- * string. The result was a red that read as *the product dropped its
- * non-affiliation notice* when the truth was *the box was too busy to run the
- * child*, and a green that could not distinguish them either.
- *
- * So the three outcomes are kept apart: exited (any code) carries stdout;
- * signalled and never-started do not, and say which they were.
- */
-async function cli(args: string[], options: CliOptions = {}): Promise<CliRun> {
-  const entry = options.entry ?? CLI_ENTRY;
-  const timeoutMs = options.timeoutMs ?? CLI_TIMEOUT_MS;
-  const argv = ['--import', 'tsx/esm', entry, ...args];
-  const label = `spotify-mcp ${args.length > 0 ? args.join(' ') : '--help'}`;
-  try {
-    const { stdout } = await run(process.execPath, argv, {
-      cwd: ROOT,
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      killSignal: 'SIGKILL',
-      env: childEnv(options.env),
-    });
-    return { ok: true, stdout, code: 0 };
-  } catch (err) {
-    const { raw, outcome } = classifyCliChild(err);
-    // A child that ran and exited is a verdict, crash or not: `doctor` exits 1
-    // on every failing check, and that is the case the notice assertions exist
-    // to cover.
-    if (outcome.kind === 'exited') {
-      return { ok: true, stdout: outcome.stdout, code: outcome.code };
-    }
-    return { ok: false, reason: describeCliFailure(label, [process.execPath, ...argv], raw, outcome, timeoutMs) };
-  }
-}
-
-/**
- * The stdout of a run that reached a verdict, failing with the child's own cause
- * if it did not.
- *
- * This is the call site every notice assertion goes through, so the failure it
- * raises is what a reader sees instead of `expected <notice>, got ''`.
- */
-function cliStdout(result: CliRun): string {
-  if (!result.ok) assert.fail(result.reason);
-  return result.stdout;
+  return faults;
 }
 
 // ------------------------------------------------------------------ the guard
+
+/**
+ * The consolidation itself, tested (#1379).
+ *
+ * The rest of this file proves the *behaviour* survived the move — the notice is
+ * still read off a real process, and a dead one is still reported with its
+ * cause. None of that can tell the difference between one harness and two, so
+ * the property that actually regressed when a second copy creeps back in gets
+ * its own case, read off this file's own source.
+ */
+describe('this file delegates its child harnesses instead of owning them (#1379)', () => {
+  it('builds neither a stdio nor a CLI child harness of its own', () => {
+    // The regression, driven rather than described. On `origin/main` this file
+    // called the async spawn itself for `initializeFrom` and promisified
+    // `execFile` for `cli()`, each with its own copy of the exit handling — so
+    // a `SIGKILL` was reported one way here and another way in
+    // `tests/helpers/stdio-child.ts`, and #1366 was fixed in one and left alive
+    // in the other.
+    const faults = childHarnessFaults(readRepoFile('tests/branding-notice-guard.test.ts'));
+    assert.deepEqual(
+      faults,
+      [],
+      `tests/branding-notice-guard.test.ts must use the shared harnesses in tests/helpers/. `
+        + `${faults.join('; ')}. Two harnesses for one job drift: the next #1366-class defect gets `
+        + `fixed in whichever file its reporter happened to open, and the reader gets a different `
+        + `answer depending on the file the failure came from.`,
+    );
+  });
+
+  it('rejects a file that hand-rolls a stdio child, and says why', () => {
+    // The negative fixture, and the reason the predicate above is not a
+    // tautology. This is the shape that was deleted, reduced to the lines the
+    // predicate reads: the two call shapes, and no import of the stdio helper —
+    // the exact state of this file before the consolidation. Built from
+    // `NEEDLE` so this file does not carry the text the rule is looking for.
+    const faults = childHarnessFaults([
+      `const run = ${NEEDLE.promisifiedExec};`,
+      `const child = ${NEEDLE.spawn}process.execPath, entry);`,
+      "import { cliStdout } from './helpers/cli-child.js';",
+    ].join('\n'));
+
+    assert.deepEqual(
+      faults,
+      [
+        FAULT.ownsStdio,
+        FAULT.ownsCli,
+        FAULT.missingImport('./helpers/stdio-child.js'),
+      ],
+      'a hand-rolled stdio child must be reported, and the report must name the missing import too',
+    );
+  });
+
+  it('rejects a file that delegates to only one of the two harnesses', () => {
+    // The half-migrated state, which is the one a partial fix produces and the
+    // one the real file once sat in: it imported `stdio-child.js` for
+    // `describeHostPressure` and still owned both spawn paths. That is the
+    // specific hole #1404's gate was written against — a file can import the
+    // correct implementation and still not use it — so it needs its own case.
+    const faults = childHarnessFaults([
+      "import { describeHostPressure } from './helpers/stdio-child.js';",
+      `const child = ${NEEDLE.spawn}process.execPath, argv);`,
+    ].join('\n'));
+
+    assert.ok(
+      faults.includes(FAULT.ownsStdio),
+      'importing the helper for one function must not be mistaken for delegating to it',
+    );
+    assert.ok(
+      faults.includes(FAULT.missingImport('./helpers/cli-child.js')),
+      'a file with no CLI harness at all is a different problem from one that owns its own',
+    );
+  });
+});
 
 describe('non-affiliation notice: the runtime surfaces (#705)', () => {
   it('a host-only agent receives the notice in its initialize instructions', async () => {
@@ -737,10 +652,10 @@ describe('the recorded name decision (#705)', () => {
 });
 
 /**
- * The harness, tested (#1366).
+ * The stdio path, tested (#1366, re-pointed at the shared harness by #1379).
  *
- * The file above is only trustworthy if `initializeFrom` fails the way a test
- * should fail. It did not, once: the callbacks destructured out of
+ * The file above is only trustworthy if the process it spawns fails the way a
+ * test should fail. It did not, once: the callbacks destructured out of
  * `Promise.withResolvers` were `undefined`, calling one inside the stdout
  * handler threw, and an exception on a stream is not routed to the assertion
  * machinery. The promise then never settled, so the teardown chained to
@@ -748,75 +663,90 @@ describe('the recorded name decision (#705)', () => {
  * held the runner open — the runner died reporting nothing and the run leaked
  * for 35 minutes.
  *
- * The four properties below are the ones that cost that, and all four are
- * checkable. The first is the headline: the historical broken shape is handed
- * to the harness, so the regression is driven rather than described.
+ * **What changed when the harness moved, and why one case is gone.** The first
+ * case this block used to hold drove `initializeFrom` with the exact broken
+ * shape the first draft destructured — `{promise, resolveWith, rejectWith}` —
+ * through a `makeDeferred` seam, and asserted the harness refused it before
+ * spawning anything. That seam was the *only* reason a caller could supply a
+ * malformed deferred at all. `StdioJsonRpcChild` does not take one: it owns its
+ * own settlement, so the class is unreachable from here rather than merely
+ * guarded against. The class itself is covered where it now lives — "a throw
+ * inside an event handler is reported, not fatal (#1366)" in
+ * `tests/stdio-child.test.ts` drives a throwing handler body against a real
+ * child and fails if the report goes away.
  *
- * What is deliberately *not* asserted here: that `Promise.withResolvers`
- * returns `{ promise, resolve, reject }`. That is a property of the Node
- * runtime, and a test of it would pass no matter what this harness did — the
- * definition of a test that cannot fail.
+ * The cases below are about the *product* boundary, and they are the point of
+ * this file: a real server process that dies before answering must fail with
+ * its cause, in the caller's own stack, promptly, and it must say which of the
+ * two ways it died. They stay here rather than folding into the helper's own
+ * test file because what they protect is this guard reading the notice off a
+ * real child.
  */
-describe('the stdio harness fails with a cause (#1366)', () => {
-  it('refuses to run on a deferred with no callbacks, instead of throwing inside a stream handler', async () => {
-    // The regression, driven rather than described. This is the exact shape the
-    // first draft destructured: the promise under its real name, the two
-    // callbacks under names `Promise.withResolvers` does not have. `never` is
-    // the promise such a harness would be left holding — unsettled, because
-    // nothing can settle it.
-    const never = new Promise<string | undefined>(() => {});
-    const started = process.hrtime.bigint();
-    await assert.rejects(
-      async () =>
-        initializeFrom('src/index.ts', () => ({
-          promise: never,
-          resolveWith: () => {},
-          rejectWith: () => {},
-        })),
-      (err: Error) => {
-        assert.ok(
-          err instanceof TypeError,
-          `a deferred with no callbacks must fail as a TypeError, got: ${err.constructor.name}: ${err.message}`,
-        );
-        assert.match(
-          err.message,
-          /resolve: undefined, reject: undefined/,
-          `the failure must name what was missing, got: ${err.message}`,
-        );
-        return true;
-      },
-    );
-    // Promptly, and with nothing left running. The guard is a synchronous
-    // check made before the spawn, so this is microseconds and no child ever
-    // existed; anything near the watchdog's 30 s means the throw moved back
-    // inside a handler, which is the bug this test exists to keep out.
-    const elapsedMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
-    assert.ok(
-      elapsedMs < 5_000,
-      `the check must run before the spawn, took ${elapsedMs}ms — the callbacks are still being called from a handler`,
-    );
-  });
-
+describe('the stdio path fails with a cause (#1366)', () => {
   it('rejects with the exit code when the server dies before answering', async () => {
     // A module that does not exist: node starts, fails to resolve it, and
     // exits non-zero without writing a frame. That is the same shape as a
-    // child SIGKILLed under load, which is the case #1366 is about.
+    // child that fell over during module load, which is the case #1366 is about.
     await assert.rejects(
       () => initializeFrom('src/no-such-entry-point.ts'),
       (err: Error) => {
+        // The helper's wording is #1335's vocabulary plus the pid and a
+        // host-pressure line; the copy's own phrasing ("exited before
+        // answering initialize") is gone, and these assertions were re-pointed
+        // at the surviving text rather than loosened.
         assert.match(
           err.message,
-          /exited before answering initialize \(code=\d+/,
+          /the server process exited 1 \(code=1 signal=null pid=\d+\)/,
           `a dead child must be reported with its exit code, got: ${err.message}`,
+        );
+        assert.match(
+          err.message,
+          /branding-guard src\/no-such-entry-point\.ts/,
+          `the report must name the child it was waiting on, got: ${err.message}`,
         );
         assert.doesNotMatch(
           err.message,
-          /timeout waiting for initialize/,
+          /timed out after/,
           'the watchdog fired instead of the exit handler — the harness is still discarding the cause',
         );
         return true;
       },
     );
+  });
+
+  it('names the signal when the child is killed mid-request, not an exit code', async () => {
+    // The other way a child dies, and the one the whole helper exists for.
+    // Under load this is what a loaded box produces, and it is the case where
+    // `code` is `null`: a report built from the exit code alone would say
+    // "exited with code null" and file an OOM kill under a clean exit, which is
+    // the #1405 defect one layer down from here.
+    const dir = await mkdtemp(path.join(tmpdir(), 'x1379-sigkill-'));
+    const entry = path.join(dir, 'dies.mjs');
+    await writeFile(entry, 'process.kill(process.pid, "SIGKILL");\n', 'utf8');
+    try {
+      const started = Date.now();
+      await assert.rejects(
+        () => initializeFrom(entry),
+        (err: Error) => {
+          assert.match(
+            err.message,
+            /the server process killed by SIGKILL \(code=null signal=SIGKILL pid=\d+\)/,
+            `a signal-killed child must be named by its signal, got: ${err.message}`,
+          );
+          assert.doesNotMatch(
+            err.message,
+            /timed out after/,
+            'the watchdog fired instead of the exit handler — a kill is being reported as a hang',
+          );
+          return true;
+        },
+      );
+      // And promptly: this is the case that used to sit out the full watchdog.
+      const elapsed = Date.now() - started;
+      assert.ok(elapsed < 20_000, `a signalled child must reject on the exit event, took ${elapsed}ms`);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it('rejects within the watchdog, not after it', async () => {
@@ -838,180 +768,5 @@ describe('the stdio harness fails with a cause (#1366)', () => {
     // "fix" written as `fail()` in the spawn would take.
     const instructions = await initializeFrom('src/index.ts');
     assert.equal(instructions, BRANDING_NOTICE, 'precondition: the real server still answers initialize');
-  });
-});
-
-/**
- * The CLI harness, tested (#1378).
- *
- * ## The defect
- *
- * `cli()` caught every failure of the child and returned `e.stdout ?? ''`. Its
- * own doc comment claimed this was deliberate and correct:
- *
- * > …which is why a killed child returns its stdout instead of an empty string.
- *
- * That claim is not true as a rule, and the file's headline subject makes the
- * gap expensive rather than cosmetic. `cli()` feeds the **non-affiliation
- * notice** assertions. `''` from a SIGKILLed child therefore reached
- *
- * ```ts
- * assert.equal(lines[1], NON_AFFILIATION_NOTICE, '`spotify-mcp doctor` must print …')
- * ```
- *
- * as `expected 'Independent, unofficial project. …', got ''` — a red that says
- * *the product dropped its compliance notice* when the truth is *the box was too
- * busy to finish starting the child*. The `doctor` and `--help` cases are
- * precisely the ones that go red on a loaded machine, which is the only machine
- * a reader is on when they see it.
- *
- * It is also a check whose green is uninformative: a fix that simply asserted
- * "notice present or not" without separating the causes would pass on a kill and
- * on a real omission alike.
- *
- * ## The correction to the issue's own diagnosis, measured
- *
- * #1378 attributes the empty result to `killSignal: 'SIGKILL'` leaving
- * `err.stdout` **`undefined`**. That is not what Node does. Measured against
- * Node 24.21.0 on this box, the async `execFile` error object always *has* a
- * `stdout` property, and it holds whatever the child managed to flush:
- *
- * | child outcome          | `err.stdout` | `err.code` | `err.signal` | `err.killed` |
- * |------------------------|--------------|------------|--------------|--------------|
- * | ran, exited 1, printed | `'HELLO\n'`  | `1`        | `null`       | `false`      |
- * | killed by SIGKILL, printed | `'HELLO\n'` | `null` | `'SIGKILL'`  | `false`      |
- * | killed by SIGKILL, silent   | `''`     | `null`     | `'SIGKILL'`  | `false`      |
- * | killed by the deadline     | `'HELLO\n'` | `null`    | `'SIGKILL'`  | `true`       |
- * | never started (ENOENT)     | `''`        | `'ENOENT'` | `undefined`  | —            |
- *
- * So the comment was right for a child that had already reached the banner and
- * wrong for one killed during module load — which is the one that happens under
- * load. The empty string is reachable either way; that is the defect, and it
- * survives the correction to the mechanism. AGENTS.md §6: a correctly named
- * payload field can still lie about its value. `stdout` was named for the
- * banner and was reporting "nothing arrived, for reasons this discards".
- *
- * The measured table also shows the timeout and the signal are the *same three
- * fields* — `code: null`, `signal: 'SIGKILL'` — separated only by `killed`.
- * Handing a raw async error to `classifyChild` would therefore file this
- * harness's own 30 s deadline as `killed by SIGKILL` and send the next reader
- * hunting an OOM killer they caused themselves.
- *
- * ## What is pinned
- *
- * The three outcomes stay distinguishable **at the point of judgement**, each
- * naming itself, and each driven by a real child process rather than a
- * hand-built object — the shapes asserted are the shapes Node produces, which is
- * the whole lesson of the table above.
- */
-describe('the CLI harness tells a killed child from a silent one (#1378)', () => {
-  /**
-   * Real children, one per outcome. `killed` is the OOM killer's exact shape:
-   * a process that dies by signal having printed nothing.
-   */
-  const FIXTURES: Readonly<Record<string, string>> = {
-    killed: 'process.kill(process.pid, "SIGKILL");\n',
-    wedged: 'setInterval(() => {}, 1000);\n',
-    exits1: 'process.exit(1);\n',
-    exits0: 'process.exit(0);\n',
-  };
-
-  let fixtures: string;
-  before(async () => {
-    fixtures = await mkdtemp(path.join(tmpdir(), 'x1378-cli-'));
-    await Promise.all(
-      Object.entries(FIXTURES).map(([name, body]) =>
-        writeFile(path.join(fixtures, `${name}.mjs`), body, 'utf8'),
-      ),
-    );
-  });
-  after(async () => {
-    await rm(fixtures, { recursive: true, force: true });
-  });
-
-  const fixture = (name: string): string => path.join(fixtures, `${name}.mjs`);
-
-  /** The reason from a run that did not reach a verdict, or a hard failure if it did. */
-  function reasonOf(result: CliRun): string {
-    if (result.ok) {
-      assert.fail(
-        `expected the child not to have exited, but it exited ${result.code} `
-          + `with stdout ${JSON.stringify(result.stdout)}`,
-      );
-    }
-    return result.reason;
-  }
-
-  it('reports a SIGKILLed child as killed, and never as a child that printed nothing', async () => {
-    // The regression, driven rather than described. A real child killed by a
-    // real signal, the shape a loaded box produces and the shape the old
-    // `e.stdout ?? ''` returned as `''`.
-    const result = await cli([], { entry: fixture('killed') });
-
-    const reason = reasonOf(result);
-
-    // Named in #1335's vocabulary, so a grep finds one convention repo-wide.
-    assert.match(reason, /killed by SIGKILL/, 'the cause must be the signal, by name');
-    // A signalled child has no exit code; saying so keeps the OOM kill from
-    // being filed under "exited with no status".
-    assert.match(reason, /code=null/, 'a signalled child has no exit code and the report must say so');
-    assert.match(reason, /signal=SIGKILL/);
-    // The line that answers the reader's only question: box or code?
-    assert.match(reason, /host pressure:/, 'the report must carry the host pressure reading');
-    // And it must not read as the compliance regression it is not.
-    assert.match(reason, /NOT a compliance failure/, 'a signal kill must not be reported as a missing notice');
-
-    // The caller side, which is what the notice assertions actually go through.
-    assert.throws(
-      () => cliStdout(result),
-      /killed by SIGKILL/,
-      'a notice assertion must fail with the cause, not with an empty expected value',
-    );
-  });
-
-  it('tells the harness deadline apart from an unexplained signal', async () => {
-    // A hang and an OOM kill are the same three fields on the wire
-    // (`code: null`, `signal: 'SIGKILL'`) and different diagnoses: one points at
-    // this file's `CLI_TIMEOUT_MS`, the other at the machine. Filing the
-    // deadline as a kill sends the reader after a process failure they caused.
-    const result = await cli([], { entry: fixture('wedged'), timeoutMs: 1_000 });
-
-    const reason = reasonOf(result);
-
-    assert.match(reason, /ETIMEDOUT/, 'the deadline must be named as one');
-    assert.match(reason, /1000ms deadline/, 'the report must say the child ran the full deadline, not that it vanished');
-    assert.doesNotMatch(
-      reason,
-      /killed by SIGKILL/,
-      'the harness\'s own deadline must not be reported as an unexplained signal kill',
-    );
-    // It is a hang, so the "not a product failure" wording is different: a
-    // child that ran for 30s may genuinely be stuck, and saying so is the point.
-    assert.doesNotMatch(reason, /NOT a compliance failure/, 'a hang is a different diagnosis from a signal kill');
-  });
-
-  it('still returns the empty output of a child that ran and exited non-zero', async () => {
-    // The anti-overcorrection, and the case that matters most, because it is the
-    // real one: `doctor` exits 1 whenever any check fails. A fix that failed
-    // every non-exit-zero run would break the notice guard outright, and a fix
-    // that failed every *empty* one would pass the kill case above while
-    // breaking a child that legitimately printed nothing.
-    const result = await cli([], { entry: fixture('exits1') });
-
-    assert.equal(result.ok, true, 'a non-zero exit is a verdict, not a crash');
-    if (result.ok) {
-      assert.equal(result.code, 1, 'the exit code must survive rather than be flattened');
-      assert.equal(cliStdout(result), '', 'empty output from a child that ran is a legitimate answer');
-    }
-  });
-
-  it('still returns the empty output of a child that exited cleanly', async () => {
-    // The other direction through the same code, and the one that would catch a
-    // `cli()` that failed whenever the notice was *absent* rather than whenever
-    // the child was gone.
-    const result = await cli([], { entry: fixture('exits0') });
-
-    assert.equal(result.ok, true, 'a clean exit is the normal path');
-    assert.equal(cliStdout(result), '', 'a silent clean exit must not be reported as a harness failure');
   });
 });

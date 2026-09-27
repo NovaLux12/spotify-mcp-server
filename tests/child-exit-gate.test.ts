@@ -163,8 +163,18 @@ test('the scan has a non-empty scope, so it is not passing vacuously', () => {
     // the shared helper — it deliberately skips `initialize` and races a record
     // file the child writes to disk.
     'lazy-module-loading.test.ts',
-    // The known-good control from the #1404 scan table.
-    'branding-notice-guard.test.ts',
+    // `helpers/stdio-child.ts` — the shared helper is the other file that owns
+    // a `spawn(` of its own, so the scan must still find it. The test below
+    // asserts more of it than this arm does.
+    //
+    // `branding-notice-guard.test.ts` used to be named here as the known-good
+    // control from the #1404 scan table. #1379 consolidated its duplicated
+    // harness, so it no longer calls `spawn(` and the scan correctly drops it
+    // from the in-scope list — it now appears among the delegating files
+    // instead. This arm is not vacuous without it: `lazy-module-loading.test.ts`
+    // still anchors route A (its own signal-naming exit listener) against the
+    // real tree, and the helper anchors the delegating side.
+    'helpers/stdio-child.ts',
   ]) {
     assert.ok(inScope.includes(expected), `the scan must still find ${expected}; it found ${JSON.stringify(inScope)}`);
   }
