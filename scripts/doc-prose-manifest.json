@@ -3269,7 +3269,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "1be10212b9eb890c",
+        "hash": "44d504557c677700",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -5338,6 +5338,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1be10212b9eb890c",
+      "label": "Returns: display name, user ID, URI, profile image URL, …",
+      "date": "2026-09-27",
+      "reason": "reworded the get_user_profile Returns paragraph: the 403 it describes no longer prescribes a grandfathered app, it records the older-registration question as unverified (#1468)"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "1d0730021d0c4a24",
       "label": "Inputs: playlistid (string, required), shared response f…",
       "date": "2026-09-27",
@@ -5471,8 +5478,8 @@
     }
   ],
   "provenance": {
-    "head": "f7ef96907cafbf7a421f9f49f139755d2f756ddd",
-    "upstream": "25ef2c287a83b050e0bb345678b43bea84d7273f",
+    "head": "c68b78ff8f83e851e651e518e69855b0dd269eba",
+    "upstream": "77f35a7af8113ff3c71f9f8b6beae1b9da537eb9",
     "behind": false
   }
 }
