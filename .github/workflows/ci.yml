@@ -80,6 +80,16 @@ jobs:
         # tags, so the release-history gate would read an empty tag list and
         # pass without comparing anything. Tags only — the shallow clone the
         # test matrix shares is left as it is.
+        #
+        # This step and the test step below must agree about whether they run.
+        # A step without an `if:` is skipped as soon as any earlier step fails,
+        # so without this guard an unrelated red (the typecheck budget, say)
+        # silently drops the tag list, and the release-history suite then
+        # reports eight failures that all say "no v* tags in this clone" —
+        # naming a clone problem where the real problem is a skipped fetch. The
+        # test step already runs unless cancelled, so it kept running and kept
+        # failing on the tags this step never fetched.
+        if: ${{ !cancelled() }}
         run: git fetch --tags --force --quiet
 
       - name: Release-history check (every tag has a CHANGELOG section)
@@ -88,6 +98,7 @@ jobs:
         # compares the tags, the changelog headings and package.json; the four
         # releases that can never gain a section are listed with the commit
         # that explains each one, inside the script.
+        if: ${{ !cancelled() }}
         run: node scripts/check-release-history.mjs
 
       - name: Generate finalized surface census
