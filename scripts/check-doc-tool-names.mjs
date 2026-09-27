@@ -107,6 +107,17 @@ const parameterAllowlist = new Set([
   // describing itself, not a request parameter — same category as the
   // `DoctorSurface` rows above.
   'matched_artists', 'unmatched_artists',
+  // #846: the fields of the one canonical playback-position record, plus two
+  // keys the migration report publishes. SPEC §5.1 has to name them to state
+  // the contract: which field means "not captured" (shuffle_state/repeat_state
+  // are null, not false), that origin_id is half the idempotency key, and that
+  // already_present is what a second run reports. They describe a store's own
+  // rows and a report's own output — the same category as the
+  // `DoctorSurface` and coverage keys above, not tool parameters. `captured_at`
+  // is named only to say the field is GONE, which is the #639 removed-field
+  // case: a caller reading an old payload must be able to look the name up.
+  'already_present', 'captured_at', 'is_playing', 'origin_id',
+  'playback_state', 'repeat_state', 'saved_at', 'shuffle_state',
   // #847: the `get_queue` structuredContent keys SPEC §5.1 and §5.15 name.
   // The queue-read collapse put six tools' answers under `runtime`,
   // `duplicates` and `profile`, and a migration note has to name the fields

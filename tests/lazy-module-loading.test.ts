@@ -229,6 +229,11 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // unrelated future transitive import does not redden the build, while
     // still failing loudly if the gate stops gating — a revert to static
     // imports puts every one of the 66 back.
+    //
+    // 106 -> 107 is #846's one added name, `migrate_playback_positions`,
+    // registered under `playbackext` and so in scope here. It is the only
+    // tool this change adds: the other three writers/readers were REWIRED
+    // onto the shared position record rather than added alongside it.
     assert.ok(
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
@@ -246,11 +251,28 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // than absorbed, because the next person to add a helper will hit the same
     // number and should know they will.
     //
-    // 107 -> 101 (#847): six queue readers collapsed into `get_queue` and
+    // Three deltas land on this number, and the comment has to carry all of
+    // them or the next reader attributes a change to the wrong one.
+    //
+    // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
+    // registers under every toolset — the `prompts` set is in the default
+    // install and the four mood prompts name this tool, and a prompt naming a
+    // tool the surface trimmed is what `prompt-resource-hints` fails on. The
+    // cost of that choice is visible right here: an `alwaysActive` module
+    // lands in EVERY trimmed surface, not only the default one. Stated rather
+    // than absorbed, because the next person to add a helper will hit the same
+    // number and should know they will.
+    //
+    // 107 -> 108 (#846): `migrate_playback_positions`, the one-time import of
+    // the three legacy playback-position stores. It is the only tool that
+    // change adds; the other three writers/readers were REWIRED onto the
+    // shared record rather than added alongside it.
+    //
+    // 108 -> 102 (#847): six queue readers collapsed into `get_queue` and
     // `peek_next`. The retired names still forward for one release, so the
     // tools a caller can name did not shrink by six — the registrations did,
     // and this is the count of registrations.
-    assert.equal(playback.toolCount, 101, 'the playback surface itself must not change');
+    assert.equal(playback.toolCount, 102, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -303,10 +325,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // asserting a number this tripwire has never measured.
     // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
     // tool. Same choice, and the same trade, as the `playback` figure above.
+    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
+    // tool. Same choice, and the same trade, as the `playback` figure above.
     //
-    // 571 -> 565 (#847): the six queue readers, same trade again — a
+    // 571 -> 572 (#846): `migrate_playback_positions`, the same one tool as
+    // above.
+    //
+    // 572 -> 566 (#847): the six queue readers, same trade again — a
     // registration count, and the forwarding aliases do not add a line here.
-    assert.equal(full.toolCount, 565, 'the full (TOOLSETS=all) surface must be unchanged');
+    assert.equal(full.toolCount, 566, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

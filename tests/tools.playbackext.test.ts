@@ -127,7 +127,7 @@ describe('playbackext', () => {
   // fail — the title promised a floor of 13, the bound allowed 12, so losing
   // one registration entirely still passed. Pin the exact set: a dropped tool
   // is a silent feature loss and an added one is drift.
-  it('registers exactly the 13 playback-extension tools', () => {
+  it('registers exactly the 14 playback-extension tools', () => {
     const { client } = makeClient(); const h = serverHarness(client);
     assert.deepEqual(
       h.registered.map((r: { name: string }) => r.name).sort(),
@@ -136,6 +136,8 @@ describe('playbackext', () => {
         'list_device_presets',
         'list_playback_states',
         'list_sessions',
+        // #846: the one-time, idempotent import of all three legacy stores.
+        'migrate_playback_positions',
         'refresh_smart_playlist',
         'rename_device',
         'replay_session',

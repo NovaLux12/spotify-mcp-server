@@ -18,6 +18,7 @@ import {
   type Exhaust2TimerHandle,
   type Exhaust2TimerScheduler,
 } from '../src/tools/exhaust2_playback.js';
+import { loadPositionStore, positionsFile } from '../src/tools/playbackpositions.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -151,6 +152,11 @@ const recentRow = (uri: string, played_at: string, name = 'Song') => ({
 /** Wipe the exhaust2 sidecar so a test starts from a clean slate. */
 async function resetSidecar(): Promise<void> {
   await saveExhaust2Store({ muteMemory: {}, episodeBookmarks: {}, checkpoints: {} });
+  // #846: `checkpoint_playback` writes the canonical position record in the
+  // playback-extensions sidecar, and `continue_last` reads it back. Clearing
+  // only the exhaust2 store would let one test's checkpoint leak into the
+  // next test's "no positions" assertion, so both stores are reset together.
+  await rm(positionsFile(), { force: true });
 }
 /** Remove the sidecar entirely (loadExhaust2Store then returns defaults). */
 async function clearSidecar(): Promise<void> {
@@ -243,10 +249,13 @@ test('#1051 corrupt sidecar: tool throws and bytes are preserved', async () => {
   const file = exhaust2PlaybackFile();
   const corrupt = '{oops';
   await writeFile(file, corrupt, 'utf8');
+  // #846 moved `checkpoint_playback` off this file, so the guard is driven
+  // through `mute`, which still reads and writes the exhaust2 store. The
+  // policy under test is the sidecar reader's, not one tool's.
   const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState() : undefined) });
   try {
     await assert.rejects(
-      h.invoke('checkpoint_playback', { note: 'should never save' }),
+      h.invoke('mute', { dry_run: false }),
       /is not valid JSON/,
     );
     // The corrupt bytes survive at <file>.corrupt; the original is still on
@@ -859,13 +868,23 @@ test('daily_pick is deterministic per date and seeded from the highlight pool', 
 // ---------------------------------------------------------------- checkpoints
 
 test('checkpoint_playback auto-names and continue_last resumes the newest', async () => {
+  await resetSidecar();
   const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player' ? playbackState({ progress_ms: 42_000 }) : undefined) });
   const out = await h.invoke('checkpoint_playback', { note: 'car ride' });
   assert.match(text(out), /Checkpoint saved: cp-\d{4}-\d{2}-\d{2}T\d{2}:\d{2} \(Song A @ 42000ms\) — car ride/);
-  const store = await loadExhaust2Store();
-  const cps = Object.values(store.checkpoints);
+
+  // #846: the record lands in the SHARED position store, not the exhaust2 one.
+  // Asserting on the store the tool stopped writing to is what would have let
+  // this test keep passing through a writer that saved nothing at all.
+  const canonical = await loadPositionStore();
+  const cps = Object.values(canonical.positions);
   assert.equal(cps.length, 1);
   assert.equal(cps[0]!.note, 'car ride');
+  assert.equal(cps[0]!.origin, 'checkpoint');
+  assert.equal(cps[0]!.track_uri, 'spotify:track:trk1');
+  assert.equal(cps[0]!.position_ms, 42_000);
+  // And the exhaust2 store is left exactly as it was found.
+  assert.deepEqual(Object.keys((await loadExhaust2Store()).checkpoints), [], 'checkpoints is now read-only legacy data');
 
   const h2 = makeHarness(registerExhaust2PlaybackTools);
   const out2 = await h2.invoke('continue_last', { dry_run: false });
@@ -878,8 +897,10 @@ test('continue_last guards no-checkpoints and no-item states', async () => {
   await resetSidecar();
   const h = makeHarness(registerExhaust2PlaybackTools);
   const out = await h.invoke('continue_last', {});
-  assert.match(text(out), /No checkpoints/);
+  assert.match(text(out), /No saved playback positions/);
 
+  // A pre-migration checkpoint with no item: `continue_last` still falls back
+  // to the exhaust2 store, so an un-migrated install keeps its guard.
   const store = await loadExhaust2Store();
   store.checkpoints['cp-empty'] = { id: 'cp-empty', saved_at: new Date().toISOString(), playback: null };
   await saveExhaust2Store(store);

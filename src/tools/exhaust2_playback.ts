@@ -46,6 +46,14 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
+import {
+  listPositions,
+  newPositionRecord,
+  positionsFile,
+  putPosition,
+  recordFromCheckpoint,
+  type PlaybackPositionRecord,
+} from './playbackpositions.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
 import { textResult, emit } from '../result.js';
@@ -196,6 +204,14 @@ interface Exhaust2Checkpoint {
 interface Exhaust2Store {
   muteMemory: Record<string, MuteMemory>;
   episodeBookmarks: Record<string, EpisodeBookmark>;
+  /**
+   * Read-only since #846: `checkpoint_playback` writes the shared position
+   * record in the playback-extensions store instead. These are the records
+   * written before that, kept here so `migrate_playback_positions` can import
+   * them and `continue_last` can fall back to them on an install that has not
+   * migrated yet. Nothing adds to this map any more, and nothing deletes from
+   * it — the key is dropped only when the whole file is next rewritten.
+   */
   checkpoints: Record<string, Exhaust2Checkpoint>;
 }
 
@@ -1163,7 +1179,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 18. checkpoint_playback (#375) — auto-named timestamped checkpoint
   server.tool(
     'checkpoint_playback',
-    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Quota: 1 read + local sidecar write.',
+    'One-shot timestamped auto-named playback checkpoint (cp-2026-08-27T21:05 style) — saves you naming slots for save_playback_state. Writes the same shared position record capture_playback_position writes, so list_playback_bookmarks and continue_last both see it. Quota: 1 read + local sidecar write.',
     {
       note: z.string().optional().describe('Optional note to attach'),
       response_format: ResponseFormat,
@@ -1171,21 +1187,42 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
       const state = await client.get<PlaybackState>('/me/player');
-      const store = await loadExhaust2Store();
       const iso = new Date().toISOString();
-      let id = `cp-${iso.slice(0, 16)}`;
-      if (store.checkpoints[id]) id = `cp-${iso.slice(0, 19)}`;
-      const cp: Exhaust2Checkpoint = { id, saved_at: iso, note: args.note, playback: state };
-      store.checkpoints[id] = cp;
-      await saveExhaust2Store(store);
-      return emit(fmt, `Checkpoint saved: ${id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`, { ok: true, checkpoint: { id, saved_at: iso, note: args.note ?? null, item: state?.item?.name ?? null, progress_ms: state?.progress_ms ?? null }, path: exhaust2PlaybackFile() });
+      // The id keeps the `cp-YYYY-MM-DDTHH:MM` shape callers already parse out
+      // of prose, and `placeRecord` appends -2/-3 if that id is taken, so the
+      // collision branch this used to have inline is now handled in one place.
+      const id = `cp-${iso.slice(0, 16)}`;
+      // #846: the canonical record carries every field this checkpoint could
+      // hold that `continue_last` or `resume_playback_position` reads — track,
+      // offset, device, shuffle, repeat, context. The old record additionally
+      // held the whole PlaybackState (queue, disallows), which nothing read;
+      // that is the loss the consolidation accepts, and it is a loss for NEW
+      // checkpoints only — an unmigrated one keeps its state under `legacy`.
+      const record = await putPosition(newPositionRecord({
+        id,
+        label: null,
+        note: args.note ?? null,
+        saved_at: iso,
+        device_id: state?.device?.id ?? null,
+        device_name: state?.device?.name ?? null,
+        track_uri: state?.item?.uri ?? null,
+        track_name: state?.item?.name ?? null,
+        position_ms: state?.progress_ms ?? 0,
+        is_playing: state?.is_playing ?? false,
+        context_uri: state?.context?.uri ?? null,
+        shuffle_state: typeof state?.shuffle_state === 'boolean' ? state.shuffle_state : null,
+        repeat_state: state?.repeat_state ?? null,
+        origin: 'checkpoint',
+        origin_id: id,
+      }));
+      return emit(fmt, `Checkpoint saved: ${record.id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`, { ok: true, checkpoint: { id: record.id, saved_at: record.saved_at, note: record.note, item: record.track_name, progress_ms: record.position_ms }, path: positionsFile() });
     },
   );
 
   // 19. continue_last (#376) — resume newest checkpoint by saved_at
   server.tool(
     'continue_last',
-    'Resume the most recent checkpoint without knowing its name (sidecar lookup by saved_at). Pairs with checkpoint_playback. Quota: 2-3 writes (play + shuffle/repeat best-effort).',
+    'Resume the most recent saved playback position without knowing its name (newest by saved_at across the shared position store — a checkpoint_playback, a capture_playback_position bookmark or a save_playback_state slot). Pairs with checkpoint_playback. Quota: 2-3 writes (play + shuffle/repeat best-effort).',
     {
       device_id: z.string().optional().describe('Target device id'),
       response_format: ResponseFormat,
@@ -1194,26 +1231,37 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     async (args) => {
       const fmt = args.response_format as ResponseFormatValue | undefined;
       const dryRun = args.dry_run;
-      const store = await loadExhaust2Store();
-      const newest = Object.values(store.checkpoints).sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
-      if (!newest) return textResult('No checkpoints. Use checkpoint_playback first.', { ok: false, error: 'no_checkpoints' });
-      const p = newest.playback;
-      if (!p?.item?.uri) return textResult(`Checkpoint "${newest.id}" has no playable item to continue.`, { ok: false, error: 'no_item', checkpoint: newest.id });
-      const deviceId = args.device_id ?? p.device?.id ?? null;
+      // #846: the canonical store is the source of truth, and "the most recent
+      // saved position" is the honest reading of this tool now that all three
+      // writers land in one place. A pre-migration exhaust2 checkpoint is the
+      // fallback, so nothing the user already saved stops being resumable
+      // before the migration has run.
+      const all = await listPositions();
+      let newest: PlaybackPositionRecord | null = all.length ? all[all.length - 1] : null;
+      if (!newest) {
+        const store = await loadExhaust2Store();
+        const legacy = Object.entries(store.checkpoints)
+          .map(([key, cp]) => recordFromCheckpoint(key, cp))
+          .sort((a, b) => b.saved_at.localeCompare(a.saved_at))[0];
+        if (legacy) newest = legacy;
+      }
+      if (!newest) return textResult('No saved playback positions. Use checkpoint_playback first.', { ok: false, error: 'no_checkpoints' });
+      if (!newest.track_uri) return textResult(`Checkpoint "${newest.id}" has no playable item to continue.`, { ok: false, error: 'no_item', checkpoint: newest.id });
+      const deviceId = args.device_id ?? newest.device_id ?? null;
       const qs = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
       if (dryRun) {
         const steps = [
-          `PUT /me/player/play${qs} { uris: ["${p.item.uri}"], position_ms: ${p.progress_ms ?? 0} }`,
-          ...(typeof p.shuffle_state === 'boolean' ? [`PUT /me/player/shuffle?state=${p.shuffle_state}`] : []),
-          ...(p.repeat_state ? [`PUT /me/player/repeat?state=${p.repeat_state}`] : []),
+          `PUT /me/player/play${qs} { uris: ["${newest.track_uri}"], position_ms: ${newest.position_ms} }`,
+          ...(typeof newest.shuffle_state === 'boolean' ? [`PUT /me/player/shuffle?state=${newest.shuffle_state}`] : []),
+          ...(newest.repeat_state ? [`PUT /me/player/repeat?state=${newest.repeat_state}`] : []),
         ];
         return { content: [{ type: 'text', text: describeDryRun('continue_last', newest.id, steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, checkpoint: newest.id, saved_at: newest.saved_at } };
       }
       const failed: string[] = [];
-      try { await client.put(`/me/player/play${qs}`, { uris: [p.item.uri], position_ms: p.progress_ms ?? 0 }); } catch { failed.push('play'); }
-      if (typeof p.shuffle_state === 'boolean') { try { await client.put(`/me/player/shuffle?state=${p.shuffle_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('shuffle'); } }
-      if (p.repeat_state) { try { await client.put(`/me/player/repeat?state=${p.repeat_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('repeat'); } }
-      return emit(fmt, `Continuing from checkpoint "${newest.id}" → ${p.item.uri} @ ${p.progress_ms ?? 0}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: p.item.uri, progress_ms: p.progress_ms ?? 0, device_id: deviceId, failed });
+      try { await client.put(`/me/player/play${qs}`, { uris: [newest.track_uri], position_ms: newest.position_ms }); } catch { failed.push('play'); }
+      if (typeof newest.shuffle_state === 'boolean') { try { await client.put(`/me/player/shuffle?state=${newest.shuffle_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('shuffle'); } }
+      if (newest.repeat_state) { try { await client.put(`/me/player/repeat?state=${newest.repeat_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('repeat'); } }
+      return emit(fmt, `Continuing from checkpoint "${newest.id}" → ${newest.track_uri} @ ${newest.position_ms}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: newest.track_uri, progress_ms: newest.position_ms, device_id: deviceId, failed });
     },
   );
 

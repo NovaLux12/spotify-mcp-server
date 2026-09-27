@@ -1602,7 +1602,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
-  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8178], { scopeKey: 'playback' }),
+  // Re-measured on the tree that carries BOTH #846 and #847, 2026-09-27:
+  // 13 -> 14 tools and 8,178 -> 8,852B (+674). #846 adds the one tool that
+  // writes the canonical playback-position record; #847's queue collapse does
+  // not touch this module, so this figure is the #846 delta measured on a
+  // post-#847 tree rather than either change's own measurement.
+  manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [14, 8852], { scopeKey: 'playback' }),
   // playbackintel 11,837 -> 11,882B (+45) is #851: market_availability's
   // description now names the concurrent batch, is_playable, and the
   // per-market failure reason it reports. Tool count is unchanged at 15 — the
@@ -1656,7 +1661,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // include=['profile']: 23 -> 22 tools, 17,518 -> 17,050B. The module's
   // other 22 tools are untouched, so the whole delta is that one row leaving
   // the surface.
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [22, 17050], { scopeKey: 'playback' }),
+  // 22 tools is #847's figure and it holds on this tree; #846 changed no
+  // registration here, only the descriptions of the ones that stayed. Bytes
+  // are re-measured, not composed: 17,050 -> 17,313B (+263) on the tree that
+  // carries both changes. The 23 -> 22 step and the byte rise have different
+  // causes, and quoting either side's number would attribute both to one.
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [22, 17313], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
@@ -1716,7 +1726,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 24 -> 20 tools, 14,043 -> 12,113B. The four local analyses they ran live
   // on in src/queueanalysis.ts, and the queue planners that remain
   // (split_queue_plan, queue_prune_plan, sleep_timer_plan) are unchanged.
-  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [20, 12113], { scopeKey: 'playback' }),
+  // 20 tools is #847's figure (24 -> 20, the four queue readers it retired),
+  // and it holds on this tree. Bytes re-measured: 12,113 -> 12,541B (+428),
+  // which is #846 rewiring the survivors onto the shared record rather than
+  // any change in how many there are.
+  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [20, 12541], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 24 / 18 tools and same input schemas.
   // restore_playlist_from_snapshot and apply_snapshot_changes now say that

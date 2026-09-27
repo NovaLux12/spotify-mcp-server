@@ -258,17 +258,27 @@ function makeHarness(options: StubOptions = {}) {
 
 let tmp: string;
 let prevBackupDir: string | undefined;
+let prevExtFile: string | undefined;
 
 beforeEach(async () => {
   tmp = await mkdtemp(join(tmpdir(), 'spotify-swarm3-playback-'));
   prevBackupDir = process.env.SPOTIFY_MCP_BACKUP_DIR;
   process.env.SPOTIFY_MCP_BACKUP_DIR = tmp;
+  // #846: capture_playback_position writes the shared position record, which
+  // lives in the playback-extensions sidecar, not the backup dir. Both stores
+  // are pinned into this test's own mkdtemp root so the suite keeps writing
+  // only there and the "the effect, not the call" assertions can still read
+  // the bytes back off disk.
+  prevExtFile = process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE;
+  process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE = join(tmp, 'playback-ext.json');
 });
 
 afterEach(async () => {
   await rm(tmp, { recursive: true, force: true });
   if (prevBackupDir === undefined) delete process.env.SPOTIFY_MCP_BACKUP_DIR;
   else process.env.SPOTIFY_MCP_BACKUP_DIR = prevBackupDir;
+  if (prevExtFile === undefined) delete process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE;
+  else process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE = prevExtFile;
 });
 
 const bookmarkFile = (id: string) => join(tmp, `playback-bookmark-${id}.json`);
@@ -326,30 +336,48 @@ describe('#668 get_playback_snapshot', () => {
 // 3. capture_playback_position
 // ===========================================================================
 
-describe('#668 capture_playback_position', () => {
-  it('writes a 0600 bookmark under the temp backup dir and names the path', async () => {
+describe('#846 capture_playback_position writes the canonical record', () => {
+  it('writes a 0600 record in the shared position store and names that file', async () => {
     const h = makeHarness();
     const out = await h.invoke('capture_playback_position', { label: 'morning' });
     const sc = h.structured(out);
     assert.equal(sc.bookmarked, true);
-    const bookmark = sc.bookmark as Record<string, unknown>;
-    assert.equal(bookmark.label, 'morning');
-    assert.equal(bookmark.track_uri, 'spotify:track:t01');
-    assert.equal(bookmark.position_ms, 30_000);
-    assert.equal(bookmark.device_id, 'dev_kitchen');
+    const record = sc.position as Record<string, unknown>;
+    assert.equal(record.label, 'morning');
+    assert.equal(record.track_uri, 'spotify:track:t01');
+    assert.equal(record.position_ms, 30_000);
+    assert.equal(record.device_id, 'dev_kitchen');
+    assert.equal(record.origin, 'bookmark');
+    // Shuffle/repeat are not read here, so they must be null rather than a
+    // default that would read as a captured `false` (#1092).
+    assert.equal(record.shuffle_state, null);
+    assert.equal(record.repeat_state, null);
 
-    // The effect, not the call: the file really exists, with the right mode.
+    // The effect, not the call: the store really exists, with the right mode,
+    // and the record really landed in it under the id that was reported.
     const files = await readdir(tmp);
     assert.equal(files.length, 1, `exactly one sidecar expected, saw ${files.join(', ')}`);
-    assert.equal(
-      String(sc.path),
-      join(tmp, files[0] as string),
-      'the reported path must be the file that was actually written, inside the temp backup dir',
-    );
-    const onDisk = JSON.parse(await readFile(join(tmp, files[0] as string), 'utf8')) as Record<string, unknown>;
-    assert.equal(onDisk.track_uri, 'spotify:track:t01');
-    const mode = (await stat(join(tmp, files[0] as string))).mode & 0o777;
-    assert.equal(mode, 0o600, `bookmark sidecar must be 0600, saw ${mode.toString(8)}`);
+    const path = String(sc.path);
+    assert.ok(path.startsWith(tmp), `the store must be inside the temp backup dir, saw ${path}`);
+    const onDisk = JSON.parse(await readFile(path, 'utf8')) as { positions: Record<string, Record<string, unknown>> };
+    assert.equal(onDisk.positions[String(record.id)]?.track_uri, 'spotify:track:t01');
+    const mode = (await stat(path)).mode & 0o777;
+    assert.equal(mode, 0o600, `position store must be 0600, saw ${mode.toString(8)}`);
+  });
+
+  it('the record it writes is the one the listing serves, in the one record format', async () => {
+    // #846's whole claim: a capture and a checkpoint are the same kind of row.
+    // Asserting it through the tools is the only way to catch a writer that
+    // fills the canonical fields but a reader that still expects the old shape.
+    const h = makeHarness();
+    const captured = (h.structured(await h.invoke('capture_playback_position', { label: 'x' })).position as { id: string });
+    const listed = h.structured(await h.invoke('list_playback_bookmarks'));
+    const rows = listed.items as Array<Record<string, unknown>>;
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0]?.id, captured.id);
+    assert.equal(rows[0]?.label, 'x');
+    assert.equal(rows[0]?.origin, 'bookmark');
+    assert.equal(listed.origins && (listed.origins as Record<string, number>).bookmark, 1);
   });
 
   it('writes nothing when there is no item to bookmark', async () => {
@@ -365,17 +393,18 @@ describe('#668 capture_playback_position', () => {
 // ===========================================================================
 
 describe('#668 list_playback_bookmarks', () => {
-  it('lists every bookmark, ordered by id, with label and mm:ss position', async () => {
+  it('lists every saved position, oldest first, with label and mm:ss position', async () => {
     const h = makeHarness();
-    // Ids seeded in an order that is NOT their sort order, so the assertion
-    // below cannot pass by accident on a filesystem whose readdir happens to
-    // return them sorted. The ordering claim is asserted as "equals the sort
-    // of what was seeded" rather than against a hardcoded pair, so it holds
-    // whatever order the directory hands back.
+    // #846 changed the sort key from the filename to `saved_at`, because the
+    // consolidated store assigns ids that are not timestamps — a canonical id
+    // has no time in it, so id order would have been an accident. Seeded here
+    // in an order that is NOT their saved_at order AND whose ids sort the
+    // OTHER way, so an implementation that regressed to id order fails rather
+    // than passing by coincidence.
     const seeded = [
-      { id: 'zz-last', track_name: 'Zulu', position_ms: 3_661_000, label: 'morning' },
-      { id: 'aa-first', track_name: 'Alpha', position_ms: 90_000 },
-      { id: 'mm-middle', track_name: 'Mike', position_ms: 0 },
+      { id: 'zz-last', captured_at: '2026-09-27T11:00:00.000Z', track_name: 'Zulu', position_ms: 3_661_000, label: 'morning' },
+      { id: 'aa-first', captured_at: '2026-09-27T09:00:00.000Z', track_name: 'Alpha', position_ms: 90_000 },
+      { id: 'mm-middle', captured_at: '2026-09-27T10:00:00.000Z', track_name: 'Mike', position_ms: 0 },
     ];
     for (const row of seeded) {
       await writeJson(bookmarkFile(row.id), seedBookmark({ ...row, id: row.id }).bm);
@@ -384,22 +413,48 @@ describe('#668 list_playback_bookmarks', () => {
     await writeFile(join(tmp, 'backup-2026-09-27-1.json'), '{}\n');
 
     const out = await h.invoke('list_playback_bookmarks');
-    assert.deepEqual(h.calls, [], 'listing bookmarks is a local read and must issue no Spotify call');
+    assert.deepEqual(h.calls, [], 'listing positions is a local read and must issue no Spotify call');
 
     const sc = h.structured(out);
     const items = sc.items as Array<Record<string, unknown>>;
-    const expectedIds = seeded.map((r) => r.id).sort();
+    const expectedIds = [...seeded]
+      .sort((a, b) => a.captured_at.localeCompare(b.captured_at))
+      .map((r) => r.id);
     assert.deepEqual(
       items.map((b) => b.id),
       expectedIds,
-      'bookmarks come back sorted by id, and only playback-bookmark-*.json rows are bookmarks',
+      'positions come back oldest first, and only playback-bookmark-*.json rows are positions',
     );
     assert.equal(items.find((b) => b.id === 'zz-last')?.label, 'morning');
     const prose = h.text(out);
-    assert.match(prose, /3 bookmark\(s\)/);
+    assert.match(prose, /3 saved playback position\(s\)/);
     assert.match(prose, /1:30/, '90_000ms renders as 1:30');
     assert.match(prose, /1:01:01/, '3_661_000ms renders as 1:01:01');
     assert.deepEqual(sc.pagination, { total: 3, returned: 3, truncated: false });
+  });
+
+  it('reports an unreadable store as an error, never as an empty list', async () => {
+    // The distinction this pins: "the file could not be read" and "you have
+    // no positions" produce different output. A read failure degraded to an
+    // empty listing is the exact lie #839/#1092 exist to prevent — the user
+    // would conclude their bookmarks were gone.
+    const h = makeHarness();
+    await writeJson(bookmarkFile('bm1'), seedBookmark().bm);
+    await writeFile(join(tmp, 'playback-ext.json'), '{"positions": {oops', 'utf8');
+
+    const out = await h.invoke('list_playback_bookmarks');
+    const sc = h.structured(out);
+    assert.equal(sc.error, 'store_unreadable');
+    assert.equal(sc.ok, false);
+    assert.equal(sc.items, undefined, 'no rows may be presented as if they were the whole list');
+    assert.match(h.text(out), /WARNING/);
+    assert.match(h.text(out), /NOT an empty list/);
+    // And the bytes are preserved rather than overwritten by the read.
+    assert.equal(
+      await readFile(join(tmp, 'playback-ext.json.corrupt'), 'utf8'),
+      '{"positions": {oops',
+      'the unreadable bytes are preserved at <file>.corrupt',
+    );
   });
 
   it('reports zero bookmarks and points at capture when the dir has none', async () => {
@@ -433,7 +488,10 @@ describe('#668 delete_playback_bookmark', () => {
     const out = await h.invoke('delete_playback_bookmark', { bookmark_id: 'bm1', dry_run: false });
     assert.equal(h.structured(out).deleted, true);
     assert.deepEqual(await readdir(tmp), [], 'commit must actually remove the sidecar');
-    assert.match(h.text(out), /Deleted bookmark bm1/);
+    // A bookmark that was never migrated has no canonical row, so the honest
+    // report names the file that was unlinked rather than claiming a store
+    // write that did not happen.
+    assert.match(h.text(out), /Deleted bookmark file .*playback-bookmark-bm1\.json/);
   });
 
   it('leaves the file untouched on the dry_run preview', async () => {
@@ -448,7 +506,7 @@ describe('#668 delete_playback_bookmark', () => {
     const h = makeHarness();
     const out = await h.invoke('delete_playback_bookmark', { bookmark_id: 'nope', dry_run: false });
     assert.equal(h.structured(out).found, false);
-    assert.match(h.text(out), /No bookmark found with id "nope"/);
+    assert.match(h.text(out), /No saved playback position with id "nope"/);
   });
 });
 
