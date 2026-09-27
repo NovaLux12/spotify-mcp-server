@@ -304,7 +304,7 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // telling a host that a walk was truncated, or that a receipt was unreadable.
   // 13,000B is roughly 30 warrants at the observed median delta.
   //
-  // This does not weaken the gate. `perToolMaxBytes` (6,000B) and every
+  // This does not weaken the gate. `perToolMaxBytes` and every
   // per-module ceiling are unchanged and do the fine-grained work; the surface
   // would have to grow 2.1% to breach. The alternative is startups failing for
   // reasons unrelated to the change that caused them, which is the failure mode
