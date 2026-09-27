@@ -3981,6 +3981,42 @@
         "label": "One boundary, not sixty edits. installAttributionBoundar…"
       },
       {
+        "hash": "e2183123d7df8849",
+        "label": "5.17 MCP Tasks for long-running tools (#600)"
+      },
+      {
+        "hash": "d281624b9cb9cdae",
+        "label": "Eleven tools advertise execution.taskSupport: \"optional\"…"
+      },
+      {
+        "hash": "12d4eff52f629359",
+        "label": "The list is derived from the code, not from the issue. #…"
+      },
+      {
+        "hash": "6629b12b783e7d3b",
+        "label": "| Tool | Why it is task-capable | Confirmation | |---|--…"
+      },
+      {
+        "hash": "cca9dd4d51e91689",
+        "label": "A single lookup is not on this list and must not be adde…"
+      },
+      {
+        "hash": "305ed923493c182d",
+        "label": "A task handle is not a way around the confirmation gate.…"
+      },
+      {
+        "hash": "a924b62cb0254c3d",
+        "label": "tasks/cancel aborts the work, not just the bookkeeping. …"
+      },
+      {
+        "hash": "a9f822003a31bf9f",
+        "label": "Status is never a guess. completed means the handler ret…"
+      },
+      {
+        "hash": "4d5f548de019d1b9",
+        "label": "Where task records live. PersistentTaskStore (src/tasks.…"
+      },
+      {
         "hash": "f3e70de12e2dc0f1",
         "label": "6. Resources"
       },
@@ -4519,7 +4555,7 @@
         "label": "Summary"
       },
       {
-        "hash": "2b3f1ed9c3b7b151",
+        "hash": "3017d1532d72bdeb",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -6507,6 +6543,13 @@
     },
     {
       "file": "docs/configuration.md",
+      "hash": "2b3f1ed9c3b7b151",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "date": "2026-09-27",
+      "reason": "rewritten by #600: the docs/configuration.md env-var table gained SPOTIFY_MCP_TASKS_DIR for the task store directory. The SPOTIFY_MCP_* key set is 66 rows on origin/main and 67 on this branch; a set diff shows zero keys present on main and absent here. A reword plus one added row, not a deletion."
+    },
+    {
+      "file": "docs/configuration.md",
       "hash": "b7b1883c226db2e1",
       "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "date": "2026-09-27",
@@ -6913,9 +6956,9 @@
     }
   ],
   "provenance": {
-    "head": "6803440e80b3aaef0319fa42abc59b01754087c1",
-    "base": "43b325472102cdb310553ecf9bb7f75cd919530b",
-    "upstream": "43b325472102cdb310553ecf9bb7f75cd919530b",
+    "head": "89c93679405e8200a2e57c11b26d6ae66e507fb2",
+    "base": "8dca449a9d43265c3560ed9f23ec599ff211a8ea",
+    "upstream": "8dca449a9d43265c3560ed9f23ec599ff211a8ea",
     "behind": false
   }
 }
