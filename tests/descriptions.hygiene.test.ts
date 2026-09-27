@@ -27,7 +27,7 @@
  *
  * Run: node --import tsx --test tests/descriptions.hygiene.test.ts
  */
-import { describe, it } from 'node:test';
+import { before, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { buildFullRegistryServer } from './live-registry.js';
@@ -72,8 +72,12 @@ interface ToolDescription {
 }
 
 /** Every registered tool's description, read off the live registry. */
-function liveDescriptions(): ToolDescription[] {
-  const server = buildFullRegistryServer();
+async function liveDescriptions(): Promise<ToolDescription[]> {
+  // `buildFullRegistryServer` is async since #906 made the manifest hold
+  // thunks. Calling it without awaiting yields a registry with zero tools, and
+  // every gate below would then pass against an empty list — so this is
+  // awaited, and the size is asserted before any rule runs.
+  const server = await buildFullRegistryServer();
   const registry = (server as unknown as {
     _registeredTools?: Record<string, { description?: string }>;
   })._registeredTools ?? {};
@@ -82,13 +86,19 @@ function liveDescriptions(): ToolDescription[] {
     .filter((tool) => tool.description.length > 0);
 }
 
-const DESCRIPTIONS = liveDescriptions();
-
 describe('registered tool descriptions are hygienic (#922)', () => {
+  let DESCRIPTIONS: ToolDescription[] = [];
+
+  before(async () => {
+    DESCRIPTIONS = await liveDescriptions();
+  });
+
   it('derives a non-trivial surface, so the gates below are not vacuous', () => {
     // A test that cannot fail is worse than no test. If the registry pass
     // silently returned nothing, every assertion below would pass against an
-    // empty list, so the surface size is asserted before the rules.
+    // empty list, so the surface size is asserted before the rules. This is
+    // not theoretical: an unawaited async registry pass registers 0 tools and
+    // turns all five gates green.
     assert.ok(
       DESCRIPTIONS.length > 500,
       `expected the full surface to register >500 described tools, got ${DESCRIPTIONS.length} — the registry pass is not deriving real descriptions`,
