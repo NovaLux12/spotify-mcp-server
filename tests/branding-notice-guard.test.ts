@@ -159,15 +159,25 @@ interface JsonRpc {
  * if the constant were computed and then never handed to `McpServer` — the
  * exact regression `instructions: SERVER_INSTRUCTIONS` can introduce. Spawning
  * and asking is the only version that cannot be fooled.
+ *
+ * `entry` is a parameter so the harness's own failure paths are reachable from a
+ * test — see the "harness" describe block at the bottom. A harness that cannot
+ * be pointed at a broken server is a harness whose error reporting is untested.
  */
-function initializeInstructions(): Promise<string | undefined> {
+function initializeFrom(entry: string): Promise<string | undefined> {
   const baseEnv = childEnv();
   delete baseEnv.SPOTIFY_SCOPES; // absent, not empty: #617 rejects a set-but-empty value
-  const child = spawn(process.execPath, ['--import', 'tsx/esm', 'src/index.ts'], {
+  const child = spawn(process.execPath, ['--import', 'tsx/esm', entry], {
     cwd: ROOT,
     env: baseEnv,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
+  // `Promise.withResolvers` returns `{ promise, resolve, reject }`. Destructuring
+  // any other names yields `undefined` callbacks, and calling one inside a
+  // stream handler throws where the test's assertion machinery cannot see it:
+  // the runner dies with no failing assertion and the suite reports nothing at
+  // all. That is not hypothetical — it is how the first draft of this file
+  // hung for 35 minutes instead of failing.
   const { promise, resolve: settle, reject: fail } = Promise.withResolvers<string | undefined>();
   let buffer = '';
   let stderr = '';
@@ -177,19 +187,35 @@ function initializeInstructions(): Promise<string | undefined> {
     stderr += c;
   });
   child.stdout.on('data', (chunk: string) => {
-    buffer += chunk;
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).trim();
-      buffer = buffer.slice(idx + 1);
-      if (!line) continue;
-      const msg = JSON.parse(line) as JsonRpc;
-      if (msg.id === 1) {
-        if (msg.error) fail(new Error(`initialize failed: ${msg.error.code} ${msg.error.message}`));
-        else settle(msg.result?.instructions);
+    // Every exit from this handler goes through `fail`, never through a throw.
+    // An exception raised here is an uncaught exception on the stream, not a
+    // rejected test: it tears down the process and reports nothing.
+    try {
+      buffer += chunk;
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx).trim();
+        buffer = buffer.slice(idx + 1);
+        if (!line) continue;
+        const msg = JSON.parse(line) as JsonRpc;
+        if (msg.id === 1) {
+          if (msg.error) fail(new Error(`initialize failed: ${msg.error.code} ${msg.error.message}`));
+          else settle(msg.result?.instructions);
+        }
       }
+    } catch (err) {
+      fail(new Error(`could not parse a frame from the server's stdout: ${(err as Error).message}\nframe: ${JSON.stringify(buffer)}`));
     }
   });
+  // A child that dies before answering must reject with the cause, not sit
+  // until the watchdog fires (#1366: two stdio harnesses here reported a bare
+  // "timeout waiting for initialize" for a child that had already been
+  // SIGKILLed under load, discarding the exit code that would have said so).
+  // First settle wins, so a healthy response is unaffected.
+  child.on('error', (err) => fail(new Error(`could not spawn ${entry}: ${err.message}`)));
+  child.on('exit', (code, signal) =>
+    fail(new Error(`${entry} exited before answering initialize (code=${code} signal=${signal})\nstderr:\n${stderr}`)),
+  );
   child.stdin.write(
     `${JSON.stringify({
       jsonrpc: '2.0',
@@ -202,9 +228,10 @@ function initializeInstructions(): Promise<string | undefined> {
       },
     })}\n`,
   );
-  // Watchdog only: the server is a separate process whose timers cannot be
-  // faked from here, so a real deadline is the only way to fail fast instead
-  // of wedging the suite.
+  // Watchdog only, and last: the server is a separate process whose timers
+  // cannot be faked from here, so a real deadline is the only way to fail fast
+  // instead of wedging the suite. Every other failure has already settled the
+  // promise by the time this can fire.
   setTimeout(() => fail(new Error(`timeout waiting for initialize\nstderr:\n${stderr}`)), 30_000).unref();
   // The child is external, so tear it down on both outcomes: end stdin so a
   // healthy server exits on its own, and SIGKILL shortly after so a wedged one
@@ -220,6 +247,9 @@ function initializeInstructions(): Promise<string | undefined> {
     .catch(() => {});
   return promise;
 }
+
+/** The real server. Thin wrapper so every call site below reads as "the server". */
+const initializeInstructions = (): Promise<string | undefined> => initializeFrom('src/index.ts');
 
 const CLI_TIMEOUT_MS = 30_000;
 
@@ -498,5 +528,66 @@ describe('the recorded name decision (#705)', () => {
           'the scripts that parse it.',
       );
     }
+  });
+});
+
+/**
+ * The harness, tested (#1366).
+ *
+ * The file above is only trustworthy if `initializeFrom` fails the way a test
+ * should fail. It did not, once: the callbacks destructured out of
+ * `Promise.withResolvers` were `undefined`, calling one inside the stdout
+ * handler threw, and an exception on a stream is not routed to the assertion
+ * machinery — the runner died reporting nothing and the run leaked for 35
+ * minutes. The two properties below are the ones that cost that, and both are
+ * checkable.
+ *
+ * What is deliberately *not* asserted here: that `Promise.withResolvers`
+ * returns `{ promise, resolve, reject }`. That is a property of the Node
+ * runtime, and a test of it would pass no matter what this harness did — the
+ * definition of a test that cannot fail.
+ */
+describe('the stdio harness fails with a cause (#1366)', () => {
+  it('rejects with the exit code when the server dies before answering', async () => {
+    // A module that does not exist: node starts, fails to resolve it, and
+    // exits non-zero without writing a frame. That is the same shape as a
+    // child SIGKILLed under load, which is the case #1366 is about.
+    await assert.rejects(
+      () => initializeFrom('src/no-such-entry-point.ts'),
+      (err: Error) => {
+        assert.match(
+          err.message,
+          /exited before answering initialize \(code=\d+/,
+          `a dead child must be reported with its exit code, got: ${err.message}`,
+        );
+        assert.doesNotMatch(
+          err.message,
+          /timeout waiting for initialize/,
+          'the watchdog fired instead of the exit handler — the harness is still discarding the cause',
+        );
+        return true;
+      },
+    );
+  });
+
+  it('rejects within the watchdog, not after it', async () => {
+    // The point of the exit handler is that a dead child fails in the child's
+    // lifetime. If this ever takes 30 s the assertion above is passing for the
+    // wrong reason, so the deadline is asserted rather than left to the runner.
+    const started = process.hrtime.bigint();
+    await assert.rejects(() => initializeFrom('src/no-such-entry-point.ts'));
+    const elapsedMs = Number((process.hrtime.bigint() - started) / 1_000_000n);
+    assert.ok(
+      elapsedMs < 20_000,
+      `a dead child must reject promptly, took ${elapsedMs}ms — that is the watchdog, not the exit handler`,
+    );
+  });
+
+  it('the real server still answers through the same path', async () => {
+    // The control. Without it the two tests above would also pass against a
+    // harness that rejects unconditionally and instantly, which is the shape a
+    // "fix" written as `fail()` in the spawn would take.
+    const instructions = await initializeFrom('src/index.ts');
+    assert.equal(instructions, BRANDING_NOTICE, 'precondition: the real server still answers initialize');
   });
 });
