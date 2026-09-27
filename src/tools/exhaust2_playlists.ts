@@ -35,7 +35,6 @@ import {
   MaxResults,
   batchSummary,
   describeDryRun,
-  legacyPlaylistListFields,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -617,7 +616,6 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'intersection read-only. Quota: N GETs + 1 PUT when committing.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['source_playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       ...SetOpParams,
       ...sharedListFields,
     },
@@ -1538,7 +1536,6 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'same set. Quota: N GETs.',
     {
       ...PlaylistListFields,
-      ...legacyPlaylistListFields(['playlist_ids'], { limitReason: PAGED_WALK_LIST_REASON }),
       min_overlap: z.number().min(0).max(1).optional().describe('Jaccard threshold to report a pair. Default 0.5'),
       response_format: ResponseFormat,
       max_results: MaxResults,

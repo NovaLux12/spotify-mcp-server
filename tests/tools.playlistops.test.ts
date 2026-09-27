@@ -305,14 +305,14 @@ describe('merge_playlists', () => {
   it('rejects when neither target_playlist_id nor new_name is given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { sources: [SRC_A] }),
+      h.invoke('merge_playlists', { playlists: [SRC_A] }),
     );
   });
 
   it('rejects when both target_playlist_id and new_name are given', async () => {
     const h = harness();
     await assert.rejects(() =>
-      h.invoke('merge_playlists', { sources: [SRC_A], target_playlist_id: TARGET, new_name: 'X' }),
+      h.invoke('merge_playlists', { playlists: [SRC_A], target_playlist_id: TARGET, new_name: 'X' }),
     );
   });
 
@@ -333,7 +333,7 @@ describe('merge_playlists', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A, `spotify:playlist:${SRC_B}`],
+      playlists: [SRC_A, `spotify:playlist:${SRC_B}`],
       new_name: 'Merged',
       public: true,
     });
@@ -370,7 +370,7 @@ describe('merge_playlists', () => {
     );
 
     await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       target_playlist_id: `spotify:playlist:${TARGET}`,
     });
 
@@ -390,7 +390,7 @@ describe('merge_playlists', () => {
     const tgt = [item('existing')];
     const h = harness(playlistResponder({ [SRC_A]: srcA, [TARGET]: tgt }, () => ({ snapshot_id: 's' })));
 
-    await h.invoke('merge_playlists', { sources: [SRC_A], target_playlist_id: TARGET });
+    await h.invoke('merge_playlists', { playlists: [SRC_A], target_playlist_id: TARGET });
 
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method === 'PUT').length,
@@ -405,7 +405,7 @@ describe('merge_playlists', () => {
       playlistResponder({ [PL9]: [item('z1')] }, () => ({ snapshot_id: 's' })),
     );
     await h.invoke('merge_playlists', {
-      sources: [`spotify:playlist:${PL9}`],
+      playlists: [`spotify:playlist:${PL9}`],
       target_playlist_id: `spotify:playlist:${TARGET_2}`,
     });
     const gets = wireCalls(h.client.calls)
@@ -426,7 +426,7 @@ describe('merge_playlists', () => {
     const h = harness(playlistResponder({ [DRY_A]: srcA, [DRY_B]: srcB }));
 
     const out = await h.invoke('merge_playlists', {
-      sources: [DRY_A, DRY_B],
+      playlists: [DRY_A, DRY_B],
       new_name: 'Preview',
       dry_run: true,
     });
@@ -472,7 +472,7 @@ describe('merge_playlists', () => {
     const h = harness(playlistResponder({ [MAX_A]: srcA }, () => ({ snapshot_id: 's' })));
 
     const out = await h.invoke('merge_playlists', {
-      sources: [MAX_A],
+      playlists: [MAX_A],
       target_playlist_id: TARGET,
       response_format: 'concise',
       max_results: 2,
@@ -503,7 +503,7 @@ describe('merge_playlists', () => {
       );
 
       const out = await h.invoke('merge_playlists', {
-        sources: [PARTIAL_A],
+        playlists: [PARTIAL_A],
         target_playlist_id: TARGET,
       });
       const p = out.structuredContent!;
@@ -531,7 +531,7 @@ describe('merge_playlists', () => {
       );
 
       const out = await h.invoke('merge_playlists', {
-        sources: [PARTIAL_A],
+        playlists: [PARTIAL_A],
         target_playlist_id: TARGET,
       });
       const p = out.structuredContent!;
@@ -558,7 +558,7 @@ describe('merge_playlists', () => {
       );
 
       const out = await h.invoke('merge_playlists', {
-        sources: [PARTIAL_A],
+        playlists: [PARTIAL_A],
         target_playlist_id: TARGET,
         response_format: 'json',
       });
@@ -588,7 +588,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 60));
 
     const out = await h.invoke('merge_playlists', {
-      sources,
+      playlists: sources,
       target_playlist_id: TARGET,
       response_format: 'json',
     });
@@ -621,7 +621,7 @@ describe('merge_playlists source walk (#902)', () => {
     );
 
     await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B, SRC_C],
+      playlists: [SRC_A, SRC_B, SRC_C],
       target_playlist_id: TARGET,
     });
 
@@ -647,7 +647,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(playlistResponder({ [SRC_A]: srcA, [SRC_B]: srcB }, () => ({ snapshot_id: 's' }), 2));
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       target_playlist_id: TARGET,
     });
 
@@ -668,7 +668,7 @@ describe('merge_playlists source walk (#902)', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       target_playlist_id: TARGET,
     });
 
@@ -704,7 +704,7 @@ describe('merge_playlists source walk (#902)', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       target_playlist_id: TARGET,
     });
     assert.equal(itemPageGets(h.client.calls).length, 5);
@@ -718,7 +718,7 @@ describe('merge_playlists source walk (#902)', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A],
+      playlists: [SRC_A],
       new_name: 'Preview',
       dry_run: true,
     });
@@ -734,7 +734,7 @@ describe('merge_playlists source walk (#902)', () => {
     );
 
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A],
+      playlists: [SRC_A],
       new_name: 'Capped',
       dry_run: true,
       scan_cap: 1,
@@ -764,7 +764,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 5));
 
     const out = await h.invoke('merge_playlists', {
-      sources,
+      playlists: sources,
       target_playlist_id: TARGET,
       scan_cap: 10,
     });
@@ -806,7 +806,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(playlistResponder(playlists, () => null, 5));
 
     const out = await h.invoke('merge_playlists', {
-      sources,
+      playlists: sources,
       new_name: 'Preview',
       dry_run: true,
       scan_cap: 10,
@@ -841,7 +841,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(withoutTotals);
 
     const out = await h.invoke('merge_playlists', {
-      sources,
+      playlists: sources,
       target_playlist_id: TARGET,
       scan_cap: 10,
     });
@@ -863,7 +863,7 @@ describe('merge_playlists source walk (#902)', () => {
     const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 5));
 
     const out = await h.invoke('merge_playlists', {
-      sources,
+      playlists: sources,
       target_playlist_id: TARGET,
       scan_cap: 10,
     });
@@ -886,7 +886,7 @@ describe('diff_playlists', () => {
     const b = [item('b2'), item('c3'), item('d4')];
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B });
+    const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B });
     const text = textOf(out);
     assert.match(text, /Only in A \(1\)/);
     assert.match(text, /a1 @ position 0/);
@@ -897,7 +897,7 @@ describe('diff_playlists', () => {
     assert.match(text, /c3 @ A:2 → B:1/);
 
     // Identical playlists produce empty sections everywhere.
-    const same = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_A });
+    const same = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_A });
     assert.match(textOf(same), /Only in A \(0\):\n  \(none\)/);
     assert.match(textOf(same), /Moved \(same track, different position\) \(0\)/);
   });
@@ -907,7 +907,7 @@ describe('diff_playlists', () => {
     const b = [item('x3'), item('x1'), item('x2')];
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, response_format: 'json' });
+    const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, response_format: 'json' });
     const data = JSON.parse(textOf(out)) as {
       a_total: number;
       b_total: number;
@@ -931,7 +931,7 @@ describe('diff_playlists', () => {
     const b = [item('q1'), item('q2'), item('q3'), item('shared')];
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
-    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, max_results: 1 });
+    const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, max_results: 1 });
     const text = textOf(out);
     assert.match(text, /Only in A \(3\):/);
     assert.match(text, /Only in B \(3\):/);
@@ -944,7 +944,7 @@ describe('diff_playlists', () => {
     const a = [item('r1')];
     const b = [item('r2')];
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
-    await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, dry_run: true });
+    await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, dry_run: true });
     assert.equal(
       wireCalls(h.client.calls).filter((c) => c.method !== 'GET').length,
       0,
@@ -958,7 +958,7 @@ describe('diff_playlists', () => {
     const b = [...many('a', 120).slice(30), ...many('b', 10)];
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }, () => null, 50));
 
-    const out = await h.invoke('diff_playlists', { a: PAIR_A, b: PAIR_B, response_format: 'json' });
+    const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, response_format: 'json' });
     const data = JSON.parse(textOf(out)) as { a_total: number; b_total: number; only_in_b: string[] };
     assert.equal(data.a_total, 120);
     assert.equal(data.b_total, 100);
@@ -1065,7 +1065,7 @@ describe('#899 bounded array arguments', () => {
     // The bound is a read-cost ceiling; a message that only said "max 10"
     // would leave the reader unable to tell a Spotify limit from a typo.
     await assert.rejects(
-      () => h.invoke('merge_playlists', { sources: eleven, target_playlist_id: TARGET }),
+      () => h.invoke('merge_playlists', { playlists: eleven, target_playlist_id: TARGET }),
       (err: Error) => {
         assert.match(err.message, /max 10 per call/);
         assert.match(err.message, /merge_playlists pages every source before it writes/);
@@ -1095,14 +1095,14 @@ describe('#899 bounded array arguments', () => {
     const h = harness(playlistResponder(playlists));
 
     const asArray = await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       target_playlist_id: TARGET,
       dry_run: true,
     });
     const asCsv = await h.invoke('merge_playlists', {
       // A host that can only send a scalar must reach the SAME bound, not
       // bypass it — so this is the string that has to normalise first.
-      sources: `${SRC_A}, ${SRC_B}`,
+      playlists: `${SRC_A}, ${SRC_B}`,
       target_playlist_id: TARGET,
       dry_run: true,
     });
@@ -1117,7 +1117,7 @@ describe('#899 bounded array arguments', () => {
   it('bounds a CSV source string by the same 10-item limit as the array form', async () => {
     const h = harness(playlistResponder({}));
     await assert.rejects(
-      () => h.invoke('merge_playlists', { sources: eleven.join(','), target_playlist_id: TARGET }),
+      () => h.invoke('merge_playlists', { playlists: eleven.join(','), target_playlist_id: TARGET }),
       /max 10 per call/,
     );
   });
@@ -1132,7 +1132,7 @@ describe('#899 bounded array arguments', () => {
     );
     const h = harness(playlistResponder(many));
     const out = await h.invoke('merge_playlists', {
-      sources: ten,
+      playlists: ten,
       target_playlist_id: TARGET,
       dry_run: true,
     });
@@ -1159,7 +1159,7 @@ describe('#899 bounded array arguments', () => {
       path === '/me/playlists' ? { id: TARGET_2 } : { snapshot_id: 'snap1' },
     ));
     const out = await h.invoke('merge_playlists', {
-      sources: [SRC_A, SRC_B],
+      playlists: [SRC_A, SRC_B],
       new_name: 'merged',
     });
     assert.equal(typeof out.structuredContent?.requests_read, 'number');

@@ -222,14 +222,45 @@ describe('playlist reference shaping', () => {
     }
   });
 
-  it('preserves documented one-release aliases after canonical normalization', () => {
+  it('normalizes canonical references and refuses a retired alias by name (#1287)', () => {
     const resolved = resolvePlaylistInput(
-      { sources: [`spotify:playlist:${ID}`, `https://open.spotify.com/embed/intl-de/playlist/${secondId}`] },
+      { playlists: [`spotify:playlist:${ID}`, `https://open.spotify.com/embed/intl-de/playlist/${secondId}`] },
       { kind: 'list', aliases: ['sources'] },
     );
-    assert.deepEqual(resolved.values, [ID, secondId]);
-    assert.deepEqual(resolved.deprecatedInputs, ['sources']);
-    assert.match(resolved.deprecationNote ?? '', /use playlists.*Alias support/);
+    assert.deepEqual(resolved.values, [ID, secondId], 'canonical values must still normalise');
+    assert.deepEqual(resolved.deprecatedInputs, [], 'a canonical call carries no deprecation metadata');
+    assert.equal(resolved.deprecationNote, null);
+
+    // `sources` is the RETIREMENT record for this tool, not an acceptance set.
+    // Both halves are asserted: the refusal names what was sent, and it names
+    // the replacement. A refusal that only said "unknown parameter" would pass
+    // the first assertion and fail the second.
+    assert.throws(
+      () => resolvePlaylistInput({ sources: [`spotify:playlist:${ID}`] }, { kind: 'list', aliases: ['sources'] }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /sources/, 'the refusal must name the retired input');
+        assert.match(message, /playlists/, 'the refusal must name the replacement');
+        return true;
+      },
+    );
+  });
+
+  it('refuses a retired A/B alias pair, naming both sides and the pair', () => {
+    assert.throws(
+      () => resolvePlaylistInput({ a: ID, b: secondId }, { kind: 'pair', aliases: [['a', 'b']] }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /a and b/, 'the refusal must name both retired fields');
+        assert.match(message, /playlist_a\/playlist_b/, 'the refusal must name the canonical pair');
+        return true;
+      },
+    );
+    // Half a pair is still a refusal, not a silently-resolved one.
+    assert.throws(
+      () => resolvePlaylistInput({ a: ID }, { kind: 'pair', aliases: [['a', 'b']] }),
+      /a/,
+    );
   });
 });
 

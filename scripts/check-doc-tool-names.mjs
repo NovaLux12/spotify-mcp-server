@@ -266,6 +266,20 @@ const retiredToolNames = new Set([
   'get_categories',
   'get_category_playlists',
 ]);
+/**
+ * #1287 — parameter names this server published under a deprecation notice and
+ * withdrew in v3.0. A migration table has to be able to NAME what it replaced,
+ * which is the whole point of the doc, so these are treated like the retired
+ * TOOL names above rather than as typos: a doc may mention one only where it is
+ * talking about the removal. They are not parameters any tool accepts, and
+ * `census.parameterNames` no longer carries them, so without this entry every
+ * honest migration note fails the gate and the only way through would be to
+ * delete the migration table.
+ */
+const retiredParameterNames = new Set([
+  'playlist_ids', 'source_playlist_ids', 'subtract_playlist_ids', 'sources',
+  'playlist_id_a', 'playlist_id_b', 'playlist_a_id', 'playlist_b_id',
+]);
 const documentedMetadata = new Set([
   'toolset_trimmed', 'scope_filtered', 'read_only_hidden',
   'deprecated_inputs', 'deprecation_note', 'auth', 'forbidden', 'not_found',
@@ -276,6 +290,12 @@ const documentedMetadata = new Set([
   // that verdict, so there is nothing to backtick. These two name the refusal
   // shape a host parses, not a tool, a parameter, or a metadata key.
   'elicitation_failed', 'confirmation_unavailable',
+  // #1287: the `reason` a refusal carries when a call sends a playlist input
+  // spelling this server published under a deprecation notice and withdrew in
+  // v3.0. A host routing on `kind` sees `validation`; this is the discriminator
+  // that separates "we never had that name" (unknown_param) from "we did, and
+  // we took it away". It is a refusal shape, not a tool or a parameter.
+  'retired_input',
   // #896: `quota_hit_at_playlist` is the key a paged scan reports to say WHICH
   // playlist a mid-walk 429 stopped it at, so a caller can tell a partial
   // result from a complete one. It is a structuredContent key, not a tool and
@@ -361,7 +381,7 @@ function collectDocumentToolContractErrors(source, file, registry) {
 
 function checkBacktickToolNames(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames]);
   for (const match of source.matchAll(/`([a-z][a-z0-9]*(?:_[a-z0-9]+)+)`/g)) {
     const name = match[1];
     if (knownTools.has(name) || knownNonTools.has(name)) continue;
@@ -400,7 +420,7 @@ function checkRangeEnumLiterals(file, source, registry = census) {
  */
 function checkModuleMapEntries(file, source, registry = census) {
   const knownTools = new Set(registry.toolNames);
-  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames]);
+  const knownNonTools = new Set([...registry.promptNames, ...registry.resourceUris, ...parameterAllowlist, ...documentedMetadata, ...(registry.registrationKeyNames ?? registrationKeyNames), ...retiredToolNames, ...retiredParameterNames]);
   const lines = source.split('\n');
   for (let index = 0; index < lines.length; index += 1) {
     const entry = /^\s*(?:[│|├└─\s])*([a-z0-9_]+\.ts)\s+#\s*(.+?)\s*$/.exec(lines[index]);

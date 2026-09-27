@@ -174,23 +174,25 @@ guarantee tightened:
    automation, set `SPOTIFY_MCP_CONFIRM=never` deliberately.
 2. **Playlist set-operation inputs are canonical.** A/B pairs are
    `playlist_a`/`playlist_b`; ordered lists are `playlists`;
-   `playlist_subtract` takes the base as `base_playlist_id`. The old spellings
-   are still accepted through **2.0** and removed in **2.1**; a result that used
-   one carries `deprecated_inputs` and a `deprecation_note`. Each tool accepts
-   only its own aliases, so send the one its schema declares rather than the
-   whole list below — SPEC.md's table maps every tool to its exact aliases:
+   `playlist_subtract` takes the base as `base_playlist_id`. This was the 2.0
+   contract; the old spellings it was allowed to keep alongside it were
+   withdrawn in **3.0** (#1287). They are no longer in any tool's schema, and a
+   call that still sends one is refused before any Spotify request with a
+   `validation` error whose `reason` is `retired_input`, naming both what was
+   sent and what to send instead. Each tool declared exactly one alias pair or
+   one alias list, so the table below is a per-tool migration map rather than a
+   bundle:
 
-   These are **per-tool** aliases, not a bundle — each tool declares exactly one
-   pair or one list, and the per-tool table in SPEC.md is the contract:
-
-   | family | canonical | the alias that tool declares |
+   | family | canonical | the spelling that tool used to declare |
    |---|---|---|
    | A/B pair | `playlist_a`, `playlist_b` | `a`/`b`, or `playlist_id_a`/`playlist_id_b`, or `playlist_a_id`/`playlist_b_id` — one of them, per tool |
    | ordered list | `playlists` | `playlist_ids`, or `source_playlist_ids`, or `sources` — one of them, per tool |
    | subtraction | `base_playlist_id` + `playlists` | the positional form `playlists: [base, ...sources]` |
 
-   Sending several at once is a `validation` error naming the conflict; a name
-   the tool does not declare is an `unknown_param` error.
+   `base_playlist_id` is required again: with the positional form gone there is
+   no longer a base for a caller to omit. A name the tool does not declare, and
+   is not a retired spelling, is an `unknown_param` error — a different claim
+   from `retired_input`, which says the server published that name until 3.0.
 3. **Numeric caps have canonical names.** `max_results` caps what is returned;
    `limit` and `scan_cap` cap how much of each source is read.
 4. **Unknown arguments are rejected** with a typed `unknown_param` error rather

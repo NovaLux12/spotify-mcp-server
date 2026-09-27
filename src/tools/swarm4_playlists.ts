@@ -34,7 +34,6 @@ import {
   PlaylistPairFields,
   batchSummary,
   describeDryRun,
-  legacyPlaylistPairFields,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -1240,7 +1239,6 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'tracks appear in the same relative order. Read-only. Quota: 4 GETs.',
     {
       ...PlaylistPairFields,
-      ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
       ...sharedListFields,
     },
     async (args) => {
@@ -1546,7 +1544,6 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'decisions). Read-only. Quota: 4 GETs.',
     {
       ...PlaylistPairFields,
-      ...legacyPlaylistPairFields([['playlist_a_id', 'playlist_b_id']]),
       ...sharedListFields,
     },
     async (args) => {

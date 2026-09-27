@@ -206,16 +206,26 @@ export function registerPlaylistFollowTools(server: McpServer, client: SpotifyCl
 
   // #1099: one-release aliases. Identical schema, identical handler, plus the
   // deprecation resolution so the result tells the caller what to move to.
+  //
+  // #1287 corrected the notice, not the registration. These two names carried
+  // "removed in 2.1" the way the input aliases did, and 2.1 shipped with both
+  // still served. #1287 removes the legacy playlist INPUT spellings; retiring
+  // these tool NAMES is a separate change (it also has to drop the `unpin`
+  // destructiveHint OVERRIDES row, SPEC §5) and is not part of this one. So the
+  // description now says what is true today — deprecated, here is the
+  // replacement — instead of dating a removal no release has scheduled. A
+  // notice the code does not honour is the exact defect this issue is about,
+  // and it must not be recreated on the half that was left behind.
   server.tool(
     'pin_playlist',
-    'DEPRECATED, removed in 2.1 — use follow_playlist. This tool never pinned anything; it has always saved the playlist to your Spotify library via PUT /me/library.',
+    'DEPRECATED, use follow_playlist. This tool never pinned anything; it has always saved the playlist to your Spotify library via PUT /me/library.',
     followSchema,
     async (args) => followHandler(server, client, 'pin_playlist', args, resolveDeprecatedToolName('pin_playlist', 'follow_playlist')),
   );
 
   server.tool(
     'unpin_playlist',
-    'DEPRECATED, removed in 2.1 — use unfollow_playlist. This tool never unpinned anything; it has always removed the playlist from your Spotify library via DELETE /me/library.',
+    'DEPRECATED, use unfollow_playlist. This tool never unpinned anything; it has always removed the playlist from your Spotify library via DELETE /me/library.',
     unfollowSchema,
     async (args) => unfollowHandler(server, client, 'unpin_playlist', args, resolveDeprecatedToolName('unpin_playlist', 'unfollow_playlist')),
   );

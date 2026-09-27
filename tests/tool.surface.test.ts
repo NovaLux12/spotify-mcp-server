@@ -485,17 +485,22 @@ describe('tool surface: budget', () => {
     assert.deepEqual(oversized, [], `tools exceeding ${PER_TOOL_MAX_BYTES}B: [${oversized.join(', ')}]`);
   });
 
-  it('preserves operation-specific canonical and legacy playlist bounds', async () => {
+  it('preserves operation-specific canonical playlist bounds', async () => {
     const tools = await listTools({});
     const expected = {
       playlist_subtract: { minItems: 1, maxItems: 10 },
       playlist_difference_plan: { minItems: 1, maxItems: 5 },
       find_duplicate_tracks_across_playlists: { minItems: 2, maxItems: 20 },
     } as const;
-    const aliases = {
-      playlist_subtract: 'subtract_playlist_ids',
-      playlist_difference_plan: 'subtract_playlist_ids',
-      find_duplicate_tracks_across_playlists: 'playlist_ids',
+    // #1287 removed the alias field that used to sit alongside `playlists` on
+    // these three tools, so this now pins the canonical bound AND the absence
+    // of every retired spelling. A read-cost ceiling that silently vanished
+    // would let one of these walk an unbounded number of playlists, and an
+    // alias that came back would ship a deprecation notice nobody can honour.
+    const retired = {
+      playlist_subtract: ['subtract_playlist_ids'],
+      playlist_difference_plan: ['subtract_playlist_ids'],
+      find_duplicate_tracks_across_playlists: ['playlist_ids'],
     } as const;
 
     for (const [name, bounds] of Object.entries(expected)) {
@@ -508,12 +513,9 @@ describe('tool surface: budget', () => {
         [bounds.minItems, bounds.maxItems],
         `${name}.playlists bounds`,
       );
-      const alias = aliases[name as keyof typeof aliases];
-      assert.deepEqual(
-        [schema.properties?.[alias]?.minItems, schema.properties?.[alias]?.maxItems],
-        [bounds.minItems, bounds.maxItems],
-        `${name}.${alias} bounds`,
-      );
+      for (const alias of retired[name as keyof typeof retired]) {
+        assert.ok(!(alias in (schema.properties ?? {})), `${name} still advertises retired input ${alias}`);
+      }
     }
   });
 

@@ -13,11 +13,10 @@ import { getConfig } from '../config.js';
 import {
   DryRun,
   PlaylistListFields,
+  playlistListFields,
   PlaylistPairFields,
   PlaylistRef,
   batchSummary,
-  legacyPlaylistPairFields,
-  playlistListInputFields,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -242,7 +241,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       description:
         'Merge multiple playlists into one. Deduplicates tracks across sources (first-seen order wins) and adds them in batches of 100. Pass target_playlist_id to append to an existing playlist (it is NOT cleared) or new_name to create a fresh playlist.',
       inputSchema: z.object({
-        ...playlistListInputFields(['sources'], { min: 1, max: 10, limitReason: 'merge_playlists pages every source before it writes' }),
+        ...playlistListFields({ min: 1, max: 10, limitReason: 'merge_playlists pages every source before it writes' }),
         target_playlist_id: PlaylistRef.optional().describe('Existing playlist to APPEND into (never cleared)'),
         new_name: z.string().optional().describe('Name for a newly created target playlist'),
         public: z.boolean().optional().describe('Visibility of a NEW playlist. Default: false'),
@@ -445,7 +444,6 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       ...sharedListFields,
       ...PlaylistWalkFields,
       ...PlaylistPairFields,
-      ...legacyPlaylistPairFields([['a', 'b']]),
       dry_run: DryRun,
     },
     async (args) => {

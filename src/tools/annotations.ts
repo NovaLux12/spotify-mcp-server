@@ -39,7 +39,7 @@ import { z } from 'zod';
 import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
-import { finalInputSchema } from '../shaping.js';
+import { finalInputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason } from '../client.js';
 
 /**
@@ -1083,10 +1083,22 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 26,119 + 210 + 647 happens to land on the measurement, but the addition is
   // a coincidence of two independent edits and is not how the number was
   // obtained.
-  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26214]),
-  manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 5348]),
+  //
+  // #1287, RE-MEASURED. Removing the legacy playlist input spellings shrank
+  // this module by 2,353B and `playlistops` by 956B; the four other modules
+  // that carried a spelling (exhaustmisc, exhaust2playlists, swarm3playlistops,
+  // swarm4playlists) were re-measured the same way — each baseline zeroed, the
+  // startup gate allowed to fail loudly, and the figure it reported written
+  // back. Every one of the six ceilings therefore FELL rather than rose: the
+  // reclaimed bytes are the alias descriptions, and no warrant was needed
+  // because nothing here needed more room. The deltas are the removal itself,
+  // not an estimate: 26,214 -> 23,861, 5,348 -> 4,392, 8,324 -> 7,876,
+  // 23,326 -> 22,423, 31,587 -> 28,891, 22,016 -> 21,084 (-8,288B in total,
+  // which is also the aggregate drop).
+  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 23861]),
+  manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
-  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3065], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3027], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
   manifestEntry('analytics', 'personalization', lazyModule('./analytics.js', 'registerAnalyticsTools'), [4, 2817], { readOnlySafe: true }),
@@ -1208,7 +1220,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
   manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1211], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', lazyModule('./smart.js', 'registerSmartTools'), [1, 2364], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 8324], { scopeKey: 'exhaustmisc' }),
+  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 7876], { scopeKey: 'exhaustmisc' }),
 
 
 
@@ -1226,7 +1238,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19443], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17473], { scopeKey: 'playback' }),
-  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23326], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 22423], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
   // the previous baseline is #896: `playlist_staleness_report` gained the
   // shared `DryRunScan` preview and the two scan tools' longer truthful-cost
@@ -1269,9 +1281,9 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
-  manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 31587], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 28891], { scopeKey: 'playlists' }),
   manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23449], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 22016], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 21084], { scopeKey: 'playlists' }),
 
 
 ] as const;
@@ -1985,6 +1997,41 @@ function unknownToolResult(registry: Record<string, RegistryEntry>, requested: s
   }, `unknown tool ${JSON.stringify(requested)}`);
 }
 
+/**
+ * The refusal for a call carrying a playlist input spelling removed in v3.0
+ * (#1287), or `undefined` when the call carries none.
+ *
+ * `kind` is `validation`, not `unknown_param`: the input is not a typo, it is a
+ * name this server published under a deprecation notice and then withdrew, and
+ * a host routing on `kind` should be able to tell that apart from a genuine
+ * unknown name without parsing prose. `reason` is the stable discriminator
+ * `retired_input`, and the retired names ride along in `param` so the caller
+ * can see which spelling was rejected without matching the message text.
+ */
+function retiredInputResult(tool: string, requested: string, args: Readonly<Record<string, unknown>>) {
+  // `Object.hasOwn`, not a bare index: the table is a frozen object LITERAL, so
+  // it still carries Object.prototype. A bare `RETIRED_PLAYLIST_INPUTS[requested]`
+  // answers `constructor` or `toString` with a function, which has no `kind` or
+  // `aliases` and would throw out of the boundary rather than return a refusal.
+  // The registry check upstream makes this unreachable today — every name that
+  // reaches here is registered, and registered names are snake_case — but the
+  // guard is the difference between a table that is exactly as long as it reads
+  // and one that silently answers for keys it does not contain.
+  if (!Object.hasOwn(RETIRED_PLAYLIST_INPUTS, requested)) return undefined;
+  const config = RETIRED_PLAYLIST_INPUTS[requested];
+  if (!config) return undefined;
+  const { retired, canonical } = retiredInputsOnCall(args, config);
+  if (retired.length === 0) return undefined;
+  const message = retiredInputMessage(retired, canonical);
+  return errorResult(tool, {
+    kind: 'validation',
+    reason: 'retired_input',
+    fix: `Remove ${humanList(retired.map(safeIdentifier))} and pass ${canonical} instead.`,
+    text: `${tool} rejected ${humanList(retired.map(safeIdentifier))}: ${message}`,
+    param: retired.map(safeIdentifier).join(', '),
+  }, `retired playlist input ${JSON.stringify(retired.join(', '))}`);
+}
+
 function unknownParamResult(tool: string, param: string, candidates: string[]) {
   let suggestions = nearestNames(param, candidates);
   if (suggestions.length === 0 && param === 'limit' && candidates.includes('offset')) {
@@ -2081,6 +2128,15 @@ export function installToolErrorBoundary(server: McpServer): number {
     const shape = getObjectShape(entry.inputSchema);
     const knownParams = shape ? Object.keys(shape) : [];
     const args = request.params.arguments ?? {};
+    // #1287: a retired playlist input spelling is answered as its own typed
+    // refusal BEFORE the unknown-parameter fallback, because the two claims are
+    // different. `unknown_param` says "we never had that name"; these names were
+    // in the registry until v3.0 and the caller is following a deprecation
+    // notice we served them. It runs here, ahead of every handler and therefore
+    // ahead of any Spotify request, which is where the removal contract says a
+    // refused input must fail.
+    const retired = retiredInputResult(tool, requested, args);
+    if (retired) return retired;
     const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
     if (unknown) return unknownParamResult(tool, unknown, knownParams);
 
