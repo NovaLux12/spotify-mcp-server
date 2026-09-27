@@ -5,6 +5,7 @@ import { SpotifyClient } from './client.js';
 import { initConfig, renderEnvHelp, statsfmEnv } from './config.js';
 import {
   applyToolAnnotations,
+  applyToolOutputSchemas,
   assertAggregateSurfaceBudget,
   collectAggregateSurfaceMeasurement,
   assertModuleSchemaBudgets,
@@ -184,6 +185,16 @@ async function buildMcpServer(
     registerPrompts(server, { resourceHints: resourcesActive });
   }
   assertToolNamingPolicy(Object.keys((server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {}));
+
+  // Published output contracts (#687), before either budget gate below. Both
+  // `assertModuleSchemaBudgets` and `assertAggregateSurfaceBudget` measure
+  // `outputSchema`, so a declaration made after them would be free — and a
+  // payload no gate can see is not one anybody is paying for. It throws on a
+  // module nobody classified, which is the state this issue exists to end.
+  const outputSchemas = applyToolOutputSchemas(server);
+  if (options.announce && (outputSchemas.total === 0 || outputSchemas.declared === 0)) {
+    console.error('[spotify-mcp] warning: no tool published an outputSchema (#687)');
+  }
 
   assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));
 

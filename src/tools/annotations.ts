@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -882,6 +882,95 @@ export function applyToolAnnotations(server: McpServer): { total: number; annota
   return { total: Object.keys(registry).length, annotated };
 }
 
+/**
+ * Publish an `outputSchema` on every tool whose module is listed in
+ * `OUTPUT_SCHEMA_BY_MODULE` (#687).
+ *
+ * WHY A POST-REGISTRATION PASS AND NOT A REGISTRATION ARGUMENT. The SDK has two
+ * registration APIs and only one of them can carry an output schema:
+ * `registerTool(name, config, cb)` reads `config.outputSchema`, while the
+ * positional `server.tool(name, description, shape, cb)` this tree uses
+ * everywhere hardcodes `outputSchema: undefined` at the point it builds the
+ * registry entry. Migrating the declaration would therefore mean rewriting the
+ * registration call of every tool in the list — hundreds of edits whose only
+ * content is a schema the module already implies, and every one of them a place
+ * for the schema and the tool to drift apart. Assigning after registration is
+ * the same model `applyToolAnnotations` above already uses, and it means the
+ * declaration is data (`OUTPUT_SCHEMA_BY_MODULE`) rather than something repeated
+ * in each module.
+ *
+ * The assignment is direct rather than through `update({ outputSchema })` on
+ * purpose: the SDK's `update` runs its argument through `objectFromShape`,
+ * which expects a zod RAW SHAPE (`{ field: z.string() }`) and would wrap a
+ * `z.object()` inside another object. The registered entry holds the zod schema
+ * itself — which is what `finalOutputSchema`, `validateOutput` and the SDK's own
+ * output check all read.
+ *
+ * ORDERING IS LOAD-BEARING. This runs before `assertModuleSchemaBudgets` and
+ * before `assertAggregateSurfaceBudget`, because both measure `outputSchema` and
+ * a declaration that neither gate can see is a declaration nobody is paying for.
+ * `scripts/surface-census.mjs` runs this same function between its own
+ * registration and its aggregate measurement for the same reason.
+ *
+ * A module named in `OUTPUT_SCHEMA_BY_MODULE` that registers no tools is
+ * skipped, not complained about: an opt-in module this session trimmed away is
+ * a normal outcome, and `metadata.tools` only holds names for modules that
+ * actually registered. Every module that DID register has to be in exactly one
+ * of the three sets — declared, prose-only, or verified-safe-and-pending — and
+ * a module in none of them fails startup. That is the acceptance criterion #687
+ * asks for ("a test fails when a tool returns structuredContent without a
+ * declared outputSchema, with an explicit allow-list for legacy tools") running
+ * at startup rather than only in CI, so a module that slipped past review is
+ * caught before a host sees the surface.
+ */
+/**
+ * @param familyFor  How a module's file resolves to a family. Injectable ONLY
+ *   so the test can drive THIS loop with a map that is missing an entry — the
+ *   pass's own body used to be duplicated in the test to allow exactly that, and
+ *   the copy was a test that could not fail: deleting this function's `throw`
+ *   left the whole 5,142-test suite green, because the test proved the copy
+ *   fired rather than this. A default parameter is the whole fix; the loop
+ *   below is the only implementation of the policy.
+ */
+export function applyToolOutputSchemas(
+  server: McpServer,
+  familyFor: (file: string) => OutputSchemaFamily | undefined = outputSchemaFamilyForModule,
+): { total: number; declared: number } {
+  const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
+  if (!registry || typeof registry !== 'object') return { total: 0, declared: 0 };
+  let declared = 0;
+  const unclassified: string[] = [];
+  for (const module of REGISTRAR_MANIFEST) {
+    // A module this session trimmed or gated away registered nothing, so there
+    // is nothing to declare and nothing to classify. That is a normal outcome,
+    // not a gap in the map.
+    const names = moduleToolNames(server, module.key);
+    if (names.length === 0) continue;
+    const family = familyFor(module.file);
+    if (family !== undefined) {
+      const schema = OUTPUT_SCHEMA_FAMILIES[family];
+      for (const name of names) {
+        const entry = registry[name];
+        if (!entry || typeof entry !== 'object') continue;
+        entry.outputSchema = schema;
+        declared++;
+      }
+      continue;
+    }
+    if (PROSE_ONLY_MODULES.has(module.file) || PENDING_OUTPUT_SCHEMA_MODULES.has(module.file)) continue;
+    unclassified.push(module.file);
+  }
+  if (unclassified.length > 0) {
+    throw new Error(
+      `tool modules are unclassified for outputSchema (#687): ${unclassified.sort().join(', ')}. `
+      + 'Add each to OUTPUT_SCHEMA_BY_MODULE (with a family), to PROSE_ONLY_MODULES (with the '
+      + 'prose-only path that keeps it out), or to PENDING_OUTPUT_SCHEMA_MODULES (verified safe, '
+      + 'awaiting aggregate headroom).',
+    );
+  }
+  return { total: Object.keys(registry).length, declared };
+}
+
 export type ModuleRegistrationStatus =
   | 'active'
   | 'toolset_trimmed'
@@ -1349,7 +1438,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26562]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
-  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3027], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3807], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
   // #695: baseline is the DEFAULT surface (3 tools). `listening_report` is a
@@ -1497,7 +1586,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `npm run count:tools` on 2026-09-27: 1718 B -> 1884 B (+166 B). Tool
   // count unchanged at 1.
   manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1884], { scopeKey: 'playlists' }),
-  manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 750], { alwaysActive: true, readOnlySafe: true }),
+  manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 825], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops
   // `switch_account` per-tool in a SPOTIFY_MCP_READONLY session (it does not
@@ -1517,7 +1606,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
-  manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2248], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   // #598. `alwaysActive` for the same reason `swarm3meta` above carries it:
   // the DEFAULT session serves the `prompts` set, and `dj` /
   // `playlist_from_mood` / `discover_weekly_alternative` / `crate_digging` now
@@ -2186,6 +2275,14 @@ type ErrorKind =
   // cancellation reported as `unavailable` (408-shaped) would have the host
   // re-issue the very request it just cancelled.
   | 'cancelled'
+  // #687: the tool returned a payload its OWN declared `outputSchema` refuses.
+  // Its own kind because every neighbouring class points the host at its input
+  // or tells it to retry, and neither is true: nothing the caller sent is at
+  // fault, and the failure is deterministic, so a retry fails identically. The
+  // fix is in this server — see the `output validation failed` arm of
+  // `publicFailure`, which claims this class before the input-validation arm
+  // below it can match the word "required" in the message.
+  | 'output_contract'
   | 'internal';
 
 interface ErrorFields {
@@ -2358,6 +2455,7 @@ function defaultReason(kind: ErrorKind): string {
     case 'unknown_tool': return 'tool_not_registered';
     case 'unknown_param': return 'parameter_not_accepted';
     case 'cancelled': return 'cancelled_by_caller';
+    case 'output_contract': return 'structured_content_failed_declared_output_schema';
     case 'internal': return 'internal_error';
   }
 }
@@ -2598,6 +2696,25 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
       reason: defaultReason('conflict'),
       fix: 'Re-read the playlist and re-run to review the new destructive impact.',
       text: `${tool} refused to write because the playlist changed since it was read; re-read it and re-run to review the new destructive impact.`,
+    };
+  }
+  // #687: the tool's own declared `outputSchema` refused the payload the tool
+  // returned. Claimed HERE, above the input-validation arm, and that placement is
+  // the whole point rather than a style choice: the two messages
+  // `validateOutput` throws differ only by a trailing clause, and the longer one
+  // ends `... structured content is required`. The unanchored `required` in the
+  // arm below would match it and report a server-side defect as the caller
+  // having sent bad arguments — the AGENTS.md §6 shape, a check matching the
+  // wrong thing. With only the shorter message it fell through to `internal`,
+  // whose advice to "retry once" is equally wrong for a deterministic defect.
+  // So the class is named rather than left to which of two strings a function
+  // happened to build.
+  if (/^output validation failed\b/.test(lower)) {
+    return {
+      kind: 'output_contract',
+      reason: defaultReason('output_contract'),
+      fix: 'This is a server-side defect and is deterministic; retrying will not change it.',
+      text: `${tool} returned a payload that does not match its declared output schema; this is a server-side defect and retrying will not change it.`,
     };
   }
   if (/^(?:invalid (?:(?:playable )?(?:spotify )?(?:reference|uris?)|spotify track\/episode uri|playlist reference)|(?:no resolvable|no valid).*uris?\b)|invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {

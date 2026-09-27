@@ -89,7 +89,7 @@ const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_
 // this mirror and `cancelled` (#676) was added alongside it.
 const KNOWN_ERROR_KINDS = [
   'auth', 'forbidden', 'not_found', 'not_modified', 'rate_limited', 'unavailable',
-  'conflict', 'validation', 'unknown_tool', 'unknown_param', 'cancelled', 'internal',
+  'conflict', 'validation', 'unknown_tool', 'unknown_param', 'cancelled', 'output_contract', 'internal',
 ] as const;
 
 /**

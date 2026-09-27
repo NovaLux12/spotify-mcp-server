@@ -18,10 +18,11 @@
  * asserting "it changed". A gate that counted the field but got its size wrong,
  * or counted it twice, fails here; a "not equal" assertion would not.
  *
- * Nothing in this file declares an output schema on a production tool. The
- * schema is attached to a throwaway probe server so the fix can be tested
- * without changing the shipped surface: on the real registry the measurement
- * must still be byte-identical, which is itself asserted below.
+ * The probes attach a schema to a throwaway server, so the size relationship
+ * is measured in isolation from the shipped surface. The last test then runs
+ * the invariant over the REAL registry — which, since #687, genuinely does
+ * declare output schemas — and asserts the aggregate charges for exactly the
+ * bytes the wire sends.
  *
  * Run: node --import tsx --test tests/output-schema-budget.test.ts
  */
@@ -36,6 +37,7 @@ import { z } from 'zod';
 import {
   AGGREGATE_SURFACE_LIMITS,
   applyToolAnnotations,
+  applyToolOutputSchemas,
   assertAggregateSurfaceBudget,
   collectAggregateSurfaceMeasurement,
   installToolErrorBoundary,
@@ -209,32 +211,49 @@ describe('#1376 the schema budget counts outputSchema', () => {
     assert.equal(withoutOutput, preFix, 'no schema declared must cost exactly what it cost before');
   });
 
-  it('the real production surface is unchanged by the fix', async () => {
-    // Every tool on this tree declares no output schema, so fixing the
-    // measurement must not move the real number by a single byte. The
-    // expectation is the aggregate's own bytes with every `outputSchema` key
-    // stripped from the serialized payload, which is exactly the number the
-    // gate reported before this change — so this holds as the surface moves,
-    // where a hardcoded 602,553B would rot the first time a tool was added.
+  it('the real production surface measures exactly what the wire sends', async () => {
+    // The production surface DOES declare output schemas as of #687, so the
+    // registry is built the way `startMcpServer` builds it — including the
+    // declaration pass. Leaving that pass out would keep this test passing for
+    // a reason that stopped being true: it asserted "no tool declares a
+    // schema" about a tree that now declares 32 of them, and the assertion
+    // only held because the test built a smaller server than production.
+    //
+    // The invariant is unchanged and is the one worth holding: the aggregate's
+    // bytes equal the serialized wire payload with every `outputSchema` key
+    // removed — exactly what the pre-#1376 literal produced. Deriving it
+    // rather than hardcoding a number means it survives the surface moving,
+    // which a pinned figure would not.
     const server = new McpServer({ name: 'real', version: '0.0.0' });
     await registerManifestModules(server, new SpotifyClient(), { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
     applyToolAnnotations(server);
+    applyToolOutputSchemas(server);
     const registry = (server as unknown as { _registeredTools: Record<string, { outputSchema?: unknown }> })._registeredTools;
     const declared = Object.entries(registry).filter(([, entry]) => entry.outputSchema !== undefined);
-    assert.deepEqual(declared.map(([name]) => name), [], 'precondition: no production tool declares an output schema');
+    assert.ok(declared.length > 0, 'precondition: #687 puts output schemas on the real surface');
 
     const measurement = collectAggregateSurfaceMeasurement(server);
     assert.equal(measurement.toolCount, Object.keys(registry).length);
 
-    // Re-derive the payload the pre-#1376 literal produced: the same fields,
-    // minus the one this change added. Equal numbers prove the fix is a no-op
-    // on a surface with no output schemas, for whatever the surface is today.
-    const preFixTools = (await listWireTools(server)).map(({ outputSchema: _omitted, ...rest }) => rest);
+    const wireTools = await listWireTools(server);
+    const wireBytes = Buffer.byteLength(JSON.stringify(wireTools), 'utf8');
     assert.equal(
       measurement.schemaBytes,
-      Buffer.byteLength(JSON.stringify(preFixTools), 'utf8'),
-      'measuring outputSchema must not change the payload of a surface that declares none',
+      wireBytes,
+      'the aggregate must charge for exactly what the wire sends, output schemas included',
     );
+
+    // The equality above holds just as well if BOTH sides dropped the field,
+    // so it is not on its own evidence the field is being charged. The
+    // pre-#1376 payload is the same tools with every `outputSchema` key
+    // removed, and it must be strictly smaller — by the cost of the
+    // declarations. Deriving it rather than pinning a number keeps the test
+    // honest as the rollout grows.
+    const preFixBytes = Buffer.byteLength(
+      JSON.stringify(wireTools.map(({ outputSchema: _omitted, ...rest }) => rest)),
+      'utf8',
+    );
+    assert.ok(wireBytes > preFixBytes, 'the wire sends outputSchema bytes the pre-#1376 payload did not');
   });
 
   it('the aggregate gate now fails closed on output schemas alone', () => {

@@ -41,6 +41,7 @@ import {
   AGGREGATE_SURFACE_LIMITS,
   TOOL_SURFACE_BUDGET,
   applyToolAnnotations,
+  applyToolOutputSchemas,
   assertToolNamingPolicy,
   collectAggregateSurfaceMeasurement,
   registerManifestModules,
@@ -169,6 +170,12 @@ async function measureIndependently() {
     await registerManifestModules(server, client, { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
     const registered = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
     assertToolNamingPolicy(Object.keys(registered));
+    // #687: the output-schema pass runs at startup BEFORE this measurement, and
+    // `collectAggregateSurfaceMeasurement` charges for `outputSchema`. A helper
+    // that skipped it would measure the pre-#687 surface and hold the document
+    // to a number no live server produces — which is precisely the drift this
+    // test exists to catch, aimed at itself.
+    applyToolOutputSchemas(server);
     applyToolAnnotations(server);
     return collectAggregateSurfaceMeasurement(server);
   } finally {
