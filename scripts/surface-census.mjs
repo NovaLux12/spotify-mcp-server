@@ -15,7 +15,7 @@
  */
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -189,8 +189,10 @@ const GATED_SCAN_EXCEPTIONS = [
  * AGENTS.md §6's class. So the invariant this flag establishes is not "the
  * census wrote something" but "**the file exists if and only if this run
  * succeeded**" — one writer, holding the child's real exit status, decides
- * whether the file is installed at all. There is no path here that leaves a
- * file behind for a run that failed.
+ * whether the file is installed at all. Enforcing that means removing a file an
+ * *earlier* run left behind, not only declining to write one: a self-hosted
+ * runner keeps its working directory between jobs, and a stale census is a
+ * plausible value for a value that was never produced.
  *
  * The install is a temp file plus a `rename` rather than one `writeFileSync`,
  * because a `writeFileSync` that dies mid-write leaves a truncated artifact —
@@ -230,8 +232,21 @@ if (!process.env.SPOTIFY_MCP_SURFACE_CENSUS) {
     // than installed, because a zero-byte artifact is precisely the file the
     // consumers cannot read — the one shape `--out` exists to make impossible.
     if (child.error || status !== 0 || !child.stdout?.length) {
+      // A file left over from an EARLIER run is the one shape this flag cannot
+      // leave to chance. GitHub-hosted runners check out fresh, so the target
+      // does not pre-exist there — but a self-hosted runner keeps its working
+      // directory between jobs, and a local re-run does too. A stale census
+      // from a previous run is a plausible value for a value that was never
+      // produced, which is the failure this whole flag exists to remove, so
+      // the invariant "the file exists if and only if this run succeeded" has
+      // to be enforced against the file that is already there.
+      const stale = existsSync(outPath);
+      if (stale) rmSync(outPath, { force: true });
       process.stderr.write(
         `surface census did not succeed (${describeCensusFailure(child)}); no census written to ${outPath}.\n`
+        + (stale
+          ? 'A census left by an earlier run was removed, so it cannot be read as this run\'s.\n'
+          : '')
         + 'The file is absent so the gates that read it fail on a missing artifact rather than on one that was never generated.\n',
       );
       process.exit(status === 0 ? 1 : status);

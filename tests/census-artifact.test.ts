@@ -264,6 +264,34 @@ describe('#1487 the census artifact exists if and only if the census succeeded',
     });
   });
 
+  it('removes a census an EARLIER run left behind (#1487)', () => {
+    // The invariant is "the file exists if and only if THIS run succeeded", and
+    // declining to write is only half of that. A file already at the target —
+    // carried over by a self-hosted runner, which keeps its working directory
+    // between jobs, or by a local re-run — is read by all three gates as if
+    // this run had produced it. A stale census parses, and is a plausible value
+    // for a value that was never produced, which is the exact failure `--out`
+    // exists to remove.
+    withScratch((dir) => {
+      const out = join(dir, '.surface-census.json');
+      // A census from a "previous run": valid JSON, so a reader gets past
+      // `JSON.parse` and dies on its contents instead.
+      writeFileSync(out, JSON.stringify({ tools: 'not-an-array' }));
+
+      const produced = runCensus(['--out', out, '--description-fixture', missingMarkerFixture(dir)], dir);
+      assert.notEqual(
+        childExitCode(produced, 'a census run that fails before printing'),
+        0,
+        'the fixture was supposed to fail this run',
+      );
+      assert.equal(
+        existsSync(out),
+        false,
+        'a census left by an earlier run survived a failed run, so the gates read it as this run\'s',
+      );
+    });
+  });
+
   it('refuses --out with no path rather than writing to nothing (#1487)', () => {
     withScratch((dir) => {
       for (const args of [['--out'], ['--out', '--check']]) {
