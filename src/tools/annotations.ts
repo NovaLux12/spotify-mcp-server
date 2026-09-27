@@ -1073,7 +1073,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // per-market failure reason it reports. Tool count is unchanged at 15 — the
   // tool is not retired, its return shape is. Measured from the real
   // `tools/list` over stdio, not estimated.
-  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11882], { scopeKey: 'playback' }),
+  // Then 11,882 -> 11,773B (-109) when #922 reworded this module's quota
+  // cost in words: the quota-circle glyphs and the cross-sell breadcrumbs
+  // come out of the 15 descriptions. The two deltas compose, and neither is
+  // measured off the other's tree — this figure is the merged measurement.
+  manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11773], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5080], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
