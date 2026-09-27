@@ -259,6 +259,11 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'artist_probe_cache_hits',
   'artist_probe_requests',
   'artist_probes',
+  // #629: import_profile_state's description names the one store key it no
+  // longer writes, so a caller does not expect its ledger to be restored. A
+  // key inside the archive it reads, never a tool it is routing to — the same
+  // category as `schema_version` above.
+  'mutations_history',
 ]);
 
 describe('tool surface: annotations', () => {

@@ -370,12 +370,17 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
     } finally { await rm(dir,{recursive:true,force:true}); }
   });
 
-  it('tightens a pre-existing world-readable ledger to 0600 and 0700 on the directory',async()=>{
+  it('leaves a pre-existing ledger byte- and mode-identical (#629)',async()=>{
+    // #628 re-asserted 0600/0700 on every write, and this import used to be
+    // one of the writers. The ledger is export-only now (#629), so the import
+    // does not reach the file at all — the mode re-assertion lives on the
+    // append path, covered by tests/infra.test.ts.
     const dir=await mkdtemp(join(tmpdir(),'portability-hist-'));
     const histDir=join(dir,'history');
     await mkdir(histDir,{recursive:true,mode:0o755});
     const histPath=join(histDir,'mutations.jsonl');
-    await writeFile(histPath,'{"method":"PUT","path":"/me/library"}\n');
+    const before='{"ts":"2026-01-01T00:00:00.000Z","who":"agent","method":"PUT","path":"/me/library","target":"abc"}\n';
+    await writeFile(histPath,before);
     await chmod(histPath,0o644);
     await chmod(histDir,0o755);
     const prev=process.env.SPOTIFY_MCP_HISTORY_DIR;
@@ -389,10 +394,12 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
       const { invoke }=harness();
       // #623: the archive is a caller-supplied read, so its scratch directory
       // is opted in as an allowed read root for this call.
-      await withAllowedReadRoot(dir,()=>invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' }));
+      const out=await withAllowedReadRoot(dir,()=>invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' }));
 
-      assert.equal((await stat(histPath)).mode & 0o777,0o600);
-      assert.equal((await stat(histDir)).mode & 0o777,0o700);
+      assert.equal(await readFile(histPath,'utf8'),before,'the import does not append to, replace, or rewrite the ledger');
+      assert.equal((await stat(histPath)).mode & 0o777,0o644,'and does not touch its mode either — it is not a write path any more');
+      assert.equal((await stat(histDir)).mode & 0o777,0o755);
+      assert.match(textOf(out),/mutations_history: export-only store/);
     } finally {
       if (prev === undefined) delete process.env.SPOTIFY_MCP_HISTORY_DIR;
       else process.env.SPOTIFY_MCP_HISTORY_DIR = prev;

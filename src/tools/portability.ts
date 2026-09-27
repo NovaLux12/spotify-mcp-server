@@ -23,7 +23,7 @@ import { getConfig } from '../config.js';
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
-import { appendFile, chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { exportRootDir, READ_ROOTS_ENV_HINT, ownStoreRoots, readLocalFile, readRoots, resolveOutputPath, writeOutputFile } from '../paths.js';
@@ -46,8 +46,6 @@ import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';
 import {
   DEFAULT_HISTORY_READ_LIMIT,
-  HISTORY_DIR_MODE,
-  HISTORY_FILE_MODE,
   historyFilePath,
   isHistoryEnabled,
   readHistory,
@@ -528,6 +526,56 @@ interface MergeOutcome {
 }
 
 const NO_DROPPED = { dropped_duplicates: 0, dropped_expired: 0, unreadable_timestamps: 0 };
+
+/**
+ * #629: why an archive's `mutations_history` is never written back. Reported
+ * verbatim in the per-store plan row and in `results`.
+ */
+const LEDGER_SKIP_REASON = 'export-only store';
+
+/**
+ * #629: the exact field set `writeHistoryRecord` persists
+ * (src/history.ts). An archive's ledger is validated against this so that a
+ * payload which is not a ledger — a bare string, an object with invented
+ * fields, a `snapshot_id` carrying prose — is refused by name and index
+ * instead of reaching a file whose readers assume the shape.
+ */
+const LEDGER_FIELDS = new Set(['ts', 'who', 'method', 'path', 'target', 'snapshot_id']);
+
+/** The two fields every persisted record carries; the rest are optional. */
+const LEDGER_REQUIRED = ['method', 'path'] as const;
+
+/**
+ * #629: fail closed on an archive's mutation ledger. Called while the import
+ * is still PLANNING, so throwing here means no store has been written.
+ */
+function assertArchiveLedgerRecords(value: unknown): void {
+  if (!Array.isArray(value)) {
+    throw new Error(`Archive stores.mutations_history must be an array of mutation records, got ${value === null ? 'null' : Array.isArray(value) ? 'an array' : typeof value}. It is an export-only store and is never imported.`);
+  }
+  value.forEach((record, index) => {
+    const at = `stores.mutations_history[${index}]`;
+    if (!isPlainRecord(record)) {
+      throw new Error(`${at} is not a mutation record: got ${record === null ? 'null' : Array.isArray(record) ? 'an array' : typeof record}. It is an export-only store and is never imported.`);
+    }
+    for (const key of LEDGER_REQUIRED) {
+      if (typeof record[key] !== 'string') {
+        throw new Error(`${at} is missing a string "${key}" (got ${record[key] === undefined ? 'nothing' : typeof record[key]}).`);
+      }
+    }
+    for (const [key, field] of Object.entries(record)) {
+      if (!LEDGER_FIELDS.has(key)) {
+        throw new Error(`${at} carries the unknown field "${key}" — a ledger record holds only ${[...LEDGER_FIELDS].join(', ')}.`);
+      }
+      if (typeof field !== 'string') {
+        throw new Error(`${at}.${key} must be a string, got ${field === null ? 'null' : typeof field}.`);
+      }
+    }
+    if (typeof record.ts === 'string' && Number.isNaN(Date.parse(record.ts))) {
+      throw new Error(`${at}.ts is not a readable timestamp: ${JSON.stringify(record.ts)}.`);
+    }
+  });
+}
 
 /** Entries the incoming store adds vs. keys it overrides on the existing one. */
 function keyCounts(existing: Record<string, unknown>, merged: Record<string, unknown>): { added: number; conflicts: number } {
@@ -1229,7 +1277,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
   server.tool(
     'import_profile_state',
-    'Restore local sidecar stores from a profile-state archive. merge unions each store on its own keys and de-duplicates search_history by entry id; overwrite replaces each store, keeping a 0600 <file>.bak of what it replaced. dry_run reports the per-store plan and writes nothing. Refuses newer schema versions.',
+    'Restore local sidecar stores from a profile-state archive. merge unions each store on its own keys and de-duplicates search_history by entry id; overwrite replaces each store, keeping a 0600 <file>.bak of what it replaced. The mutation ledger (stores.mutations_history) is export-only: it is never appended to or replaced, and an archive carrying it is reported as skipped. dry_run reports the per-store plan and writes nothing. Refuses newer schema versions.',
     {
       input_path: z.string().describe('Path to the profile-state archive JSON file'),
       mode: z.enum(['merge', 'overwrite']).optional().default('merge').describe('merge = union on each store\'s own keys; overwrite = replace, keeping a .bak'),
@@ -1284,6 +1332,8 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         unreadable_timestamps: number;
         /** Overwrite only: the .bak this run wrote, or would write. */
         backup: string | null;
+        /** Why a skipped store was skipped, when the skip was a policy call. */
+        skip_reason?: string;
       }
 
       /** The plan as reported — the bytes headed for the store are withheld. */
@@ -1395,51 +1445,32 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         });
       };
 
-      /** #752: the mutation ledger is JSONL, appended to rather than rewritten. */
-      const planLedger = async (value: unknown): Promise<void> => {
-        if (!Array.isArray(value)) return;
-        const histPath = historyFilePath();
-        const present = await fileExists(histPath);
-        // An unreadable ledger reports no count rather than a fabricated zero,
-        // and a guard refusal (not a regular file, over the cap) is "unreadable"
-        // on exactly those terms — it must never become a row count.
-        const existingKeys = present
-          ? await readLocalFile({
-              roots: ownStoreRoots(histPath),
-              tool: 'import_profile_state',
-              target: histPath as string,
-            })
-            .then((raw) => raw.split('\n').filter((l) => l.trim().length > 0).length)
-            .catch(() => null)
-          : 0;
-        const data = `${value.map((r) => JSON.stringify(r)).join('\n')}\n`;
-        if (args.mode === 'overwrite') {
-          plan.push({
-            store: 'mutations_history',
-            path: histPath,
-            action: present ? 'overwritten' : 'created',
-            summary: present
-              ? `replace mutations_history with ${value.length} ledger records — the current ledger is kept at ${histPath}.bak`
-              : `create mutations_history with ${value.length} ledger records (no local ledger to replace)`,
-            data,
-            existing_keys: 0,
-            added: value.length,
-            conflicts: 0,
-            ...NO_DROPPED,
-            backup: present ? `${histPath}.bak` : null,
-          });
-          return;
-        }
+      /**
+       * #629: the mutation ledger is EXPORT-ONLY. It is the record of what
+       * this server did on this machine, and `mutation_log_export` renders its
+       * `who`/`path`/`snapshot_id` fields back to the model — so an archive
+       * that could write it could both erase the audit trail (overwrite) and
+       * plant text that reads back as history (merge). An import therefore
+       * never touches the file, in either mode.
+       *
+       * The archive's copy is still checked, and rejected loudly. A silent
+       * skip would be indistinguishable from success to the caller, so a
+       * tampered or corrupt ledger is named — with the offending index — and
+       * the whole import fails before any store is written.
+       */
+      const planLedger = (value: unknown): void => {
+        assertArchiveLedgerRecords(value);
         plan.push({
           store: 'mutations_history',
-          path: histPath,
-          action: 'appended',
-          summary: `append ${value.length} ledger record(s) to mutations_history`,
-          data,
-          existing_keys: existingKeys,
-          added: value.length,
+          path: historyFilePath(),
+          action: 'skipped',
+          summary: `mutations_history: export-only store — the local mutation ledger is neither appended to nor replaced (${LEDGER_SKIP_REASON})`,
+          data: null,
+          existing_keys: 0,
+          added: 0,
           conflicts: 0,
           ...NO_DROPPED,
+          skip_reason: LEDGER_SKIP_REASON,
           backup: null,
         });
       };
@@ -1464,7 +1495,7 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
             await planStore('artist_watchlist', artistWatchlistPath(), value, 'record');
             break;
           case 'mutations_history':
-            await planLedger(value);
+            planLedger(value);
             break;
         }
       }
@@ -1483,30 +1514,13 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
 
       for (const step of plan) {
         if (step.action === 'skipped') {
-          results[step.store] = 'skipped';
+          // #629: a skip that says only "skipped" reads like a store the
+          // archive simply had nothing for. The ledger's skip is a policy
+          // decision, so the reason travels with it.
+          results[step.store] = step.skip_reason ? `skipped: ${step.skip_reason}` : 'skipped';
           continue;
         }
         if (step.backup) backups[step.store] = await writeStoreBackup(step.path);
-        if (step.store === 'mutations_history') {
-          await mkdir(dirname(step.path), { recursive: true, mode: HISTORY_DIR_MODE });
-          // Mode arguments only apply at creation, so re-assert after the
-          // write: a pre-existing or copied-in ledger must not stay
-          // group/world-readable (#628).
-          await chmod(dirname(step.path), HISTORY_DIR_MODE);
-          const body = step.data as string;
-          if (step.action === 'appended') {
-            try {
-              await appendFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE } as unknown as Record<string, unknown>);
-            } catch {
-              await writeFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
-            }
-          } else {
-            await writeFile(step.path, body, { encoding: 'utf8', mode: HISTORY_FILE_MODE });
-          }
-          await chmod(step.path, HISTORY_FILE_MODE);
-          results.mutations_history = step.action === 'appended' ? 'merged' : step.action;
-          continue;
-        }
         await writeStore(step.path, step.data);
         results[step.store] = step.action;
       }
