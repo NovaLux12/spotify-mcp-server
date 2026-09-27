@@ -27,7 +27,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
-import { assertPlaylistRewritable, unavailableRowPositions } from './rewritable.js';
+import { assertPlaylistRewriteReadable, assertPlaylistRewritable, unavailableRowPositions } from './rewritable.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -107,14 +107,50 @@ function normalizeArtistRef(ref: string): string {
   return ref.trim();
 }
 
+/**
+ * The outcome of one playlist item walk: the rows it read, and the verdict on
+ * whether it read ALL of them.
+ *
+ * #1362: a bare `PlaylistItemObject[]` cannot tell "this is the whole playlist"
+ * from "this is the first `cap` rows of it", and every committing tool in this
+ * slice builds a URI list from it and PUTs the whole list back. On a playlist
+ * larger than the cap the unread rows are simply ABSENT from the PUT, and an
+ * absent row in a full-content replace is a deleted row. So the verdict travels
+ * with the rows instead of being dropped.
+ */
+interface PlaylistWalk {
+  items: PlaylistItemObject[];
+  /** The walk stopped short of the end of the playlist. */
+  truncated: boolean;
+  /** The ceiling that produced the truncation, so a refusal can name it. */
+  cap: number;
+  /** Spotify's own `items.total` when the walk saw a page carrying one. */
+  reportedTotal: number | null;
+}
+
 /** Page every item of a playlist (playlist order), capped by the fetch-all cap. */
-async function fetchAllItems(client: SpotifyClient, ref: string): Promise<PlaylistItemObject[]> {
+async function fetchAllItems(client: SpotifyClient, ref: string): Promise<PlaylistWalk> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
-  return client.getAllPages<PlaylistItemObject>(
+  const cap = getConfig().fetchAllCap;
+  // One row PAST the cap is what lets the walk see the row that overflows it
+  // and prove the truncation happened; the probe is dropped again below. A
+  // `rows.length >= cap` test reports every exact-cap playlist as truncated and
+  // would refuse work the tool can actually do correctly.
+  const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
     `/playlists/${id}/items`,
     { limit: '100' },
-    { maxItems: getConfig().fetchAllCap },
+    { maxItems: cap + 1 },
   );
+  return {
+    items: walk.items.slice(0, cap),
+    // The walk's own verdict OR the clip applied above. `walk.truncated` alone
+    // cannot see the cap+1 case: the client stops once `all.length` reaches
+    // `maxItems`, and with maxItems === cap+1 a playlist of exactly cap+1 rows
+    // is not itself an overflow, so only the clip proves it (#718/#864).
+    truncated: walk.truncated || walk.items.length > cap,
+    cap,
+    reportedTotal: walk.reportedTotal,
+  };
 }
 
 const isTrack = (p: SpotifyTrack | SpotifyEpisode | null | undefined): p is SpotifyTrack =>
@@ -126,28 +162,72 @@ interface LoadedPlaylist {
   id: string;
   name: string | null;
   items: PlaylistItemObject[];
+  /**
+   * #1362: the walk's own verdict, and the ceiling that produced it. Carried on
+   * the loaded playlist because the committing tools all commit through ONE
+   * atomic full-content replace, so a truncated walk is not a smaller answer —
+   * it is a smaller answer the playlist is then made to match, and the rows past
+   * the cap are deleted. `cap` is here so the refusal can name the boundary
+   * rather than saying "some rows were missed".
+   */
+  truncated: boolean;
+  cap: number;
+  /**
+   * Spotify's own item count, read from the metadata this already fetched — so
+   * the refusal can say "at least N more rows were never read" instead of
+   * leaving the size of the unread region unknown. Undefined when the metadata
+   * carried no count; never substituted with the count that could be read.
+   */
+  total?: number;
 }
 
 /** Playlist metadata + fully paged items; fails fast on a missing playlist. */
 async function loadPlaylistFull(client: SpotifyClient, ref: string): Promise<LoadedPlaylist> {
   const id = normalizePlaylistRef(ref);
-  const meta = await client.get<{ id?: string; name?: string }>(`/playlists/${encodeURIComponent(id)}`);
+  const meta = await client.get<{ id?: string; name?: string; items?: { total?: number }; tracks?: { total?: number } }>(
+    `/playlists/${encodeURIComponent(id)}`,
+  );
   if (!meta) throw new Error(`Playlist "${ref}" not found`);
-  const items = await fetchAllItems(client, id);
-  return { id, name: meta.name ?? null, items };
+  const walk = await fetchAllItems(client, id);
+  // `items` is the current field on a playlist object; `tracks` is the
+  // deprecated spelling still served by some responses. Whichever carried a
+  // number is used, and neither is ever defaulted to `walk.items.length` —
+  // that count IS the truncated one, so substituting it would let the refusal
+  // report the shortfall as "nothing was missed".
+  const reported = meta.items?.total ?? meta.tracks?.total ?? walk.reportedTotal;
+  return {
+    id,
+    name: meta.name ?? null,
+    items: walk.items,
+    truncated: walk.truncated,
+    cap: walk.cap,
+    ...(typeof reported === 'number' ? { total: reported } : {}),
+  };
 }
 
 /**
  * Atomic overwrite: PUT replaces the whole playlist (≤100 URIs per call), so
  * the first chunk does the replacement and any remainder is appended via POST
  * — mirroring replace_playlist_items on main.
+ *
+ * #1362: the target arrives as the WHOLE `LoadedPlaylist`, not as a bare id,
+ * so the write cannot be reached by a read whose verdict was never checked.
+ * Every one of the ten call sites builds `uris` from `p.items` and targets
+ * `p.id`, which makes this the single point where "the read was whole" and
+ * "the write is about to happen" are provably the same playlist. The
+ * truncation refusal is re-asserted here as the structural backstop: a new
+ * tool added later inherits it by calling this function, instead of having to
+ * remember a second guard. The per-tool `assertPlaylistReadWhole(p)` ahead of
+ * the `dry_run` branch is not redundant with this one — it is the only
+ * enforcement a dry run can reach, since a preview issues no write.
  */
 async function atomicReplace(
   client: SpotifyClient,
-  targetId: string,
+  target: LoadedPlaylist,
   uris: readonly string[],
 ): Promise<{ requests: number; snapshot_id?: string }> {
-  const path = `/playlists/${encodeURIComponent(targetId)}/items`;
+  assertPlaylistReadWhole(target);
+  const path = `/playlists/${encodeURIComponent(target.id)}/items`;
   let snapshotId: string | undefined;
   let requests = 0;
   const writeCap = capFor('playlist_writes');
@@ -303,6 +383,45 @@ function assertRewritable(p: LoadedPlaylist): void {
   assertPlaylistRewritable(p.name ?? p.id, unavailableRowPositions(p.items));
 }
 
+/**
+ * #1362 — the truncation half of the guard, for the ten tools here that commit
+ * one atomic full-content replace.
+ *
+ * A SEPARATE predicate from {@link assertRewritable} that composes with it, on
+ * the rule `rewritable.ts` states: the two guards answer different questions
+ * and neither relaxes the other. #860 asks "can every row read be put back by
+ * URI?". #1362 asks "were all the rows read at all?". A caller told the first
+ * needs `remove_unavailable_playlist_items`; a caller told the second needs a
+ * higher `SPOTIFY_MCP_FETCH_ALL_CAP`, and sending them to the wrong remedy is
+ * how a workaround gets applied to the wrong fault.
+ *
+ * It REFUSES rather than disclosing, and that is the whole point. A truncated
+ * walk is not a preview of a correct answer — the rewrite is COMPUTED from the
+ * rows that were read, so on a truncated read the result is a DIFFERENT answer,
+ * not a smaller one: a reverse of the first 500 rows, a dedupe that never saw
+ * rows 501–600, a runtime filter that kept a track because the tracks that
+ * should have displaced it were past the cap. A warning is acceptable where
+ * something else stands between the short read and the damage (a mandatory
+ * elicitation on every destructive impact, which is why `playlists.ts` can
+ * disclose inside `playlist_union`'s confirmation prompt). None of these ten
+ * tools has such a gate on this path, and the write they guard is a full
+ * replace: there is no partial-damage outcome to warn about, only rows the
+ * user still had yesterday and will not have after this call returns.
+ *
+ * It fires before the dry-run branch too, alongside `assertRewritable`. A
+ * preview that renders "would reverse 500 items" for a 600-row playlist is a
+ * preview of a commit that will be refused, and `dry_run` here already refuses
+ * the sibling unavailable-row fault for the same reason.
+ */
+function assertPlaylistReadWhole(p: LoadedPlaylist): void {
+  assertPlaylistRewriteReadable(p.name ?? p.id, {
+    truncated: p.truncated,
+    rowCount: p.items.length,
+    cap: p.cap,
+    total: p.total,
+  });
+}
+
 /** "Name — Artist" style display label for a row. */
 function rowLabel(r: OpRow): string {
   const who = r.artists.length > 0 ? ` — ${r.artists.join(', ')}` : '';
@@ -446,6 +565,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const collator = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
@@ -515,7 +635,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun(`sort by ${args.sort_by}`, p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Sorted "${p.name ?? p.id}" by ${args.sort_by} (${args.direction}), ${rows.length} item(s).\n`
@@ -547,6 +667,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const n = rows.length;
       if (n === 0) {
@@ -577,7 +698,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('rotate', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Rotated "${p.name ?? p.id}" by ${args.positions} — now starts with "${firstNew}".\n`
@@ -611,6 +732,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const rand = args.seed !== undefined ? mulberry32(args.seed) : Math.random;
       const shuffled = shuffleArr(rows, rand);
@@ -635,7 +757,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('shuffle', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Shuffled "${p.name ?? p.id}" (${rows.length} item(s)${args.seed !== undefined ? `, seed ${args.seed}` : ''}).\n`
@@ -662,6 +784,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const reversed = [...rows].reverse();
       const uris = reversed.map((r) => r.uri);
@@ -684,7 +807,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('reverse', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Reversed "${p.name ?? p.id}" (${rows.length} item(s)).\n` + batchSummary(uris.length, uris),
@@ -718,6 +841,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const n = rows.length;
       const start = args.start;
@@ -782,7 +906,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('move block', p.name ?? p.id, prose), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Moved ${count} item(s) in "${p.name ?? p.id}" (start ${start} → position ${args.to_position}).\n`
@@ -812,6 +936,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const n = rows.length;
       if (args.position_a > n || args.position_b > n) {
@@ -850,7 +975,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('swap positions', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Swapped positions ${args.position_a} ↔ ${args.position_b} in "${p.name ?? p.id}".\n`
@@ -885,6 +1010,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const keyOf = (r: OpRow): string | null =>
         args.match_by === 'uri' ? (r.uri || null) : (r.name.trim().toLowerCase() || null);
@@ -928,7 +1054,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('dedupe', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Deduped "${p.name ?? p.id}": removed ${removed.length} duplicate(s), ${finalRows.length} item(s) kept.\n`
@@ -959,6 +1085,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const artistRef = normalizeArtistRef(args.artist);
       const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
@@ -998,7 +1125,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           no_op: true,
         });
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Removed ${removed.length} track(s) by ${looksLikeId ? artistRef : `"${args.artist}"`} from "${p.name ?? p.id}".\n`
@@ -1032,6 +1159,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const artistRef = normalizeArtistRef(args.artist);
       const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
@@ -1062,7 +1190,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('keep artist', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `"${p.name ?? p.id}" now holds only ${kept.length} item(s) (kept ${looksLikeId ? artistRef : `"${args.artist}"`}).\n`
@@ -1098,6 +1226,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }
       const p = await loadPlaylistFull(client, args.playlist_id);
       assertRewritable(p);
+      assertPlaylistReadWhole(p);
       const rows = toRows(p.items);
       const inWindow = (r: OpRow): boolean =>
         r.durationMs !== null &&
@@ -1139,7 +1268,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (args.dry_run) {
         return shape(rf, describeDryRun('runtime filter', p.name ?? p.id, prose.slice(1)), payload);
       }
-      const res = await atomicReplace(client, p.id, uris);
+      const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
         `Filtered "${p.name ?? p.id}": ${kept.length} item(s) kept (runtime ${msToClock(totalMs)}), ${removed.length} removed.\n`

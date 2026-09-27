@@ -46,14 +46,20 @@
  *
  * The predicates are pure and live here because the guard is not one module's
  * policy. `playlists.ts` and `playlisthealth.ts` carry the #1310 truncation
- * refusal. `swarm4_playlists.ts` also commits through one full atomic replace
- * and also calls `assertPlaylistRewritable`, but its `fetchAllItems` walks with
- * a bare `getAllPages` and keeps no verdict, so its eleven committing tools
- * are NOT covered by the truncation guard yet — `assertRewritable` there
- * passes no `truncated` flag and the guard cannot infer one. Closing that is
- * its own change, not something to half-apply here; until it lands, a
- * `swarm4_*` rewrite over a playlist larger than the cap still deletes the
- * unread tail.
+ * refusal. `swarm4_playlists.ts` commits through the same full atomic replace
+ * and calls the same #860 guard, and #1362 closed it: its `fetchAllItems`
+ * walked with a bare `getAllPages` and kept no verdict, so `assertRewritable`
+ * there could not see one and a `swarm4_*` rewrite over a playlist larger than
+ * the cap deleted the unread tail. It now walks with
+ * `getAllPagesWithTruncation` and the same `cap + 1` probe, carries the verdict
+ * on the loaded playlist, and refuses through `assertPlaylistRewriteReadable`
+ * at its `atomicReplace` choke point — which now takes the whole
+ * `LoadedPlaylist` rather than a bare target id, so the ten call sites that
+ * build `uris` from `p.items` and target `p.id` cannot reach a write with an
+ * unchecked read. It refuses in the `dry_run` branch too, which is the only
+ * enforcement a preview can reach; that is a disclosure a commit cannot
+ * substitute for, and a different reason from the missing prompt that drives
+ * the `playlists.ts` decisions above.
  */
 import type { PlaylistItemObject } from '../types/spotify.js';
 

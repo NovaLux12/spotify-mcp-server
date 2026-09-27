@@ -184,12 +184,10 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm4playlists',
     reason:
-      'The fourth-wave playlist family is 14/18 untested, including the clone, dedupe-apply and snapshot-detail operations (epic #575).',
+      'The fourth-wave playlist family is 5/18 untested: the four read-only observers (clone, diff, history, snapshot detail) and the non-destructive balance split, which creates new playlists and leaves the source untouched. The ten tools that commit one atomic full-content replace are covered by tests/tools.swarm4-truncated-rewrite.test.ts (#1362), and the rest by tests/tools.swarm4-playlists.test.ts and the chunk-preview coverage on main (epic #575).',
     tools: [
-      'playlist_balance', 'playlist_clone_snapshot',
-      'playlist_dedupe_advanced', 'playlist_diff', 'playlist_filter_runtime', 'playlist_flip_order',
-      'playlist_history', 'playlist_keep_artist', 'playlist_remove_artist', 'playlist_rotate',
-      'playlist_seed_shuffle', 'playlist_snapshot_detail',
+      'playlist_balance', 'playlist_clone_snapshot', 'playlist_diff',
+      'playlist_history', 'playlist_snapshot_detail',
     ],
   },
 ];
