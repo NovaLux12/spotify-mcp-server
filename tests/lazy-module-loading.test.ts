@@ -233,7 +233,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
-    assert.equal(playback.toolCount, 106, 'the playback surface itself must not change');
+    // 106 -> 107 (#598). `expand_mood_to_queries` is `alwaysActive`, so it
+    // registers under every toolset — the `prompts` set is in the default
+    // install and the four mood prompts name this tool, and a prompt naming a
+    // tool the surface trimmed is what `prompt-resource-hints` fails on. The
+    // cost of that choice is visible right here: an `alwaysActive` module
+    // lands in EVERY trimmed surface, not only the default one. Stated rather
+    // than absorbed, because the next person to add a helper will hit the same
+    // number and should know they will.
+    assert.equal(playback.toolCount, 107, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -284,7 +292,9 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    assert.equal(full.toolCount, 570, 'the full (TOOLSETS=all) surface must be unchanged');
+    // 570 -> 571 (#598): `expand_mood_to_queries`, one `alwaysActive` read-only
+    // tool. Same choice, and the same trade, as the `playback` figure above.
+    assert.equal(full.toolCount, 571, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

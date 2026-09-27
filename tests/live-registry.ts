@@ -138,6 +138,13 @@ const NON_TOOL_IDENTIFIERS: ReadonlySet<string> = new Set([
   'time_range', 'playlist_name',
   // Time-range enum values a prompt echoes back to the agent.
   'short_term', 'medium_term', 'long_term',
+  // The `source` value `expand_mood_to_queries` reports when it answered from
+  // its built-in map instead of the host model (#598). Same category as the
+  // time-range values above: a FIELD VALUE a prompt quotes so the agent knows
+  // which path produced the expansion, not a tool it might call. The sibling
+  // value, `sampling`, needs no entry — it carries no underscore, so the
+  // tool-name pattern never matched it.
+  'static_map',
   // Prose describing what a tool call will do, using the tool's own argument
   // name so the agent does not invent a different one.
   'fetch_all', 'include_singles', 'include_groups', 'max_results', 'dry_run',
