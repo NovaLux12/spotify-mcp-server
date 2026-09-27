@@ -120,9 +120,13 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
       });
 
       if (responseFormat === 'concise') {
-        assert.ok(result.content[0].text.includes(`"Playlist ${PLAYLIST_A}" lacks (from B):`));
-        assert.match(result.content[0].text, /Track a-only/);
-        assert.equal(result.content[0].text.includes(`"Playlist ${PLAYLIST_B}" lacks (from A):`), false);
+        // #1422: the section heading names a third-party playlist, so it names
+        // it inside a marker. The row label below is marked for the same
+        // reason, and the marker is the whole reason `includes` is used here
+        // rather than a regex over the bare name.
+        assert.ok(result.content[0].text.includes(`"<<untrusted: Playlist ${PLAYLIST_A} >>" lacks (from B):`));
+        assert.match(result.content[0].text, /<<untrusted: Track a-only — Artist a-only >>/);
+        assert.equal(result.content[0].text.includes(`"<<untrusted: Playlist ${PLAYLIST_B} >>" lacks (from A):`), false);
       }
       assert.ok(result.structuredContent);
       assert.deepEqual(result.structuredContent.only_in_a, ['spotify:track:a-only']);
@@ -141,9 +145,9 @@ describe('playlist_pair_check exclusive sections and structured budgets', () => 
       });
 
       if (responseFormat === 'concise') {
-        assert.ok(result.content[0].text.includes(`"Playlist ${PLAYLIST_B}" lacks (from A):`));
-        assert.match(result.content[0].text, /Track b-only/);
-        assert.equal(result.content[0].text.includes(`"Playlist ${PLAYLIST_A}" lacks (from B):`), false);
+        assert.ok(result.content[0].text.includes(`"<<untrusted: Playlist ${PLAYLIST_B} >>" lacks (from A):`));
+        assert.match(result.content[0].text, /<<untrusted: Track b-only — Artist b-only >>/);
+        assert.equal(result.content[0].text.includes(`"<<untrusted: Playlist ${PLAYLIST_A} >>" lacks (from B):`), false);
       }
       assert.ok(result.structuredContent);
       assert.deepEqual(result.structuredContent.only_in_a, []);

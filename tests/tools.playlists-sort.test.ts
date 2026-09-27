@@ -295,6 +295,8 @@ describe('playlist_resequence refuses a key with no comparable values (#861)', (
     const put = writes(h.calls).find((c) => c.method === 'PUT');
     assert.ok(put, 'a varying key still commits');
     assert.deepEqual(put.arg, { uris: ['spotify:track:a', 'spotify:track:b', 'spotify:track:c'] });
-    assert.match(textOf(out), /Sorted "Playlist A{22}" by name \(asc\)/);
+    // #1422: the playlist name is third-party, so the commit sentence names it
+    // inside a marker. The name itself is unchanged; only the delimiting moved.
+    assert.match(textOf(out), /Sorted "<<untrusted: Playlist A{22} >>" by name \(asc\)/);
   });
 });

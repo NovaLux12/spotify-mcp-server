@@ -1844,6 +1844,28 @@ export function validateUris(
 }
 
 /**
+ * `untrusted()`, applied only to text that is not already delimited (#1422).
+ *
+ * A change list routinely mixes server-authored lines with values a caller
+ * marked at the point it formatted them — `swarm4_playlists.ts` marks a row
+ * label once, inside `rowLabel`, and every plan that renders it inherits that.
+ * Re-wrapping an already-delimited value cannot break it, because `neutralise`
+ * strips the inner angle brackets, but it renders `<<untrusted: untrusted: Track
+ * 1  >>`, which reads as a corrupted name rather than as a labelled one.
+ *
+ * The "already delimited" test is unforgeable for the same reason the marker
+ * itself is: `untrusted()` removes every `<` and `>` from its input, so no
+ * attacker-supplied name can arrive already shaped like this module's own
+ * output. Anything already reading `<<untrusted: … >>` was put there by
+ * `untrusted()`.
+ */
+function delimit(text: string): string {
+  return text.startsWith(`${UNTRUSTED_OPEN} `) && text.endsWith(` ${UNTRUSTED_CLOSE}`)
+    ? text
+    : untrusted(text);
+}
+
+/**
  * Deterministic description of what a destructive operation WOULD do (#57).
  * Rendered by tools when dry_run is set — no mutating endpoint is called.
  *
@@ -1854,12 +1876,17 @@ export function validateUris(
  * rendered as if this server had written it, on the surface where a model
  * decides whether a destructive operation is safe to commit. `action` is
  * server-authored at every call site and is left alone.
+ *
+ * `changes` goes through {@link delimit} rather than `untrusted` directly, so a
+ * change a caller already delimited keeps its single marker (#1422). For every
+ * call site that exists today — all of which pass raw text — the two are
+ * byte-identical.
  */
 export function describeDryRun(action: string, target: string, changes: readonly string[]): string {
-  const lines = [`[dry run] ${action} on ${untrusted(target)} — nothing was changed.`];
+  const lines = [`[dry run] ${action} on ${delimit(target)} — nothing was changed.`];
   if (changes.length > 0) {
     lines.push(`Would affect ${changes.length} item${changes.length === 1 ? '' : 's'}:`);
-    for (const change of changes) lines.push(`  - ${untrusted(change)}`);
+    for (const change of changes) lines.push(`  - ${delimit(change)}`);
   }
   return lines.join('\n');
 }

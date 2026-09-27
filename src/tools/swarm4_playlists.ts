@@ -47,6 +47,7 @@ import {
   resolvePlaylistInput,
   sharedListFields,
   truncateItems,
+  untrusted,
   withPlaylistInputMetadata,
   withPlaylistInputNote,
 } from '../shaping.js';
@@ -424,7 +425,7 @@ function toRows(items: readonly PlaylistItemObject[]): OpRow[] {
  * threads `truncated` through for the same reason.
  */
 function assertRewritable(p: LoadedPlaylist): void {
-  assertPlaylistRewritable(p.name ?? p.id, unavailableRowPositions(p.items), { truncated: p.truncated });
+  assertPlaylistRewritable(plName(p), unavailableRowPositions(p.items), { truncated: p.truncated });
 }
 
 /**
@@ -458,7 +459,7 @@ function assertRewritable(p: LoadedPlaylist): void {
  * the sibling unavailable-row fault for the same reason.
  */
 function assertPlaylistReadWhole(p: LoadedPlaylist): void {
-  assertPlaylistRewriteReadable(p.name ?? p.id, {
+  assertPlaylistRewriteReadable(plName(p), {
     truncated: p.truncated,
     rowCount: p.items.length,
     cap: p.cap,
@@ -512,7 +513,33 @@ function describeSplitCoverage(p: LoadedPlaylist, rowsRead: number): string {
 /** "Name — Artist" style display label for a row. */
 function rowLabel(r: OpRow): string {
   const who = r.artists.length > 0 ? ` — ${r.artists.join(', ')}` : '';
-  return `${r.name}${who}`;
+  // #1422: the track title and every credited artist name are third-party
+  // text. Marking here rather than at each of the dozen `${rowLabel(...)}`
+  // sites in this file is deliberate — `rowLabel` is the single point where a
+  // row becomes a sentence, so a tool added later inherits the marking by
+  // being formatted through it. `untrusted()`'s own contract says to delimit
+  // at the template site and never by mutating the row, and it does: `r` is
+  // untouched, and the `OpRow` that rides in `structuredContent` keeps its
+  // names verbatim.
+  return untrusted(`${r.name}${who}`);
+}
+
+/**
+ * A playlist's display name for prose (#1422).
+ *
+ * The name is Spotify-supplied — anyone who can share a playlist can choose it
+ * — and this file renders it into the sentence that confirms a mutation the
+ * model has just made, which is the one place injected text is hardest to
+ * discount. So it is marked.
+ *
+ * The `p.id` fallback deliberately is NOT. An id is a base62 string Spotify
+ * allocated; there is nothing in it for a model to be steered by, and marking
+ * it would be noise in every sentence that happens to name a playlist with no
+ * title — which teaches the next reader to skim past the marker. The rule is
+ * "mark what a person can choose", and only the name is that.
+ */
+function plName(p: { id: string; name: string | null }): string {
+  return p.name ? untrusted(p.name) : p.id;
 }
 
 /** Truncate a row list into prose lines + footer, honoring max_results. */
@@ -615,7 +642,7 @@ function findSnapshotPlaylist(
     const names = snap.playlists.map((p) => p.name).slice(0, 12).join(', ');
     throw new Error(
       `Playlist "${wanted}" not found in snapshot ${file}. ` +
-        `Playlists present: ${names}${snap.playlists.length > 12 ? '…' : ''}`,
+        `Playlists present: ${untrusted(names)}${snap.playlists.length > 12 ? '…' : ''}`,
     );
   }
   return { uri: row.uri, name: row.name, item_count: row.item_count, items: row.items };
@@ -676,7 +703,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       if (rows.length > 1 && distinct.size <= 1) {
         return shape(
           rf,
-          `Refused to sort "${p.name ?? p.id}" by ${args.sort_by}: no comparable values — all ${rows.length} item(s) share the same ${args.sort_by} value, so the sort would not change the order. Nothing was changed.`,
+          `Refused to sort "${plName(p)}" by ${args.sort_by}: no comparable values — all ${rows.length} item(s) share the same ${args.sort_by} value, so the sort would not change the order. Nothing was changed.`,
           {
             ok: false,
             reason: 'no_comparable_values',
@@ -703,7 +730,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const uris = sorted.map((r) => r.uri);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `${args.direction === 'desc' ? 'Descending' : 'Ascending'} sort of "${p.name ?? p.id}" by ${args.sort_by}:`,
+        `${args.direction === 'desc' ? 'Descending' : 'Ascending'} sort of "${plName(p)}" by ${args.sort_by}:`,
         `  ${rows.length} item(s) would be reordered.`,
         '',
         ...renderRows(sorted, max),
@@ -720,12 +747,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun(`sort by ${args.sort_by}`, p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun(`sort by ${args.sort_by}`, plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Sorted "${p.name ?? p.id}" by ${args.sort_by} (${args.direction}), ${rows.length} item(s).\n`
+        `Sorted "${plName(p)}" by ${args.sort_by} (${args.direction}), ${rows.length} item(s).\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -758,7 +785,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rows = toRows(p.items);
       const n = rows.length;
       if (n === 0) {
-        return shape(rf, `"${p.name ?? p.id}" is empty — nothing to rotate.`, { ok: true, items: 0 });
+        return shape(rf, `"${plName(p)}" is empty — nothing to rotate.`, { ok: true, items: 0 });
       }
       const shift = ((args.positions % n) + n) % n;
       const rotated = [...rows.slice(shift), ...rows.slice(0, shift)];
@@ -767,7 +794,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const firstNew = rotated[0] ? rowLabel(rotated[0]) : '(empty)';
       const prose = [
-        `Rotate "${p.name ?? p.id}" by ${args.positions} (effective ${shift} of ${n}):`,
+        `Rotate "${plName(p)}" by ${args.positions} (effective ${shift} of ${n}):`,
         `  new first item: ${firstNew}`,
         ...renderRows(rotated, max),
       ];
@@ -783,12 +810,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('rotate', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('rotate', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Rotated "${p.name ?? p.id}" by ${args.positions} — now starts with "${firstNew}".\n`
+        `Rotated "${plName(p)}" by ${args.positions} — now starts with "${firstNew}".\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -827,7 +854,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `Shuffle "${p.name ?? p.id}"${args.seed !== undefined ? ` (seed ${args.seed} — reproducible)` : ''}:`,
+        `Shuffle "${plName(p)}"${args.seed !== undefined ? ` (seed ${args.seed} — reproducible)` : ''}:`,
         `  ${rows.length} item(s), order randomized.`,
         ...renderRows(shuffled, max),
       ];
@@ -842,12 +869,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('shuffle', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('shuffle', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Shuffled "${p.name ?? p.id}" (${rows.length} item(s)${args.seed !== undefined ? `, seed ${args.seed}` : ''}).\n`
+        `Shuffled "${plName(p)}" (${rows.length} item(s)${args.seed !== undefined ? `, seed ${args.seed}` : ''}).\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -878,7 +905,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `Reverse "${p.name ?? p.id}":`,
+        `Reverse "${plName(p)}":`,
         `  ${rows.length} item(s); first becomes "${rows.length ? rowLabel(reversed[0]) : '(empty)'}".`,
         ...renderRows(reversed, max),
       ];
@@ -892,12 +919,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('reverse', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('reverse', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Reversed "${p.name ?? p.id}" (${rows.length} item(s)).\n` + batchSummary(uris.length, uris),
+        `Reversed "${plName(p)}" (${rows.length} item(s)).\n` + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
     },
@@ -934,7 +961,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const start = args.start;
       const count = Math.min(args.count, n - start + 1);
       if (start > n || count < 1) {
-        return shape(rf, `Position ${args.start} is out of range for "${p.name ?? p.id}" (${n} item(s)).`, {
+        return shape(rf, `Position ${args.start} is out of range for "${plName(p)}" (${n} item(s)).`, {
           ok: false,
           items: n,
         });
@@ -991,12 +1018,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('move block', p.name ?? p.id, prose), payload);
+        return shape(rf, describeDryRun('move block', plName(p), prose), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Moved ${count} item(s) in "${p.name ?? p.id}" (start ${start} → position ${args.to_position}).\n`
+        `Moved ${count} item(s) in "${plName(p)}" (start ${start} → position ${args.to_position}).\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1027,7 +1054,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const rows = toRows(p.items);
       const n = rows.length;
       if (args.position_a > n || args.position_b > n) {
-        return shape(rf, `Positions ${args.position_a}/${args.position_b} out of range for "${p.name ?? p.id}" (${n} item(s)).`, {
+        return shape(rf, `Positions ${args.position_a}/${args.position_b} out of range for "${plName(p)}" (${n} item(s)).`, {
           ok: false,
           items: n,
         });
@@ -1043,7 +1070,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `Swap positions ${args.position_a} ↔ ${args.position_b} in "${p.name ?? p.id}":`,
+        `Swap positions ${args.position_a} ↔ ${args.position_b} in "${plName(p)}":`,
         `  ${args.position_a}: ${rowLabel(rows[a])} → ${rowLabel(rows[b])}`,
         `  ${args.position_b}: ${rowLabel(rows[b])} → ${rowLabel(rows[a])}`,
         ...renderRows(swapped, max),
@@ -1060,12 +1087,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('swap positions', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('swap positions', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Swapped positions ${args.position_a} ↔ ${args.position_b} in "${p.name ?? p.id}".\n`
+        `Swapped positions ${args.position_a} ↔ ${args.position_b} in "${plName(p)}".\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1112,7 +1139,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const prose = [
-        `Dedupe "${p.name ?? p.id}" (match by ${matchBy}, keep ${args.keep}):`,
+        `Dedupe "${plName(p)}" (match by ${matchBy}, keep ${args.keep}):`,
         `  ${removed.length} duplicate(s) in ${groups} group(s) would be removed, ${finalRows.length} item(s) kept.`,
         ...(removed.length > 0 ? ['', 'Removed:', ...renderRows(removed, max, '✗')] : []),
       ];
@@ -1132,12 +1159,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('dedupe', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('dedupe', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Deduped "${p.name ?? p.id}": removed ${removed.length} duplicate(s), ${finalRows.length} item(s) kept.\n`
+        `Deduped "${plName(p)}": removed ${removed.length} duplicate(s), ${finalRows.length} item(s) kept.\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1192,7 +1219,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const removedBudget = budgetedArray(removed.map((r) => r.uri), max, 'removed');
       const label = reference.id ?? `"${args.artist}"`;
       const prose = [
-        `Remove ${label} from "${p.name ?? p.id}":`,
+        `Remove ${label} from "${plName(p)}":`,
         `  ${removed.length} track(s) would be removed, ${kept.length} kept.`,
         ...(removed.length > 0 ? ['', 'Removed:', ...renderRows(removed, max, '✗')] : []),
       ];
@@ -1212,7 +1239,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('remove artist', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('remove artist', plName(p), prose.slice(1)), payload);
       }
       if (removed.length === 0) {
         // #885: a zero-match result has to be attributable. Before, an id-shaped
@@ -1221,7 +1248,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         // absence from a reference compared against the wrong field.
         return shape(
           rf,
-          `No tracks by ${label} found in "${p.name ?? p.id}" — matched on ${reference.form === 'name' ? 'credited artist name' : 'artist id'}, `
+          `No tracks by ${label} found in "${plName(p)}" — matched on ${reference.form === 'name' ? 'credited artist name' : 'artist id'}, `
             + `${args.include_featured ? 'every credit' : 'primary credit only'}. Playlist unchanged.`,
           { ...payload, no_op: true },
         );
@@ -1229,7 +1256,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Removed ${removed.length} track(s) by ${label} from "${p.name ?? p.id}".\n`
+        `Removed ${removed.length} track(s) by ${label} from "${plName(p)}".\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1281,7 +1308,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const orderBudget = budgetedArray(uris, max, 'items', args.include_full_order);
       const prose = [
-        `Keep only ${label} in "${p.name ?? p.id}":`,
+        `Keep only ${label} in "${plName(p)}":`,
         `  ${kept.length} track(s) kept, ${removed.length} removed${args.keep_episodes ? ' (episodes kept)' : ''}.`,
         ...(kept.length > 0 ? ['', 'Kept:', ...renderRows(kept, max)] : []),
       ];
@@ -1299,12 +1326,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('keep artist', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('keep artist', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `"${p.name ?? p.id}" now holds only ${kept.length} item(s) (kept ${label}).\n`
+        `"${plName(p)}" now holds only ${kept.length} item(s) (kept ${label}).\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1357,7 +1384,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .filter(Boolean)
         .join(' and ');
       const prose = [
-        `Filter "${p.name ?? p.id}" to duration ${window}:`,
+        `Filter "${plName(p)}" to duration ${window}:`,
         `  ${kept.length} item(s) kept (runtime ${msToClock(totalMs)}), ${removed.length} removed.`,
         ...(removed.length > 0 ? ['', 'Removed:', ...renderRows(removed, max, '✗')] : []),
       ];
@@ -1377,12 +1404,12 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        return shape(rf, describeDryRun('runtime filter', p.name ?? p.id, prose.slice(1)), payload);
+        return shape(rf, describeDryRun('runtime filter', plName(p), prose.slice(1)), payload);
       }
       const res = await atomicReplace(client, p, uris);
       return shape(
         rf,
-        `Filtered "${p.name ?? p.id}": ${kept.length} item(s) kept (runtime ${msToClock(totalMs)}), ${removed.length} removed.\n`
+        `Filtered "${plName(p)}": ${kept.length} item(s) kept (runtime ${msToClock(totalMs)}), ${removed.length} removed.\n`
           + batchSummary(uris.length, uris),
         { ...payload, dry_run: false, requests: res.requests, snapshot_id: res.snapshot_id ?? null },
       );
@@ -1446,7 +1473,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }
       if (chunkCount > shown) lines.push(`  … ${chunkCount - shown} more chunk(s) not shown.`);
       const prose = [
-        `Chunk preview for "${p.name ?? p.id}" (page_size ${args.page_size}, offset ${start}):`,
+        `Chunk preview for "${plName(p)}" (page_size ${args.page_size}, offset ${start}):`,
         `  ${rows.length} item(s) total → ${chunkCount} chunk(s).`,
         ...(lines.length > 0 ? ['', ...lines] : ['  (nothing to preview)']),
       ];
@@ -1503,11 +1530,11 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const onlyABudget = budgetedArray(onlyA.map((r) => r.uri), max, 'only_in_a');
       const onlyBBudget = budgetedArray(onlyB.map((r) => r.uri), max, 'only_in_b');
       const prose = [
-        `Diff "${a.name ?? a.id}" (${rowsA.length}) vs "${b.name ?? b.id}" (${rowsB.length}):`,
+        `Diff "${plName(a)}" (${rowsA.length}) vs "${plName(b)}" (${rowsB.length}):`,
         `  common: ${common.length} · only in A: ${onlyA.length} · only in B: ${onlyB.length}`,
         `  shared tracks in same relative order: ${sameOrder ? 'yes' : 'no'}`,
-        ...(onlyA.length > 0 ? ['', `Only in "${a.name ?? a.id}":`, ...renderRows(onlyA, max, 'A')] : []),
-        ...(onlyB.length > 0 ? ['', `Only in "${b.name ?? b.id}":`, ...renderRows(onlyB, max, 'B')] : []),
+        ...(onlyA.length > 0 ? ['', `Only in "${plName(a)}":`, ...renderRows(onlyA, max, 'A')] : []),
+        ...(onlyB.length > 0 ? ['', `Only in "${plName(b)}":`, ...renderRows(onlyB, max, 'B')] : []),
       ];
       const payload = {
         ok: true,
@@ -1617,7 +1644,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }));
       const itemBudget = budgetedArray(row.items, max);
       const prose = [
-        `"${row.name}" in snapshot ${args.backup_file}:`,
+        `"${untrusted(row.name)}" in snapshot ${args.backup_file}:`,
         `  recorded item_count: ${row.item_count ?? row.items.length} · items stored: ${row.items.length}`,
         '',
         ...renderRows(pseudoRows, max),
@@ -1673,6 +1700,16 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           album: null,
         }));
       const itemBudget = budgetedArray(uris, max);
+      // #1422: `name` and `row.name` are both third-party — the snapshot
+      // recorded whatever the playlist was called. The purpose sentence names
+      // both, and it is rendered in TWO channels: `provenance`/`consent_note` in
+      // `structuredContent`, and `provenanceNote` in the prose. Marking the
+      // string at construction would put markers in the payload a programmatic
+      // consumer reads, which `untrusted()` forbids, so the sentence is a
+      // function of its marking and only the PROSE copy is marked.
+      const purpose = (mark: (s: string) => string): string =>
+        `create a NEW Spotify playlist "${mark(name)}" holding the ${uris.length} item(s) this local library `
+        + 'snapshot records for the playlist ' + `"${mark(row.name)}" — the live playlist is not read or modified`;
       // #708: the snapshot is a library backup file, so the declared date is
       // `_meta.created`. A file predating the schema that stamps it declares
       // none, and the record names the reason instead of borrowing the mtime.
@@ -1683,9 +1720,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           items: uris.length,
           ...declaredCreationDate(snap._meta, 'created', '_meta.created'),
         },
-        purpose:
-          `create a NEW Spotify playlist "${name}" holding the ${uris.length} item(s) this local library `
-          + 'snapshot records for the playlist ' + `"${row.name}" — the live playlist is not read or modified`,
+        purpose: purpose((s) => s),
       };
       const prov = (consent: WriteProvenance['consent']): WriteProvenance => ({ ...provenanceBase, consent });
       const consent = prov({
@@ -1706,6 +1741,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         ...consentFields(consent),
       };
       if (args.dry_run) {
+        // `describeDryRun` delimits both its target and every change, so the
+        // raw `name` here is already marked on the way out.
         return shape(rf, describeDryRun('clone from snapshot', `new playlist "${name}"`, [
           ...provenancePromptLines(provenanceBase),
           `Create "${name}" with ${uris.length} item(s) from snapshot ${args.backup_file}:`,
@@ -1716,9 +1753,11 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const add = uris.length > 0 ? await addUrisChunked(client, created, uris) : { requests: 0 };
       return shape(
         rf,
-        `Cloned "${row.name}" from snapshot ${args.backup_file} into new playlist ${created} `
-          + `("${name}", ${uris.length} item(s), ${add.requests} add request(s)).\n`
-          + `#708 ${provenanceNote(consent)}`,
+        `Cloned "${untrusted(row.name)}" from snapshot ${args.backup_file} into new playlist ${created} `
+          + `("${untrusted(name)}", ${uris.length} item(s), ${add.requests} add request(s)).\n`
+          // The PROSE copy of the sentence is the marked one; the payload copy
+          // in `consent_fields` above keeps the raw names.
+          + `#708 ${provenanceNote({ ...consent, purpose: purpose((s) => untrusted(s)) })}`,
         { ...payload, dry_run: false, playlist_id: created, requests: add.requests },
       );
     },
@@ -1777,7 +1816,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const addedBudget = budgetedArray(added.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })), max, 'added');
       const removedBudget = budgetedArray(removed.map((u) => ({ uri: u, name: nameMap.get(u) ?? u })), max, 'removed');
       const prose = [
-        `Changelog for "${rowA.name}" — ${args.backup_file_a} → ${args.backup_file_b}:`,
+        `Changelog for "${untrusted(rowA.name)}" — ${args.backup_file_a} → ${args.backup_file_b}:`,
         `  ${rowA.items.length} → ${rowB.items.length} items · +${added.length} added / -${removed.length} removed / ${keptA.length} kept`,
         reordered ? '  kept tracks were REORDERED between snapshots.' : '  kept tracks kept their relative order.',
         ...(added.length > 0 ? ['', 'Added:', ...renderRows(asRows(added, nameMap), max, '+')] : []),
@@ -1832,10 +1871,10 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       const onlyABudget = budgetedArray(onlyA.map((r) => r.uri), max, 'only_in_a');
       const onlyBBudget = budgetedArray(onlyB.map((r) => r.uri), max, 'only_in_b');
       const prose = [
-        `Pair check "${a.name ?? a.id}" (${rowsA.length}) ↔ "${b.name ?? b.id}" (${rowsB.length}):`,
+        `Pair check "${plName(a)}" (${rowsA.length}) ↔ "${plName(b)}" (${rowsB.length}):`,
         `  overlap ${overlap.length} · Jaccard ${jaccard.toFixed(3)} · only-A ${onlyA.length} · only-B ${onlyB.length}`,
-        ...(onlyA.length > 0 ? ['', `"${a.name ?? a.id}" lacks (from B):`, ...renderRows(onlyA, max, '→')] : []),
-        ...(onlyB.length > 0 ? ['', `"${b.name ?? b.id}" lacks (from A):`, ...renderRows(onlyB, max, '→')] : []),
+        ...(onlyA.length > 0 ? ['', `"${plName(a)}" lacks (from B):`, ...renderRows(onlyA, max, '→')] : []),
+        ...(onlyB.length > 0 ? ['', `"${plName(b)}" lacks (from A):`, ...renderRows(onlyB, max, '→')] : []),
       ];
       const payload = {
         ok: true,
@@ -1905,7 +1944,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
           : `has ${n} item(s)`;
         return shape(
           rf,
-          `${coverage ? `${coverage}\n` : ''}"${p.name ?? p.id}" ${size} — fewer than the ${args.parts} parts requested.`,
+          `${coverage ? `${coverage}\n` : ''}"${plName(p)}" ${size} — fewer than the ${args.parts} parts requested.`,
           { ok: false, ...scope },
         );
       }
@@ -1933,7 +1972,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       // inside its change list, so it is not elided as one long change line.
       const prose = [
         ...buckets.map(
-          (b, i) => `  "${names[i]}": ${b.length} item(s), runtime ${msToClock(b.reduce((s, r) => s + (r.durationMs ?? 0), 0))}`,
+          (b, i) => `  "${untrusted(names[i])}": ${b.length} item(s), runtime ${msToClock(b.reduce((s, r) => s + (r.durationMs ?? 0), 0))}`,
         ),
         ...buckets.flatMap((b, i) => [``, `Part ${i + 1}:`, ...renderRows(b, max)]),
       ];
@@ -1953,7 +1992,7 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         dry_run: args.dry_run,
       };
       if (args.dry_run) {
-        const plan = describeDryRun('balance split', p.name ?? p.id, prose);
+        const plan = describeDryRun('balance split', plName(p), prose);
         return shape(rf, coverage ? `${coverage}\n${plan}` : plan, payload);
       }
       const created: string[] = [];
@@ -1966,8 +2005,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       }
       const summary = [
         ...(coverage ? [coverage] : []),
-        `Split "${p.name ?? p.id}" into ${args.parts} new playlists${p.truncated ? ' (a partial split — see above)' : ''}:`,
-        ...buckets.map((b, i) => `  • "${names[i]}" (${created[i]}): ${b.length} item(s)`),
+        `Split "${plName(p)}" into ${args.parts} new playlists${p.truncated ? ' (a partial split — see above)' : ''}:`,
+        ...buckets.map((b, i) => `  • "${untrusted(names[i])}" (${created[i]}): ${b.length} item(s)`),
       ].join('\n');
       return shape(rf, summary, { ...payload, dry_run: false, playlist_ids: created, requests });
     },
