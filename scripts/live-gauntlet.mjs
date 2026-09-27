@@ -4,7 +4,9 @@
 // anything was mutated.
 //
 // Prereqs: npm run build && npm run auth && .env present (tokens in
-// ~/.spotify-mcp/tokens.json).
+// ~/.spotify-mcp/tokens.json — the harness COPIES that file into a throwaway
+// home; the live one is never opened for writing, and never read again after the
+// copy).
 //
 // Usage:
 //   node scripts/live-gauntlet.mjs [report.json]
@@ -37,6 +39,14 @@
 //     and PASSES only when the response confirms it STRUCTURALLY
 //     (`structuredContent.dry_run === true`). A prose "[dry run]" is recorded
 //     as UNVERIFIED, never as a pass: the tool's own sentence is not evidence.
+//   - The server runs in a THROWAWAY HOME (#1397). `spawnHarnessServer` builds a
+//     fresh `mkdtemp` root, points `HOME`/`USERPROFILE` at it, deletes every
+//     inherited `SPOTIFY_MCP_*` override, and re-pins all eighteen local stores
+//     inside it, so the `join(homedir(), '.spotify-mcp', …)` defaults land in
+//     the sandbox rather than in the developer's real store. Only the OAuth token
+//     file is copied in, because a sweep has to authenticate to be worth running
+//     and a token file is written in place on refresh — so the harness has never
+//     had a path to the real one.
 //   - `mutations detected` is the size of a diff between an account-state
 //     fingerprint taken before and after the run, over the user's saved-track
 //     count, saved-album count, playlist count, and the hash of the playlist id
@@ -50,10 +60,10 @@
 //
 // Decision logic lives in ./live-gauntlet-core.mjs so it can be exercised
 // against fixtures; this file owns the RPC and nothing else.
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { spawnHarnessServer } from './hermetic-home.mjs';
 import {
   ACCOUNT_PROBES,
   MUTATING,
@@ -109,9 +119,13 @@ const GATE_SNIFF = /forbidden|\b403\b|removed by spotify|not available for this 
 
 // --------------------------------------------------------------- JSONL RPC layer
 
-const child = spawn('node', ['--env-file=.env', 'dist/index.js'], {
+// #1397: the `env` is built by spawnHarnessServer and is NOT optional, not
+// configurable, and not a flag. A sweep must not be able to reach the developer's
+// real ~/.spotify-mcp by any code path, including one added later.
+const { child } = await spawnHarnessServer({
+  label: 'live-gauntlet',
+  args: ['--env-file=.env', 'dist/index.js'],
   cwd: ROOT,
-  stdio: ['pipe', 'pipe', 'inherit'],
 });
 let buf = '';
 const pending = new Map();
@@ -341,11 +355,18 @@ audiobookBuilders();
 // `backup_library`, plus the recipes above.
 //
 // The three remaining are left gated deliberately, not by oversight:
-//   - `save_scene` / `delete_scene` write and delete the user's real
-//     `~/.spotify-mcp/scenes.json`. This harness spawns the server WITHOUT a
-//     HOME override (see the `spawn` below), so calling them would read and
-//     overwrite the developer's actual saved scenes — `delete_scene` on a name
-//     the sweep invented, against a file the sweep did not create.
+//   - `save_scene` / `delete_scene` write and delete a `scenes.json` sidecar.
+//     They are ungated **on coverage grounds only**: the sweep has no real saved
+//     scene to exercise them against, and calling them would seed a sandbox
+//     scene and then delete the name it invented. The reason is no longer the
+//     one it used to be. This comment previously said the harness "spawns the
+//     server WITHOUT a HOME override", and since #1397 that has been false — the
+//     spawn is unconditionally hermetic (see the safety model above), so a scene
+//     write can no longer reach the developer's real `~/.spotify-mcp/scenes.json`.
+//     The gate stays because the OVERRIDES that would make these two reachable
+//     are a coverage decision to make deliberately, and a stale safety claim in a
+//     comment is worse than no claim at all: it is the §6 failure where naming
+//     is treated as documentation and the wire format disagrees.
 //   - `cancel_wind_down` clears the in-process ramp, and its recipe has never
 //     had a wind-down to clear; the harness arms none.
 // Reclassifying any of them read-only to satisfy the gate would be a false

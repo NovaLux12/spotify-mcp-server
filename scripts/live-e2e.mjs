@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 // Live end-to-end check against a real Spotify account.
-// Prereqs: npm run build && npm run auth (tokens in ~/.spotify-mcp/tokens.json)
+// Prereqs: npm run build && npm run auth (tokens in ~/.spotify-mcp/tokens.json,
+// which the harness COPIES into a throwaway home — see spawnHarnessServer)
 // Usage: node scripts/live-e2e.mjs [SPOTIFY_CLIENT_ID]
-import { spawn } from 'node:child_process';
+//
+// #1397: this used to spawn with no `env` at all, so the server inherited the
+// developer's real $HOME and its local stores. The spawn is now unconditional and
+// hermetic; see scripts/hermetic-home.mjs.
 import { once } from 'node:events';
+import { spawnHarnessServer } from './hermetic-home.mjs';
 
-const child = spawn('node', ['--env-file=.env', 'dist/index.js'], { cwd: new URL('..', import.meta.url).pathname, stdio: ['pipe', 'pipe', 'inherit'] });
+const { child } = await spawnHarnessServer({
+  label: 'live-e2e',
+  args: ['--env-file=.env', 'dist/index.js'],
+  cwd: new URL('..', import.meta.url).pathname,
+});
 let buf = '';
 const pending = new Map();
 child.stdout.on('data', (d) => {
