@@ -1417,11 +1417,19 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // produces. #895 gave 4 of the 10 `max_results` so the shared row cap has a
   // control the caller can raise; #1318 added the same deprecated `user_id`
   // alias across all 10. MEASURED with `node scripts/surface-census.mjs` on
-  // 2026-09-27 after merging both onto current main: 9924 B, tool count
+  // 2026-09-27 after merging both onto current main: 10242 B, tool count
   // unchanged at 10. The ceiling is DERIVED by `manifestEntry` (110%), so
-  // `Math.ceil(9924 * 1.1)` = 10917 B and this sits inside budget with 993 B
+  // `Math.ceil(10242 * 1.1)` = 11267 B and this sits inside budget with 1025 B
   // spare.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 9924], { readOnlySafe: true }),
+  //
+  // The first measurement of the merged tree read 9924 B, which was 318 B
+  // short: the merge had dropped `...StatsfmUserInputFields` from
+  // `taste_listening_clock` while its handler still called
+  // `resolveStatsfmUserInput`. `check:doc-tool-names` caught it (the cookbook
+  // shows that tool taking `statsfm_user`); the schema was restored and the
+  // baseline re-measured. A baseline measured against a tree where a tool had
+  // lost an input is a ratchet that would have locked the loss in.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 10242], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count

@@ -802,6 +802,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
     'taste_listening_clock',
     'Listening-clock summary: day-part split (UTC), peak window, and a sequencing note for playlist order. Read-only, no auth.',
     {
+      ...StatsfmUserInputFields,
       // #895: this tool publishes raw upstream collections in json mode, so the
       // cap needs to be a control the caller can raise, not a fixed constant.
       max_results: MaxResults,
