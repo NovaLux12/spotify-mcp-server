@@ -43,6 +43,13 @@ interface RegisteredTool {
 const wireCalls = (calls: RecordedCall[]) =>
   calls.map((c) => ({ method: c.method, path: c.path, arg: c.arg }));
 
+/** Per-call walk options, matching the real client's `GetAllPagesOptions`. */
+interface PageWalkOptions {
+  maxItems?: number;
+  initialOffset?: number;
+  onPage?: (info: { page: number; fetched: number }) => void;
+}
+
 function makeStubClient(responder: Responder = () => null) {
   const calls: RecordedCall[] = [];
   let respond: Responder = responder;
@@ -71,41 +78,35 @@ function makeStubClient(responder: Responder = () => null) {
       calls.push({ method: 'DELETE', path, arg: body });
       return respond(path, body) as T | null;
     },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get() so paged
-    // fixtures are exercised against real pagination semantics.
+    // Mirrors SpotifyClient.getAllPagesWithTruncation over the stubbed get()
+    // so paged fixtures are exercised against real pagination semantics.
+    // getAllPages delegates to the truncating variant exactly as the real
+    // client does, so a fixture cannot pass against a verdict the production
+    // walk would not produce.
     async getAllPages<T>(
       path: string,
       params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
+      opts?: PageWalkOptions,
     ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
+      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
     },
     // #899: the read-cost counter must come from the CLIENT, not the tool, or
     // the test would be asserting its own arithmetic. This mirrors
     // SpotifyClient.getAllPagesWithTruncation, including counting the request
-    // that returns no page array.
+    // that returns no page array, and carries the #864 truncation verdict
+    // (`truncated` vs `truncatedByCap` vs `reportedTotal`) that #902's
+    // combined-total disclosure is built on, plus the per-call `onPage` hook.
+    // All three behaviours live in ONE method: a second copy would be a
+    // duplicate key that silently shadows whichever came first.
     async getAllPagesWithTruncation<T>(
       path: string,
       params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
+      opts?: PageWalkOptions,
     ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
       const maxItems = opts?.maxItems ?? 500;
       const all: T[] = [];
       let offset = opts?.initialOffset ?? 0;
+      let pageNumber = 0;
       let lastTotal: number | null = null;
       let pages = 0;
       for (;;) {
@@ -114,6 +115,7 @@ function makeStubClient(responder: Responder = () => null) {
         if (!page || !Array.isArray(page.items)) break;
         if (typeof page.total === 'number') lastTotal = page.total;
         all.push(...page.items);
+        opts?.onPage?.({ page: ++pageNumber, fetched: all.length });
         if (all.length >= maxItems) {
           return {
             items: all.slice(0, maxItems),
@@ -212,6 +214,8 @@ const unavailableItem = (): PlaylistItemObject =>
 
 const SRC_A = 'A'.repeat(22);
 const SRC_B = 'B'.repeat(22);
+const SRC_C = 'C'.repeat(22);
+const SRC_D = 'F'.repeat(22);
 const TARGET = 'T'.repeat(22);
 const PL9 = 'P'.repeat(22);
 const TARGET_2 = 'U'.repeat(22);
@@ -250,6 +254,109 @@ function playlistResponder(
     return mutations(path, arg);
   };
 }
+
+// ---------------------------------------------------------------------------
+// #902 fixtures: a server that honours `fields`, and tracks nested reads
+// ---------------------------------------------------------------------------
+
+/** The exact `fields` merge_playlists must send on every source item page. */
+const MERGE_ITEM_FIELDS = 'items(item(uri,name)),limit,next,total';
+
+/** Fields a projection-agnostic walk needs for its end-of-data and truncation tests. */
+const PAGE_META_FIELDS = ['limit', 'total'];
+
+/**
+ * An item whose nested track payload is behind getters that record every
+ * read. A merge that projects down to `uri`/`name` never touches them, so
+ * the log stays empty; a merge that reaches into `album`/`artists` is caught
+ * even when the surrounding rows happen to be correct.
+ */
+function trackedItem(touches: string[], id: string, name = `Track ${id}`): PlaylistItemObject {
+  const track: Record<string, unknown> = {
+    type: 'track',
+    id,
+    name,
+    uri: `spotify:track:${id}`,
+    duration_ms: 200000,
+  };
+  const nested: Record<string, unknown> = {
+    album: { name: 'Nested Album', images: [{ url: 'https://example.invalid/c.jpg' }] },
+    artists: [{ name: 'Nested Artist' }],
+    added_at: '2026-01-01T00:00:00Z',
+    external_ids: { isrc: 'ISRC0' },
+  };
+  for (const [key, value] of Object.entries(nested)) {
+    Object.defineProperty(track, key, {
+      enumerable: true,
+      configurable: true,
+      get() {
+        touches.push(key);
+        return value;
+      },
+    });
+  }
+  return { added_at: '2026-01-01T00:00:00Z', item: track } as unknown as PlaylistItemObject;
+}
+
+/**
+ * A responder that behaves the way Spotify does with a `fields` filter: a
+ * projected page comes back with ONLY the requested item fields, an
+ * unprojected one with the full track objects.
+ *
+ * `DECOY` is the point. If the merge stopped sending `fields`, it would be
+ * served the unprojected rows and every name would arrive suffixed — so the
+ * assertion on merged names fails instead of passing by luck on data the
+ * two payloads happen to share.
+ */
+function projectingResponder(
+  playlists: Record<string, PlaylistItemObject[]>,
+  mutations: Responder = () => null,
+  pageSize = 100,
+): Responder {
+  return (path, arg, method) => {
+    const match = method === 'GET' ? /^\/playlists\/([^/]+)\/items$/.exec(path) : null;
+    if (match && decodeURIComponent(match[1]) in playlists) {
+      const all = playlists[decodeURIComponent(match[1])] ?? [];
+      const params = (arg ?? {}) as Record<string, string>;
+      const offset = Number(params.offset ?? 0);
+      const page = all.slice(offset, offset + pageSize);
+      const fields = typeof params.fields === 'string' ? params.fields : null;
+      const projected = fields !== null && fields.includes('item(uri,name)');
+      const kept = (name: string) =>
+        fields === null || fields.split(',').some((f) => f.trim() === name);
+      const meta: Record<string, unknown> = {};
+      // A real `fields` filter drops anything not asked for, page metadata
+      // included — so a projection that forgot `limit`/`total` would come
+      // back without them here, exactly as it would from Spotify.
+      for (const name of PAGE_META_FIELDS) {
+        if (kept(name)) meta[name] = name === 'total' ? all.length : pageSize;
+      }
+      if (kept('next')) meta.next = null;
+      const items = page.map((row) => {
+        const track = row.item as unknown as Record<string, unknown> | null;
+        if (track === null) return { item: null } as unknown as PlaylistItemObject;
+        if (projected) {
+          return { item: { uri: track.uri, name: track.name } } as unknown as PlaylistItemObject;
+        }
+        // Unprojected: the whole track object, name decorated. The clone
+        // copies property DESCRIPTORS, so it carries the same nested getters
+        // without invoking them here.
+        const full = Object.create(
+          Object.getPrototypeOf(track),
+          Object.getOwnPropertyDescriptors(track),
+        ) as Record<string, unknown>;
+        full.name = `${String(track.name)} DECOY`;
+        return { item: full } as unknown as PlaylistItemObject;
+      });
+      return { items, ...meta };
+    }
+    return mutations(path, arg);
+  };
+}
+
+/** GETs against a playlist's items, in the order the client issued them. */
+const itemPageGets = (calls: RecordedCall[]) =>
+  wireCalls(calls).filter((c) => c.method === 'GET' && /\/items$/.test(c.path));
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -427,7 +534,12 @@ describe('merge_playlists', () => {
     });
     assert.equal(out.structuredContent?.truncated, true);
     assert.equal(out.structuredContent?.scan_cap, 1);
-    assert.match(textOf(out), /configured cap of 1 rows/);
+    // DRY_A holds 2 rows and DRY_B holds 1, so the combined total is 3 and
+    // the cap leaves 2 — the disclosure must name both, not the cap alone.
+    assert.equal(out.structuredContent?.rows_read, 2);
+    assert.equal(out.structuredContent?.reported_total, 3);
+    assert.match(textOf(out), /cap of 1 row\(s\) per source/);
+    assert.match(textOf(out), /read 2 of 3 row\(s\)/);
   });
 
   it('max_results caps rendered rows while totals stay accurate', async () => {
@@ -531,6 +643,311 @@ describe('merge_playlists', () => {
       assert.equal(parsed.committed_uris, 100);
       assert.equal(out.structuredContent!.partial_write_failure, true);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// merge_playlists — streaming read phase (#902)
+// ---------------------------------------------------------------------------
+
+describe('merge_playlists source walk (#902)', () => {
+  it('interleaves the source walks: every source\'s first page is requested before any second page', async () => {
+    // Four sources, two pages each (pageSize 60 over 120 items). A serial
+    // walk would issue A/0, A/60, B/0, B/60 …; the interleaved one puts all
+    // four first pages in flight in the same tick.
+    const sources = [SRC_A, SRC_B, SRC_C, SRC_D];
+    const playlists: Record<string, PlaylistItemObject[]> = {};
+    sources.forEach((id, s) => {
+      playlists[id] = Array.from({ length: 120 }, (_, i) => item(`${id}${i}`));
+    });
+    const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 60));
+
+    const out = await h.invoke('merge_playlists', {
+      sources,
+      target_playlist_id: TARGET,
+      response_format: 'json',
+    });
+
+    const gets = itemPageGets(h.client.calls);
+    const opening = gets.slice(0, 4);
+    assert.deepEqual(
+      opening.map((c) => c.path),
+      sources.map((id) => `/playlists/${id}/items`),
+      'all four sources must have their first page requested before any second page',
+    );
+    assert.deepEqual(opening.map((c) => (c.arg as Record<string, string>).offset), ['0', '0', '0', '0']);
+    // 4 sources x 2 pages: the interleaving must not add or drop requests.
+    assert.equal(gets.length, 8);
+    assert.equal(out.structuredContent!.requests_read, 8);
+    assert.equal(out.structuredContent!.added, 480);
+  });
+
+  it('keeps first-seen order across sources even though the walks interleave', async () => {
+    const h = harness(
+      playlistResponder(
+        {
+          [SRC_A]: [item('t1'), item('t2'), item('t3')],
+          [SRC_B]: [item('t2'), item('t4'), item('t1')],
+          [SRC_C]: [item('t5')],
+        },
+        () => ({ snapshot_id: 's' }),
+        2,
+      ),
+    );
+
+    await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B, SRC_C],
+      target_playlist_id: TARGET,
+    });
+
+    const batch = wireCalls(h.client.calls).find(
+      (c) => c.method === 'POST' && /\/items$/.test(c.path),
+    );
+    assert.deepEqual((batch!.arg as { uris: string[] }).uris, [
+      'spotify:track:t1',
+      'spotify:track:t2',
+      'spotify:track:t3',
+      'spotify:track:t4',
+      'spotify:track:t5',
+    ]);
+  });
+
+  it('reads only uri/name off a source item, never the nested track payload', async () => {
+    // This responder serves the FULL track objects, nested fields and all,
+    // so the getters behind album/artists/added_at/external_ids are reachable
+    // and every read of one is recorded. The merge must never make one.
+    const touches: string[] = [];
+    const srcA = Array.from({ length: 3 }, (_, i) => trackedItem(touches, `p${i}`, `P${i}`));
+    const srcB = Array.from({ length: 2 }, (_, i) => trackedItem(touches, `q${i}`, `Q${i}`));
+    const h = harness(playlistResponder({ [SRC_A]: srcA, [SRC_B]: srcB }, () => ({ snapshot_id: 's' }), 2));
+
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B],
+      target_playlist_id: TARGET,
+    });
+
+    assert.deepEqual(
+      touches,
+      [],
+      'the merge consumed only uri/name — no album/artists/added_at/external_ids was read',
+    );
+    assert.equal(out.structuredContent!.added, 5);
+  });
+
+  it('projects every source item page down to uri+name on the wire', async () => {
+    const touches: string[] = [];
+    const srcA = Array.from({ length: 3 }, (_, i) => trackedItem(touches, `p${i}`, `P${i}`));
+    const srcB = Array.from({ length: 2 }, (_, i) => trackedItem(touches, `q${i}`, `Q${i}`));
+    const h = harness(
+      projectingResponder({ [SRC_A]: srcA, [SRC_B]: srcB }, () => ({ snapshot_id: 's' }), 2),
+    );
+
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B],
+      target_playlist_id: TARGET,
+    });
+
+    const gets = itemPageGets(h.client.calls);
+    assert.ok(gets.length >= 3, 'sources really are multi-page here');
+    for (const get of gets) {
+      assert.equal(
+        (get.arg as Record<string, string>).fields,
+        MERGE_ITEM_FIELDS,
+        `source page ${get.path} must carry the fields projection`,
+      );
+    }
+    // Names came from the PROJECTED payload. `projectingResponder` suffixes
+    // every name with DECOY when a page is requested unprojected, so a merge
+    // that stopped sending `fields` fails here instead of matching by luck.
+    assert.equal(out.structuredContent!.added, 5);
+    assert.match(textOf(out), /spotify:track:p0 "P0"/);
+    assert.doesNotMatch(textOf(out), /DECOY/);
+  });
+
+  it('reports requests_read as the measured page count, including capped walks', async () => {
+    // Source A: 5 rows at pageSize 2 → 3 pages (the last is short).
+    // Source B: 3 rows at pageSize 2 → 2 pages.
+    const h = harness(
+      playlistResponder(
+        {
+          [SRC_A]: Array.from({ length: 5 }, (_, i) => item(`r${i}`)),
+          [SRC_B]: Array.from({ length: 3 }, (_, i) => item(`s${i}`)),
+        },
+        () => ({ snapshot_id: 's' }),
+        2,
+      ),
+    );
+
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A, SRC_B],
+      target_playlist_id: TARGET,
+    });
+    assert.equal(itemPageGets(h.client.calls).length, 5);
+    assert.equal(out.structuredContent!.requests_read, 5);
+    assert.match(textOf(out), /after 5 source page request\(s\)/);
+  });
+
+  it('reports requests_read in the dry-run payload, where it is the whole cost', async () => {
+    const h = harness(
+      playlistResponder({ [SRC_A]: [item('d1'), item('d2')] }, () => null, 1),
+    );
+
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A],
+      new_name: 'Preview',
+      dry_run: true,
+    });
+    assert.equal(itemPageGets(h.client.calls).length, 2);
+    assert.equal(out.structuredContent!.requests_read, 2);
+  });
+
+  it('counts a capped walk as the pages it actually spent, not the pages the cap implies', async () => {
+    // scan_cap 1 asks for one row; the walk still spends exactly one page
+    // because the cap is applied to what it accumulates, not to how it pages.
+    const h = harness(
+      playlistResponder({ [SRC_A]: [item('c1'), item('c2'), item('c3')] }, () => null, 2),
+    );
+
+    const out = await h.invoke('merge_playlists', {
+      sources: [SRC_A],
+      new_name: 'Capped',
+      dry_run: true,
+      scan_cap: 1,
+    });
+    assert.equal(out.structuredContent!.truncated, true);
+    assert.equal(out.structuredContent!.requests_read, 1);
+  });
+
+  // ---------------------------------------------------------------------
+  // #902: the cap is per SOURCE, so the combined total is a sum. These are
+  // the tests that make a per-source cap which is never accumulated across
+  // sources impossible to ship — a single source cannot catch that class,
+  // because one source's cap and the combined cap are the same number.
+  // ---------------------------------------------------------------------
+
+  it('caps each source separately and discloses the TRUE combined total', async () => {
+    // 4 sources x 25 rows, pageSize 5, scan_cap 10. The cap binds on every
+    // source, so each walk stops at 10 of its own 25 — 40 rows read against a
+    // true combined 100. A merge that treated the cap as a budget for the
+    // whole merge would read 10 rows total and report success; a merge that
+    // reported the cap alone would claim 10 rows when 100 exist.
+    const sources = [SRC_A, SRC_B, SRC_C, SRC_D];
+    const playlists: Record<string, PlaylistItemObject[]> = {};
+    sources.forEach((id, s) => {
+      playlists[id] = Array.from({ length: 25 }, (_, i) => item(`s${s}r${i}`));
+    });
+    const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 5));
+
+    const out = await h.invoke('merge_playlists', {
+      sources,
+      target_playlist_id: TARGET,
+      scan_cap: 10,
+    });
+
+    const sc = out.structuredContent!;
+    assert.equal(sc.truncated, true);
+    assert.equal(sc.truncated_by_cap, true);
+    // The SUM, not the cap and not one source's count.
+    assert.equal(sc.rows_read, 40);
+    assert.equal(sc.reported_total, 100);
+    // 4 sources x 3 pages each (the cap binds on the third).
+    assert.equal(sc.requests_read, 12);
+    assert.equal(sc.added, 40);
+
+    // The disclosure names both numbers, and says the missing rows are absent
+    // from the merge rather than hinting the totals might be off.
+    const note = textOf(out);
+    assert.match(note, /read 40 of 100 row\(s\)/);
+    assert.match(note, /60 row\(s\) are NOT in this result/);
+    assert.match(note, /cap of 10 row\(s\) per source/);
+    // The cap applies per source, so the destination gets 10 from EACH.
+    const posted = wireCalls(h.client.calls)
+      .filter((c) => c.method === 'POST' && /\/items$/.test(c.path))
+      .flatMap((c) => (c.arg as { uris: string[] }).uris);
+    assert.equal(posted.length, 40);
+    assert.deepEqual(
+      posted,
+      sources.flatMap((_, s) => Array.from({ length: 10 }, (_, i) => `spotify:track:s${s}r${i}`)),
+      'each source contributed its own capped prefix, in the order listed',
+    );
+  });
+
+  it('previews the same combined total under dry_run, where the cap decides the answer', async () => {
+    const sources = [SRC_A, SRC_B, SRC_C];
+    const playlists: Record<string, PlaylistItemObject[]> = {};
+    sources.forEach((id, s) => {
+      playlists[id] = Array.from({ length: 20 }, (_, i) => item(`p${s}r${i}`));
+    });
+    const h = harness(playlistResponder(playlists, () => null, 5));
+
+    const out = await h.invoke('merge_playlists', {
+      sources,
+      new_name: 'Preview',
+      dry_run: true,
+      scan_cap: 10,
+    });
+
+    const sc = out.structuredContent!;
+    assert.equal(sc.rows_read, 30);
+    assert.equal(sc.reported_total, 60);
+    assert.equal(sc.truncated, true);
+    assert.match(textOf(out), /read 30 of 60 row\(s\)/);
+    assert.match(textOf(out), /30 row\(s\) are NOT in this result/);
+  });
+
+  it('leaves the combined total unknown — never overstated — when a source reports no total', async () => {
+    // A page with no `total` (#718): the sum cannot be computed, so the
+    // disclosure must not fall back to the 40 rows it happened to read and
+    // call the walk whole. Unknown stays unknown.
+    const sources = [SRC_A, SRC_B];
+    const playlists: Record<string, PlaylistItemObject[]> = {};
+    sources.forEach((id, s) => {
+      playlists[id] = Array.from({ length: 30 }, (_, i) => item(`u${s}r${i}`));
+    });
+    const withoutTotals: Responder = (path, arg, method) => {
+      const match = method === 'GET' ? /^\/playlists\/([^/]+)\/items$/.exec(path) : null;
+      if (match && decodeURIComponent(match[1]) in playlists) {
+        const all = playlists[decodeURIComponent(match[1])] ?? [];
+        const offset = Number(((arg ?? {}) as Record<string, string>).offset ?? 0);
+        return { items: all.slice(offset, offset + 5), limit: 5, offset, next: null };
+      }
+      return null;
+    };
+    const h = harness(withoutTotals);
+
+    const out = await h.invoke('merge_playlists', {
+      sources,
+      target_playlist_id: TARGET,
+      scan_cap: 10,
+    });
+
+    const sc = out.structuredContent!;
+    assert.equal(sc.reported_total, null);
+    assert.equal(sc.rows_read, 20);
+    assert.equal(sc.truncated, true);
+    assert.match(textOf(out), /totals may be incomplete/);
+    assert.doesNotMatch(textOf(out), /read 20 of 20 row\(s\)/);
+  });
+
+  it('says nothing about truncation when the sources really were read whole', async () => {
+    const sources = [SRC_A, SRC_B];
+    const playlists: Record<string, PlaylistItemObject[]> = {};
+    sources.forEach((id, s) => {
+      playlists[id] = Array.from({ length: 7 }, (_, i) => item(`w${s}r${i}`));
+    });
+    const h = harness(playlistResponder(playlists, () => ({ snapshot_id: 's' }), 5));
+
+    const out = await h.invoke('merge_playlists', {
+      sources,
+      target_playlist_id: TARGET,
+      scan_cap: 10,
+    });
+
+    const sc = out.structuredContent!;
+    assert.equal(sc.truncated, false);
+    assert.equal(sc.rows_read, 14);
+    assert.equal(sc.reported_total, 14);
+    assert.doesNotMatch(textOf(out), /NOT in this result|totals may be incomplete/);
   });
 });
 

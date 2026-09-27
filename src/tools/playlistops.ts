@@ -68,27 +68,165 @@ function trackKey(track: SpotifyTrack | SpotifyEpisode): string | null {
 }
 
 /**
- * Page every item of a playlist through client.getAllPages, capped by the
- * configured fetch-all cap. Returns items in playlist order, plus the number
- * of HTTP GETs the walk actually spent (#899) — a walk that stops on a short
- * page has read fewer rows than requests, and the caller is told the cost, not
- * a number derived from the row count.
+ * The one row shape the merge consumes (#902). `merge_playlists` only ever
+ * reads `uri` and `name` from an item, so the walk asks Spotify for exactly
+ * those two fields and nothing else. That drops the nested `album`/`artists`
+ * payloads a full track object drags in — the reason a 4-source merge of
+ * 500-item playlists used to retain megabytes of parsed JSON to build a
+ * `uri`/`name` list.
+ *
+ * `limit` is kept in the projection deliberately even though the walk does
+ * not read it for offsets: the client's end-of-data test compares a page's
+ * length against `page.limit`, so stripping it would change WHEN a walk
+ * stops and silently alter which rows a merge sees. `total` is required for
+ * the same reason — without it the truncation verdict degrades to
+ * "conservatively truncated".
+ */
+const MERGE_ITEM_FIELDS = 'items(item(uri,name)),limit,next,total';
+
+/** One source playlist's completed walk, with the verdict that came with it. */
+interface SourceWalk {
+  /** Rows this source contributed, in playlist order, cut to the source cap. */
+  items: PlaylistItemObject[];
+  /** Rows are missing — either the cap bound the walk or the server's total outran it. */
+  truncated: boolean;
+  /** The cap is specifically WHY this walk was truncated (#864). */
+  truncatedByCap: boolean;
+  /** The source's own row count as Spotify reported it, or null if it reported none. */
+  reportedTotal: number | null;
+  /** Item-page requests this walk actually spent (#899). */
+  requests: number;
+}
+
+/**
+ * Page every item of a playlist, capped by the configured fetch-all cap.
+ * Returns items in playlist order, plus the number of HTTP GETs the walk
+ * actually spent (#899) — a walk that stops on a short page has read fewer
+ * rows than requests, and the caller is told the cost, not a number derived
+ * from the row count.
+ *
+ * `options.fields` narrows what the server sends per page (#902).
+ *
+ * The request count comes from the client's own `pages`, not from a counter
+ * kept here. #899 already counts the requests at the point they fire inside
+ * the walk, which includes a request that returned no page array — a cost
+ * against the quota that a count taken from returned pages would miss. A
+ * second counter alongside it would be the same duplication #1204 removed for
+ * `committed_uris`, and could disagree with the client's.
+ *
+ * The truncation verdict is TAKEN from `getAllPagesWithTruncation`, not
+ * re-derived from the row count. `rows.length > cap` only says "the page
+ * overflowed"; it cannot see a walk that stopped on a short page while the
+ * server's own `total` still counted more rows (#718/#864), and it discards
+ * `reportedTotal` — the only number a multi-source caller can sum into the
+ * TRUE combined size of its sources.
  */
 async function fetchAllItems(
   client: SpotifyClient,
   ref: string,
-  options: { limit?: number; scan_cap?: number } = {},
-): Promise<{ items: PlaylistItemObject[]; truncated: boolean; requests: number }> {
+  options: { limit?: number; scan_cap?: number; fields?: string } = {},
+): Promise<SourceWalk> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
   const cap = Math.min(options.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
   const pageLimit = Math.min(options.limit ?? 100, 100);
   const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
     `/playlists/${id}/items`,
-    { limit: String(pageLimit) },
-    { maxItems: cap + 1 },
+    {
+      limit: String(pageLimit),
+      ...(options.fields ? { fields: options.fields } : {}),
+    },
+    {
+      // cap + 1 so the walk can SEE the row that overflows the cap and prove
+      // the truncation happened; the +1 is dropped below.
+      maxItems: cap + 1,
+    },
   );
-  const rows = walk.items;
-  return { items: rows.slice(0, cap), truncated: rows.length > cap, requests: walk.pages };
+  const items = walk.items.slice(0, cap);
+  return {
+    items,
+    // The walk's own verdict OR the clip applied here. The two answer
+    // different questions and only one of them is a truncation: a walk that
+    // read a 2-row source end to end is not truncated, but slicing it to a
+    // cap of 1 still drops a row the caller expected. Reporting that as
+    // "not truncated" is the clipped-walk-reported-as-complete failure
+    // AGENTS.md §6 warns about, so the clip counts too.
+    truncated: walk.truncated || walk.items.length > cap,
+    truncatedByCap: walk.truncatedByCap,
+    reportedTotal: walk.reportedTotal,
+    requests: walk.pages,
+  };
+}
+
+/** The read phase's accounting, summed ACROSS sources. */
+interface SourceReadSummary {
+  /** Per-source rows, in the order the caller listed the sources. */
+  lists: PlaylistItemObject[][];
+  /** Item-page requests every source walk together spent. */
+  requests: number;
+  /** Rows are missing from at least one source. */
+  truncated: boolean;
+  /** The per-source cap is specifically WHY a walk came back short. */
+  truncatedByCap: boolean;
+  /** Rows actually read, summed across sources — the cap applies per source. */
+  rowsRead: number;
+  /**
+   * The TRUE combined total the sources hold, summed from the counts Spotify
+   * reported, or null when any source reported none. Null means unknown, and
+   * it must not be rounded to `rowsRead`: that is exactly the "clipped walk
+   * reported as complete" failure from AGENTS.md §6 (#718).
+   */
+  reportedTotal: number | null;
+  /** How many sources fed this summary. */
+  sourceCount: number;
+}
+
+/**
+ * Sum a completed set of source walks.
+ *
+ * `scan_cap` bounds each SOURCE, so the combined row count is a sum and any
+ * verdict phrased in terms of the cap alone understates it by the source
+ * count. Accumulating here — once, for every tool in this module — is what
+ * keeps `merge_playlists` from reporting a four-source merge clipped to one
+ * source's cap as though it had read them all (#902).
+ */
+function summarizeSourceWalks(walks: SourceWalk[]): SourceReadSummary {
+  const totals = walks.map((walk) => walk.reportedTotal);
+  return {
+    lists: walks.map((walk) => walk.items),
+    requests: walks.reduce((n, walk) => n + walk.requests, 0),
+    truncated: walks.some((walk) => walk.truncated),
+    truncatedByCap: walks.some((walk) => walk.truncatedByCap),
+    rowsRead: walks.reduce((n, walk) => n + walk.items.length, 0),
+    reportedTotal: totals.every((t): t is number => typeof t === 'number')
+      ? totals.reduce((a, b) => a + b, 0)
+      : null,
+    sourceCount: walks.length,
+  };
+}
+
+/**
+ * The one-line disclosure for a read phase whose source walks came back short.
+ *
+ * Returns '' when nothing was dropped, so callers can append it
+ * unconditionally. When every source reported a total, the line names BOTH
+ * the rows actually read and the true combined total the sources hold — a
+ * merge of four 500-item playlists under a 100-row cap reads 400 of 2,000,
+ * and saying only "reached the cap of 100 rows" would report a tenth of the
+ * work as a whole merge. When a source reported no total the sum is unknown,
+ * so the line falls back to the per-source cap and says the totals may be
+ * incomplete rather than asserting a number nobody reported (#718).
+ */
+function describeSourceTruncation(read: SourceReadSummary, sourceCap: number): string {
+  if (!read.truncated) return '';
+  const via =
+    read.truncatedByCap
+      ? `Source scan stopped at the cap of ${sourceCap} row(s) per source`
+      : 'A source walk ended before the last row Spotify reported';
+  if (read.reportedTotal === null) {
+    return `(${via} across ${read.sourceCount} source playlist(s); ${read.rowsRead} row(s) read, totals may be incomplete.)`;
+  }
+  const missing = Math.max(0, read.reportedTotal - read.rowsRead);
+  return `(${via} across ${read.sourceCount} source playlist(s): read ${read.rowsRead} of ${read.reportedTotal} row(s), so ${missing} row(s) are NOT in this result. Raise scan_cap or narrow the sources to include them.)`;
 }
 
 export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClient): void {
@@ -122,21 +260,26 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       }
       // Reads are safe in preview mode: page every source up front so the
       // dry-run preview can state exactly which tracks would be added.
+      //
+      // #902: the walks start in the SAME tick, so all four sources' first
+      // pages are in flight before any source's second page — the read phase
+      // interleaves instead of paying each source's full round trip in
+      // series. `Promise.all` preserves result order, so the walks are still
+      // consumed in the order the caller listed them and the first-seen
+      // order across sources is unchanged.
       const sourceRefs = input.values;
-      const sourceLists: PlaylistItemObject[][] = [];
-      let sourceTruncated = false;
-      // #899: the read phase is the expensive half of a merge, and it is
-      // counted as it happens so the reported cost is the requests actually
-      // spent, not rows retained.
-      let requestsRead = 0;
-      for (const ref of sourceRefs) {
-        const walk = await fetchAllItems(client, ref, args);
-        sourceLists.push(walk.items);
-        sourceTruncated ||= walk.truncated;
-        requestsRead += walk.requests;
-      }
+      const sourceWalks = await Promise.all(
+        sourceRefs.map((ref) => fetchAllItems(client, ref, { ...args, fields: MERGE_ITEM_FIELDS })),
+      );
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
-      const truncated = sourceTruncated;
+      // #902: one accumulation across every source, so a merge of N capped
+      // sources reports N caps' worth of rows and the true combined total
+      // rather than a single source's worth.
+      const read = summarizeSourceWalks(sourceWalks);
+      const { lists: sourceLists, requests: readRequests, truncated, truncatedByCap, rowsRead, reportedTotal } = read;
+      // The single sentence both dry_run and the real write append, so the
+      // preview and the outcome cannot describe the same walk differently.
+      const truncationNote = describeSourceTruncation(read, sourceCap);
 
       // Dedupe by track key preserving first-seen order across sources.
       const seen = new Set<string>();
@@ -180,14 +323,27 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           withPlaylistInputNote(
             `[dry run] merge_playlists — nothing was changed.\n${changes.join('\n')}` +
               (duplicates > 0 ? `\n(${duplicates} duplicate(s) across sources would be skipped)` : '') +
-              (truncated ? `\n(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)` : '') +
+              (truncationNote ? `\n${truncationNote}` : '') +
               // #899: a dry run walks every source for real, so it spends the
               // read budget a real merge would. A preview that hid that would
-              // understate the cost of the call it is previewing.
-              `\n(Read cost: ${requestsRead} paged read request(s) across ${sourceRefs.length} source playlist(s).)`,
+              // understate the cost of the call it is previewing. Kept
+              // unconditional — the truncation note above only speaks when
+              // rows were dropped, but the read cost is incurred either way.
+              `\n(Read cost: ${readRequests} paged read request(s) across ${sourceRefs.length} source playlist(s).)`,
             input,
           ),
-          withPlaylistInputMetadata({ ok: true, dry_run: true, changes, playlists: sourceRefs, truncated, scan_cap: sourceCap, requests_read: requestsRead }, input),
+          withPlaylistInputMetadata({
+            ok: true,
+            dry_run: true,
+            changes,
+            playlists: sourceRefs,
+            truncated,
+            truncated_by_cap: truncatedByCap,
+            rows_read: rowsRead,
+            reported_total: reportedTotal,
+            scan_cap: sourceCap,
+            requests_read: readRequests,
+          }, input),
         );
       }
 
@@ -220,7 +376,10 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         const prose = write.failed_chunk_index === 0
           ? `merge_playlists aborted before any track landed on playlist ${targetId}: ${write.error}. Nothing was merged.`
           : `Partial merge into playlist ${targetId}: chunks 1–${write.failed_chunk_index} committed (${committedCount} track(s)), batch ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${mergedUris.length - committedCount} track(s); the committed prefix is already on the playlist. (${write.error})`;
-        const payload = withPlaylistInputMetadata({ ...write, target_playlist: targetId, attempted_uris: mergedUris.length, remaining_uris: mergedUris.length - committedCount, playlists: sourceRefs, duplicates_skipped: duplicates, unavailable_items_skipped: unavailable, truncated, scan_cap: sourceCap, created_new_playlist: creatingNew }, input);
+        // #1204: `...write` already carries `committed_uris` as the running
+        // total across every committed chunk, so this site does NOT override
+        // it — re-deriving the number here is what #1204 removed.
+        const payload = withPlaylistInputMetadata({ ...write, target_playlist: targetId, attempted_uris: mergedUris.length, remaining_uris: mergedUris.length - committedCount, playlists: sourceRefs, duplicates_skipped: duplicates, unavailable_items_skipped: unavailable, truncated, truncated_by_cap: truncatedByCap, rows_read: rowsRead, reported_total: reportedTotal, scan_cap: sourceCap, requests_read: readRequests, created_new_playlist: creatingNew }, input);
         return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(prose, input), payload);
       }
       const snapshotId = write.snapshot_id;
@@ -230,6 +389,9 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         ok: true,
         dry_run: args.dry_run ?? false,
         truncated,
+        truncated_by_cap: truncatedByCap,
+        rows_read: rowsRead,
+        reported_total: reportedTotal,
         scan_cap: sourceCap,
         limit: args.limit ?? null,
         target_playlist: targetId,
@@ -238,8 +400,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         added: merged.length,
         duplicates_skipped: duplicates,
         unavailable_items_skipped: unavailable,
+        requests_read: readRequests,
         batches_sent: requestCount,
-        requests_read: requestsRead,
         ...(snapshotId ? { snapshot_id: snapshotId } : {}),
       };
 
@@ -251,9 +413,10 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const lines = [
         `Merged ${merged.length} unique track(s) into ${creatingNew ? 'new playlist' : 'playlist'} ${targetId}` +
           ` across ${requestCount} batch request(s)` +
+          ` (after ${readRequests} source page request(s))` +
           (duplicates > 0 ? `; skipped ${duplicates} duplicate(s)` : '') +
           (unavailable > 0 ? `, ${unavailable} unavailable item(s)` : '') +
-          `. Read cost: ${requestsRead} paged read request(s) across ${sourceRefs.length} source playlist(s).`,
+          `. Read cost: ${readRequests} paged read request(s) across ${sourceRefs.length} source playlist(s).`,
         batchSummary(merged.length, merged.map((t) => t.uri)),
       ];
       const view = truncateItems(
@@ -265,7 +428,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         lines.push(...view.items.map((row) => `  • ${row}`));
         if (view.footer) lines.push(`(${view.footer})`);
       }
-      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      if (truncationNote) lines.push(truncationNote);
       const summaryText = lines.join('\n');
       return textResult(
         withPlaylistInputNote(snapshotId ? `${summaryText}\nSnapshot ID: ${snapshotId}` : summaryText, input),
@@ -297,9 +460,10 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const aItems = aWalk.items;
       const bItems = bWalk.items;
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
-      const truncated = aWalk.truncated || bWalk.truncated;
+      const read = summarizeSourceWalks([aWalk, bWalk]);
       // #899: both sides are walked in parallel, so the cost is their sum.
-      const requestsRead = aWalk.requests + bWalk.requests;
+      const { requests: requestsRead, truncated } = read;
+      const truncationNote = describeSourceTruncation(read, sourceCap);
 
       // First-occurrence position map over track IDs.
       const posA = new Map<string, number>();
@@ -373,7 +537,8 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
           moved.map((m) => `${m.id} @ A:${m.a_position} → B:${m.b_position}`),
         ),
       ];
-      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
+      if (truncationNote) lines.push(truncationNote);
+      // #899: the read cost is incurred whether or not rows were dropped.
       lines.push(`(Read cost: ${requestsRead} paged read request(s) across both playlists.)`);
       return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
         ok: true,
@@ -421,18 +586,15 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const threshold = args.min_overlap ?? refs.length;
 
       // One full paging pass keeps both the presence sets and display names.
-      const itemLists: PlaylistItemObject[][] = [];
-      let walkTruncated = false;
+      const read = summarizeSourceWalks(
+        await Promise.all(refs.map((ref) => fetchAllItems(client, ref, args))),
+      );
+      const itemLists = read.lists;
       // #899: this tool is read-only, so the walk IS the cost of the call.
-      let requestsRead = 0;
-      for (const ref of refs) {
-        const walk = await fetchAllItems(client, ref, args);
-        itemLists.push(walk.items);
-        walkTruncated ||= walk.truncated;
-        requestsRead += walk.requests;
-      }
+      const { requests: requestsRead } = read;
       const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
-      const truncated = walkTruncated;
+      const { truncated } = read;
+      const truncationNote = describeSourceTruncation(read, sourceCap);
       // One pass records presence and, at the same time, the display name each
       // track is FIRST seen under (#903). First-seen-wins is exactly what the
       // old per-entry scan did — it walked itemLists in order and took the
@@ -500,8 +662,9 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         ...(view.items.length > 0 ? view.items.map((row) => `  • ${row}`) : ['  (none)']),
       ];
       if (view.footer) lines.push(`(${view.footer})`);
-      if (truncated) lines.push(`(Source walk reached the configured cap of ${sourceCap} rows; totals may be incomplete.)`);
-      // #899: read-only, so this is the whole cost of the call.
+      if (truncationNote) lines.push(truncationNote);
+      // #899: read-only, so this is the whole cost of the call. Unconditional —
+      // the truncation note above only speaks when rows were dropped.
       lines.push(`(Read cost: ${requestsRead} paged read request(s) across ${refs.length} playlist(s).)`);
       return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
         ok: true,

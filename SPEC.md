@@ -1114,6 +1114,17 @@ Two consequences callers can observe:
 
 **Migration note (breaking, v2.0):** a call that previously committed over a playlist with unavailable rows now fails. The tool names the count and the positions; run `remove_unavailable_playlist_items` (or `playlist_health_check` to find them) and retry.
 
+#### `merge_playlists`
+Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.
+
+**Inputs:** `playlists` (source references, 1–10; legacy alias `sources` through v2.0), plus exactly one of `target_playlist_id` (append into an existing playlist) or `new_name` + `public` (create one). `limit` (source page size, 1–100), `scan_cap` (maximum source rows to scan), `dry_run`, `response_format`, `max_results`.
+
+**Source read phase (#902).** Every source is walked concurrently (`Promise.all`), so all of their first pages are in flight before any source's second page, and the walks are consumed in the order the caller listed them — interleaving the requests does not reorder the merge. Each item page is requested with the projection `items(item(uri,name)),limit,next,total`, because only `uri` and `name` are read; a full track object would drag nested `album`/`artists` payloads across the wire and into memory for nothing. `limit` and `total` stay in the projection because the walk's end-of-data and truncation tests read them — dropping them would change which rows a merge sees.
+
+**The cap is per source, so the combined total is a sum (#902).** `scan_cap` bounds each source independently, so a merge reads up to `scan_cap × sources` rows. Every walk's verdict is therefore accumulated across sources before anything is reported: `rows_read` is the sum of rows actually read, and `reported_total` is the sum of the totals Spotify itself reported for each source. A four-source merge of 500-item playlists under a 100-row cap reads 400 of 2,000 and says so — naming the cap alone would understate the shortfall by the source count and read as though the merge had been whole. When any source reports no `total`, `reported_total` is `null`: the combined size is unknown, and it is never rounded down to `rows_read`. `truncated` is true when any source came back short, and `truncated_by_cap` distinguishes the cap being the reason from a walk that ended before the last row the server reported. The same sentence renders in prose for the dry run, the successful write, and `diff_playlists` / `overlap_playlists`, so a preview and its outcome cannot describe one walk differently.
+
+**Returns:** `target_playlist`, `created_new_playlist`, `playlists` (the source references), `added`, `duplicates_skipped`, `unavailable_items_skipped`, `rows_read`, `reported_total`, `requests_read` (source item pages actually fetched, measured per page rather than inferred from the row count), `batches_sent` (write requests), `snapshot_id` when Spotify returned one, plus `truncated`/`truncated_by_cap`/`scan_cap`.
+
 #### `get_playlist`
 Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` for metadata, then `GET /playlists/{id}/items` for the track/episode list.
 
