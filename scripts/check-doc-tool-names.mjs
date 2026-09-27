@@ -124,6 +124,20 @@ const parameterAllowlist = new Set([
   // branch on it rather than parse prose. A key the tool returns about its own
   // result, not a parameter.
   'expect_present',
+  // #658: SPEC.md §5.11 documents the two undo tools, which until then had no
+  // contract at all. Two kinds of name enter the doc and neither is a tool or a
+  // parameter: the receipt KINDS the scan filters on (`playlist_items` and
+  // `playlist_meta` are values of the stored receipt's `kind`, not tool names),
+  // and the `reason` / structuredContent keys an undo returns about its own
+  // result. `partial_write_failure`, `post_state_mismatch`,
+  // `confirmation_unavailable`, `direction_assumed` and `snapshot_id` are
+  // already known from #865 and #688 above.
+  'playlist_items', 'playlist_meta',
+  'unknown_receipt', 'not_reversible', 'no_uris', 'no_reversible',
+  'occurrences_unrecorded',
+  'undone_receipt', 'inverted_to', 'expected_absent', 'expected_present',
+  'completed_requests', 'attempted_requests', 'unconfirmed_uris',
+  'post_state_unverified',
   // #713: SPEC.md §5.11 documents the discovery trio's response_format, which
   // means naming the payload each mode serializes. These are the remaining
   // structuredContent keys of find_tool/inspect_tool/toolset_report, joining
