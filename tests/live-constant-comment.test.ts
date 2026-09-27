@@ -31,19 +31,6 @@ import { maskToComments } from '../scripts/check-doc-tool-counts.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * Files this gate does not police.
- *
- * `src/shaping.ts` is owned by #1341, which fixes both of its instances at once
- * — `:685` (`defaultMaxBytes` (620,000B)) and `:692` (`64,000B` against the
- * live `MAX_RESPONSE_BYTES`). Scanned from here, the two gates would collide on
- * the same lines: whichever landed second would fail the other, and the failure
- * would name a line the reader had been told is already fixed. When #1341 merges,
- * delete this entry — a scope exclusion that outlives its reason is a gate that
- * has quietly stopped running.
- */
-const OUT_OF_SCOPE = new Set(['src/shaping.ts']);
-
 /** Smallest figure worth a gate. Below this, a collision is arithmetic coincidence. */
 const FIGURE_FLOOR = 1_000;
 
@@ -267,10 +254,10 @@ function sourceFiles(dir: string): string[] {
 
 describe('#1332 — comments must not restate a live constant', () => {
   it('finds no unanchored comment figure that a constant also defines', () => {
-    const files = sourceFiles(join(ROOT, 'src'))
-      .map((path) => path.slice(ROOT.length + 1))
-      .filter((path) => !OUT_OF_SCOPE.has(path))
-      .map((path) => ({ path, source: readFileSync(join(ROOT, path), 'utf8') }));
+    const files = sourceFiles(join(ROOT, 'src')).map((path) => ({
+      path: path.slice(ROOT.length + 1),
+      source: readFileSync(path, 'utf8'),
+    }));
     assert.ok(files.length > 20, `expected the src/ tree, scanned ${files.length} files`);
 
     const { quotes, deadAllowances } = findLiveConstantQuotes(files);
