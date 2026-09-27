@@ -284,9 +284,15 @@ process are all standing state, not standing approval.
       `--batch`, `--resume`, and `--report` flags to
       `scripts/live-gauntlet.mjs`; `scripts/sweep-loop.sh` controls `BATCH`,
       `INTERVAL`, `REPORT`, and `MAX_BATCHES`.
-    - Point `REPORT` and the loop log outside the checkout (for example
-      `/tmp/sweep-loop.log`) unless the human explicitly approved the tracked
-      `memory/live-sweep-report.json` artifact, which is a working-tree write.
+    - Every run writes a report into the checkout unless you move it. The
+      `sweep` and `sweep:loop` package scripts both default to the tracked
+      `memory/live-sweep-report.json`, so a bare `npm run sweep` dirties the
+      working tree by design. Keep the artifact outside the checkout — set
+      `REPORT=/tmp/live-sweep-report.json` for the loop, or pass
+      `--report=/tmp/live-sweep-report.json` after `--` for a single batch —
+      and send the loop log to `/tmp/sweep-loop.log`, unless the human
+      explicitly approved the tracked artifact, which is a working-tree write
+      in its own right.
     - Keep batches below the observed quota wall, space them with `INTERVAL`,
       and allow `SWEEP_RETRY_MAX` to cap retries. Inspect the report and resume
       file after each run; the script merges prior records with current results.
