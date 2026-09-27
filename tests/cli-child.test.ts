@@ -18,11 +18,22 @@ const ROOT = fileURLToPath(new URL('..', import.meta.url));
  * would read and write the real `~/.spotify-mcp`, which is the leak
  * `tests/helpers/hermetic.ts` exists to prevent. The helper takes the env from
  * its caller for exactly this reason, so there is no default to forget.
+ *
+ * `cwd` and `env` are **not** in the accepted options, which is the point. They
+ * are applied after the caller's fields, so a test cannot spread its way into
+ * the ambient environment — and with them absent from the parameter type, a test
+ * that tried would not compile. The alternative (`{ cwd, env, ...options }`)
+ * put the caller's values *last*: a silent no-op in every test here, since none
+ * of them pass either field, and a live `HOME` leak in the first one that did.
  */
 function cli(
-  options: Parameters<typeof runCliSubcommand>[0],
+  options: Omit<Parameters<typeof runCliSubcommand>[0], 'cwd' | 'env'>,
 ): Promise<CliRun> {
-  return runCliSubcommand({ cwd: ROOT, env: { PATH: process.env.PATH, HOME: tmpdir() }, ...options });
+  return runCliSubcommand({
+    ...options,
+    cwd: ROOT,
+    env: { PATH: process.env.PATH, HOME: tmpdir() },
+  });
 }
 
 /**

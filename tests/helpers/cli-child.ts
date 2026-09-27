@@ -185,10 +185,22 @@ export function classifyCliChild(err: unknown): { readonly raw: RawChildResult; 
 }
 
 /**
+ * The two outcomes that are failures rather than verdicts.
+ *
+ * `runCliSubcommand` returns a child that *ran and exited* as `ok`, whatever its
+ * code, so `exited` never reaches the reporting path. Narrowing the parameter to
+ * the remaining two is what lets `explainCliFailure` read `reason` in its final
+ * line without a cast: that line is only correct for a child that never started,
+ * and a `ChildOutcome` wide enough to also be `exited` would let it claim
+ * otherwise.
+ */
+type CliFailureOutcome = Exclude<ChildOutcome, { readonly kind: 'exited' }>;
+
+/**
  * What kind of death this was, stated so it cannot be read as a defect in the
  * product. Split from the facts above so a message carrying both says each once.
  */
-function explainCliFailure(outcome: ChildOutcome, timeoutMs: number): string {
+function explainCliFailure(outcome: CliFailureOutcome, timeoutMs: number): string {
   if (outcome.kind === 'signalled') {
     return 'A signal kill is a resource/process failure, NOT a compliance failure. Nothing the CLI could have\n'
       + 'printed was lost in the product — a signal takes the process with it before it reaches the banner —\n'
@@ -209,7 +221,7 @@ function describeCliFailure(
   label: string,
   command: readonly string[],
   raw: RawChildResult,
-  outcome: ChildOutcome,
+  outcome: CliFailureOutcome,
   timeoutMs: number,
 ): string {
   return [
