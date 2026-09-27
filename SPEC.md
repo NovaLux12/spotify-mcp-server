@@ -33,11 +33,23 @@ A Model Context Protocol (MCP) server that gives Claude full control over Spotif
 - Simple one-time OAuth setup; silent token refresh thereafter
 
 ### Non-Goals
-- Audio streaming or analysis (Spotify does not provide audio via Web API)
-- Web UI or dashboard
-- Multi-user / SaaS hosting
-- Lyrics (separate licensed product)
-- Spotify Connect SDK (hardware/native integration)
+
+What v2 will deliberately not do. Each line is a decision carrying a one-line
+rationale; the evidence, the alternative offered in its place, and the source
+each rests on are in **[docs/non-goals.md](docs/non-goals.md)**, which is the
+maintained record. That page also names the scope questions still open in other
+issues, so the absence of a line here is not read as a decision either way.
+
+- **Audio streaming, audio analysis, and offline playback** — the Web API serves metadata rather than audio, and the analysis endpoints belong to a class this project ships no wrapper for at all.
+- **A web UI, a dashboard, or an MCP UI surface** — the server is a local stdio process; `spotify_doctor`, the MCP resources and each tool's structured result cover what a page would show.
+- **Multi-tenant or hosted operation** — one process serves one user's credentials, and the loopback-only OAuth callback cannot complete a hosted login.
+- **Sharing one user's credentials across users** — no token pooling and no caller-supplied credentials; a process holding several people's tokens could not say whose library a call touched.
+- **Lyrics** — the public API has no lyrics endpoint, so `lyric_snippet_search` matches a remembered phrase against track metadata instead.
+- **The Spotify Connect SDK and native client integration** — the Web API is the only surface spoken; `get_devices`, `switch_device` and `transfer_playback` are the device control it does expose.
+- **Voice control** — capturing audio is a different product with a different consent surface; a host's own voice layer can call this server with ordinary text.
+- **Training a model on Spotify data, or exporting derived profiles** — prohibited by Spotify's Developer Terms, and already restated in this repository's [End User Agreement](END_USER_AGREEMENT.md) and [Privacy Notice](PRIVACY.md).
+- **A second third-party upstream, ad-tech, or monetization egress** — stats.fm is the only non-Spotify API called, and a new recipient is a disclosure change before it is a code change.
+- **Working around Spotify's own controls** — no stream ripping and no quota, regional or access-control circumvention; a registration-gated endpoint explains its 403 rather than being routed around.
 
 ---
 
