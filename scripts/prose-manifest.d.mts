@@ -39,6 +39,27 @@ export type ProseRetirement = ProseUnitPin & {
 };
 
 /**
+ * A pin that was replaced in place: this paragraph became that one, and both
+ * were in the tree when the record was written (#1527).
+ *
+ * Deliberately a different shape from `ProseRetirement` rather than the same
+ * record with a flag on it. A merged list re-introduces the ambiguity the two
+ * arrays exist to remove: the reader has to be able to say "this text was
+ * replaced" and "this text is gone" without inspecting a discriminator, and a
+ * reanchor is meaningless without its successor — a retirement with no `to` is
+ * the whole defect.
+ */
+export type ProseReanchor = ProseUnitPin & {
+  file: string;
+  /** The content hash of the replacement paragraph, which the tool required to be in the file. */
+  to: string;
+  /** The replacement's first 56 characters, so the record names both sides. */
+  toLabel?: string;
+  date: string;
+  reason: string;
+};
+
+/**
  * The commits a sync ran against, recorded so a later reader can tell a genuine
  * deletion from one a rebase manufactured (#1440).
  *
@@ -59,6 +80,7 @@ export type ProseManifest = {
   note?: string;
   files?: Record<string, ProseUnitPin[]>;
   retired?: ProseRetirement[];
+  reanchored?: ProseReanchor[];
   provenance?: ProseProvenance;
 };
 
@@ -115,13 +137,58 @@ export function proseDrift(
 };
 
 /**
+ * One `--reanchor` request, as the CLI parses it: a pinned `file:hash` and the
+ * replacement, named either by the paragraph's hash or by its text.
+ */
+export type ProseReanchorRequest = { file: string; hash: string; to: string; reason: string };
+
+/** Why a reanchor request was refused. Every one of them is the replacement check seen from a side. */
+export type ProseReanchorRefusal = {
+  kind:
+    | 'unpinned'
+    | 'unscanned'
+    | 'replacement-absent'
+    | 'chained'
+    | 'source-present'
+    | 'replacement-pinned';
+  key: string;
+  message: string;
+};
+
+/**
+ * Resolve reanchor requests into records, refusing the ones that cannot be true.
+ *
+ * Pure, and the reason it returns messages rather than a boolean is the same one
+ * the rest of this module has: a refusal nobody can act on is a refusal the next
+ * author routes around.
+ */
+export function resolveReanchors(
+  manifest: ProseManifest,
+  documents: ProseDocuments,
+  requests: ProseReanchorRequest[],
+): {
+  /** The records that would be written, without their date. */
+  resolved: Array<Omit<ProseReanchor, 'date'>>;
+  /** Requests an existing record already satisfies, so re-running is a no-op. */
+  alreadyApplied: Array<ProseReanchor & { requested: string }>;
+  refusals: ProseReanchorRefusal[];
+};
+
+/**
  * Rebuild a manifest from the documents, refusing to drop a pin that is no
  * longer present unless the caller retires it with a recorded reason.
  */
 export function syncProseManifest(
   manifest: ProseManifest,
   documents: ProseDocuments,
-  options: { retire?: string; date: string; reason?: string; corrects?: string },
+  options: {
+    retire?: string;
+    date: string;
+    reason?: string;
+    corrects?: string;
+    /** Records `resolveReanchors` already accepted; their sources are not drops. */
+    reanchors?: Array<Omit<ProseReanchor, 'date'>>;
+  },
 ): {
   manifest: ProseManifest;
   dropped: Array<ProseUnitPin & { file: string }>;
@@ -129,6 +196,10 @@ export function syncProseManifest(
   retired: ProseRetirement[];
   /** Every retirement after the write, additions and prior records together. */
   allRetired: ProseRetirement[];
+  /** The reanchor records this run added. */
+  reanchored: ProseReanchor[];
+  /** Every reanchor record after the write. */
+  allReanchored: ProseReanchor[];
   /** The one correction record written, or null when `--corrects` was absent. */
   correction: ProseRetirement | null;
   /** The `file:hash` a `--corrects` named that is not in the manifest, or null. */
@@ -161,6 +232,34 @@ export function retirementStanding(manifest: ProseManifest): {
   retracted: ProseRetirement[];
   correctedBy: Map<string, string[]>;
   unknown: Array<{ corrects: string; by: string }>;
+  cyclic: string[];
+};
+
+/**
+ * The `file:hash` a reanchor record is identified by — the paragraph it replaced.
+ *
+ * The same identity a retirement of that paragraph carries, which is what makes
+ * the two records detectable as a contradiction.
+ */
+export function reanchorKey(entry: { file: string; hash: string }): string;
+
+/**
+ * What a reader should make of the `reanchored` list, and the three ways it can
+ * be false.
+ *
+ * `contradicted`, `malformed` and `cyclic` are errors; `active`, `superseded` and
+ * `detached` are reported and read. A record whose replacement has since left the
+ * tree is `detached` rather than an error, because reverting a reword is
+ * legitimate and the only remedy would be hand-editing the manifest.
+ */
+export function reanchorStanding(manifest: ProseManifest): {
+  active: ProseReanchor[];
+  /** Records whose replacement was itself reanchored — the chain, not a failure. */
+  superseded: ProseReanchor[];
+  /** Records whose replacement is neither pinned nor itself reanchored. Read, not failed. */
+  detached: ProseReanchor[];
+  contradicted: Array<{ reanchor: string; retirement: string; why: string }>;
+  malformed: Array<{ reanchor: string; why: string }>;
   cyclic: string[];
 };
 

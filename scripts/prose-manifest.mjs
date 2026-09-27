@@ -65,6 +65,29 @@
  * 56 characters of the paragraph, which also makes the manifest diffable by
  * eye: a lost paragraph is a line that visibly disappears from a JSON file
  * rather than a hash that quietly changes.
+ *
+ * ## Why a reword and a deletion are two records and not one
+ *
+ * A content hash cannot tell a reworded paragraph from a deleted one — both are
+ * a key that is no longer in the file, and that is not a shortcoming of the key,
+ * it is the only fact a content-addressed pin has. So the *records* have to carry
+ * the distinction the key cannot, and there are exactly two of them because there
+ * are exactly two things that happened:
+ *
+ *  - `reanchored` — this text replaced that text, and **both are in the tree**.
+ *    It is refused when the replacement is not in the file, which is the whole
+ *    asymmetry: a reanchor can only describe a tree that exists, so it can never
+ *    be the way prose comes back. Restoring is hand-work from the ref you
+ *    dropped, and the refusal says so rather than offering a second spelling of
+ *    it.
+ *  - `retired` — that text is gone. No successor is named, because there is none.
+ *
+ * Before this, the only record that could be written was the second one, so a
+ * corrected sentence produced a manifest entry asserting a deletion — a false
+ * record, in the one file whose value is that its records can be trusted, and it
+ * reads to the next author as a decision. That is why `reanchorStanding` is read
+ * by `--prose-report` and not merely written: a list nothing checks is the same
+ * class of problem as a paragraph nothing pins.
  */
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
@@ -97,6 +120,12 @@ const MANIFEST_NOTE = [
   'fail. Regenerate with `npm run count:tools -- --prose-sync`; that command refuses to drop a pinned',
   'entry and will tell you so, which is the entire point — see scripts/prose-manifest.mjs for why this pin',
   'cannot live in a generated block.',
+  '',
+  '`retired` and `reanchored` are the two ways a pinned paragraph is allowed to stop being pinned, and they',
+  'are different facts. A reword in place is `--prose-sync --reanchor "<file>:<hash>" --to "<new prose>"',
+  '--why "<why>"`, which records the old and the new hash and refuses unless the replacement is already in',
+  'the file. A deletion is `--prose-sync --retire "<reason>"`. Neither restores prose that is gone: that is',
+  'hand-work from the ref you dropped.',
 ].join('\n');
 
 /**
@@ -228,13 +257,15 @@ const indexByHash = (entries) => new Map(entries.map((entry) => [entry.hash, ent
 /**
  * Compare a manifest against the documents as they now stand.
  *
- * The two failure classes are deliberately not told apart, because nothing in
- * the tree can tell them apart: a reworded paragraph and a deleted one are the
- * same fact — a pinned key is gone. Guessing which one it was from unit counts
- * or line counts is the reasoning error this whole file exists to warn about
- * (AGENTS.md §6: a value that cannot be read must not be coerced into a
- * plausible answer). The message names both readings and hands over the
- * decision, because the decision is the reader's.
+ * The two failure classes are deliberately not told apart **in what is
+ * detected**, because nothing in the tree can tell them apart: a reworded
+ * paragraph and a deleted one are the same fact — a pinned key is gone. Guessing
+ * which one it was from unit counts or line counts is the reasoning error this
+ * whole file exists to warn about (AGENTS.md §6: a value that cannot be read
+ * must not be coerced into a plausible answer). What they *need* is told apart
+ * from the moment on: the message names both readings and points at the two
+ * commands that record them, because the decision is the reader's and it is a
+ * decision the manifest then has to be able to represent.
  *
  * Coverage is reconciled here rather than trusted: a mixed document that no
  * manifest entry claims is reported, so adding a new file with a generated
@@ -272,9 +303,15 @@ export function proseDrift(manifest, documents) {
       missingUnits.push({ file, hash: entry.hash, label: entry.label });
       errors.push(
         `${file}: pinned prose block is no longer in the file — "${entry.label}". `
-        + 'A reword or a deliberate deletion is legitimate: `npm run count:tools -- --prose-sync --retire "<reason>"` '
-        + 'records it. A paragraph that vanished because a conflict here was resolved with --ours or --theirs is not: '
-        + 'the generator only owns the text between the markers, so it cannot restore this. '
+        + 'The pin is keyed by content, so a reword and a deletion look identical here, and they need different '
+        + 'commands. Reworded in place — the paragraph is still in the file, under new text — is '
+        + '`npm run count:tools -- --prose-sync --reanchor "${file}:${entry.hash}" --to "<new prose>" --why "<why>"`, '
+        + 'which records the old and the new hash and refuses unless the replacement is already in the file. '
+        + 'Deliberately deleted is `npm run count:tools -- --prose-sync --retire "<reason>"`, which records the '
+        + 'reason and the date and names no successor. '
+        + 'A paragraph that vanished because a conflict here was resolved with --ours or --theirs is neither: '
+        + 'the generator only owns the text between the markers, so it cannot restore this, and neither operation '
+        + 'will pretend to. '
         + 'Restore the paragraph by hand from the side you dropped (`git show <ref>:ARCHITECTURE.md`, and the same '
         + 'for every other mixed file), and only then run `npm run count:tools -- --write` — `--write` repairs the '
         + 'generated blocks and exits 1 for exactly as long as this paragraph is missing.',
@@ -334,6 +371,160 @@ export function proseDrift(manifest, documents) {
 }
 
 /**
+ * A unit hash, as it appears in a manifest.
+ *
+ * `--to` accepts either a hash or the replacement prose itself, and telling the
+ * two apart needs a shape rather than a lookup: the author has the text in front
+ * of them, and the hash is what `--prose-report` printed a moment earlier. A
+ * paragraph whose entire text is sixteen hex characters would be misread, which
+ * is a cost worth paying for not having to reconstruct a paragraph that is
+ * already sitting in the file.
+ */
+const HASH_SHAPE = /^[0-9a-f]{16}$/;
+
+/** The unit a `--to` value names, or null when the file does not contain it. */
+function resolveReplacement(value, units) {
+  const candidate = HASH_SHAPE.test(value) ? value : proseUnitHash(value);
+  return units.find((unit) => unit.hash === candidate) ?? null;
+}
+
+/**
+ * Resolve the reanchor requests of one run into records, and refuse the rest.
+ *
+ * This is where the asymmetry of a reanchor is enforced, and it is worth stating
+ * plainly because it is the entire difference between this and a retirement:
+ * **the replacement has to be in the file.** Every refusal below is that one
+ * check seen from a different side.
+ *
+ * The consequence is that a reanchor can only ever *describe* a tree, never
+ * *produce* one. If the paragraph was genuinely deleted there is no replacement
+ * text to point at, so the command refuses — which is correct, because restoring
+ * prose is hand-work from the ref you dropped, and a flag that quietly did it
+ * would be a second, worse spelling of `git show`. The same check refuses in the
+ * other direction: a reanchor whose subject is still sitting in the file is
+ * claiming a transition that has not happened yet.
+ *
+ * Pure: it writes nothing, returns the records it would write, and every refusal
+ * is a `{ kind, key, message }` the CLI can print verbatim. That is what lets the
+ * refusal be tested against the real command rather than a copy of its logic.
+ */
+export function resolveReanchors(manifest, documents, requests) {
+  const resolved = [];
+  const alreadyApplied = [];
+  const refusals = [];
+
+  for (const request of requests) {
+    const key = `${request.file}:${request.hash}`;
+
+    const source = documents[request.file];
+    if (source === undefined) {
+      refusals.push({
+        kind: 'unscanned',
+        key,
+        message: `${request.file} was not scanned, so the replacement cannot be checked against it.\n`
+          + 'A reanchor asserts that both texts are in the tree, and that assertion needs the tree. This file is\n'
+          + 'not a mixed document, so nothing here can have reworded it — re-run `npm run count:tools -- --prose-sync`\n'
+          + 'without the override that replaced it.',
+      });
+      continue;
+    }
+
+    const units = describeDocument(source);
+    const replacement = resolveReplacement(request.to, units);
+    if (!replacement) {
+      // The anti-vacuity refusal, and the one the whole operation turns on.
+      refusals.push({
+        kind: 'replacement-absent',
+        key,
+        message: `${key} → "${request.to}" cannot be a reanchor: the replacement is not in ${request.file}.\n`
+          + 'A reanchor records that this text replaced that text and that **both are in the tree**. That condition\n'
+          + 'is the operation: it is what stops a reanchor being a quiet way to drop a pin, and it is why restoring\n'
+          + 'prose is not something a flag does. If you meant to delete the paragraph, that is\n'
+          + '`npm run count:tools -- --prose-sync --retire "<reason>"` — a different record, with no successor.\n'
+          + 'If you meant to restore it, the bytes are in the ref you dropped: `git show <ref>:${request.file}`.\n'
+          + 'If you have already written the replacement and it is still reported absent, pass the paragraph\'s\n'
+          + 'hash instead of its text — `npm run count:tools -- --prose-report` lists what it found.',
+      });
+      continue;
+    }
+
+    // Idempotence, checked against the RECORD rather than against the pin — and
+    // that ordering is the whole reason it works. By the time the same command
+    // runs a second time, the paragraph it names has left `files` on purpose,
+    // so a pin lookup would refuse a re-run of a reanchor that had already
+    // succeeded. Comparing `to` is what separates that from a *second*
+    // transition, which is refused rather than chained: a genuine second reword
+    // reanchors the replacement, not the paragraph that has already been
+    // replaced.
+    const prior = (manifest.reanchored ?? []).find((entry) => entry.file === request.file && entry.hash === request.hash);
+    if (prior) {
+      if (prior.to === replacement.hash) {
+        alreadyApplied.push({ ...prior, requested: key });
+        continue;
+      }
+      refusals.push({
+        kind: 'chained',
+        key,
+        message: `${key} was already reanchored to ${request.file}:${prior.to} on ${prior.date}.\n`
+          + 'Recording a second replacement for it would claim a second transition that did not happen, and the two\n'
+          + 'records would disagree about what the paragraph says now.\n'
+          + 'A genuine second reword is a reanchor of the *replacement*: '
+          + `--reanchor "${request.file}:${prior.to}" --to "<newer prose>" --why "<why>".`,
+      });
+      continue;
+    }
+
+    const pinned = (manifest.files?.[request.file] ?? []).find((entry) => entry.hash === request.hash);
+    if (!pinned) {
+      refusals.push({
+        kind: 'unpinned',
+        key,
+        message: `${key} is not a pinned paragraph, so there is nothing to reanchor.\n`
+          + 'A reanchor replaces one pin with another; naming a paragraph no pin claims is a typo, and treating it\n'
+          + 'as a reword would write a record about a paragraph the manifest never held.\n'
+          + 'The pinned keys are in the `files` array of scripts/doc-prose-manifest.json, one per paragraph, and\n'
+          + '`npm run count:tools -- --prose-report` prints the ones currently missing as "<file>:<hash>".',
+      });
+      continue;
+    }
+
+    if (units.some((unit) => unit.hash === request.hash)) {
+      refusals.push({
+        kind: 'source-present',
+        key,
+        message: `${key} is still in ${request.file}, byte for byte, so it has not been reworded.\n`
+          + 'A reanchor records a replacement. The paragraph it names is still the pinned one, so the record would\n'
+          + 'be false on its face — the same false record a retirement of a live paragraph is.',
+      });
+      continue;
+    }
+
+    if ((manifest.files?.[request.file] ?? []).some((entry) => entry.hash === replacement.hash)) {
+      refusals.push({
+        kind: 'replacement-pinned',
+        key: `${request.file}:${replacement.hash}`,
+        message: `${request.file}:${replacement.hash} is already a pinned paragraph, so reanchoring onto it would\n`
+          + 'record a replacement that the pin had already claimed independently of this paragraph.\n'
+          + 'A reanchor has to name a paragraph that is new to the pin, or the record says the two are one sentence\n'
+          + 'when the manifest says they were separate. Reword to text no pin has yet seen.',
+      });
+      continue;
+    }
+
+    resolved.push({
+      file: request.file,
+      hash: request.hash,
+      label: pinned.label,
+      to: replacement.hash,
+      toLabel: replacement.label,
+      reason: request.reason,
+    });
+  }
+
+  return { resolved, alreadyApplied, refusals };
+}
+
+/**
  * Rebuild a manifest from the documents as they stand, carrying every pinned
  * key forward that is still present and refusing to drop the ones that are not.
  *
@@ -348,8 +539,13 @@ export function proseDrift(manifest, documents) {
  * `retirementStanding`, which is what makes the correction load-bearing. It is
  * carried onto every record this run writes, so a run that retires several
  * paragraphs at once states once which earlier claim they collectively answer.
+ *
+ * `reanchors` are the records `resolveReanchors` already accepted. Their sources
+ * are subtracted from the drop list rather than refused, which is the whole
+ * point of the operation: the paragraph did leave the pin, but it is in the file
+ * under different text and a retirement would say it is gone.
  */
-export function syncProseManifest(manifest, documents, { retire, date, reason, corrects }) {
+export function syncProseManifest(manifest, documents, { retire, date, reason, corrects, reanchors = [] }) {
   // Stamped on creation and preserved thereafter, and placed first, so the file
   // says what it is to whoever opens it. A pin sitting next to a generator and
   // its `--write` flag looks, at a glance, like one more generated artifact —
@@ -373,12 +569,30 @@ export function syncProseManifest(manifest, documents, { retire, date, reason, c
     for (const entry of manifest.files[file]) dropped.push({ file, ...entry });
   }
 
-  if (dropped.length > 0 && !retire) {
+  // A reanchored paragraph is not a drop. It left the pin, and it is in the file
+  // under different text — which is why the operation exists and why a
+  // retirement of it would be the false record #1527 is about. Subtracted here
+  // rather than in `resolveReanchors` because only this function knows which
+  // pins the walk actually lost: a reanchor request that names a paragraph the
+  // file still carries is refused there, so anything reaching this list is a
+  // paragraph the tree really did drop.
+  //
+  // Above the refusal below, deliberately. A reanchor and a retirement are two
+  // answers to "this pin is gone", and the question the refusal asks is
+  // "is anything gone that nobody has explained" — a paragraph with a reanchor
+  // has been explained, so counting it in that question would make the operation
+  // unreachable: every reanchored paragraph would hold its own sync hostage.
+  const reanchoredFrom = new Set(reanchors.map((entry) => `${entry.file}:${entry.hash}`));
+  const unrecorded = dropped.filter((entry) => !reanchoredFrom.has(`${entry.file}:${entry.hash}`));
+
+  if (unrecorded.length > 0 && !retire) {
     return {
       manifest: next,
       dropped,
       retired: [],
       allRetired: manifest.retired ?? [],
+      reanchored: [],
+      allReanchored: manifest.reanchored ?? [],
       correction: null,
       unknownCorrection: null,
       refused: true,
@@ -386,7 +600,7 @@ export function syncProseManifest(manifest, documents, { retire, date, reason, c
   }
 
   const retired = retire
-    ? dropped.map((entry) => ({ ...entry, date, reason }))
+    ? unrecorded.map((entry) => ({ ...entry, date, reason }))
     : [];
 
   // A correction is its OWN record, not a field on whatever this run happened to
@@ -400,7 +614,17 @@ export function syncProseManifest(manifest, documents, { retire, date, reason, c
   if (corrects !== undefined && corrects !== null) {
     const target = (manifest.retired ?? []).find((entry) => retirementKey(entry) === corrects);
     if (!target) {
-      return { manifest: next, dropped, retired: [], allRetired: manifest.retired ?? [], correction: null, unknownCorrection: corrects, refused: true };
+      return {
+        manifest: next,
+        dropped,
+        retired: [],
+        allRetired: manifest.retired ?? [],
+        reanchored: [],
+        allReanchored: manifest.reanchored ?? [],
+        correction: null,
+        unknownCorrection: corrects,
+        refused: true,
+      };
     }
     // The correction needs an identity of its OWN, and it cannot be the target's:
     // a record is keyed by `file:hash`, so a correction carrying the file and hash
@@ -435,6 +659,20 @@ export function syncProseManifest(manifest, documents, { retire, date, reason, c
     next.retired = manifest.retired;
   }
 
+  // Same two questions for the reanchor list, and the same split: what this run
+  // added, and what the file holds afterwards. `retired` and `reanchored` are
+  // kept in separate arrays rather than merged because a reader has to be able to
+  // tell "this text was replaced by that text" from "this text is gone", and a
+  // merged list with a discriminator re-introduces exactly the ambiguity the two
+  // arrays remove.
+  if (reanchors.length > 0) {
+    next.reanchored = [...(manifest.reanchored ?? []), ...reanchors]
+      .map((entry) => ({ ...entry, date }))
+      .sort((a, b) => `${a.file}:${a.hash}`.localeCompare(`${b.file}:${b.hash}`));
+  } else if (manifest.reanchored) {
+    next.reanchored = manifest.reanchored;
+  }
+
   // `retired` stays "the records THIS RUN added" — the census counts it to report
   // what the run did, and widening it to the whole set would make that line report
   // every retirement ever recorded. `allRetired` is the whole post-write set, which
@@ -446,6 +684,8 @@ export function syncProseManifest(manifest, documents, { retire, date, reason, c
     dropped,
     retired: added,
     allRetired: next.retired ?? [],
+    reanchored: reanchors,
+    allReanchored: next.reanchored ?? [],
     correction,
     unknownCorrection: null,
     refused: false,
@@ -526,6 +766,92 @@ export function retirementStanding(manifest) {
     unknown,
     cyclic,
   };
+}
+
+/**
+ * The `file:hash` a reanchor record is identified by — the paragraph it
+ * replaced, which is the same identity a retirement of that paragraph carries.
+ */
+export function reanchorKey(entry) {
+  return `${entry.file}:${entry.hash}`;
+}
+
+/**
+ * What a reader should make of the `reanchored` list, and the three ways it can
+ * be false.
+ *
+ * A list nothing checks is not a record, it is a comment: it would be written on
+ * every reword and never read, which is the same class of problem as a paragraph
+ * nobody pins. So `--prose-report` reads it and this is what it checks. All three
+ * failures are about the **records disagreeing with each other**, never about the
+ * documents' current state, and that boundary is deliberate:
+ *
+ *  - **cyclic** — `to === hash`, a paragraph recorded as replacing itself. No CLI
+ *    can produce one (`resolveReanchors` refuses a subject that is still in the
+ *    file), so it means a hand-edited or half-merged manifest, which is exactly
+ *    the case a reader of the file cannot see.
+ *  - **malformed** — a record with no `to`, no reason or no date. A retirement
+ *    without a reason is the artefact the whole mechanism exists to prevent, and
+ *    a reanchor without one is the same artefact wearing a different word.
+ *  - **contradicted** — a paragraph carrying an active retirement *and* a
+ *    reanchor. The two records say opposite things about the same unit, and one
+ *    of them is the false record #1527 is about. Only active retirements count:
+ *    a retracted one is history, and history is allowed to be wrong, which is
+ *    what `corrects` is for.
+ *
+ * What is deliberately *not* an error: a record whose replacement is no longer in
+ * the tree. Reverting a reword is legitimate — the paragraph comes back and the
+ * replacement goes — and the only in-tool remedy for that would be hand-editing
+ * the manifest, which this file is never allowed to do. A gate with no exit is a
+ * gate that gets ignored, so `detached` is reported and read, not failed on.
+ */
+export function reanchorStanding(manifest) {
+  const all = manifest.reanchored ?? [];
+  const pinned = new Set();
+  for (const [file, entries] of Object.entries(manifest.files ?? {})) {
+    for (const entry of entries) pinned.add(`${file}:${entry.hash}`);
+  }
+  const reanchoredAway = new Set(all.map(reanchorKey));
+  // Only retirements a reader should still act on. A retracted one is superseded
+  // by a later, named claim, so pairing it with a reanchor is not a contradiction.
+  const activeRetirements = new Set(retirementStanding(manifest).active.map(retirementKey));
+
+  const active = [];
+  const superseded = [];
+  const detached = [];
+  const contradicted = [];
+  const malformed = [];
+  const cyclic = [];
+
+  for (const entry of all) {
+    const key = reanchorKey(entry);
+    if (typeof entry.to !== 'string' || entry.to === '' || typeof entry.reason !== 'string' || entry.reason.trim() === ''
+      || typeof entry.date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(entry.date)) {
+      malformed.push({ reanchor: key, why: !entry.to ? 'it names no replacement (`to`)' : !entry.reason ? 'it carries no reason' : 'it carries no date' });
+      continue;
+    }
+    if (entry.to === entry.hash) {
+      cyclic.push(key);
+      continue;
+    }
+    if (activeRetirements.has(key)) {
+      contradicted.push({
+        reanchor: key,
+        retirement: key,
+        why: 'the same paragraph is recorded as reworded to new text and as deleted',
+      });
+      continue;
+    }
+    // A reworded paragraph that was itself reworded: the first record is still
+    // true, and the second is the one a reader acts on.
+    if (reanchoredAway.has(`${entry.file}:${entry.to}`) && !pinned.has(`${entry.file}:${entry.to}`)) {
+      superseded.push(entry);
+      continue;
+    }
+    (pinned.has(`${entry.file}:${entry.to}`) ? active : detached).push(entry);
+  }
+
+  return { active, superseded, detached, contradicted, malformed, cyclic };
 }
 
 /**

@@ -367,8 +367,8 @@
         "label": "Adding prose is free for --check, and named by --prose-r…"
       },
       {
-        "hash": "c28b86d583b5ead2",
-        "label": "Changing or deleting prose needs --prose-sync. That comm…"
+        "hash": "2045ad170ec882aa",
+        "label": "Changing or deleting prose needs --prose-sync, and the t…"
       },
       {
         "hash": "121c441e39ca2ca3",
@@ -6986,9 +6986,20 @@
     }
   ],
   "provenance": {
-    "head": "316e4d562f2c14fe0835341eab9782664a2fd6dd",
-    "base": "f465876ab46dc73059e05256855b61f308d81932",
-    "upstream": "f465876ab46dc73059e05256855b61f308d81932",
+    "head": "09cd67d36f0fd809631e0c3b651b7ab62ec6dbab",
+    "base": "5ff44a9159f51f2ae4c7437e6fe97d1ef61bcfeb",
+    "upstream": "5ff44a9159f51f2ae4c7437e6fe97d1ef61bcfeb",
     "behind": false
-  }
+  },
+  "reanchored": [
+    {
+      "file": "AGENTS.md",
+      "hash": "c28b86d583b5ead2",
+      "label": "Changing or deleting prose needs --prose-sync. That comm…",
+      "to": "2045ad170ec882aa",
+      "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
+      "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
+      "date": "2026-09-27"
+    }
+  ]
 }

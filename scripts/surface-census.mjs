@@ -28,6 +28,8 @@ import {
   proseSyncRefusals,
   provenanceStampWarning,
   readFilesAtRef,
+  reanchorStanding,
+  resolveReanchors,
   retirementKey,
   retirementStanding,
   short,
@@ -541,6 +543,85 @@ function proseCorrectsKey() {
   return key;
 }
 
+/** Every value given for a repeatable flag, in the order they were written. */
+function proseFlagValues(name) {
+  const values = [];
+  for (let i = 0; i < args.length; i++) if (args[i] === name) values.push(args[i + 1]);
+  return values;
+}
+
+/**
+ * The `--reanchor "<file>:<hash>"` requests, paired with `--to` and `--why` by
+ * position (#1527).
+ *
+ * Repeatable rather than a single flag because a reword and a correction
+ * routinely land in the same document in the same commit, and a single-flag form
+ * would make the second one unrecordable: the first reanchor would still leave
+ * the other paragraph dropped, so the run would refuse with nothing left to try.
+ * Pairing by position is the price, and it is paid in a check that the three
+ * counts agree — a `--to` with no matching `--reanchor` names no paragraph, and
+ * guessing which one it was meant to be is the coercion AGENTS.md §6 forbids.
+ */
+function proseReanchorRequests() {
+  const from = proseFlagValues('--reanchor');
+  const to = proseFlagValues('--to');
+  const why = proseFlagValues('--why');
+
+  if (from.length === 0) {
+    if (to.length > 0 || why.length > 0) {
+      throw new Error(
+        '--to and --why only mean something alongside --reanchor. A reanchor names three things — the paragraph\n'
+        + 'being replaced, the text that replaced it, and why — and two of them without the first names no\n'
+        + 'paragraph at all.\n'
+        + 'Usage: npm run count:tools -- --prose-sync --reanchor "<file>:<hash>" --to "<new prose>" --why "<why>"',
+      );
+    }
+    return [];
+  }
+
+  if (to.length !== from.length || why.length !== from.length) {
+    throw new Error(
+      `Each --reanchor needs its own --to and --why, and they are paired by position: got ${from.length} `
+      + `--reanchor, ${to.length} --to, ${why.length} --why.\n`
+      + 'Repeating one flag without the others is the shape of a truncated command, and guessing which paragraph a '
+      + 'lone --to belonged to is a value that cannot be read being coerced into a plausible answer.',
+    );
+  }
+
+  return from.map((raw, index) => {
+    // The `--retire` rule, for the same reason: a value starting with `-` is the
+    // next flag, not a value, and that is what a shell that ate the quotes hands
+    // over. A reanchor record with no replacement or no reason is the artefact
+    // the whole mechanism exists to prevent.
+    const value = (given, flag, example) => {
+      if (!given || given.startsWith('-')) {
+        throw new Error(
+          `${flag} requires a value, e.g. ${flag} ${example}.\n`
+          + 'A reanchor record with an empty half is not a shorter record, it is a claim the reader cannot check.',
+        );
+      }
+      return given;
+    };
+    const key = value(raw, '--reanchor', '"<file>:<hash>"');
+    if (!key.includes(':')) {
+      throw new Error(
+        `--reanchor must name a paragraph as "<file>:<hash>", not "${key}". A bare hash is ambiguous: the same `
+        + 'prose text can be pinned in two files, and a reanchor that cannot say which paragraph it replaces is '
+        + 'not a reanchor.\n'
+        + 'Every pinned key is in the `files` array of scripts/doc-prose-manifest.json, and '
+        + '`npm run count:tools -- --prose-report` prints the missing ones in exactly this form.',
+      );
+    }
+    const [file, hash] = key.split(/:(.+)/);
+    return {
+      file,
+      hash,
+      to: value(to[index], '--to', '"<the replacement prose, or its hash>"'),
+      reason: value(why[index], '--why', '"why this sentence was reworded"'),
+    };
+  });
+}
+
 /**
  * The `--allow-stale "<why>"` argument, or undefined when the flag is absent (#1440).
  *
@@ -842,6 +923,7 @@ if (proseReportIndex >= 0) {
   const retirements = retirementStanding(manifest);
   const unpinned = report.coverage.unpinned;
   const unpinnedErrors = unpinned.map(unpinnedProseError);
+  const reanchors = reanchorStanding(manifest);
   console.log(JSON.stringify({
     // The gate's whole failure list, in one key. `proseDrift` answers "how does
     // the pin disagree with the tree"; an unpinned paragraph is a third answer
@@ -876,9 +958,25 @@ if (proseReportIndex >= 0) {
     // resolved: a `corrects` naming no record, or one that retracts itself, is a
     // claim this tool will not make a reading of on the author's behalf.
     retirements,
+    // The other half of the same file (#1527). A reanchored paragraph is not
+    // gone, it was replaced — so the list of replacements is what a reader needs
+    // beside the list of deletions, and it is *checked* here rather than merely
+    // stored. `contradicted` is the case that matters: one paragraph carrying
+    // both records is the false record the operation exists to stop, and only a
+    // read finds it. `detached` is reported and deliberately not failed on; see
+    // `reanchorStanding` for why a gate with no exit is worse than an honest
+    // observation.
+    reanchors,
   }, null, 2));
   process.exit(
-    report.errors.length > 0 || unpinnedErrors.length > 0 || provenance.error || retirements.unknown.length > 0 || retirements.cyclic.length > 0
+    report.errors.length > 0
+    || unpinnedErrors.length > 0
+    || provenance.error
+    || retirements.unknown.length > 0
+    || retirements.cyclic.length > 0
+    || reanchors.contradicted.length > 0
+    || reanchors.malformed.length > 0
+    || reanchors.cyclic.length > 0
       ? 1
       : 0,
   );
@@ -902,7 +1000,9 @@ if (args.includes('--prose-sync')) {
   const reason = proseRetireReason();
   const allowStale = proseAllowStale();
   const corrects = proseCorrectsKey();
+  const reanchorRequests = proseReanchorRequests();
   const previous = readProseManifest({ required: false });
+  const date = new Date().toISOString().slice(0, 10);
 
   // Computed before the provenance decision, not after it, and the ordering is
   // load-bearing. `syncProseManifest` is pure — it returns the manifest it would
@@ -911,11 +1011,20 @@ if (args.includes('--prose-sync')) {
   // about to retire. A refusal that says "this tree cannot be attested" and
   // stops there tells the reader nothing about what was at stake, and the path
   // of least resistance from there is `--allow-stale` without reading anything.
+  //
+  // `resolveReanchors` is pure for the same reason, and runs first of the two
+  // because its output is an input to the sync: a reanchored paragraph is not a
+  // drop, so the sync cannot compute its own drop list until the reanchors are
+  // settled. Its refusals are printed further down, after the tree is attested —
+  // a reanchor resolved against a tree the tool cannot vouch for would be
+  // resolving against the wrong bytes.
+  const reanchorPlan = resolveReanchors(previous, documents, reanchorRequests);
   const result = syncProseManifest(previous, documents, {
     retire: reason,
     reason,
     corrects,
-    date: new Date().toISOString().slice(0, 10),
+    date,
+    reanchors: reanchorPlan.resolved,
   });
 
   // #1502: a `corrects` naming a record that is not in the manifest would be a
@@ -978,13 +1087,46 @@ if (args.includes('--prose-sync')) {
     process.exit(1);
   }
 
+  // #1527: the reanchor refusals, after the tree is attested and before the drop
+  // refusal, so the author is told which of the two operations their run was
+  // actually trying to be. Printing them here rather than folding them into the
+  // drop message is the point: both are "this paragraph is no longer in the
+  // file", and the reader has to be able to tell a request that was malformed
+  // from one that was merely unsatisfied.
+  if (reanchorPlan.refusals.length > 0) {
+    console.error(
+      `Refusing to reanchor ${reanchorPlan.refusals.length} of ${reanchorRequests.length} requested reanchor(s).\n\n`
+      + reanchorPlan.refusals.map((refusal) => `✗ ${refusal.kind}: ${refusal.message}\n`).join('\n')
+      + (reanchorPlan.resolved.length > 0
+        ? `${reanchorPlan.resolved.length} of the requests were valid; they are listed below. Nothing has been\n`
+          + 'written — a reanchor and a retirement are separate acts, and a run that gets one of them wrong is a run\n'
+          + 'whose manifest nobody should have to reason about afterwards.\n'
+          + 'Re-anchor the paragraph and re-run; the valid ones are still unrecorded, and re-running with the same\n'
+          + 'arguments after the fixed one has been applied is a no-op rather than a second record.\n\n'
+        : '')
+      + 'Valid requests:\n'
+      + (reanchorPlan.resolved.length > 0
+        ? reanchorPlan.resolved
+          .map((entry) => `- ${entry.file}:${entry.hash} → ${entry.file}:${entry.to}  ("${entry.label}")`)
+          .join('\n') + '\n'
+        : '(none)\n'),
+    );
+    process.exit(1);
+  }
+
   if (result.refused) {
     console.error(
       `Refusing to rewrite the prose manifest: ${result.dropped.length} pinned prose block(s) are no longer in their file.\n`
-      + result.dropped.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
-      + '\n\nA reword or a deliberate deletion is legitimate — re-run with --retire "<reason>" to record it.'
-      + '\nProse that vanished because a conflict in a mixed file was resolved with --ours or --theirs is not:'
-      + ' the generator only owns the text between the markers and cannot restore it.'
+      + result.dropped.map((entry) => `- ${entry.file}:${entry.hash}  "${entry.label}"`).join('\n')
+      + '\n\nThe pin is keyed by content, so a reword and a deletion look identical here and they take different'
+      + '\ncommands (#1527). For each block above, pick the one that is true:'
+      + `\n  reworded in place  --prose-sync --reanchor "<file>:<hash>" --to "<new prose>" --why "<why>"`
+      + '\n                         records the old and the new hash; the tool refuses unless the replacement is'
+      + '\n                         already in the file, so it can never restore prose that is not there.'
+      + '\n  deliberately gone  --prose-sync --retire "<reason>"'
+      + '\n                         records the reason and the date, and names no successor.'
+      + '\nProse that vanished because a conflict in a mixed file was resolved with --ours or --theirs is neither:'
+      + '\nthe generator only owns the text between the markers and cannot restore it, and neither flag pretends to.'
       + '\nRecover the prose by hand from the side you dropped (`git show <ref>:ARCHITECTURE.md`),'
       + ' and only then re-run `npm run count:tools -- --write` — `--write` repairs generated blocks'
       + ' and exits 1 for as long as a pinned paragraph is missing.'
@@ -1016,6 +1158,13 @@ if (args.includes('--prose-sync')) {
     `Wrote ${PROSE_MANIFEST}: ${Object.keys(stamped.files).length} file(s), `
     + `${reportUnitCount(stamped)} pinned unit(s)`
     + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : '')
+    + (result.reanchored.length > 0
+      ? `, ${result.reanchored.length} reanchored to text that is in the tree: `
+        + result.reanchored.map((entry) => `${entry.file}:${entry.hash} → ${entry.file}:${entry.to}`).join(', ')
+      : '')
+    + (reanchorPlan.alreadyApplied.length > 0
+      ? `, ${reanchorPlan.alreadyApplied.length} reanchor(s) already recorded (no second record written)`
+      : '')
     + (allowStale ? `, synced from a tree behind origin/main (acknowledged: ${allowStale})` : ''),
   );
   if (stampWarning) console.error(`\n${stampWarning}\n`);
