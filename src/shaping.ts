@@ -2695,6 +2695,28 @@ export function batchSummary(n: number, uris: readonly string[], previewCount = 
 }
 
 // ---------------------------------------------------------------------------
+// Playlist count phrase (#1556)
+// ---------------------------------------------------------------------------
+
+/**
+ * The parenthesised count a playlist row shows: `"12 tracks"`, or
+ * `"unknown track count"` when Spotify stated no count at all.
+ *
+ * Zero is a claim — the playlist is empty — and a row whose page never arrived
+ * is making a different statement about a different thing. Substituting `0`
+ * for an unstated count told the reader their playlist was empty when nobody
+ * had read that far, which is #803's rule restated: an unreadable value is
+ * reported unreadable, never as a plausible number.
+ *
+ * Feed it {@link playlistItemTotal}'s result so the `items` / legacy `tracks`
+ * precedence and the "not stated" case are decided in one place; this only
+ * phrases the answer the caller already has.
+ */
+export function playlistCountPhrase(total: number | undefined): string {
+  return total === undefined ? 'unknown track count' : `${total} tracks`;
+}
+
+// ---------------------------------------------------------------------------
 // dry_run validation + description (#57)
 // ---------------------------------------------------------------------------
 

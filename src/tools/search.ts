@@ -7,6 +7,7 @@ import type {
   SpotifyPlaylistSimple,
   SpotifySearchResults,
 } from '../types/spotify.js';
+import { playlistItemTotal } from '../types/spotify.js';
 import { publisherAttribution, publisherByline } from '../removed.js';
 import {
   ResponseFormat,
@@ -15,6 +16,7 @@ import {
   truncateItems,
   paginationInfo,
   nextPageLine,
+  playlistCountPhrase,
 } from '../shaping.js';
 import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
 import { emit, formatDuration } from '../result.js';
@@ -208,8 +210,11 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
         const playlistRows = playlists.items.filter(
           (p): p is SpotifyPlaylistSimple => p !== null,
         );
+        // #1556: a count Spotify did not state renders as unknown, never as 0.
+        // A `/search` row can arrive without any page at all, and `0 tracks`
+        // there is a claim about a playlist the reader can go and open.
         emit('PLAYLISTS', { items: playlistRows, total: playlists.total }, (p) =>
-          `"${p.name}" by ${p.owner.display_name ?? p.owner.id} (${p.items?.total ?? 0} tracks) | URI: ${p.uri}`,
+          `"${p.name}" by ${p.owner.display_name ?? p.owner.id} (${playlistCountPhrase(playlistItemTotal(p))}) | URI: ${p.uri}`,
         );
       }
 

@@ -1105,7 +1105,7 @@ Search Spotify's catalog.
 | `offset` | number | no | Index of the first result to return, 0–1000 — use with `limit` to page through results |
 | `include_external` | string | no | Pass `"audio"` to include externally-hosted audio items marked as playable |
 
-**Returns:** grouped results by type. Each item includes URI, name, and type-specific fields (artist names, album name, release date, duration, etc.).
+**Returns:** grouped results by type. Each item includes URI, name, and type-specific fields (artist names, album name, release date, duration, etc.). A playlist row's track count reads `unknown track count` when the payload states no count at all, and `0 tracks` when Spotify states a real zero — an unstated count is never rendered as 0.
 
 The `episode` group is a `PagingSimplifiedEpisodeObject`, whose items carry no `show` member, so the show a result belongs to is **not** in the response and is not printed. Use `get_episode_details` (or `get_episode`) when a single episode's show is needed (#1508).
 
@@ -1556,7 +1556,7 @@ List the current user's playlists.
 
 **Inputs:** `limit` (1–50, default 20), `offset`, `fetch_all` (all optional — `fetch_all` retrieves every page via `client.getAllPages`, capped by `SPOTIFY_MCP_FETCH_ALL_CAP`, default 500)
 
-**Returns:** id, name, description, track count, is_public, is_collaborative, owner, URI.
+**Returns:** id, name, description, track count, is_public, is_collaborative, owner, URI. The track count reads `unknown track count` when Spotify states none, and `0 tracks` when it states a real zero; the row in `structuredContent` keeps the two apart by carrying Spotify's own page or carrying none.
 
 ---
 
@@ -2186,7 +2186,7 @@ List another Spotify user's public playlists.
 | `limit` | number | no | 1–50 per page. Default: 20 |
 | `offset` | number | no | Pagination offset. Default: 0 |
 
-**Returns:** playlist name, owner, track count, ID, URI; plus total count and pagination info in structuredContent. Output is capped by `max_results`. Uses `GET /users/{user_id}/playlists`.
+**Returns:** playlist name, owner, track count, ID, URI; plus total count and pagination info in structuredContent. Output is capped by `max_results`. Uses `GET /users/{user_id}/playlists`. As with `get_user_playlists`, an unstated track count renders as `unknown track count` and never as `0 tracks`.
 
 ### 5.10 stats.fm (v2 — implemented)
 
