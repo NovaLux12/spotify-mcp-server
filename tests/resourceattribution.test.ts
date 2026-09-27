@@ -339,20 +339,22 @@ describe('the contract the documentation states', () => {
     assert.match(compliance, /resource/i, 'docs/compliance.md must record the resource decision');
   });
 
-  it('installs the boundary in src/index.ts, and before the read surfaces register', () => {
+  it('installs the boundary where the server is built, and before the read surfaces register', () => {
     // Everything above drives `installResourceAttributionBoundary` directly, so
-    // on its own it would stay green if `src/index.ts` never called it — the
+    // on its own it would stay green if the factory never called it — the
     // boundary correct, tested and unreachable, which is the exact failure this
     // issue is about. There is no test in this tree that stands up the real
     // server, so the install site is pinned as source instead.
     //
-    // The ORDER is the load-bearing half. The SDK stores a resource's read
-    // callback when it registers and dispatches through that stored reference
-    // on `resources/read`, so an installer called after `registerReadSurfaces()`
-    // wraps nothing and reports success. A boundary that silently does nothing
-    // is worse than one that is absent, so the constraint is asserted rather
-    // than left to a comment in `src/index.ts`.
-    const source = readFileSync(join(ROOT, 'src/index.ts'), 'utf8');
+    // #606 moved `buildMcpServer` out of `src/index.ts` and into `src/server.ts`
+    // so the CLI can build the same production server in-process. The install
+    // site moved with it, and this assertion had to follow: left pointing at
+    // `src/index.ts` it would have kept passing on a file that no longer
+    // contains the boundary at all, which is the failure it exists to catch,
+    // wearing the costume of a green test. Read whichever file actually builds
+    // the server, and fail loudly if the factory is not where we expect it.
+    const FACTORY = 'src/server.ts';
+    const source = readFileSync(join(ROOT, FACTORY), 'utf8');
     const install = source.indexOf('installResourceAttributionBoundary(server)');
     // Anchored on the dynamic IMPORT, not on the identifier. The bare name
     // appears in this file's own explanatory comment — which sits ABOVE the
@@ -361,8 +363,8 @@ describe('the contract the documentation states', () => {
     // prose has to name the call, or it measures whoever wrote the comment.
     const register = source.indexOf("await import('./resources/register.js')");
 
-    assert.ok(install >= 0, 'src/index.ts must install the resource attribution boundary');
-    assert.ok(register >= 0, 'the read surfaces must still be registered in src/index.ts');
+    assert.ok(install >= 0, `${FACTORY} must install the resource attribution boundary`);
+    assert.ok(register >= 0, `the read surfaces must still be registered in ${FACTORY}`);
     assert.ok(
       install < register,
       'the boundary must be installed BEFORE the read surfaces register — the SDK stores the '
