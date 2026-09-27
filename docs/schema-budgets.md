@@ -158,7 +158,7 @@ if you lower the limit to force one.
 | libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
 | portability | 11 | 10,036 | 11 | 10,036 | 12 | 11,040 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
-| libraryhygiene | 1 | 734 | 1 | 734 | 2 | 808 |
+| libraryhygiene | 1 | 754 | 1 | 754 | 2 | 830 |
 | showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
 | saveddedupe | 1 | 1,438 | 1 | 1,438 | 2 | 1,582 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
@@ -184,14 +184,14 @@ if you lower the limit to force one.
 | import | 1 | 1,211 | 1 | 1,211 | 2 | 1,333 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |
 | exhaustmisc | 10 | 8,324 | 10 | 8,324 | 11 | 9,157 |
-| exhaust2catalog | 19 | 19,372 | 19 | 19,372 | 20 | 21,310 |
+| exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
 | exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
 | exhaust2playlists | 18 | 23,326 | 18 | 23,326 | 19 | 25,659 |
 | exhaust2misc | 27 | 23,866 | 27 | 23,866 | 28 | 26,253 |
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
-| swarm3discovery | 24 | 22,277 | 24 | 22,277 | 25 | 24,505 |
-| swarm3bdiscovery | 24 | 19,919 | 24 | 19,919 | 25 | 21,911 |
+| swarm3discovery | 24 | 22,286 | 24 | 22,286 | 25 | 24,515 |
+| swarm3bdiscovery | 24 | 19,952 | 24 | 19,952 | 25 | 21,948 |
 | swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
