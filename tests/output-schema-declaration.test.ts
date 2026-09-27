@@ -207,11 +207,16 @@ function scanToolModules(): ModuleMarkers[] {
   return files.map((file) => {
     const code = scrubCode(readFileSync(join(TOOLS_DIR, file), 'utf8'));
     const reasons: string[] = [];
-    // Both registration APIs count. The positional `server.tool(name, …)` and
-    // the config-object `server.registerTool(name, …)` are not
-    // interchangeable, and a scanner that only reads one of them silently
-    // reports `playlistbatch.ts` and `playlistops.ts` as empty modules.
-    const registers = [...code.matchAll(/(?<![\w.])(?:server\.(?:tool|registerTool)|registerTool)\s*\(/g)].length;
+    // Both registration APIs count, and the RECEIVER does not have to be named
+    // `server`. The positional `x.tool(name, …)` and the config-object
+    // `x.registerTool(name, …)` are not interchangeable, and a scanner that
+    // only reads one of them silently reports `playlistbatch.ts` and
+    // `playlistops.ts` as empty modules. Requiring the literal `server.` is the
+    // same mistake one level up: `statsfm_taste.ts` registers through a local
+    // `registerCanonicalTool` helper that calls `s.tool(...)`, and a scanner
+    // that misses it reports the module as registering nothing — which is what
+    // silently exempted that module from the prose-safe check below.
+    const registers = [...code.matchAll(/(?<![\w.])(?:[\w$]+\.(?:tool|registerTool)|registerTool)\s*\(/g)].length;
     if (/(?<![\w.$])MUTATION_EMIT(?![\w$])/.test(code)) reasons.push('MUTATION_EMIT');
     if (/proseCarriesPayload\s*:\s*false/.test(code)) reasons.push('proseCarriesPayload:false');
     if (/(?<![\w.$])renderSingle\s*\(/.test(code)) reasons.push('renderSingle()');
@@ -322,9 +327,17 @@ describe('#687 every tool module is classified for outputSchema', () => {
     assert.ok(original, 'precondition: at least one module is declared');
     const server = await buildRegistry();
     try {
-      const shrunk = Object.freeze({ ...OUTPUT_SCHEMA_BY_MODULE, [target as string]: undefined });
+      // The REAL pass, with only its resolver swapped. This used to drive a
+      // hand-copied loop in this file, on the grounds that a copy "would prove
+      // nothing about the thing that runs at startup" — while proving exactly
+      // that nothing. Deleting the `throw` from the production function left
+      // all 5,142 tests green. The resolver is the only thing that varies
+      // between the production call and this one, so it is the only thing
+      // injected.
+      const shrunk = new Map(Object.entries(OUTPUT_SCHEMA_BY_MODULE));
+      shrunk.delete(target as string);
       assert.throws(
-        () => applyToolOutputSchemasWithMap(server, shrunk),
+        () => applyToolOutputSchemas(server, (file) => shrunk.get(file)),
         (error: unknown) =>
           error instanceof Error
           && /unclassified for outputSchema/.test(error.message)
@@ -336,49 +349,6 @@ describe('#687 every tool module is classified for outputSchema', () => {
     }
   });
 });
-
-/**
- * The pass, with the declaration map supplied by the caller.
- *
- * `applyToolOutputSchemas` reads the module-level constant, so proving it
- * fails means driving the same code over a map that is missing an entry. This
- * is the exported pass's own body factored so both the production call and the
- * test drive the SAME loop — a reimplementation here would prove nothing about
- * the thing that runs at startup.
- */
-function applyToolOutputSchemasWithMap(
-  server: McpServer,
-  map: Readonly<Record<string, keyof typeof OUTPUT_SCHEMA_FAMILIES | undefined>>,
-): { total: number; declared: number } {
-  const registry = (server as unknown as { _registeredTools?: Record<string, { outputSchema?: unknown }> })._registeredTools;
-  if (!registry || typeof registry !== 'object') return { total: 0, declared: 0 };
-  let declared = 0;
-  const unclassified: string[] = [];
-  for (const module of REGISTRAR_MANIFEST) {
-    if (moduleToolNames(server, module.key).length === 0) continue;
-    const family = Object.prototype.hasOwnProperty.call(map, module.file) ? map[module.file] : undefined;
-    if (family !== undefined) {
-      for (const name of moduleToolNames(server, module.key)) {
-        const entry = registry[name];
-        if (!entry || typeof entry !== 'object') continue;
-        entry.outputSchema = OUTPUT_SCHEMA_FAMILIES[family];
-        declared++;
-      }
-      continue;
-    }
-    if (PROSE_ONLY_MODULES.has(module.file) || PENDING_OUTPUT_SCHEMA_MODULES.has(module.file)) continue;
-    unclassified.push(module.file);
-  }
-  if (unclassified.length > 0) {
-    throw new Error(
-      `tool modules are unclassified for outputSchema (#687): ${unclassified.sort().join(', ')}. `
-      + 'Add each to OUTPUT_SCHEMA_BY_MODULE (with a family), to PROSE_ONLY_MODULES (with the '
-      + 'prose-only path that keeps it out), or to PENDING_OUTPUT_SCHEMA_MODULES (verified safe, '
-      + 'awaiting aggregate headroom).',
-    );
-  }
-  return { total: Object.keys(registry).length, declared };
-}
 
 describe('#687 the prose-only classification matches the sources', () => {
   it('no module listed as prose-only is free of prose-only markers', () => {
@@ -406,9 +376,15 @@ describe('#687 the prose-only classification matches the sources', () => {
     // not become safe by waiting. Scoping this to the declared set alone is
     // what let a misfiled `playback.ts` — the one module that sets
     // `proseCarriesPayload: false` — pass as pending.
-    const scanned = scanToolModules().filter((m) => m.registers > 0);
+    //
+    // This used to read `scanToolModules().filter((m) => m.registers > 0)`,
+    // which is a silent exemption: a module the scanner cannot count a
+    // registration for is dropped from the check entirely and the suite reports
+    // green — the check did not pass, it did not run. `statsfm_taste.ts` is the
+    // live case. The filter is gone; the coverage test below now proves every
+    // classified module IS scanned, so dropping one cannot quietly pass here.
     const safe = new Set([...Object.keys(OUTPUT_SCHEMA_BY_MODULE), ...PENDING_OUTPUT_SCHEMA_MODULES]);
-    const missing = scanned
+    const missing = scanToolModules()
       .filter((module) => safe.has(module.file) && module.proseOnly)
       .map((module) => `${module.file} (${module.reasons.join(', ')})`);
     assert.deepEqual(
@@ -416,6 +392,36 @@ describe('#687 the prose-only classification matches the sources', () => {
       [],
       'a module in OUTPUT_SCHEMA_BY_MODULE or PENDING_OUTPUT_SCHEMA_MODULES has a prose-only path; '
       + 'it belongs in PROSE_ONLY_MODULES',
+    );
+  });
+
+  it('the scanner can see every classified module', () => {
+    // The general guard for the check above. A prose-only path is found by
+    // SCANNING source text, so a module whose registration the scanner cannot
+    // match is invisible to every test in this file: not the prose-only list,
+    // not the "believed prose-safe" check, not the declared check. Each of those
+    // reads "this module is fine", and none of them looked.
+    //
+    // Asserting coverage of the scanner is the only assertion that survives a
+    // future blind spot, because it does not depend on any individual marker
+    // being recognised. This is the shape AGENTS.md §6 calls out — a guard that
+    // has only ever been shown the correct input has not been shown to work.
+    const scanned = new Map(scanToolModules().map((m) => [m.file, m]));
+    const classified = [
+      ...Object.keys(OUTPUT_SCHEMA_BY_MODULE),
+      ...PENDING_OUTPUT_SCHEMA_MODULES,
+      ...PROSE_ONLY_MODULES,
+    ];
+    const unseen: string[] = [];
+    for (const file of classified) {
+      const found = scanned.get(file);
+      if (!found) unseen.push(`${file} (not on disk under src/tools)`);
+      else if (found.registers === 0) unseen.push(`${file} (no registration the scanner can match)`);
+    }
+    assert.deepEqual(
+      unseen,
+      [],
+      'a classified module the source scanner cannot see; the prose-only checks below it are silent about it',
     );
   });
 

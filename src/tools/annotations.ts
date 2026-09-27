@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -914,7 +914,19 @@ export function applyToolAnnotations(server: McpServer): { total: number; annota
  * at startup rather than only in CI, so a module that slipped past review is
  * caught before a host sees the surface.
  */
-export function applyToolOutputSchemas(server: McpServer): { total: number; declared: number } {
+/**
+ * @param familyFor  How a module's file resolves to a family. Injectable ONLY
+ *   so the test can drive THIS loop with a map that is missing an entry — the
+ *   pass's own body used to be duplicated in the test to allow exactly that, and
+ *   the copy was a test that could not fail: deleting this function's `throw`
+ *   left the whole 5,142-test suite green, because the test proved the copy
+ *   fired rather than this. A default parameter is the whole fix; the loop
+ *   below is the only implementation of the policy.
+ */
+export function applyToolOutputSchemas(
+  server: McpServer,
+  familyFor: (file: string) => OutputSchemaFamily | undefined = outputSchemaFamilyForModule,
+): { total: number; declared: number } {
   const registry = (server as unknown as { _registeredTools?: Record<string, RegistryEntry> })._registeredTools;
   if (!registry || typeof registry !== 'object') return { total: 0, declared: 0 };
   let declared = 0;
@@ -925,7 +937,7 @@ export function applyToolOutputSchemas(server: McpServer): { total: number; decl
     // not a gap in the map.
     const names = moduleToolNames(server, module.key);
     if (names.length === 0) continue;
-    const family = outputSchemaFamilyForModule(module.file);
+    const family = familyFor(module.file);
     if (family !== undefined) {
       const schema = OUTPUT_SCHEMA_FAMILIES[family];
       for (const name of names) {

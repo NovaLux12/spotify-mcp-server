@@ -2984,25 +2984,35 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
  * measures: `AGGREGATE_SURFACE_LIMITS` is enforced against whichever surface is
  * live, while `defaultMaxBytes` was sized for the default one. Both figures
  * below are MEASURED through `collectAggregateSurfaceMeasurement` — the same
- * projection startup enforces, not the census's echo of a baseline:
+ * projection startup enforces, not the census's echo of a baseline. The census
+ * cannot supply the opt-in row at all: it deletes every `SPOTIFY_*` variable
+ * before its base pass, so the number it publishes is always the default
+ * surface. The opt-in row therefore needs the measurement driven directly, and
+ * the default row it is checked against is the census's own:
  *
- *   default surface     600,474B -> 601,554B   headroom 10,446B  (1.71%, `tight`)
- *   analytics opt-in ON 610,462B -> 611,542B   headroom    458B  (0.07%, `effectively exhausted`)
+ *   default surface      593,070B -> 594,150B   headroom 17,850B  (3.00%, `tight`)
+ *   analytics opt-in ON  603,058B -> 604,138B   headroom  7,862B  (1.30%, `tight`)
  *
- * Those three modules cost +1,080B. Measured per tool on this tree, a family
- * costs {@link ListOutput} 235B, {@link MutationOutput} 195B, {@link CardOutput}
- * 75B, so the rest of the prose-safe set can be sized without re-running
- * anything: `library` alone is over 3,000B, more than the entire budget the
- * opt-in has left.
+ * (Measured on this branch merged forward onto `f3b6ee80`; the tree these
+ * replace was the branch's own pre-merge base, which #848 had already shrunk.)
  *
- * That is the finding worth carrying forward, and it is a budget decision the
- * maintainer owns rather than one this change should make by spending the last
- * 458B on a contract. Raising `defaultMaxBytes` was declined for the reason
- * `TOOL_SURFACE_BUDGET` states in its own words — "reclaim-first remains the
- * rule for any single edit" — and because open epic #565 exists to shrink
- * exactly this payload. Issue #687's ">= 90% of tools" target is not reachable
- * at the current ceiling by any rollout order; only a reclaim or a raise gets
- * there, and both are above this change.
+ * Those three modules cost +1,080B. A family costs {@link ListOutput} 235B,
+ * {@link MutationOutput} 195B, {@link CardOutput} 75B per tool, and declaring
+ * `library` as `list` was measured at **+3,055B** — which FITS in the 7,862B
+ * the opt-in has left, leaving 4,807B (0.79%). An earlier draft of this comment
+ * carried the pre-merge-forward figure and concluded `library` cost "more than
+ * the entire budget the opt-in has left"; that was true of 458B and false of
+ * 7,862B, and the conclusion did not survive the re-measurement.
+ *
+ * So the rollout is not blocked at three modules by arithmetic. What still
+ * governs it is that the aggregate gate charges for the opt-in surface while
+ * `defaultMaxBytes` was sized for the default one, and the census publishes only
+ * the default one — #1493. Raising `defaultMaxBytes` remains declined for the
+ * reason `TOOL_SURFACE_BUDGET` states in its own words — "reclaim-first remains
+ * the rule for any single edit" — and because open epic #565 exists to shrink
+ * exactly this payload. Issue #687's ">= 90% of tools" target is still not
+ * reachable at the current ceiling by any rollout order; only a reclaim or a
+ * raise gets there, and both are above this change.
  */
 export const OUTPUT_SCHEMA_BY_MODULE: Readonly<Record<string, OutputSchemaFamily>> = Object.freeze({
   // The write surface. `ok` / `dry_run` / `cancelled` / `receipt` is the whole

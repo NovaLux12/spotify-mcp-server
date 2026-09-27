@@ -672,7 +672,7 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
 
   | Family | Declares |
   |---|---|
-  | `ListOutput` | `items`, plus the truncation boundary's `truncated` / `returned` / `total` / `remaining` / `next_offset` |
+  | `ListOutput` | `items`, plus the truncation boundary's `truncated` / `returned` / `total` / `remaining` |
   | `MutationOutput` | `ok`, `dry_run`, `cancelled`, `receipt` — the envelope every confirmation refusal already matches |
   | `CardOutput` | no required key; the floor for a tool whose payload is a record with a tool-specific shape |
 
