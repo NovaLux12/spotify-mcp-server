@@ -119,7 +119,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/actingaccount.ts` | The acting-account echo (#602). (0 registered tools) | 187 |
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | 148 |
 | `src/audiobookview.ts` | The audiobook and chapter prose renderers, shared by the audiobook tools and the `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` resource templates (#603). (0 registered tools) | 119 |
-| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 942 |
+| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 1105 |
 | `src/branding.ts` | The non-affiliation notice (#705) — the one place that owns the wording. (0 registered tools) | 63 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 526 |
 | `src/cachepersist.ts` | Optional cross-process persistence for the immutable read cache (#893, A16-019). (0 registered tools) | 692 |
@@ -127,14 +127,14 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 2923 |
 | `src/concurrency.ts` | Bounded-concurrency fan-out for the freshness-radar walks (#783). (0 registered tools) | 169 |
-| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 1137 |
+| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 1398 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/derivedanalytics.ts` | The derived-listening-analytics opt-in (#695). (0 registered tools) | 137 |
 | `src/devices.ts` | The one device line, shared by the `get_devices` tool and the `spotify://player/devices` resource (#603). (0 registered tools) | 46 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family, classified from Spotify's February 2026 changelog and its endpoint reference pages. (0 registered tools) | 419 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 512 |
-| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 378 |
+| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 385 |
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 460 |
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 1098 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
@@ -153,7 +153,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 272 |
 | `src/tools/accounts.ts` | `list_accounts` and `switch_account` (#602). (2 registered tools) | 347 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (3 registered tools) | 524 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2924 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2952 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 950 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
 | `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 273 |
@@ -163,7 +163,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/browse.ts` | Runtime module for src/tools/browse.ts. (1 registered tool) | 57 |
 | `src/tools/catalog.ts` | Runtime module for src/tools/catalog.ts. (31 registered tools) | 1692 |
 | `src/tools/confirm.ts` | Elicitation-gated confirmation for destructive playlist operations (#111 item 5). (0 registered tools) | 191 |
-| `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the diagnostic report, as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 1246 |
+| `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the diagnostic report, as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 1279 |
 | `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes?ids= to save). The tool swallowed 404s and reported ok:true, which was phantom success. Removed per #85 precedent. (1 registered tool) | 274 |
 | `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1666 |
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- now a registration placeholder only (#791). (0 registered tools) | 43 |
