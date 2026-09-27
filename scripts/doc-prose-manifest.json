@@ -3561,7 +3561,7 @@
         "label": "/.spotify-mcp/accounts.json (override with SPOTIFYMCPACC…"
       },
       {
-        "hash": "9a349302e0e8f233",
+        "hash": "a5212769a50bda48",
         "label": "It is a file rather than a /me sweep on purpose: an acco…"
       },
       {
@@ -5590,6 +5590,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "9a349302e0e8f233",
+      "label": "It is a file rather than a /me sweep on purpose: an acco…",
+      "date": "2026-09-27",
+      "reason": "Deliberate reword: the paragraph credited `spotify-mcp auth --profile` as a writer of the registry, which it is not (only switch_account writes it), so the sentence was corrected rather than deleted (#1465)."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "b1e3950f484ccc49",
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
@@ -5716,8 +5723,8 @@
     }
   ],
   "provenance": {
-    "head": "479d11f6f18e2027ac593a24ab2a5f1eb5cdcb55",
-    "upstream": "479d11f6f18e2027ac593a24ab2a5f1eb5cdcb55",
+    "head": "f3b6ee80bac713525946da9991c23afa0c1bd7d2",
+    "upstream": "f3b6ee80bac713525946da9991c23afa0c1bd7d2",
     "behind": false
   }
 }
