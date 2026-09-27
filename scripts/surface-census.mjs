@@ -980,6 +980,21 @@ const shortSurface = `A server started with no \`SPOTIFY_MCP_TOOLSETS\` register
  */
 const cookbookIntro = `**${cookbook.count}** recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.`;
 
+/**
+ * The 3.0 headline, rendered for `docs/v3-roadmap.md`.
+ *
+ * A "what's coming" page is exactly where a hand-typed figure rots, because
+ * the default surface moves with almost every registry change and the page
+ * would go stale without anybody noticing until a reader counted the tools
+ * themselves. So the figures are measured here, in the same run that measures
+ * everything else, and the block is regenerated on any registry change.
+ *
+ * The gap between the two tool counts is a subtraction of two figures measured
+ * in this same run — not a figure reconstructed from anywhere else, which is
+ * the distinction that matters when a number is published as fact.
+ */
+const v3Headline = `Measured on this branch, just now: a default 3.0 session puts **${result.defaultTools} tools** in front of the model — ${result.defaultBytes.toLocaleString('en-US')} bytes of schema — drawn from **${result.tools}** this server knows how to register. The other ${result.tools - result.defaultTools} are one environment variable away, waiting behind \`SPOTIFY_MCP_TOOLSETS\` alongside **${result.resourceTemplates}** resource templates and **${result.prompts}** prompts.`;
+
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
   ['README.md', 'gated-endpoints', gatedEndpointTable()],
@@ -995,6 +1010,7 @@ const blocks = [
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['docs/cookbook.md', 'recipe-index', cookbookIntro],
+  ['docs/v3-roadmap.md', 'v3-headline', v3Headline],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
   ['skills/spotify-mcp-competitor-comparison/SKILL.md', 'surface-census', skillSurface(result)],
   ['src/toolsets.ts', 'surface-census', [
