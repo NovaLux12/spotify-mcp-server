@@ -39,15 +39,17 @@
  * delegation rather than a coincidence. A same-source expectation would be
  * decoration.
  *
- * ## The two divergences, pinned as current behaviour
+ * ## The two corrections, and what they buy
  *
- * `head expressions immediately before the trailing operator` documents two
- * shapes this class gets wrong relative to the SDK. They are pinned rather than
- * asserted as correct because they are real: an exploded head variable is not
- * split, and a head variable swallows the query string when nothing literal
- * sits between it and the operator. Both are reported, unfiled. No renderer
- * reads these match variables today (every callback takes a `URL` and re-parses
- * the query from `href`), so routing is unaffected — see the report.
+ * Everywhere else this class agrees with the SDK, and the last group asserts
+ * that property directly against the SDK's own `UriTemplate` over a corpus
+ * spanning the shape matrix. That differential assertion is the point: two
+ * silent divergences shipped here (#1558) precisely because nothing compared
+ * the override with the implementation it replaces. The only URIs where the two
+ * are expected to differ are the two corrections in the header — a form-style
+ * expression matching a subset of its variables, and a reserved expression
+ * refusing a path continuation — and each one names which correction it is
+ * exercising, so a third divergence cannot hide in the group.
  *
  * Run: node --import tsx --test tests/resources.uritemplate.test.ts
  */
@@ -298,53 +300,67 @@ describe('Rfc6570UriTemplate — what it hands straight to the SDK', () => {
 });
 
 describe('Rfc6570UriTemplate — head expressions immediately before the trailing operator', () => {
-  it('absorbs the query into a head variable, and drops the query variables', () => {
-    // PINNED AS CURRENT BEHAVIOUR, and it is wrong. `[^/,]+` matches `?` and
-    // `=`, and there is nothing in the head for the regex to backtrack against,
-    // so `?format=json` is swallowed whole. The SDK's fully anchored pattern
-    // backtracks and answers correctly.
-    //
-    // How many shipped patterns this reaches is NOT counted here — the next
-    // test derives it from `templates.ts`, because a hand-written number in a
-    // comment is a claim that decays the moment a template is added. An earlier
-    // draft of this comment said "six" and then listed seven names.
-    //
-    // Every registered callback takes a `URL` and re-parses `href`, so no
-    // renderer reads this value and routing is intact today.
+  it('stops the head at the query and reads the query as the query (#1558)', () => {
+    // The head regex is unanchored at the end, so a capture has to know where
+    // it stops without anything to backtrack against. `[^/,]+` did not: it
+    // matched `?` and `=`, and where the head is immediately followed by the
+    // operator — every shipped pattern ending in a bare `{id}` — the whole
+    // `?format=json` went into the id and every declared parameter was lost.
     const tpl = ours(BARE_ID);
-    assert.deepEqual(tpl.match('spotify://artist/xyz?format=json'), { id: 'xyz?format=json' });
+    assert.deepEqual(tpl.match('spotify://artist/xyz?format=json'), { id: 'xyz', format: 'json' });
+    // The SDK's fully anchored pattern finds the same stopping point by
+    // backtracking, so agreement here is the evidence the fix restored the
+    // behaviour rather than inventing one.
     assert.deepEqual(sdk(BARE_ID, 'spotify://artist/xyz?format=json'), { id: 'xyz', format: 'json' });
-    // With no query there is nothing to absorb, and the answer is right.
+    // With no query there is nothing to split, and the answer is unchanged.
     assert.deepEqual(tpl.match('spotify://artist/xyz'), { id: 'xyz' });
     // A literal between the variable and the operator is the shipped shape for
-    // every other template, and it reads correctly.
+    // every other template, and it read correctly before and after.
     const withLiteral = ours('spotify://artist/{id}/albums{?format}');
     assert.deepEqual(withLiteral.match('spotify://artist/xyz/albums?format=json'), { id: 'xyz', format: 'json' });
   });
 
-  it('does not split an exploded head variable, unlike the SDK', () => {
-    // PINNED AS CURRENT BEHAVIOUR, and it is wrong: the SDK splits an exploded
-    // value on commas, `compileHead` does not, and `match` assigns the raw
-    // capture. No shipped template uses explode.
+  it('stops the head at a fragment, so a reserved tail still sees the whole fragment (#1558)', () => {
+    // `{#frag}` is the same shape with a different delimiter, and it was broken
+    // the same way: the head ate `#f` and the tail got an empty remainder.
+    const tpl = ours('spotify://artist/{id}{#frag}');
+    assert.deepEqual(tpl.match('spotify://artist/xyz#f'), { id: 'xyz', frag: '#f' });
+    assert.deepEqual(tpl.match('spotify://artist/xyz'), { id: 'xyz' });
+  });
+
+  it('splits an exploded head variable, as the SDK does (#1558)', () => {
+    // `compileHead` captures the raw `a,b`; the SDK's `match` then splits an
+    // exploded value on commas. The override assigned the capture directly and
+    // dropped that step, so a head expression was the one place an exploded
+    // variable stayed a string while every delegated template split it.
     const tpl = ours('spotify://artist/{id*}/albums{?format}');
-    assert.deepEqual(tpl.match('spotify://artist/a,b/albums?format=json'), { id: 'a,b', format: 'json' });
+    assert.deepEqual(tpl.match('spotify://artist/a,b/albums?format=json'), { id: ['a', 'b'], format: 'json' });
     assert.deepEqual(sdk('spotify://artist/{id*}/albums{?format}', 'spotify://artist/a,b/albums?format=json'), {
       id: ['a', 'b'],
       format: 'json',
     });
+    // The split is a property of the `*`, not of the comma: without it the raw
+    // comma is a second value and the URI is not this resource — in BOTH
+    // implementations — while an encoded comma is one value in both.
+    const plain = 'spotify://artist/{id}/albums{?format}';
+    assert.equal(ours(plain).match('spotify://artist/a,b/albums?format=json'), null);
+    assert.equal(sdk(plain, 'spotify://artist/a,b/albums?format=json'), null);
+    assert.deepEqual(ours(plain).match('spotify://artist/a%2Cb/albums?format=json'), {
+      id: 'a%2Cb',
+      format: 'json',
+    });
   });
 
-  it('reaches every shipped pattern whose head is a bare {id}', () => {
+  it('reads every shipped pattern whose head is a bare {id}', () => {
     // The blast radius, derived rather than asserted. `registerTemplate`
-    // composes `${pattern}{?${query.join(',')}}`, so a pattern ENDING in
-    // `{id}` composes to exactly the failing shape — the head is immediately
-    // followed by the trailing operator, with no literal to backtrack against.
+    // composes `${pattern}{?${query.join(',')}}`, so a pattern ENDING in `{id}`
+    // composes to exactly the shape that had nothing to backtrack against.
     //
     // Reading the patterns out of `templates.ts` rather than listing them here
     // is the point: a list in a test is a list that goes stale, and this one
     // already had. The first draft of the sibling comment said "six" and named
     // seven patterns, missing `playlist` — the actual number is whatever this
-    // returns, and a new bare-`{id}` template joins the failing set with no
+    // returns, and a new bare-`{id}` template joins the covered set with no
     // edit here at all.
     const src = readFileSync(new URL('../src/resources/templates.ts', import.meta.url), 'utf8');
     const bare = [...src.matchAll(/'(spotify:\/\/[a-z-]+\/\{id\})'/g)].map((m) => m[1]!);
@@ -354,16 +370,99 @@ describe('Rfc6570UriTemplate — head expressions immediately before the trailin
     for (const pattern of [...bare].sort()) {
       const composed = `${pattern}{?format}`;
       const uri = `${pattern.replace('{id}', 'xyz')}?format=json`;
-      assert.deepEqual(
-        ours(composed).match(uri),
-        { id: 'xyz?format=json' },
-        `${pattern}: the head absorbs the query`,
-      );
+      assert.deepEqual(ours(composed).match(uri), { id: 'xyz', format: 'json' }, `${pattern}: the head must stop at ?`);
       assert.deepEqual(
         sdk(composed, uri),
         { id: 'xyz', format: 'json' },
-        `${pattern}: and the SDK disagrees, so this is our bug and not a shared reading`,
+        `${pattern}: and the SDK agrees, so this pins behaviour rather than a private reading`,
       );
     }
   });
+});
+
+/**
+ * The property the class exists to provide: outside the two documented
+ * corrections, `Rfc6570UriTemplate.match` and the SDK's `UriTemplate.match`
+ * return the same variables.
+ *
+ * The comparison is between two independent implementations at runtime, not
+ * against a hand-typed expectation, so it fails if EITHER moves — including if
+ * an SDK upgrade changes the answer, which is the signal to re-derive rather
+ * than a flake to paper over. The corpus spans the shape matrix the two
+ * disagree on by construction: a head with and without a trailing literal, with
+ * and without explode, with `.` and `/` label operators, and the reserved and
+ * form-style tails.
+ */
+describe('Rfc6570UriTemplate — agrees with the SDK outside its two corrections', () => {
+  /** A shape the SDK answers correctly, so ours must answer identically. */
+  const AGREE: [string, string][] = [
+    // A trailing literal gives the head something to backtrack against — the
+    // shape every test before #1558 covered, and the reason the defect shipped.
+    ['spotify://artist/{id}/albums{?format}', 'spotify://artist/xyz/albums?format=json'],
+    // No trailing literal: the head must still stop at `?` on its own. Both of
+    // these declare every parameter the URI carries, so the SDK's stricter
+    // "all present, adjacent, in order" rule is satisfied and the two are
+    // expected to meet.
+    ['spotify://artist/{id}{?format}', 'spotify://artist/xyz?format=json'],
+    ['spotify://a/{id}{?format,offset,limit}', 'spotify://a/xyz?format=json&offset=1&limit=2'],
+    // Explode, with and without a literal, and the label operators — all three
+    // take their character class from the same `HEAD_VALUE`.
+    ['spotify://artist/{id*}/albums{?format}', 'spotify://artist/a,b/albums?format=json'],
+    ['spotify://artist/{id*}{?format}', 'spotify://artist/a,b?format=json'],
+    ['spotify://artist/.id{?format}', 'spotify://artist/.xyz?format=json'],
+    ['spotify://artist{/id}{?format}', 'spotify://artist/xyz?format=json'],
+    // Values that percent-encode the delimiters, which must NOT split: the
+    // matcher does not decode, so `%3F` is just a character in the value.
+    ['spotify://artist/{id}/albums{?format}', 'spotify://artist/x%3Fy/albums?format=json'],
+    // The two neighbours that must not match at all: an empty id, and a path
+    // continuation past the resource.
+    ['spotify://artist/{id}{?format}', 'spotify://artist/?format=json'],
+    ['spotify://artist/{id}/albums{?format}', 'spotify://artist/xyz/albums/extra?format=json'],
+  ];
+
+  /**
+   * A shape the SDK gets wrong on purpose-corrected grounds. Each entry names
+   * which of the two corrections it exercises, and each asserts the SDK really
+   * does answer differently — otherwise the case would be silently testing
+   * agreement and the reason it is listed would rot.
+   */
+  const CORRECTED: [template: string, uri: string, expected: unknown, why: string][] = [
+    // Correction 1: a form-style expression expands with whatever variables are
+    // defined, so a subset, an out-of-declaration-order set, an undeclared
+    // pair, and no query at all all expand to a URI this matcher must accept.
+    ['spotify://artist/{id}{?format}', 'spotify://artist/xyz', { id: 'xyz' }, 'correction 1: the zero-variable case'],
+    [
+      'spotify://artist/{id}{?format}',
+      'spotify://artist/xyz?offset=1',
+      { id: 'xyz' },
+      'correction 1: an undeclared pair is not a variable',
+    ],
+    [
+      'spotify://a/{id}{?format,offset,limit}',
+      'spotify://a/xyz?format=json&limit=2',
+      { id: 'xyz', format: 'json', limit: '2' },
+      'correction 1: a declared subset, not all three adjacent',
+    ],
+    // Correction 2: the reserved tail is anchored, so a path continuation is a
+    // different resource. `spotify://artist/xyz/albums` under `{+qs}` is the
+    // `/albums` continuation this class exists to reject.
+    ['spotify://artist/{id}{+qs}', 'spotify://artist/xyz/albums', null, 'correction 2: `/albums` is a path continuation'],
+    ['spotify://artist/{id}{#frag}', 'spotify://artist/xyz?format=json', null, 'correction 2: a query is not a fragment'],
+  ];
+
+  for (const [template, uri] of AGREE) {
+    it(`agrees on ${template} ← ${uri}`, () => {
+      assert.deepEqual(ours(template).match(uri), sdk(template, uri), `ours and the SDK must agree on ${uri}`);
+    });
+  }
+
+  for (const [template, uri, expected, why] of CORRECTED) {
+    it(`differs on ${template} ← ${uri} — ${why}`, () => {
+      assert.deepEqual(ours(template).match(uri), expected, `our corrected answer for ${uri}`);
+      // If the SDK ever starts answering this correctly, the correction it
+      // names may be obsolete — which is worth knowing, and is the only way
+      // this list cannot quietly stop describing the SDK.
+      assert.notDeepEqual(sdk(template, uri), ours(template).match(uri), `the SDK must still disagree on ${uri}`);
+    });
+  }
 });

@@ -43,6 +43,17 @@
  * are handed straight to the SDK — its `([^/,]+)` compilation is already
  * correct, and there is no reason to re-derive it.
  *
+ * ## What the override must NOT diverge on
+ *
+ * Everywhere else this class answers exactly what the SDK's `UriTemplate`
+ * answers; the two corrections above are the whole of the difference, and
+ * `tests/resources.uritemplate.test.ts` asserts that against the SDK directly
+ * rather than against hand-typed expectations. That property is load-bearing,
+ * not decorative: a third divergence shipped here once (the head's character
+ * class, #1558) precisely because nothing compared the override with the
+ * implementation it replaces, and every symptom was silent — the match
+ * succeeded, so nothing errored.
+ *
  * `toString()` and `variableNames` are inherited unchanged, so
  * `resources/templates/list` still advertises the original template strings and
  * the census is unaffected.
@@ -61,6 +72,24 @@ function escapeRegExp(literal: string): string {
   return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * What a simple or label-style head expression may contain: everything except
+ * the characters that end it.
+ *
+ * `,` and `/` are the SDK's own exclusions (`partToRegExp`'s `[^/,]+`). `?` and
+ * `#` are added because they are the two delimiters a query or a fragment
+ * begins, and a simple expansion percent-encodes both — `encodeURIComponent('?')`
+ * is `%3F` — so a value carrying a raw `?` is not a longer id, it is a head that
+ * has run into the query. With the SDK's class alone the greedy `[^/,]+` had
+ * nothing to stop it: where no literal sits between a head expression and the
+ * trailing `{?...}`, it consumed the query whole, and
+ * `spotify://artist/{id}{?format}` matched `spotify://artist/xyz?format=json` as
+ * `{ id: 'xyz?format=json' }` — every declared parameter dropped. Excluding the
+ * delimiters gives the regex the same stopping point the SDK's fully anchored
+ * pattern finds by backtracking, without the backtracking.
+ */
+const HEAD_VALUE = '[^/,?#]';
+
 type Part =
   | { literal: string }
   | { operator: string; names: string[]; exploded: boolean };
@@ -73,8 +102,8 @@ export class Rfc6570UriTemplate extends UriTemplate {
    * on purpose: the tail is what `match` inspects separately.
    */
   private readonly head: RegExp | null;
-  /** Variable name owning each capture group in `head`, in order. */
-  private readonly headGroups: string[] = [];
+  /** Variable owning each capture group in `head`, in order. */
+  private readonly headGroups: { name: string; exploded: boolean }[] = [];
   /** Declared names, in declaration order, for the trailing expression. */
   private readonly names: string[] = [];
   private readonly operator: string;
@@ -131,24 +160,36 @@ export class Rfc6570UriTemplate extends UriTemplate {
     }
   }
 
-  /** Compile everything before the trailing query-string expression. */
+  /**
+   * Compile everything before the trailing query-string expression.
+   *
+   * The head is unanchored at the end, so every capture here has to know where
+   * it stops on its own — that is what `HEAD_VALUE` is for, and why the `/` and
+   * `.` cases carry the same character class as the default one rather than
+   * their own. The SDK compiles the equivalent expressions the same way, except
+   * that it can lean on a `(.+)`-free anchored pattern to find the stopping
+   * point by backtracking.
+   */
   private compileHead(parts: Part[]): string {
     return parts
       .map((part) => {
         if ('literal' in part) return escapeRegExp(part.literal);
         const [name] = part.names;
-        this.headGroups.push(name);
+        this.headGroups.push({ name, exploded: part.exploded });
+        const value = part.exploded
+          ? `(${HEAD_VALUE}+(?:,${HEAD_VALUE}+)*)`
+          : `(${HEAD_VALUE}+)`;
         switch (part.operator) {
           case '.':
-            return `\\.([^/,]+)`;
+            return `\\.${value}`;
           case '/':
-            return `/([^/,]+)`;
+            return `/${value}`;
           case '#':
             return `(#.+)`;
           case '+':
             return '(\\?.+)';
           default:
-            return part.exploded ? '([^/,]+(?:,[^/,]+)*)' : '([^/,]+)';
+            return value;
         }
       })
       .join('');
@@ -188,9 +229,14 @@ export class Rfc6570UriTemplate extends UriTemplate {
     const rest = uri.slice(found[0].length);
 
     const variables: Variables = {};
-    this.headGroups.forEach((name, i) => {
+    this.headGroups.forEach((group, i) => {
       const value = found[i + 1];
-      if (value !== undefined) variables[name] = value;
+      if (value === undefined) return;
+      // The SDK's step, restored. `compileHead` captures an exploded value as
+      // the raw `a,b`, and the capture is what this class hands back, so
+      // without this a head expression would be the one place an exploded
+      // variable stayed a string while every delegated template split it.
+      variables[group.name] = group.exploded && value.includes(',') ? value.split(',') : value;
     });
 
     // A URI the server itself advertised resolves to the unparameterised read.
