@@ -49,7 +49,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
-import { cachePendingPath } from './cachepersist.js';
+import { cachePendingPath, cachePersistPath, cachePersistPaths } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
 import { historyFilePath } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
@@ -102,6 +102,15 @@ interface StoreDefinition {
   envVar: string | null;
   erasure: StoreErasure;
   resolve: (env: NodeJS.ProcessEnv) => string;
+  /**
+   * Set when the owning module can name MORE THAN ONE file for this store — the
+   * persisted read cache is one file per account (#1300). Each path becomes its
+   * own store and gets its own id, so every one of them is planned, refused, and
+   * reported on individually; leaving the second account's file out would be
+   * invisible in the report, which is the failure this whole module is about.
+   * `resolve` still runs, and supplies the paths when `expand` is absent.
+   */
+  expand?: (env: NodeJS.ProcessEnv) => string[];
 }
 
 /**
@@ -233,6 +242,18 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     resolve: (env) => portabilityDir(env),
   },
   {
+    id: 'cache',
+    label: 'Persisted read cache',
+    kind: 'file',
+    envVar: 'SPOTIFY_MCP_DATA_DIR',
+    erasure: 'move',
+    // `resolve` is the single-file answer, correct on a machine with one
+    // account; `expand` is what actually runs, because the active profile's file
+    // is only ever one of the files a machine with profiles has.
+    resolve: (env) => cachePersistPath(env),
+    expand: (env) => cachePersistPaths(env),
+  },
+  {
     id: 'cache-pending-marker',
     label: 'Persisted read cache: pending-save marker',
     kind: 'file',
@@ -263,6 +284,11 @@ export interface StorePathsOptions {
  * The token resolver is `resolveTokenFile` — config.ts is the authority for the
  * token path in this checkout (there is no `dataDir` field on the config type
  * yet); every other path comes from the module that writes it.
+ *
+ * A definition that `expand`s contributes one store per path, each with the file
+ * name in its id. The id is a map key in {@link planErasure}'s real-path
+ * bookkeeping, so two stores sharing one id would make the second overwrite the
+ * first and the containment check would then be reasoning about the wrong file.
  */
 export function localStorePaths(options: StorePathsOptions = {}): LocalStore[] {
   const cwd = options.cwd ?? process.cwd();
@@ -271,17 +297,21 @@ export function localStorePaths(options: StorePathsOptions = {}): LocalStore[] {
       ? { ...(options.env ?? process.env), SPOTIFY_MCP_PROFILE: options.profile }
       : (options.env ?? process.env);
 
-  return STORE_DEFINITIONS.map((def) => {
-    const path = resolve(def.resolve(env));
-    return {
-      id: def.id,
+  return STORE_DEFINITIONS.flatMap((def) => {
+    const paths = (def.expand ? def.expand(env) : [def.resolve(env)]).map((p) => resolve(p));
+    // An `expand`er always yields ids carrying the file name, even when it
+    // yields exactly one: the count is a property of the machine's profiles, not
+    // of the store, and an id that changed shape with it would not be a stable
+    // key for a report or a test.
+    return paths.map((path) => ({
+      id: def.expand ? `${def.id}:${basename(path)}` : def.id,
       label: def.label,
       kind: def.kind,
       path,
       root: def.kind === 'dir' ? path : dirname(path),
       erasure: def.erasure,
       envVar: def.envVar,
-    };
+    }));
   });
 }
 

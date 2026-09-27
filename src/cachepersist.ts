@@ -32,6 +32,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
@@ -201,6 +202,60 @@ export function cachePersistPath(env: NodeJS.ProcessEnv = process.env, opts: Cac
   const tokenFile = getTokenFilePath(env);
   const dir = env.SPOTIFY_MCP_DATA_DIR?.trim() || dirname(tokenFile);
   return join(dir, cacheFileNameFor(tokenFile));
+}
+
+// ---------------------------------------------------------------------------
+// Enumeration
+// ---------------------------------------------------------------------------
+
+/**
+ * Every cache file this environment can own, not only the active one.
+ *
+ * The cache is named after the account it belongs to (#1249 review), so a machine
+ * with several profiles has one cache file per profile and {@link cachePersistPath}
+ * — which resolves the ACTIVE profile — can name only one of them. Anything that
+ * has to reason about the whole set (`logout` erasing local stores, #1300) needs
+ * the rest, and the only safe way to get them is to run the writer's own naming
+ * function over the token files rather than to re-spell the filenames here: a
+ * second naming rule is exactly the drift #1249 was fixed to remove.
+ *
+ * Token files and cache files normally share a directory (`~/.spotify-mcp` for
+ * both), but `SPOTIFY_MCP_DATA_DIR` can separate them, so the profiles are
+ * discovered in the token file's directory and the resulting names are placed in
+ * the cache file's directory. Reading one and writing the other is the shape that
+ * has to work, not the shape that happens to be the default.
+ *
+ * The active cache is always in the result, whether or not its token file exists,
+ * so a machine whose token has already been removed by hand still has its
+ * remaining cache named. The reverse is not true and cannot be: a cache whose
+ * token file is gone is an orphan that no derivation from token files can reach.
+ * Those are not matched by a `cache*.json` glob here — that would erase files
+ * this server never wrote — so an orphaned cache is left for the user to delete
+ * by hand, and the caller is told which paths it was given rather than being
+ * promised a sweep.
+ */
+export function cachePersistPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const active = cachePersistPath(env);
+  const dir = dirname(active);
+  const tokenDir = dirname(getTokenFile(undefined, env));
+  const names = new Set<string>([basename(active)]);
+
+  let entries: string[];
+  try {
+    entries = readdirSync(tokenDir);
+  } catch {
+    // An unreadable or absent token directory costs the other profiles, not the
+    // active one, which is already named.
+    return [active];
+  }
+
+  for (const entry of entries) {
+    if (entry === 'tokens.json' || (entry.startsWith('tokens.') && entry.endsWith('.json'))) {
+      names.add(cacheFileNameFor(join(tokenDir, entry)));
+    }
+  }
+
+  return [...names].sort().map((name) => join(dir, name));
 }
 
 // ---------------------------------------------------------------------------
