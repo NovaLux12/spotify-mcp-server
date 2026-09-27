@@ -102,6 +102,7 @@ The package contract is generated directly from `package.json`; the census guard
     "check:docs-counts": "node scripts/surface-census.mjs --check",
     "check:doc-tool-names": "node scripts/check-doc-tool-names.mjs",
     "check:tests-typecheck": "node scripts/check-tests-typecheck.mjs",
+    "lint:scripts": "node scripts/check-script-syntax.mjs",
     "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
     "sweep:loop": "bash scripts/sweep-loop.sh",
     "probe:edge": "node scripts/edge-probe.mjs",

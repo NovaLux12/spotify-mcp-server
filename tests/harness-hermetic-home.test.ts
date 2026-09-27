@@ -291,8 +291,12 @@ function harnessSandbox(script: string): { dir: string; envOut: string; fakeHome
   scratchDirs.push(fakeHome);
 
   writeFileSync(join(dir, 'package.json'), JSON.stringify({ type: 'module' }), 'utf8');
-  // `--env-file` is a hard requirement of all three harnesses and node exits 9
-  // without it, so the fixture has to carry an empty one.
+  // The preflight requires a client id from one source or the other. The
+  // harness spawns node with `--env-file-if-exists=.env` rather than the
+  // unconditional `--env-file` (which aborted node with exit 9 before the server
+  // existed, so the harness reported `timeout: initialize` and named no cause),
+  // but preflight still refuses to start without a client id, so the fixture
+  // carries an empty one.
   writeFileSync(join(dir, '.env'), '', 'utf8');
   mkdirSync(join(dir, 'dist'), { recursive: true });
   mkdirSync(join(dir, 'scripts'), { recursive: true });
@@ -302,6 +306,23 @@ function harnessSandbox(script: string): { dir: string; envOut: string; fakeHome
     const from = join(SCRIPTS, support);
     if (existsSync(from)) copyFileSync(from, join(dir, 'scripts', support));
   }
+  // #644: the three harnesses now import `scripts/lib/{preflight,mcp-client}.mjs`.
+  // The sandbox has no `node_modules` by design (that is what proves the libs
+  // carry no bare-specifier imports), so a relative specifier only resolves if
+  // the file is copied too. These two are loaded on every harness run.
+  mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true });
+  for (const support of readdirSync(join(SCRIPTS, 'lib'))) {
+    if (support.endsWith('.mjs')) copyFileSync(join(SCRIPTS, 'lib', support), join(dir, 'scripts', 'lib', support));
+  }
+
+  // #644: the harnesses now run `assertPreconditions` BEFORE spawning, and a
+  // missing token file is a precondition failure with its own message rather
+  // than a hundred confusing FAIL rows. So the fixture has to look like a
+  // machine that has run `npm run auth` — at a path of its own, NOT inside
+  // `fakeHome`, because "the caller's home stayed empty" is the assertion this
+  // whole file exists to make.
+  const seededToken = join(dir, 'seeded-token.json');
+  writeFileSync(seededToken, JSON.stringify({ access_token: 'stub' }), 'utf8');
   const envOut = join(dir, 'observed.json');
   return {
     dir,
@@ -324,6 +345,12 @@ function harnessSandbox(script: string): { dir: string; envOut: string; fakeHome
           // parent, so removing the key would leave the sandbox's copies of the
           // harness scripts collecting into the report under `os.tmpdir()`.
           NODE_V8_COVERAGE: '',
+          // The preflight resolves the token path through this, and
+          // `spawnHarnessServer` strips it from the CHILD's environment exactly
+          // as it strips every other `SPOTIFY_MCP_*` — so it steers where the
+          // harness copies FROM without becoming configuration the server can
+          // be steered by.
+          SPOTIFY_MCP_TOKEN_FILE: seededToken,
         },
       });
       if (res.error) throw res.error;

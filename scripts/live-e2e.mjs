@@ -7,37 +7,17 @@
 // #1397: this used to spawn with no `env` at all, so the server inherited the
 // developer's real $HOME and its local stores. The spawn is now unconditional and
 // hermetic; see scripts/hermetic-home.mjs.
-import { once } from 'node:events';
-import { spawnHarnessServer } from './hermetic-home.mjs';
+// #644: the spawn, the JSONL RPC loop, the handshake and the timeout policy all
+// moved to scripts/lib/mcp-client.mjs, and the preconditions run before the
+// spawn. Previously a missing `.env` made node abort with exit 9 before the
+// server existed, and this script reported the only thing it could —
+// `Error: timeout: initialize` — 30s later. It now says which file is missing
+// and what to run.
+import { connect } from './lib/mcp-client.mjs';
 
-const { child } = await spawnHarnessServer({
-  label: 'live-e2e',
-  args: ['--env-file=.env', 'dist/index.js'],
-  cwd: new URL('..', import.meta.url).pathname,
-});
-let buf = '';
-const pending = new Map();
-child.stdout.on('data', (d) => {
-  buf += d;
-  let i;
-  while ((i = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, i); buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    try { const m = JSON.parse(line); if (m.id && pending.has(m.id)) pending.get(m.id)(m); } catch {}
-  }
-});
-let nextId = 1;
-function rpc(method, params) {
-  const id = nextId++;
-  return new Promise((res, rej) => {
-    pending.set(id, (m) => (m.error ? rej(new Error(JSON.stringify(m.error))) : res(m.result)));
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    setTimeout(() => pending.has(id) && (pending.delete(id), rej(new Error(`timeout: ${method}`))), 30000);
-  });
-}
-
-await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'live-e2e', version: '1.0.0' } });
-child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+const ROOT = new URL('..', import.meta.url).pathname;
+const client = await connect({ label: 'live-e2e', name: 'live-e2e', cwd: ROOT });
+const { rpc } = client;
 
 const text = (r) => r.content.map((c) => c.text).join('\n');
 const results = [];
@@ -63,5 +43,5 @@ console.log('\n=== LIVE E2E ===');
 for (const [n, s, o] of results) console.log(`${s.padEnd(5)} ${n.padEnd(30)} ${o}`);
 const failed = results.filter(([, s]) => s === 'FAIL').length;
 console.log(`\n${results.length - failed}/${results.length} passed`);
-child.kill();
+client.close();
 process.exit(failed ? 1 : 0);

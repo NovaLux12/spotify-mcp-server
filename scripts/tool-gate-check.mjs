@@ -5,37 +5,18 @@
 // #1397: this used to spawn with no `env` at all, so the server inherited the
 // developer's real $HOME and its local stores. The spawn is now unconditional and
 // hermetic; see scripts/hermetic-home.mjs.
-import { once } from 'node:events';
-import { spawnHarnessServer } from './hermetic-home.mjs';
+// #644: the spawn, the JSONL RPC loop, the handshake and the timeout policy
+// moved to scripts/lib/mcp-client.mjs, which also runs the preconditions
+// before the spawn. This script previously held its own 45s timeout and its own
+// hard-coded protocol revision, both now the shared ones.
+import { connect } from './lib/mcp-client.mjs';
 
-const { child } = await spawnHarnessServer({
+const client = await connect({
   label: 'tool-gate-check',
-  args: ['--env-file=.env', 'dist/index.js'],
+  name: 'tool-gate-check',
   cwd: new URL('..', import.meta.url).pathname,
 });
-let buf = '';
-const pending = new Map();
-child.stdout.on('data', (d) => {
-  buf += d;
-  let i;
-  while ((i = buf.indexOf('\n')) >= 0) {
-    const line = buf.slice(0, i); buf = buf.slice(i + 1);
-    if (!line.trim()) continue;
-    try { const m = JSON.parse(line); if (m.id && pending.has(m.id)) pending.get(m.id)(m); } catch {}
-  }
-});
-let nextId = 1;
-function rpc(method, params, timeoutMs = 45000) {
-  const id = nextId++;
-  return new Promise((res, rej) => {
-    pending.set(id, (m) => (m.error ? rej(new Error(JSON.stringify(m.error)).slice(0, 400)) : res(m.result)));
-    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
-    setTimeout(() => pending.has(id) && (pending.delete(id), rej(new Error(`timeout: ${method}`))), timeoutMs);
-  });
-}
-
-await rpc('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'tool-gate-check', version: '1.0.0' } });
-child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n');
+const { rpc } = client;
 
 const { tools } = await rpc('tools/list', {});
 console.log(`tools/list: ${tools.length}`);
@@ -77,5 +58,5 @@ for (const [name, args] of candidates) {
   }
   await new Promise((r) => setTimeout(r, 700));
 }
-child.kill();
+client.close();
 process.exit(0);
