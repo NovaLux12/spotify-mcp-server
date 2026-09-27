@@ -228,7 +228,11 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // down rather than widening the assertion to a computed one is the point:
     // a number that moves for a stated reason is information, and one that
     // moves silently is the failure this tripwire exists to catch.
-    assert.equal(full.toolCount, 585, 'the default surface must be unchanged');
+    //
+    // Measured from the live registry on the post-rebase tree, not derived by
+    // subtracting: main moved underneath this branch twice, and the removals
+    // did not compose with the other changes to the plain arithmetic.
+    assert.equal(full.toolCount, 587, 'the default surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

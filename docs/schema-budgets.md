@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 610,254B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 69,209B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 10,746B | 1.7% of the enforced limit |
+| Measured `tools/list` payload | 603,781B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 68,409B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 17,219B | 2.8% of the enforced limit |
 
-Headroom is **10,746B** of the 621,000B enforced limit — 1.7% — so the aggregate budget is **tight**.
+Headroom is **17,219B** of the 621,000B enforced limit — 2.8% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -143,9 +143,9 @@ than maintained.
 |---|---:|---:|---:|---:|---:|---:|
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 26,883 | 31 | 26,883 | 32 | 29,572 |
-| library | 16 | 14,932 | 16 | 14,932 | 17 | 16,426 |
+| library | 13 | 12,521 | 13 | 12,521 | 14 | 13,774 |
 | playback | 16 | 12,077 | 16 | 12,077 | 17 | 13,285 |
-| following | 5 | 3,948 | 5 | 3,948 | 6 | 4,343 |
+| following | 3 | 2,502 | 3 | 2,502 | 4 | 2,753 |
 | users | 2 | 1,613 | 2 | 1,613 | 3 | 1,775 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
@@ -179,7 +179,7 @@ than maintained.
 | freshness | 1 | 2,235 | 1 | 2,235 | 2 | 2,459 |
 | searchdive | 1 | 1,683 | 1 | 1,683 | 2 | 1,852 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
-| browse | 3 | 2,634 | 3 | 2,634 | 4 | 2,898 |
+| browse | 1 | 436 | 1 | 436 | 2 | 480 |
 | artistwatch | 6 | 6,284 | 6 | 6,284 | 7 | 6,913 |
 | queueops | 3 | 3,293 | 3 | 3,293 | 4 | 3,623 |
 | playbackext | 13 | 8,178 | 13 | 8,178 | 14 | 8,996 |
@@ -199,7 +199,7 @@ than maintained.
 | exhaust2extra | 3 | 4,024 | 3 | 4,024 | 4 | 4,427 |
 | swarm3discovery | 24 | 22,286 | 24 | 22,286 | 25 | 24,515 |
 | swarm3bdiscovery | 24 | 19,952 | 24 | 19,952 | 25 | 21,948 |
-| swarm3shows | 24 | 21,075 | 24 | 21,075 | 25 | 23,183 |
+| swarm3shows | 24 | 21,457 | 24 | 21,457 | 25 | 23,603 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
 | swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
 | swarm3library | 24 | 18,092 | 24 | 18,092 | 25 | 19,902 |
