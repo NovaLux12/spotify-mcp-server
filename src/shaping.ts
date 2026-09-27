@@ -200,9 +200,10 @@ export function shapeDiscoveryResult(
 
 /**
  * The three discovery tools' `response_format` description. The shared
- * `ResponseFormat` fragment stays as-is for the other ~590 tools; these three
+ * `ResponseFormat` fragment stays as-is for every other tool; these three
  * spell out what each mode actually emits because "json = raw API object" is
- * the wrong promise for a tool that never calls the API.
+ * the wrong promise for a tool that never calls the API. "Every other tool" is
+ * the whole claim, and unlike a count of them it cannot go stale.
  */
 export const DiscoveryResponseFormat = ResponseFormat.describe(
   "'concise' (default) = prose bullet list; 'detailed' = the same prose; " +

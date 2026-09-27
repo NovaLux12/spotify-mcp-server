@@ -1699,7 +1699,7 @@ A successful execute returns `ok`, `undone_receipt`, `direction`, `inverted_to`,
 **Known gap (#658).** Both tools declare `response_format` but neither handler reads it, so `json` returns the same prose as `concise` — where the shared controls section above promises a raw API payload. The registry-wide conformance gate in `tests/mutations.conformance.test.ts` checks that a write-capable tool *exposes* `dry_run` and `response_format`, not that it honours them, so this is invisible to it. `tests/tools.undo-receipts.test.ts` deliberately asserts nothing about `response_format`'s effect rather than ratifying the mismatch.
 ### 5.12 Discovery and registry introspection
 
-Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a 592-tool surface. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
+Three pure-introspection tools register outside toolset trimming (`alwaysActive`, catalog scope key) so they survive a minimal toolset — the escape hatch for a registry of hundreds of tools. `scripts/check-doc-tool-counts.mjs` refuses a registry tool count in hand-maintained text anywhere but a generated block, and fails if the registry ever leaves the three-digit range "hundreds" describes. They call no Spotify endpoint. `response_format` on these three differs from the shared contract above, because "json = raw API object" is the wrong promise for a tool that never calls the API:
 
 | `response_format` | `find_tool` / `inspect_tool` / `toolset_report` emit |
 |---|---|

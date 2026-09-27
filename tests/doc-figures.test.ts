@@ -20,12 +20,22 @@ import './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyClient } from '../src/client.js';
+import {
+  REGISTRY_SCALE_FLOOR,
+  assertFloorIsDrawnCorrectly,
+  blankGenerated,
+  collectToolCountErrors,
+  maskSource,
+  maskToComments,
+  registryScaleToolCounts,
+  scannableFiles,
+} from '../scripts/check-doc-tool-counts.mjs';
 import {
   AGGREGATE_SURFACE_LIMITS,
   TOOL_SURFACE_BUDGET,
@@ -332,6 +342,13 @@ describe('hand-typed figures stay out of documentation prose (#1241, #1247)', ()
     // says the registry was 592 tools before and after #900 — which are the same
     // category as the per-module baselines below and stay in prose. Widen this
     // to every page and it would demand that history be deleted.
+    //
+    // #1290 supersedes the last part of that: those dated records are no longer
+    // merely tolerated by being out of scope, they are regulated by
+    // `scripts/check-doc-tool-counts.mjs`, which scans every document and every
+    // `src/` comment and requires each one to be allowlisted line by line. What
+    // stays a decision here is that a *dated* record may keep its number, which
+    // is why the other rule keys on README's own prose.
   });
 
   it('the README tool-count guard would have caught the #1241 sentence', () => {
@@ -481,5 +498,290 @@ describe('hand-typed figures stay out of documentation prose (#1241, #1247)', ()
     ]) {
       assert.ok(listed.includes(expected), `AGENTS.md §3 is missing "${expected}"`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1290 — registry tool counts in hand-maintained text
+// ---------------------------------------------------------------------------
+
+/**
+ * #1290 is the gap in everything above. Those rules cover three documents by
+ * name, and a `.ts` comment is not a document, so a stale "592 tools" sat in
+ * six `src/` comments and one docs line for as long as the surface moved under
+ * it. The fix is not a refresh: `scripts/check-doc-tool-counts.mjs` refuses a
+ * registry-scale tool count anywhere outside a generated block, and a comment
+ * that genuinely needs one has to record what it measured and when.
+ *
+ * Every test here is two-sided. The gate is driven as a subprocess against a
+ * copy of the tree, so a mutation is a file edit rather than a re-implementation
+ * of the comparison, and each mutation's expected failure is asserted on the
+ * script's own output. A guard whose negative case was never run is the thing
+ * §6 is warning about.
+ */
+
+/** The census this rule is anchored to, generated once and shared. */
+let cachedCensus: Record<string, unknown> | undefined;
+let cachedCensusFile: string | undefined;
+
+function censusJson(): string {
+  if (!cachedCensusFile) {
+    const dir = mkdtempSync(join(tmpdir(), 'smcp-doc-figures-census-'));
+    const file = join(dir, 'census.json');
+    writeFileSync(file, execFileSync(process.execPath, ['scripts/surface-census.mjs'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      maxBuffer: 32 * 1024 * 1024,
+    }));
+    cachedCensusFile = file;
+    cachedCensus = JSON.parse(readFileSync(file, 'utf8'));
+  }
+  return cachedCensusFile;
+}
+
+function census(): Record<string, any> {
+  censusJson();
+  return cachedCensus as Record<string, any>;
+}
+
+/**
+ * A throwaway copy of every file the rule reads, taken from the gate's own
+ * `scannableFiles` so the test cannot fall behind the gate's scope.
+ */
+function withTree(run: (root: string) => string): string {
+  return withTempDir((dir) => {
+    const root = join(dir, 'tree');
+    for (const file of scannableFiles(ROOT)) {
+      const destination = join(root, relative(ROOT, file));
+      mkdirSync(dirname(destination), { recursive: true });
+      writeFileSync(destination, readFileSync(file));
+    }
+    return run(root);
+  });
+}
+
+/** Rewrite one file in a throwaway tree; the edit must actually change it. */
+function editIn(root: string, file: string, mutate: (source: string) => string): void {
+  const path = join(root, file);
+  const before = readFileSync(path, 'utf8');
+  const after = mutate(before);
+  assert.notEqual(after, before, `precondition: the mutation changed nothing in ${file}`);
+  writeFileSync(path, after);
+}
+
+/**
+ * Drive the real gate against a mutated tree and return its combined output
+ * plus the exit status. A clean tree exits 0; every mutation below asserts on
+ * what the script printed, not on a re-derivation of it.
+ */
+function runGate(root: string): { code: number; output: string } {
+  const args = ['scripts/check-doc-tool-counts.mjs', '--root', root, '--census-file', censusJson()];
+  try {
+    const stdout = execFileSync(process.execPath, args, { cwd: ROOT, encoding: 'utf8', stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+    return { code: 0, output: stdout };
+  } catch (error) {
+    const result = error as { status?: number; stdout?: string; stderr?: string };
+    return { code: result.status ?? 1, output: `${result.stdout ?? ''}\n${result.stderr ?? ''}` };
+  }
+}
+
+describe('registry tool counts stay out of hand-maintained text (#1290)', () => {
+  it('the real gate passes on this tree', () => {
+    const { code, output } = runGate(ROOT);
+    assert.equal(code, 0, `the gate rejected the tree it is supposed to accept:\n${output}`);
+    assert.deepEqual(collectToolCountErrors(ROOT, census()), [], 'the in-process comparison and the script disagree');
+    // The gate is not vacuous: there is a real allowance list doing work, and
+    // every entry in it is load-bearing because a dead one is an error.
+    assert.ok(output.includes('no hand-typed registry tool count'), `unexpected gate output: ${output}`);
+  });
+
+  it('rejects the three present-tense sentences #1290 reported', () => {
+    // The sentences as they actually stood on the tree this branch started
+    // from. Each is restored into the real file it came from, so the gate has
+    // to find a count in hand-written prose and in a `.ts` comment — the two
+    // shapes the document rules above never looked at.
+    const cases: { file: string; from: string; to: string; line: number }[] = [
+      {
+        file: 'src/logout.ts',
+        from: 'would join the `tools/list` surface and every host',
+        to: 'would join the `tools/list` surface (592 tools today) and every host',
+        line: 40,
+      },
+      {
+        file: 'src/shaping.ts',
+        from: 'fragment stays as-is for every other tool;',
+        to: 'fragment stays as-is for the other ~590 tools;',
+        line: 203,
+      },
+      {
+        file: 'SPEC.md',
+        from: 'the escape hatch for a registry of hundreds of tools',
+        to: 'the escape hatch for a 592-tool surface',
+        line: 1702,
+      },
+    ];
+    for (const { file, from, to, line } of cases) {
+      const { code, output } = withTree((root) => {
+        assert.ok(readFileSync(join(ROOT, file), 'utf8').includes(from), `precondition: ${file} no longer contains "${from}"`);
+        editIn(root, file, (source) => source.replace(from, to));
+        return runGate(root);
+      });
+      assert.notEqual(code, 0, `restoring "${to}" into ${file} was not rejected`);
+      const firstFinding = output.split('\n').find((line) => line.trim().length > 0)?.trim() ?? '';
+      assert.ok(
+        firstFinding.startsWith(`${file}:${line}:`),
+        `expected the gate's first finding to be ${file}:${line}, got "${firstFinding}"\n${output}`,
+      );
+      assert.match(output, /hand-typed registry tool count "~?5\d\d"/, `the gate did not report the figure it found:\n${output}`);
+    }
+  });
+
+  it('an allowance cannot launder a count on another line of the same file', () => {
+    // The allowance list is line-scoped, so this is the case a whole-file
+    // allowance would wave through: `src/tools/annotations.ts` carries seven
+    // allowed lines, and a bare "today" claim added beside them is still fatal.
+    const { code, output } = withTree((root) => {
+      editIn(root, 'src/tools/annotations.ts', (source) =>
+        source.replace(
+          "  manifestEntry('catalog', 'catalog'",
+          '  // 592 tools today, per the surface census.\n  manifestEntry(\'catalog\', \'catalog\'',
+        ));
+      return runGate(root);
+    });
+    assert.notEqual(code, 0, 'a new count inside an allowlisted file was accepted');
+    assert.match(output, /src\/tools\/annotations\.ts:\d+: hand-typed registry tool count "592"/, output);
+    assert.doesNotMatch(output, /is dead/, 'the existing allowances should still be live, so this must be the only failure');
+  });
+
+  it('a reworded allowance line is a dead allowance, not a silent pass', () => {
+    // The other direction. If the allowance only had to exist, rewording the
+    // sentence it covers would quietly hand the tree a free registry count —
+    // so a line that no longer matches its allowance is reported, and the
+    // reviewer has to re-read what the number was warranting.
+    const { code, output } = withTree((root) => {
+      editIn(root, 'src/tools/annotations.ts', (source) =>
+        source.replace('+1% each, against a 592-tool tools/list payload.', '+1% each, against a 592 tool tools/list payload.'));
+      return runGate(root);
+    });
+    assert.notEqual(code, 0, 'a rewording that orphaned an allowance passed');
+    assert.match(output, /allowance for src\/tools\/annotations\.ts is dead/, output);
+    assert.match(output, /\+1% each, against a 592-tool tools\/list payload\./, 'the dead allowance must quote what it no longer matches');
+  });
+
+  it('a count inside a generated block is not a finding, and blanking is what makes that so', () => {
+    // The negative direction of the generated-block handling. `src/toolsets.ts`
+    // states the registry total in its `surface-census` block, and that number
+    // is the one in the tree that is not allowed to rot — so the rule has to
+    // leave it alone, and the reason it does is the blanking, not a pattern
+    // that happens to miss it.
+    const file = 'src/toolsets.ts';
+    const generated = /\/\/ BEGIN:generated surface-census[\s\S]*?\/\/ END:generated surface-census/.exec(readFileSync(join(ROOT, file), 'utf8'));
+    assert.ok(generated, `precondition: ${file} has no surface-census block`);
+    const inside = generated![0];
+    const figure = /(\d[\d,]*) tools/.exec(inside)?.[1];
+    assert.ok(figure, `precondition: the ${file} block states no tool count`);
+    // The block's own number, in the block, is masked out.
+    assert.deepEqual(registryScaleToolCounts(maskSource(inside, true)), [], 'the generated block was not blanked');
+    // The same number outside a block is a finding, at the magnitude the gate
+    // draws. Without this the blanking test above would also pass on a pattern
+    // that simply cannot see a count.
+    assert.deepEqual(
+      registryScaleToolCounts(maskSource(`// ${figure} tools, on the merged tree.`, true)).map((hit) => hit.figure),
+      [figure],
+      'the pattern does not see a registry count outside a generated block',
+    );
+    // And a deliberately wrong figure inside the real block is still ignored.
+    const { code, output } = withTree((root) => {
+      editIn(root, file, (source) => source.replace(`${figure} tools,`, '592 tools,'));
+      return runGate(root);
+    });
+    assert.equal(code, 0, `a stale count inside a generated block was reported as a finding:\n${output}`);
+  });
+
+  it('the floor is drawn from the measurement, and a count below it is a module, not the registry', () => {
+    // The rule keys on magnitude, so the magnitude has to mean something. The
+    // census says the registry is three digits and the largest single module is
+    // not, which is what makes "31 tools" a per-module figure that
+    // `surface-census --check` already validates and "592 tools" a claim about
+    // the whole registry that nothing else validates.
+    const measured = census();
+    const largest = Math.max(...Object.values(measured.perModule as Record<string, number>));
+    assert.ok(
+      measured.tools >= REGISTRY_SCALE_FLOOR && measured.tools < 1000,
+      `precondition: the registry is ${measured.tools} tools, so "hundreds" in SPEC.md is ${measured.tools < 1000 ? 'true' : 'false'} and the ${REGISTRY_SCALE_FLOOR} floor is meaningful`,
+    );
+    assert.ok(
+      largest < REGISTRY_SCALE_FLOOR,
+      `precondition: the largest module holds ${largest} tools, so no per-module count reaches the floor`,
+    );
+    // SPEC.md leans on the upper bound of that range, so it is asserted rather
+    // than trusted: the sentence this branch rewrote says "hundreds".
+    assert.ok(
+      readDoc('SPEC.md').includes('a registry of hundreds of tools'),
+      'SPEC.md no longer states the surface as hundreds; the floor contract it leans on needs a review',
+    );
+    // The floor is the discriminator, on both sides of it.
+    assert.deepEqual(registryScaleToolCounts(maskSource('// 31 tools / 27222B -> 31 tools / 27222B', true)), []);
+    assert.deepEqual(registryScaleToolCounts(maskSource('// 592 tools, measured on the merged tree', true)).map((h) => h.figure), ['592']);
+    // `tools: 592` is the other word order, and a count whose noun wrapped to
+    // the next line of the same comment is the shape annotations.ts actually has.
+    assert.deepEqual(registryScaleToolCounts(maskSource('// [27, 24316] from the real registrar (tools: 592).', true)).map((h) => h.figure), ['592']);
+    assert.deepEqual(
+      registryScaleToolCounts(maskSource('// 607,715B over the same 592\n//         tools — the smaller number', true)).map((h) => h.figure),
+      ['592'],
+      'a count whose noun wrapped onto the next comment line was missed',
+    );
+    // And the tokens that look like figures but are not: a markdown anchor, a
+    // branch name, a version, a per-module baseline, a byte figure.
+    for (const notAFigure of [
+      '5. [Tools](#5-tools)',
+      'branch swarm3-500-tools',
+      'feature swarm v1.25.0',
+      '24,316B baseline',
+      'the aggregate is 606,460 → 607,104 bytes',
+      'tools/list 606,353 B across 31',
+    ]) {
+      assert.deepEqual(
+        registryScaleToolCounts(maskSource(`// ${notAFigure}`, true)),
+        [],
+        `a non-figure was read as a registry tool count: ${notAFigure}`,
+      );
+    }
+  });
+
+  it('a registry or a module that leaves the three-digit range fails the gate loudly', () => {
+    // Both ends of the floor, so the threshold cannot quietly stop meaning
+    // anything. Without this the rule would still pass on a surface of 40 tools
+    // while checking nothing at all.
+    const real = census();
+    const shrunk = { ...real, tools: 40 };
+    assert.throws(() => assertFloorIsDrawnCorrectly(shrunk), /below the \d+ floor/, 'a sub-100 registry did not fail the floor contract');
+    const quadrupled = { ...real, tools: 4200 };
+    assert.throws(() => assertFloorIsDrawnCorrectly(quadrupled), /no longer "hundreds"/, 'a four-digit registry did not fail the floor contract');
+    const fatModule = { ...real, perModule: { ...real.perModule, 'src/tools/annotations.ts': 140 } };
+    assert.throws(() => assertFloorIsDrawnCorrectly(fatModule), /a module registers 140 tools/, 'a module at the floor did not fail the floor contract');
+    assert.doesNotThrow(() => assertFloorIsDrawnCorrectly(real), 'precondition: the real census does not satisfy the floor contract');
+  });
+
+  it('comment-only scanning of src/ costs no coverage today', () => {
+    // The stated limitation: a trailing `//` comment on a code line is not
+    // scanned, because a TypeScript comment cannot be told from a string
+    // without a parser. This asserts the limitation is currently free rather
+    // than assuming it — if a code line ever grows a registry count, this goes
+    // red and the masking is revisited instead of the gap quietly widening.
+    // Both sides are blanked the same way, so a generated block is not what
+    // this reports.
+    const offenders: string[] = [];
+    for (const file of scannableFiles(ROOT)) {
+      const name = relative(ROOT, file);
+      if (!name.startsWith('src/')) continue;
+      const blanked = blankGenerated(readFileSync(file, 'utf8'));
+      const seen = registryScaleToolCounts(blanked);
+      const scanned = new Set(registryScaleToolCounts(maskToComments(blanked)).map((hit) => hit.index));
+      for (const hit of seen) {
+        if (!scanned.has(hit.index)) offenders.push(`${name}: ${JSON.stringify(blanked.slice(hit.index, hit.index + 12).split('\n')[0])}`);
+      }
+    }
+    assert.deepEqual(offenders, [], `a registry count sits on a code line the comment mask skips: ${offenders.join(', ')}`);
   });
 });
