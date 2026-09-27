@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { readFileSync, readdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { dirname, isAbsolute, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -35,13 +36,57 @@ const census = JSON.parse(execFileSync(process.execPath, ['scripts/surface-censu
   registrySource: string;
 };
 
+/**
+ * Run `run` against a fresh scratch directory under `os.tmpdir()` (#1383).
+ *
+ * This used to be `mkdtemp(join(ROOT, '.census-fixture-'))`. The `finally`
+ * cleaned up, so the leak only happened on an abnormal exit — but an OOM kill
+ * or a SIGKILL at load 60-90 is routine on this box, and the result was an
+ * untracked `.census-fixture-*` in the repository root. That is worse than
+ * untidy: a clean `git status --porcelain` is this repo's standing assertion
+ * that no generated block is stale, so a leaked directory makes a correct change
+ * read as a stale one, and every plausible next step — `--write`, a manual
+ * block edit — touches the one thing that must never be hand-edited. The
+ * census's own marker scan skips dot-entries (#1238), so the census never
+ * noticed; only the check whose whole job is to notice a change on disk did.
+ *
+ * `scratchOutsideRepo` is the assertion that keeps this honest: it runs on
+ * every fixture, so moving the directory back under `ROOT` fails here rather
+ * than passing silently.
+ */
 async function withFixtures<T>(run: (dir: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(ROOT, '.census-fixture-'));
+  const dir = await mkdtemp(join(tmpdir(), 'census-fixture-'));
+  // The assertion is inside the `try`, not between the `mkdtemp` and the
+  // `try`. Asserting first would throw past the `finally` and leave the
+  // directory behind — the guard for the leak would then *be* a leak, which is
+  // exactly the shape this issue is about, and it would only show up on the run
+  // where the guard had already caught something.
   try {
+    assert.ok(
+      scratchOutsideRepo(dir),
+      `census fixture ${dir} is inside the repository (${relative(ROOT, dir)}); it must live under os.tmpdir() so an abnormal exit cannot leave the working tree dirty (#1383)`,
+    );
     return await run(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * Is `path` outside the repository root?
+ *
+ * `relative` is the test, not a string `startsWith` on the root: a sibling
+ * directory that merely shares a name prefix (`/repo-copy`) must count as
+ * outside, and a path equal to `ROOT` itself must not. `..` as the first
+ * segment is the only way `relative` reports a path above the root it was
+ * resolved against, and the empty string means it *is* the root.
+ *
+ * The `isAbsolute` arm is the Windows cross-drive case, where `relative`
+ * cannot relate the two paths and returns the absolute one unchanged.
+ */
+function scratchOutsideRepo(path: string): boolean {
+  const rel = relative(ROOT, path);
+  return isAbsolute(rel) || rel.startsWith('..');
 }
 
 function runFailure(args: string[], env: NodeJS.ProcessEnv = {}): string {
