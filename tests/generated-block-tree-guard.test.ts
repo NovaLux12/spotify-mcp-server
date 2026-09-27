@@ -44,6 +44,9 @@ const EXPECTED_FILES = [
   'README.md',
   'SPEC.md',
   // Added by #1288, which gave the cookbook's recipe count a generated block.
+  // Added by #926, which gave the env reference's two hand-typed name lists
+  // generated blocks — making it a mixed document the tree scan must read.
+  'docs/configuration.md',
   'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
