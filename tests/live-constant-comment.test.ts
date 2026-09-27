@@ -65,12 +65,6 @@ const DATED_TREE = /\b(?:measured|re-?measur\w*|measuring|warrants?|grants?)\b|(
 const ALLOWED: { file: string; contains: string; why: string }[] = [
   {
     file: 'src/tools/annotations.ts',
-    contains: '14005 B -> 14735 B (+730 B).',
-    why:
-      'dated: the #905 `statsfm` re-measure. Its sentence is "MEASURED, not estimated: dist/index.js driven over stdio …" and the figure sits in the NEXT sentence, split at the full stop.',
-  },
-  {
-    file: 'src/tools/annotations.ts',
     contains: 'Then 11,882 -> 11,773B (-109) when #922 reworded this module',
     why:
       'dated: the #922 `playbackintel` re-measure. The figure is the manifest baseline it set; the sentence qualifying it ("The two deltas compose, and neither is measured off the other’s tree — this figure is the merged measurement.") is the NEXT one, so the anchoring test cannot reach it from here.',

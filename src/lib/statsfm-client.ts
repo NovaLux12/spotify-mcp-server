@@ -421,3 +421,40 @@ export function __setStatsfmSleepImpl(fn: (ms: number) => Promise<void>): void {
 export function __resetStatsfmSleepImpl(): void {
   sleepImpl = timerSleep;
 }
+
+/**
+ * The one stats.fm identity resolver (#927).
+ *
+ * Four modules declare an identity argument — `user_id` in `statsfm.ts`,
+ * `statsfm_user` in `statsfm_taste.ts`, `taste_composites.ts` and
+ * `taste_playlist.ts` — and all four now fall back to the same
+ * `STATSFM_USER_ID` default. The precedence is deliberately boring and stated
+ * in one place so the four call sites cannot drift:
+ *
+ *   explicit per-call argument  >  STATSFM_USER_ID  >  throw
+ *
+ * The throw is the load-bearing part. Before this variable existed the
+ * argument was simply `z.string().min(1)` and the SDK's own validation
+ * produced the error, naming the argument. Making the argument `.optional()`
+ * to admit the default REMOVES that guarantee, so this function owes the caller
+ * an equally good message — it names both ways to supply the id, and it
+ * throws rather than falling back to a placeholder, because a placeholder would
+ * turn "you did not tell me who" into a confident 200 from somebody else's
+ * public profile. That is the same class of bug #997 was: a value that could
+ * not be read, rendered as a plausible one.
+ *
+ * `paramName` is passed by the caller rather than hardcoded because the
+ * argument is spelled two ways across the surface; the message has to name the
+ * one this tool actually declares, or it sends the reader to the wrong field.
+ */
+export function resolveStatsfmUserId(
+  explicit: string | undefined,
+  paramName: 'user_id' | 'statsfm_user',
+): string {
+  if (explicit !== undefined && explicit.trim() !== '') return explicit;
+  const configured = getConfig().statsfmUserId;
+  if (configured !== null && configured !== '') return configured;
+  throw new Error(
+    `no stats.fm user id: pass ${paramName} or set STATSFM_USER_ID`,
+  );
+}

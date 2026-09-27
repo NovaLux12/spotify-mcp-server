@@ -64,6 +64,20 @@ export interface SpotifyMcpConfig {
   /** Default market fallback (SPOTIFY_MCP_MARKET). Null = not set / invalid. */
   market: string | null;
   /**
+   * Default stats.fm identity (STATSFM_USER_ID). Null = not set.
+   *
+   * stats.fm has no OAuth and no per-account token, so "identity" here is just
+   * which public profile the user-scoped reads are about (#927). It is a
+   * convenience default for the `user_id` / `statsfm_user` argument, never an
+   * substitute for it: a per-call argument always wins, and an unset value
+   * leaves the argument required, exactly as it was before this existed.
+   *
+   * A stats.fm user id is a public handle, not a secret — but it is still the
+   * user's own listening identity, so it is reported by the doctor only as
+   * whether it is set, never echoed back.
+   */
+  statsfmUserId: string | null;
+  /**
    * Hard read-only mode (SPOTIFY_MCP_READONLY) — the same value the
    * registration gate acts on, read through the same `readOnlyEnv` (#611).
    *
@@ -372,6 +386,24 @@ export function parseMarket(raw: string | undefined): string | null {
 }
 
 /**
+ * Validate STATSFM_USER_ID: the default stats.fm profile identity (#927).
+ *
+ * Unlike `parseMarket` there is nothing here to validate — stats.fm ids and
+ * customIds are opaque strings, and the API is the only authority on which ones
+ * exist. So this only normalizes: an unset or blank value is `null` (the
+ * argument stays required, as it was before this variable existed), and any
+ * other value is trimmed and kept verbatim.
+ *
+ * It deliberately does NOT lowercase or otherwise "fix" the value. Guessing at
+ * a handle's canonical spelling is the kind of coercion that produces a call
+ * which 404s against a real profile and reads as "no such user".
+ */
+export function parseStatsfmUserId(raw: string | undefined): string | null {
+  if (!raw || raw.trim() === '') return null;
+  return raw.trim();
+}
+
+/**
  * Resolve effective market with precedence:
  * explicit tool arg > SPOTIFY_MCP_MARKET (config) > account-country fallback > omitted.
  * The account-country fetch is supplied by the caller (null/undefined = omitted).
@@ -409,6 +441,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     ),
     scopes,
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
+    statsfmUserId: parseStatsfmUserId(env.STATSFM_USER_ID),
     readonly: parseReadOnly(env.SPOTIFY_MCP_READONLY),
   };
 }
@@ -605,6 +638,13 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
   {
     name: 'SPOTIFY_MCP_MARKET',
     summary: 'Default ISO 3166-1 alpha-2 market for market-gated lookups.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'STATSFM_USER_ID',
+    summary:
+      'Default stats.fm user id or customId for the user-scoped stats.fm tools. A per-call `user_id`/`statsfm_user` argument still wins.',
     default: null,
     inHelp: true,
   },

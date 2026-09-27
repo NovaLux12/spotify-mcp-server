@@ -726,6 +726,11 @@ function staticRows(client: SpotifyClient, tokenFile: string): DoctorRow[] {
   if (profile) parts.push(`profile=${profile}`);
   if (cfg.market) parts.push(`market=${cfg.market}`);
   if (cfg.scopes) parts.push(`scopes_override=${cfg.scopes.join(',')}`);
+  // Presence only, never the value. A stats.fm handle is a public profile name,
+  // but it is still the user's own listening identity, and a doctor report is
+  // the kind of output that gets pasted into an issue. The value's absence is
+  // the actionable part: without it every stats.fm call needs an explicit id.
+  parts.push(`statsfm_user_id=${cfg.statsfmUserId === null ? 'unset' : 'set'}`);
   rows.push({
     id: 'config',
     status: 'pass',

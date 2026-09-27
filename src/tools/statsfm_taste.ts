@@ -37,6 +37,7 @@ import {
   __setStatsfmClient,
   statsfmClient,
   statsfmFetchFromPayloadImpl,
+  resolveStatsfmUserId,
 } from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
 
@@ -789,10 +790,22 @@ export function __clearFeedbackEntries(): void {
 // Shared arg fragments + output helper
 // ---------------------------------------------------------------------------
 
+/**
+ * The stats.fm identity argument for the `statsfm_user` spelling (#927).
+ *
+ * This module used to keep a private copy of the schema that
+ * `taste_composites.ts` also declares; both are now the same optional field
+ * with the same `STATSFM_USER_ID` default, resolved by the same
+ * `resolveStatsfmUserId` helper. See that function for why the guard is
+ * required rather than merely tidy.
+ */
 const statsfmUserSchema = z
   .string()
   .min(1)
-  .describe('stats.fm user ID (or username) — public profile, no auth needed');
+  .optional()
+  .describe(
+    'stats.fm user ID (or username) — public profile, no auth. Defaults to STATSFM_USER_ID.',
+  );
 
 /**
  * `range` is the shared stats.fm ranking window (#720) — the same upstream
@@ -854,7 +867,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const range = args.range ?? 'lifetime';
       const [artistsRaw, genresRaw, tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, {
@@ -957,7 +970,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const q = args.artist.toLowerCase();
       const [artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, {
@@ -1025,7 +1038,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const kind = args.subject_type ?? 'artist';
       const q = args.subject.toLowerCase();
       const listPath =
@@ -1086,7 +1099,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const streamsRaw = await statsfmGet<unknown>(
         `/users/${encodeURIComponent(u)}/streams`,
         { limit: '500' },
@@ -1148,7 +1161,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const gap = args.gap_minutes ?? 30;
       const streamsRaw = await statsfmGet<unknown>(
         `/users/${encodeURIComponent(u)}/streams`,
@@ -1216,7 +1229,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [topRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, {
           range: 'lifetime',
@@ -1281,7 +1294,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [artistsRaw, genresRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, {
           range: 'lifetime',

@@ -51,6 +51,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_TASTE_FEEDBACK_FILE` | `<SPOTIFY_MCP_DATA_DIR>/taste-feedback.json` | Store for verdicts written by `statsfm_record_feedback`. The full path wins; otherwise the file is `taste-feedback.json` inside `SPOTIFY_MCP_DATA_DIR` (`~/.spotify-mcp`). Written at 0600, atomically (temp file, fsync, rename), and loaded through the shared sidecar policy in `src/sidecar.ts`: a missing file reads as an empty store, and a corrupt or truncated one is preserved at `<file>.corrupt[N]` and reported rather than reset. |
 | `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES` | `500` | Verdicts retained in the taste feedback store. Past this the oldest are evicted; the number dropped is persisted and reported, so a shrinking store never reads as an empty one. |
 | `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_BYTES` | `1048576` | Size cap for `taste-feedback.json`. Evicts oldest-first until the file fits, so raising `SPOTIFY_MCP_TASTE_FEEDBACK_MAX_ENTRIES` past what the byte cap allows cannot unbound the store. |
+| `STATSFM_USER_ID` | unset (the per-call argument is required) | Default stats.fm user id or customId for the user-scoped stats.fm tools, so you need not pass one on every call. A per-call `user_id` or `statsfm_user` argument always wins. Blank and whitespace-only values count as unset. |
 | `SPOTIFY_MCP_PLAYBACKEXT_FILE` | `~/.spotify-mcp/playback-ext.json` | Playback extension sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE` | `~/.spotify-mcp/exhaust2-playback.json` | Playback helper sidecar. |
 | `SPOTIFY_MCP_EXHAUST2_MISC_FILE` | `~/.spotify-mcp/exhaust2-misc.json` | Miscellaneous helper sidecar. |
@@ -172,6 +173,16 @@ Eviction is oldest-first until all three hold, and the lifetime `recorded` and `
 **The write is atomic.** The store is a single JSON document, so a write that truncated the target in place and died mid-write would lose *every* record rather than one line. Instead: a uniquely named temp file in the same directory, `fsync`, then `rename(2)` over the target. The rename is the only mutation of the real path, so a crash before it leaves the previous store whole. The temp name carries the pid and random bytes because a fixed `<path>.tmp` is a race between concurrent `record_feedback` calls (#1135). A write that fails is **reported** as a failure — a verdict that reads as recorded but is not on disk is the #764 watchlist failure.
 
 `spotify_doctor` reports both stores: the `history` row carries the ledger's sizes, cap and record count, and the taste-feedback row carries the store's path, how many verdicts are retained, and how many the cap has dropped.
+
+### stats.fm identity
+
+stats.fm has no OAuth and no token, so "identity" here is only *which public profile* the user-scoped reads are about. `STATSFM_USER_ID` supplies that default so the same id is not repeated on every call.
+
+The precedence is: **explicit per-call argument > `STATSFM_USER_ID` > error.** The last step is deliberate and is the part worth knowing. The argument used to be strictly required, so the SDK's own validation produced the error when it was missing; making it optional to admit this default removed that guarantee, so each handler now resolves the value through one shared helper that throws naming both ways to supply it (`no stats.fm user id: pass user_id or set STATSFM_USER_ID`). It throws rather than falling back to a placeholder: a guessed id would return a confident, well-formed answer about *somebody else's* public profile, which is a worse failure than a refusal. The spelling follows the tool — the endpoint tools in `statsfm.ts` declare `user_id`, the taste tools and composites declare `statsfm_user`, and the error names whichever one that tool actually declares.
+
+A value that is unset, empty, or only whitespace counts as unset. No other normalization is applied: stats.fm ids and customIds are opaque, and there is no authority in this repository for their canonical spelling, so guessing at one would produce a 404 against a real profile that reads as "no such user".
+
+`spotify_doctor`'s `config` row reports whether the variable is `set` or `unset`, never the value — a doctor report is the kind of output that ends up pasted into an issue.
 
 ### Mutation receipts
 

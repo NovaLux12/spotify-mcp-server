@@ -46,6 +46,7 @@ import {
   __setStatsfmClient,
   statsfmClient,
   statsfmFetchFromPayloadImpl,
+  resolveStatsfmUserId,
 } from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
 import { readOnlyModeEnabled } from './annotations.js';
@@ -78,10 +79,25 @@ export async function statsfmGet<T>(path: string, params?: Record<string, string
 // Shared bits
 // ---------------------------------------------------------------------------
 
+/**
+ * The stats.fm identity argument for the `statsfm_user` spelling (#927).
+ *
+ * The same contract as `userIdSchema()` in `statsfm.ts`, under the other name:
+ * `.optional()` so `STATSFM_USER_ID` can supply the default, with every handler
+ * resolving through `resolveStatsfmUserId` before use. That helper throws a
+ * message naming both ways to supply the id when neither is present, which is
+ * what replaces the SDK's own required-field error that `.optional()` removes.
+ *
+ * Exported because `taste_playlist.ts` declares the same argument and must not
+ * keep a private copy that could drift.
+ */
 export const statsfmUserSchema = z
   .string()
   .min(1)
-  .describe('stats.fm user ID (or username) — public profile, no auth needed');
+  .optional()
+  .describe(
+    'stats.fm user ID (or username) — public profile, no auth. Defaults to STATSFM_USER_ID.',
+  );
 
 /**
  * `range` is the shared stats.fm ranking window (#720) — the same upstream
@@ -265,7 +281,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const day = args.date ?? ymd(Date.now() - 86_400_000);
       const [artistsRaw, tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '20' }),
@@ -322,7 +338,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '100' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -385,7 +401,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [topRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: String(args.top_limit ?? 50) }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -443,7 +459,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const range = args.range ?? 'lifetime';
       const artistsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range, limit: '50' });
       if (args.response_format === 'json') {
@@ -485,7 +501,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [topRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '60' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' }),
@@ -532,7 +548,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const days = args.days ?? 7;
       const [artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '20' }),
@@ -593,7 +609,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [genresRaw, tracksRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/genres`, { range: 'lifetime', limit: '15' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '60' }),
@@ -656,7 +672,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const range = args.range ?? 'lifetime';
       const [artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range, limit: '20' }),
@@ -698,7 +714,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       response_format: ResponseFormat,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const streamsRaw = await statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/streams`, { limit: '500' });
       if (args.response_format === 'json') {
         const raw = { streams: streamsRaw };
@@ -732,7 +748,7 @@ export function registerTasteCompositeTools(server: McpServer, client: SpotifyCl
       max_results: MaxResults,
     },
     async (args) => {
-      const u = args.statsfm_user;
+      const u = resolveStatsfmUserId(args.statsfm_user, 'statsfm_user');
       const [tracksRaw, artistsRaw, streamsRaw] = await Promise.all([
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/tracks`, { range: 'lifetime', limit: '50' }),
         statsfmGet<unknown>(`/users/${encodeURIComponent(u)}/top/artists`, { range: 'lifetime', limit: '30' }),

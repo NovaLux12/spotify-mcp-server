@@ -83,7 +83,7 @@ Every HTTP call funnels through one private path inside `SpotifyClient`:
 
 ## Second upstream: stats.fm (v2 — implemented)
 
-Spotify is the system of record for playback, library, and catalog. stats.fm rides alongside as a **second upstream** for lifetime listening history, cross-range top lists, and taste aggregates. The network-backed `src/tools/statsfm.ts` and `src/tools/statsfm_taste.ts` tools are read-only; the local `statsfm_record_feedback`/`record_feedback` tools write one bounded JSON sidecar (`~/.spotify-mcp/taste-feedback.json`) and touch neither Spotify nor stats.fm. `response_format` is on all 38 `statsfm_*` tools and `max_results` on 20 of them — the aggregate, per-artist and now-playing reads take only `response_format`. Results carry `structuredContent`. Network tools have no `dry_run`, receipts, or history JSONL. Identity is a stats.fm user ID, not OAuth. Full guide: `docs/statsfm.md`.
+Spotify is the system of record for playback, library, and catalog. stats.fm rides alongside as a **second upstream** for lifetime listening history, cross-range top lists, and taste aggregates. The network-backed `src/tools/statsfm.ts` and `src/tools/statsfm_taste.ts` tools are read-only; the local `statsfm_record_feedback`/`record_feedback` tools write one bounded JSON sidecar (`~/.spotify-mcp/taste-feedback.json`) and touch neither Spotify nor stats.fm. `response_format` is on all 38 `statsfm_*` tools and `max_results` on 20 of them; the other 18 are single-object or fixed-shape reads that take `response_format` alone. That set is not just the obvious aggregates — it is every per-entity `*_stats`/`*_date_stats` read, every `statsfm_catalog_*` lookup, `statsfm_search`, `statsfm_resolve_user`, `statsfm_friend_count`, `statsfm_artist_affinity`, `statsfm_exposure_check` and `statsfm_record_feedback`, and it is worth reading the tool schemas rather than inferring membership from a name. Results carry `structuredContent`. Network tools have no `dry_run`, receipts, or history JSONL. Identity is a stats.fm user ID, not OAuth — passed per call as `user_id` or `statsfm_user`, with `STATSFM_USER_ID` supplying a default that an explicit argument overrides. Full guide: `docs/statsfm.md`.
 
 ```mermaid
 flowchart LR
@@ -124,13 +124,13 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 2919 |
 | `src/concurrency.ts` | Bounded-concurrency fan-out for the freshness-radar walks (#783). (0 registered tools) | 169 |
-| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 646 |
+| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 686 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family, classified from Spotify's February 2026 changelog and its endpoint reference pages. (0 registered tools) | 416 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 427 |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 297 |
-| `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 423 |
+| `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | 460 |
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | 1013 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 588 |
@@ -147,7 +147,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 264 |
 | `src/tools/accounts.ts` | `list_accounts` and `switch_account` (#602). (2 registered tools) | 347 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (4 registered tools) | 515 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2575 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 2599 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 953 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
 | `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 334 |
@@ -157,7 +157,7 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/browse.ts` | Runtime module for src/tools/browse.ts. (1 registered tool) | 57 |
 | `src/tools/catalog.ts` | Runtime module for src/tools/catalog.ts. (31 registered tools) | 1692 |
 | `src/tools/confirm.ts` | Elicitation-gated confirmation for destructive playlist operations (#111 item 5). (0 registered tools) | 191 |
-| `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the diagnostic report, as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 1025 |
+| `src/tools/doctortool.ts` | spotify_doctor (#111 idea 9 + #228): the diagnostic report, as an in-server TOOL so MCP agents can self-diagnose the most common failure class — missing/expired tokens, scope gaps between the auth-time grant and the write tools exposed by the active toolsets, Premium gating they cannot introspect, and an active rate-limit cooldown. (1 registered tool) | 1030 |
 | `src/tools/episodemgmt.ts` | episodemgmt (#204, #187, #230): archive_played_episodes. mark_episode_played was removed in #230 — PUT /me/episodes/{id} with resume_point is not a real Spotify endpoint (real endpoint is PUT /me/episodes?ids= to save). The tool swallowed 404s and reported ok:true, which was phantom success. Removed per #85 precedent. (1 registered tool) | 274 |
 | `src/tools/exhaust2_catalog.ts` | exhaust2 catalog slice — feature swarm v1.24.0 (issues #332–#357). (19 registered tools) | 1621 |
 | `src/tools/exhaust2_enggating.ts` | exhaust2 enggating slice -- now a registration placeholder only (#791). (0 registered tools) | 43 |
@@ -198,8 +198,8 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/searchhistory.ts` | searchhistory (#205): search_history + search_rerun (90-day expiry, sidecar). (2 registered tools) | 456 |
 | `src/tools/showradar.ts` | show_new_episodes (#173): new-episode radar across saved podcast shows. (1 registered tool) | 632 |
 | `src/tools/smart.ts` | create_smart_playlist (#172): rule-based playlist generation from the user's OWN listening data — top tracks, recently played, or saved tracks — with optional artist filtering and per-artist uniqueness. (1 registered tool) | 314 |
-| `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API. (30 registered tools) | 1154 |
-| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (16 registered tools) | 1489 |
+| `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API. (30 registered tools) | 1180 |
+| `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (16 registered tools) | 1502 |
 | `src/tools/swarm3_analytics.ts` | swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1415 |
 | `src/tools/swarm3_discovery.ts` | Runtime module for src/tools/swarm3_discovery.ts. (24 registered tools) | 2092 |
 | `src/tools/swarm3_library.ts` | swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools). (24 registered tools) | 1640 |
@@ -211,8 +211,8 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/tools/swarm3_snapshots.ts` | Runtime module for src/tools/swarm3_snapshots.ts. (24 registered tools) | 1684 |
 | `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 1401 |
 | `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 1682 |
-| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 791 |
-| `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 344 |
+| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 807 |
+| `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 345 |
 | `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 457 |
 | `src/tools/users.ts` | Runtime module for src/tools/users.ts. (2 registered tools) | 195 |
 | `src/toolsets.ts` | Toolsets (#95): coarse-grained grouping of registration entry points so an operator can trim the server's exposed surface via `SPOTIFY_MCP_TOOLSETS` (e.g. "playback,library" for a car dashboard, or "catalog,personalization" for a read-only recommender). (0 registered tools) | 237 |

@@ -8,9 +8,9 @@ Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_play
 
 1. **Create a stats.fm account** at [stats.fm](https://stats.fm) and log in.
 2. **Import your Spotify history.** In stats.fm, open Settings → Import, connect Spotify, and request your extended history. Lifetime results are only as complete as that import. `statsfm_streams_stats` reports aggregate totals for the history visible to stats.fm, and `statsfm_recaps` provides per-calendar-year views; neither proves import completeness.
-3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. Most user-scoped endpoint tools take it as a required `user_id`; the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take it as a required `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works. Which one a given tool takes is a property of its schema, not of its name — the `taste_*` wave-2 composites below take `statsfm_user`, and `taste_shift_report` / `taste_checkpoint` read Spotify's own top lists and take no identity argument at all.
+3. **Find your stats.fm user ID.** Open your profile page and copy the `<id>` out of the `stats.fm/user/<id>` URL. It is a string, not a number — the tool schema's own example is the handle `"martijn"`. Most user-scoped endpoint tools take it as `user_id`; the seven network-backed taste tools in `src/tools/statsfm_taste.ts` take it as `statsfm_user`. Both parameters accept a stats.fm user id or a customId, so either form works. Which one a given tool takes is a property of its schema, not of its name — the `taste_*` wave-2 composites below take `statsfm_user`, and `taste_shift_report` / `taste_checkpoint` read Spotify's own top lists and take no identity argument at all.
 
-There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). User-scoped calls pass identity explicitly on every call; there is no `STATSFM_USER_ID` setting. Catalog searches and catalog-entity lookups do not require an identity argument.
+There is no stats.fm OAuth dance: public profile data needs no token. Private profiles need the profile owner's cooperation (see [Privacy](#privacy)). To stop repeating the id on every call, set `STATSFM_USER_ID` to it — an explicit per-call argument always wins, and with the variable unset the argument is required exactly as it was before. With neither, the call fails naming both ways to supply the id; it never guesses one, because a guess would return a well-formed answer about the wrong public profile. See [stats.fm identity](configuration.md#statsfm-identity). Catalog searches and catalog-entity lookups do not require an identity argument.
 
 ## Taste-tool naming
 
@@ -121,7 +121,7 @@ The singular spellings `week` and `month` are not accepted. stats.fm rejects the
 - **stats.fm ≠ Spotify counts.** Totals come from stats.fm's stream log, not Spotify's API — expect mismatches against `listening_report` or Spotify Wrapped. Different counters, different windows.
 - **Genres are stats.fm's own taxonomy.** `statsfm_top_genres` labels come from stats.fm, not Spotify. Use them as search seeds, not Spotify genre IDs.
 - **Clock buckets are UTC in the taste tools.** Exact-hour claims depend on the timestamps returned by stats.fm.
-- **Identity is per call.** User-scoped endpoint tools require `user_id`; network-backed taste tools require `statsfm_user`. Catalog search and entity-lookup tools need no user identity. No stats.fm identity environment variable is read.
+- **Identity is per call by default.** User-scoped endpoint tools take `user_id`; network-backed taste tools take `statsfm_user`. Setting `STATSFM_USER_ID` supplies the default for both, but an explicit per-call argument always wins and, with neither, the call fails rather than assuming a profile. Catalog search and entity-lookup tools need no user identity either way.
 
 ## See also
 
