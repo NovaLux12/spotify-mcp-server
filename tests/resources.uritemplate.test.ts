@@ -55,6 +55,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { UriTemplate } from '@modelcontextprotocol/sdk/shared/uriTemplate.js';
 import { Rfc6570UriTemplate } from '../src/resources/uritemplate.js';
 
@@ -301,10 +302,15 @@ describe('Rfc6570UriTemplate — head expressions immediately before the trailin
     // PINNED AS CURRENT BEHAVIOUR, and it is wrong. `[^/,]+` matches `?` and
     // `=`, and there is nothing in the head for the regex to backtrack against,
     // so `?format=json` is swallowed whole. The SDK's fully anchored pattern
-    // backtracks and answers correctly. Six shipped patterns end in `{id}`
-    // (`album`, `artist`, `audiobook`, `chapter`, `episode`, `show`, `track`),
-    // so this shape is live — but every registered callback takes a `URL` and
-    // re-parses `href`, so no renderer reads this value and routing is intact.
+    // backtracks and answers correctly.
+    //
+    // How many shipped patterns this reaches is NOT counted here — the next
+    // test derives it from `templates.ts`, because a hand-written number in a
+    // comment is a claim that decays the moment a template is added. An earlier
+    // draft of this comment said "six" and then listed seven names.
+    //
+    // Every registered callback takes a `URL` and re-parses `href`, so no
+    // renderer reads this value and routing is intact today.
     const tpl = ours(BARE_ID);
     assert.deepEqual(tpl.match('spotify://artist/xyz?format=json'), { id: 'xyz?format=json' });
     assert.deepEqual(sdk(BARE_ID, 'spotify://artist/xyz?format=json'), { id: 'xyz', format: 'json' });
@@ -326,5 +332,38 @@ describe('Rfc6570UriTemplate — head expressions immediately before the trailin
       id: ['a', 'b'],
       format: 'json',
     });
+  });
+
+  it('reaches every shipped pattern whose head is a bare {id}', () => {
+    // The blast radius, derived rather than asserted. `registerTemplate`
+    // composes `${pattern}{?${query.join(',')}}`, so a pattern ENDING in
+    // `{id}` composes to exactly the failing shape — the head is immediately
+    // followed by the trailing operator, with no literal to backtrack against.
+    //
+    // Reading the patterns out of `templates.ts` rather than listing them here
+    // is the point: a list in a test is a list that goes stale, and this one
+    // already had. The first draft of the sibling comment said "six" and named
+    // seven patterns, missing `playlist` — the actual number is whatever this
+    // returns, and a new bare-`{id}` template joins the failing set with no
+    // edit here at all.
+    const src = readFileSync(new URL('../src/resources/templates.ts', import.meta.url), 'utf8');
+    const bare = [...src.matchAll(/'(spotify:\/\/[a-z-]+\/\{id\})'/g)].map((m) => m[1]!);
+
+    assert.ok(bare.length > 0, 'templates.ts must still register bare-{id} patterns for this to mean anything');
+    // Sorted so a failure names what changed rather than what moved.
+    for (const pattern of [...bare].sort()) {
+      const composed = `${pattern}{?format}`;
+      const uri = `${pattern.replace('{id}', 'xyz')}?format=json`;
+      assert.deepEqual(
+        ours(composed).match(uri),
+        { id: 'xyz?format=json' },
+        `${pattern}: the head absorbs the query`,
+      );
+      assert.deepEqual(
+        sdk(composed, uri),
+        { id: 'xyz', format: 'json' },
+        `${pattern}: and the SDK disagrees, so this is our bug and not a shared reading`,
+      );
+    }
   });
 });
