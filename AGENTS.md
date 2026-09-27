@@ -220,6 +220,7 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 | `npm run count:tools -- --write` | Refreshes the generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
+| `node scripts/check-doc-tool-counts.mjs` | Fails if a registry-scale tool count (100+, measured) appears in a hand-written `src/` comment or in document prose. Has no npm script — `tests/doc-figures.test.ts` drives it, so CI runs it. `--census-file <path>` reuses a census; `--root <dir>` points it at a copy of the tree. |
 | `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
 | `node --import tsx/esm scripts/check-doc-links.mjs` | Fails if a relative Markdown link names a missing file or a missing heading, or if the graceful-403 message points at a README section that does not exist (#931). CI runs this. Remote URLs are out of scope by design — a flaky network check is worse than none. `--check-fixture <dir>` runs the same collector over a scratch tree, which is how `tests/doc-links.test.ts` proves the gate rejects rather than assumes. |
 | `npm run dev` | Runs the server from source against `.env` if present. |
@@ -227,6 +228,16 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 
 Both doc gates accept `--census-file <path>` so CI generates the census once and
 feeds the same JSON to both. Do not run them independently in a loop.
+
+**A tool count belongs in a generated block, or nowhere.** The count that
+appears in a `.ts` comment or in prose is a claim about a tree nobody pinned,
+and it goes stale on the next tool that lands. A comment that genuinely needs
+one — a raise warrant, a dated measurement — records what it measured and when,
+and `scripts/check-doc-tool-counts.mjs` allowlists that one line by line. A
+present-tense claim — "N tools today", "the escape hatch for an N-tool surface"
+— gets its number deleted, not refreshed: the sentence usually does not need it.
+Writing the number into this rule would trip the rule, which is the intended
+outcome.
 
 ### Generated blocks vs hand-maintained baselines
 
