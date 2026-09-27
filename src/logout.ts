@@ -290,6 +290,20 @@ export interface StorePathsOptions {
 }
 
 /**
+ * The one environment a run is against.
+ *
+ * Both halves of `logout` have to agree on it, and they used to disagree: the
+ * store paths were resolved from a caller-supplied `env` while the
+ * home-directory refusal in {@link planErasure} fell back to `os.homedir()`,
+ * the *process* home. One resolution, handed to both (#1358).
+ */
+export function resolveStoreEnv(options: StorePathsOptions = {}): NodeJS.ProcessEnv {
+  return options.profile && options.profile.length > 0
+    ? { ...(options.env ?? process.env), SPOTIFY_MCP_PROFILE: options.profile }
+    : (options.env ?? process.env);
+}
+
+/**
  * Resolve every store for an environment.
  *
  * The token resolver is `resolveTokenFile` — config.ts is the authority for the
@@ -303,10 +317,7 @@ export interface StorePathsOptions {
  */
 export function localStorePaths(options: StorePathsOptions = {}): LocalStore[] {
   const cwd = options.cwd ?? process.cwd();
-  const env =
-    options.profile && options.profile.length > 0
-      ? { ...(options.env ?? process.env), SPOTIFY_MCP_PROFILE: options.profile }
-      : (options.env ?? process.env);
+  const env = resolveStoreEnv(options);
 
   return STORE_DEFINITIONS.flatMap((def) => {
     const paths = (def.expand ? def.expand(env) : [def.resolve(env)]).map((p) => resolve(p));
@@ -334,8 +345,42 @@ export type EraseDecision =
 
 export interface PlanOptions {
   home?: string;
+  /**
+   * The environment the stores were resolved from — the same object
+   * {@link localStorePaths} was handed.
+   *
+   * `home` alone is not the whole story, and leaving it to be the whole story
+   * is the bug this closes (#1358). A store path comes from one of two places:
+   * an explicit `SPOTIFY_MCP_*` override, which is relative to *this*
+   * environment's `HOME`, or a module default, which falls through to
+   * `os.homedir()` and therefore to the *process* home. A caller that supplied
+   * an env had the first kind redirected and the second kind checked against a
+   * root it never named, so a store that resolved to the home it had declared
+   * was approved for erasure.
+   */
+  env?: NodeJS.ProcessEnv;
   /** `--keep-backups`: the backup library is user data, not session state. */
   keepBackups?: boolean;
+}
+
+/**
+ * Every home this run's store paths could sit at, resolved once.
+ *
+ * A store is refused if it is any of them, so supplying an `env` can only make
+ * the guard stricter. Replacing the process home with the declared one instead
+ * would be a loosening: the stores with no override of their own still resolve
+ * through `os.homedir()`, and those are exactly the ones the process-home check
+ * was written for.
+ */
+function eraseGuardHomes(options: PlanOptions): string[] {
+  const candidates = [homedir(), options.env?.HOME, options.home];
+  return [
+    ...new Set(
+      candidates
+        .filter((home): home is string => typeof home === 'string' && home.length > 0)
+        .map((home) => resolve(home)),
+    ),
+  ];
 }
 
 /**
@@ -348,7 +393,7 @@ export async function planErasure(
   stores: LocalStore[],
   options: PlanOptions = {},
 ): Promise<EraseDecision[]> {
-  const home = options.home ?? homedir();
+  const homes = eraseGuardHomes(options);
   const decisions: (EraseDecision | null)[] = [];
   // Real path per store, needed by the containment check below even for stores
   // that turn out to be absent.
@@ -408,7 +453,7 @@ export async function planErasure(
     // Belt-and-braces. A misconfigured env var can point a store at a directory
     // that has no business being erased, and none of the above would catch it
     // because the path would be inside its own root by construction.
-    const refusal = dangerousEraseTarget(pathReal, rootReal, home);
+    const refusal = dangerousEraseTarget(pathReal, rootReal, homes);
     if (refusal) {
       decisions.push({ store, action: 'refuse', reason: refusal });
       continue;
@@ -464,9 +509,13 @@ export async function planErasure(
 }
 
 /** True when the resolved path is one that must never be erased, whatever the store says. */
-function dangerousEraseTarget(pathReal: string, rootReal: string, home: string): string | null {
+function dangerousEraseTarget(
+  pathReal: string,
+  rootReal: string,
+  homes: readonly string[],
+): string | null {
   if (pathReal === parse(pathReal).root) return 'is a filesystem root';
-  if (pathReal === resolve(home)) return 'is the home directory';
+  if (homes.includes(pathReal)) return 'is the home directory';
   if (pathReal !== rootReal && isInsideRoot(pathReal, rootReal)) {
     return `is an ancestor of its own store directory ${rootReal}`;
   }
@@ -922,19 +971,22 @@ export async function runLogout(
   }
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  // Resolved once and handed to both halves. This used to be passed only to the
+  // store paths, so a caller-supplied `HOME` redirected where the stores were
+  // read from while the home-directory refusal in `planErasure` still ran
+  // against `os.homedir()` — and a store resolving to the home the caller had
+  // declared was approved for erasure (#1358). The profile override is already
+  // folded in here, so `localStorePaths` needs nothing else.
+  const env = resolveStoreEnv({ env: options.env, profile: opts.profile });
   let stores: LocalStore[];
   try {
-    stores = localStorePaths({
-      env: options.env,
-      cwd: options.cwd,
-      profile: opts.profile,
-    });
+    stores = localStorePaths({ env, cwd: options.cwd });
   } catch (err) {
     io.write(`Cannot resolve the Spotify profile: ${(err as Error).message}\n`);
     return 2;
   }
 
-  const decisions = await planErasure(stores, { keepBackups: opts.keepBackups });
+  const decisions = await planErasure(stores, { keepBackups: opts.keepBackups, env });
   const outcomes: EraseOutcome[] = [];
 
   if (opts.dryRun) {
