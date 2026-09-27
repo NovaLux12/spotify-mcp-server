@@ -696,9 +696,18 @@ describe('tool surface: budget', () => {
     for (const module of REGISTRAR_MANIFEST) {
       const names = moduleToolNames(server, module.key);
       const measured = names.reduce((sum, name) => sum + serializedSchemaBytes(registry[name] ?? {}, name), 0);
+      // This is the same payload the census's `serializedFinalizedSchemaBytes`
+      // builds, so the two implementations are cross-checked here rather than
+      // trusted. `outputSchema` is included because the boundary emits it (#1376);
+      // leaving it out of this side would make the assertion pass for a
+      // measurement that is wrong in the same way the census was.
       const wire = names.reduce((sum, name) => {
-        const tool = wireByName.get(name);
-        return sum + Buffer.byteLength(JSON.stringify({ description: tool?.description ?? '', inputSchema: tool?.inputSchema ?? {} }), 'utf8');
+        const tool = wireByName.get(name) as { description?: string; inputSchema?: unknown; outputSchema?: unknown } | undefined;
+        return sum + Buffer.byteLength(JSON.stringify({
+          description: tool?.description ?? '',
+          inputSchema: tool?.inputSchema ?? {},
+          ...(tool?.outputSchema === undefined ? null : { outputSchema: tool.outputSchema }),
+        }), 'utf8');
       }, 0);
       assert.equal(measured, wire, `${module.key} schema bytes must match tools/list wire payload`);
     }

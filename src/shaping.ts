@@ -27,6 +27,50 @@ export function finalInputSchema(input: unknown): Record<string, unknown> {
   return schema;
 }
 
+/**
+ * Exact output schema projected onto the production tools/list boundary (#1376).
+ *
+ * `undefined` for a tool that declares none, which is the case for every tool
+ * on the current tree. The schema budget reads this, so a tool that declares
+ * an `outputSchema` is charged for the bytes it puts on the wire.
+ *
+ * The two callers — the tools/list boundary and the budget measurement — both
+ * call THIS, rather than each repeating the SDK's normalize/convert pair. That
+ * is the whole point: a measurement that reconstructs the payload by its own
+ * route is a second implementation of the wire format, and the two drift the
+ * first time either moves. The budget then reports a confident number about a
+ * payload nobody sends.
+ *
+ * Deliberately NOT symmetric with `finalInputSchema`, and the asymmetry is
+ * recorded rather than smoothed over:
+ *   - `$schema` survives here and is deleted for inputs. Output schemas are
+ *     new to the surface (#687 was declined), so there is no shipped wire
+ *     shape to preserve — but deleting the key is a *change to what hosts
+ *     receive*, which is a different change from measuring what they already
+ *     receive. On the current tree it is 52B per declaring tool, so it is
+ *     worth doing deliberately rather than folding into a measurement fix.
+ *
+ * `additionalProperties` is likewise not forced here, but the reason to
+ * expect it anyway is worth writing down, because it is the trap for whoever
+ * declares a schema next: the SDK's zod→JSON-Schema conversion emits
+ * `additionalProperties: false` for a `z.object()` on its own. A published
+ * output schema is therefore CLOSED, while the runtime `safeParseAsync` in
+ * `validateOutput` is LENIENT — it strips unknown keys and passes. The two
+ * disagree in the direction that hides things: a host validating against the
+ * published schema would reject the endpoint-specific extras these payloads
+ * really carry (`scanned`, `counts`, `degraded_reason`, `response_cap`,
+ * `partial_write_failure`), while the server's own check would not notice.
+ * Measured, not inferred. This change makes the bytes visible; it does not
+ * make the shapes agree, and that is #687's problem to solve on the day
+ * something declares a schema.
+ */
+export function finalOutputSchema(output: unknown): Record<string, unknown> | undefined {
+  if (!output) return undefined;
+  const objectSchema = normalizeObjectSchema(output as Parameters<typeof normalizeObjectSchema>[0]);
+  if (!objectSchema) return undefined;
+  return toJsonSchemaCompat(objectSchema, { pipeStrategy: 'output' });
+}
+
 // ---------------------------------------------------------------------------
 // Shared zod fragments (#51/#53/#57)
 // ---------------------------------------------------------------------------
