@@ -284,11 +284,77 @@ describe('the CLI doctor reports the flag (#611)', () => {
       assert.match(
         out,
         /^\s*readonly\s+yes$/m,
-        `doctor misreported SPOTIFY_MCP_READONLY=${JSON.stringify(raw)} as off`,
+        `doctor misreported SPOTIFY_MCP_READONLY=${JSON.stringify(raw)} as off. Output was:\n${out}`,
       );
     }
   });
 
+});
+
+describe('the doctor assertions carry the output they assert on (#1334)', () => {
+  /**
+   * Every `assert.match` over the doctor's stdout in the block above asserts
+   * against a value it just captured. When such an assertion fails, the only
+   * evidence available is its message, so the message has to carry that value.
+   *
+   * One of the three omitted it: the message named the flag spelling that was
+   * misreported and nothing else, which cannot distinguish a missing row, a
+   * wrong row, and truncated stdout. The fix is an interpolation; this test is
+   * what stops it being reverted by a well-meaning edit.
+   */
+  function doctorAssertions(text: string): { found: string[]; missing: string[] } {
+    // Anchored on the describe title, not a line number: line numbers move with
+    // every edit above, and a check that silently misses is worse than none.
+    const anchor = "describe('the CLI doctor reports the flag (#611)'";
+    const start = text.indexOf(anchor);
+    assert.notEqual(start, -1, 'the doctor describe block must still exist in this file');
+    const rest = text.slice(start + anchor.length);
+    const end = rest.indexOf('\ndescribe(');
+    const block = rest.slice(0, end === -1 ? undefined : end);
+    const found = [...block.matchAll(/assert\.match\(\s*out,\s*\/[^\n]*?\/[gimsuy]*\s*,\s*`([^`]*)`/g)]
+      .map((m) => m[1]!);
+    return { found, missing: found.filter((m) => !/\$\{out\}/.test(m)) };
+  }
+
+  it('names the captured output in every doctor failure message', () => {
+    const { found, missing } = doctorAssertions(
+      readFileSync(path.join(ROOT, 'tests/config-readonly.test.ts'), 'utf8'),
+    );
+    // Without a floor, a broken extractor yields `missing: []` and this passes
+    // for the wrong reason — a scan that found nothing is not a clean scan.
+    assert.ok(found.length >= 3, `only ${found.length} doctor assertions found — the extractor is too narrow`);
+    assert.deepEqual(
+      missing,
+      [],
+      'every doctor assertion must interpolate the output it asserts on into its message, '
+        + 'or a failure leaves no evidence of what was printed. Messages missing it: '
+        + missing.join(' | '),
+    );
+  });
+
+  it('goes red on an assertion that omits the output (the check can fail)', () => {
+    // The assertion above is a source scan, so it is worth proving the scan
+    // discriminates: same shape as the real block, with one message stripped.
+    const doctorAssertion = (message: string) => `describe('the CLI doctor reports the flag (#611)', () => {
+      const out = runDoctor({});
+      assert.match(
+        out,
+        /^\\s*readonly\\s+yes$/m,
+        \`${message}\`,
+      );
+    });`;
+    const stripped = doctorAssertion('doctor misreported SPOTIFY_MCP_READONLY="ON" as off');
+    assert.deepEqual(
+      doctorAssertions(stripped).missing,
+      ['doctor misreported SPOTIFY_MCP_READONLY="ON" as off'],
+      'a message without the output must be reported as missing, or the guard above cannot fail',
+    );
+    assert.deepEqual(
+      doctorAssertions(doctorAssertion('as off. Output was:\\n${out}')).missing,
+      [],
+      'the same message WITH the output must pass, or the guard rejects the fix too',
+    );
+  });
 });
 
 describe('no second copy of the flag can come back (#611 acceptance)', () => {
