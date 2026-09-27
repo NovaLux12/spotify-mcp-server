@@ -1830,7 +1830,16 @@ export class SpotifyClient {
     // will attempt another refresh instead of sending a dead token.
     const expiresIn = Number.isFinite(data.expires_in) ? data.expires_in : 0;
 
+    // Spread the previous token object (#1559). This literal used to name only
+    // the three fields below, so every OTHER field was dropped on each
+    // refresh — `scope` above all, which the token endpoint does not echo, so
+    // nothing downstream could repopulate it. A token file that had a scope
+    // lost it within the hour, and `moduleBlockedByScopes` fails open on an
+    // empty set (scopefilter.ts:61): scope-aware tool hiding would silently
+    // stop hiding anything for the rest of the session. The named fields
+    // after the spread still win, so the refresh's own values are unaffected.
     this.tokens = {
+      ...tokens,
       access_token: data.access_token,
       refresh_token: data.refresh_token ?? tokens.refresh_token,
       expires_at: Date.now() + expiresIn * 1000,

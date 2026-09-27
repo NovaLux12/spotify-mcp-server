@@ -69,7 +69,7 @@ function installStub(): void {
 }
 
 async function seedTokens(
-  overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number }> = {},
+  overrides: Partial<{ access_token: string; refresh_token: string; expires_at: number; scope: string }> = {},
 ): Promise<void> {
   const tokens = {
     access_token: 'tok-initial',
@@ -84,6 +84,7 @@ async function storedTokens(): Promise<{
   access_token: string;
   refresh_token: string;
   expires_at: number;
+  scope?: string;
 }> {
   return JSON.parse(await readFile(tokenPath, 'utf8'));
 }
@@ -347,6 +348,53 @@ describe('refresh resilience (#109)', () => {
     assert.ok(
       stored.expires_at <= Date.now() + 1000,
       `expires_at must be ~now, got ${stored.expires_at}`,
+    );
+  });
+});
+
+describe('a refresh must not drop fields the token endpoint does not echo (#1559)', () => {
+  afterEach(async () => {
+    await rm(tokenPath, { force: true });
+  });
+
+  it('carries `scope` across a real refresh, on disk and in memory', async () => {
+    // The token endpoint never echoes `scope`, so a refresh literal that does
+    // not spread the previous object cannot repopulate it — it can only lose
+    // it. Seed a token that HAS one and drive a genuine refresh.
+    //
+    // Asserting on loadTokens alone is what let this ship: it proves a scope
+    // already on disk survives being READ, which was never the failing path.
+    // The failing path is the WRITE the refresh performs, so that is what this
+    // asserts on.
+    const granted = 'user-read-email playlist-modify-public';
+    await seedTokens({ expires_at: Date.now() - 1000, scope: granted });
+    calls = [];
+    responder = (url) => {
+      if (isAccountsUrl(url)) {
+        // Note the absent `scope` — that is the real token endpoint's shape.
+        return jsonResponse({ access_token: 'tok-refreshed', expires_in: 3600 });
+      }
+      return jsonResponse({ ok: true });
+    };
+    installStub();
+
+    const client = new SpotifyClient();
+    await client.get<{ ok: boolean }>('/me');
+
+    // The refresh really happened; otherwise this asserts nothing.
+    assert.equal(
+      calls.filter((c) => isAccountsUrl(c.url)).length,
+      1,
+      `the expired token must actually have been refreshed; calls: ${JSON.stringify(calls.map((c) => c.url))}`,
+    );
+
+    const stored = await storedTokens();
+    assert.equal(stored.access_token, 'tok-refreshed', 'the refresh did land');
+    assert.equal(
+      stored.scope,
+      granted,
+      `the refresh dropped \`scope\` from the persisted token (stored ${JSON.stringify(stored)}). ` +
+        'scopefilter.ts fails open on an empty scope set, so this silently disables scope-aware tool hiding.',
     );
   });
 });
