@@ -749,13 +749,27 @@ Seek to a position in the current track.
 ---
 
 #### `set_volume`
-Set playback volume.
+Set, nudge, mute, unmute, or preset playback volume. One tool for the whole
+family (#848); the retired names forward to it with the flags that made them
+themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `volume_percent` | number | yes | 0–100 |
-| `device_id` | string | no | |
+| `op` | `"level"` \| `"mute"` \| `"unmute"` \| `"preset"` | no | Variant. `"level"` (default) sets or copies a level, the others map to the former `mute`/`unmute`/`room_level`/`apply_device_presets` names |
+| `volume_percent` | number | no | Absolute level 0–100. Mutually exclusive with `delta_step` |
+| `delta_step` | number | no | Signed nudge, e.g. +10 or -10, clamped to 0–100. Mutually exclusive with `volume_percent` |
+| `device_id` | string | no | Device ID for a single-device write (default: the active device) |
+| `device_ids` | string[] | no | For `op` `"level"` with `volume_percent`: fan out to these device ids or names. Mutually exclusive with `all_devices` |
+| `all_devices` | boolean | no | For `op` `"level"` with `volume_percent`: set every volume-capable device |
+| `exclude_device_id` | string | no | For `op` `"level"` with no `volume_percent`: leave this device untouched while levelling the rest |
+| `dry_run` | boolean | no | Preview only; default false |
+
+Nothing in the schema is required: a request that carries no volume input at
+all is refused at runtime, before any request is spent, naming the fields that
+would satisfy it. A field that is meaningless for the chosen `op` — `op:
+"mute"` with a `volume_percent`, say — is refused the same way rather than
+silently ignored.
 
 ---
 
@@ -830,13 +844,25 @@ List available Spotify Connect devices.
 ---
 
 #### `transfer_playback`
-Move playback to a different device.
+Move playback to a different device, and optionally carry state across with it.
+One tool for the whole family (#848); the retired names forward to it with the
+flags that made them themselves.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `device_id` | string | yes | Target device ID |
-| `play` | boolean | no | Force play immediately (default: maintain current state) |
+| `device` | string | yes | Target device: exact id, sidecar label, or case-insensitive name substring |
+| `play` | boolean | no | Force play (true) or arrive paused (false); omit to preserve the current play state |
+| `preserve_position` | boolean | no | Resume the current track at its current position on the target instead of restarting it (default: false) |
+| `restore_shuffle_repeat` | boolean | no | Re-apply the current shuffle and repeat modes on the target (default: false) |
+| `volume` | number | no | Volume to set on the target after transfer, 0–100 |
+| `device_id` | string | no | DEPRECATED: use `device`. Removed in v2.2 |
+| `dry_run` | boolean | no | Preview only; default false |
+
+Name resolution is one resolver (`matchDevice` in `src/playbackstores.ts`) with
+a fixed precedence: exact id, then a sidecar label, then a case-insensitive name
+substring. It returns no match rather than guessing the first device, so an
+unknown name is refused with the list of real ones.
 
 ---
 
