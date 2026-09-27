@@ -279,6 +279,23 @@ export function auditClassification(tools, options = {}) {
   // toolset, a scoped install) would fail on it for no safety reason.
   const warnings = reviewedNotRegistered.map((name) => `${name}: REVIEWED_READS entry for a tool that is not registered`);
 
+  // #1347: the census of what failing closed actually costs. A MUTATING tool
+  // is only ever called when it is allowlisted AND its schema declares
+  // `dry_run`, so a registry write with no commit path is a tool this harness
+  // can never call — not "not called this run", NEVER. Those are the tools
+  // whose coverage a reader of the sweep report would otherwise assume it has.
+  //
+  // Derived here from the same verdicts everything else uses, and never a
+  // hand-kept list: a name added to the registry, or a tool that grows a
+  // `dry_run`, moves itself off this list without anyone editing it. That is
+  // the property that makes it a measurement rather than a second table to
+  // forget — the failure #1347 is about is a gate that reports green while
+  // measuring nothing, and a hand-typed roster of the gaps is exactly the kind
+  // of thing that goes stale while still looking authoritative.
+  const uncalledRegistryWrites = names
+    .filter((n) => verdicts.get(n).class === MUTATING && !verdicts.get(n).declaresDryRun)
+    .sort();
+
   return {
     total: names.length,
     mutating: mutating.length,
@@ -292,6 +309,8 @@ export function auditClassification(tools, options = {}) {
     reviewedButNotReadOnly,
     reviewedNotRegistered,
     writeClassifiedSafe,
+    uncalledRegistryWrites,
+    uncalledRegistryWriteCount: uncalledRegistryWrites.length,
     verdicts,
     errors,
     warnings,
@@ -598,9 +617,18 @@ export function renderProofLines(proof) {
 
 /** The per-run classification census, rendered. */
 export function renderAuditLines(audit) {
+  const gaps = audit.uncalledRegistryWrites ?? [];
   return [
     `classification audit: ${audit.mutating} MUTATING / ${audit.safe} SAFE / ${audit.reviewedReadCount} REVIEWED_READS (of ${audit.total} registered; ${audit.dryRunDeclared} declare dry_run)`,
     ...audit.reviewedReads.map((name) => `  REVIEWED_READS ${name}`),
     ...audit.unreviewedDryRunReads.map((name) => `  dry_run-declaring tool classified SAFE: ${name}`),
+    // #1347. Named on every run, and counted, so "the sweep covered X" is
+    // never read as "the sweep covered everything registered". The count is
+    // the length of the measured list, not a literal that can drift from it.
+    ...(gaps.length
+      ? [
+        `uncalled registry writes: ${gaps.length} registered tool(s) are writes with no dry_run, so this harness can never call them — coverage this report does NOT claim: ${gaps.join(', ')}`,
+      ]
+      : ['uncalled registry writes: 0']),
   ];
 }

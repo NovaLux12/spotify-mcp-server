@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 602,686B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 68,654B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 18,314B | 2.9% of the enforced limit |
+| Measured `tools/list` payload | 602,722B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 68,690B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 18,278B | 2.9% of the enforced limit |
 
-Headroom is **18,314B** of the 621,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
+Headroom is **18,278B** of the 621,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a

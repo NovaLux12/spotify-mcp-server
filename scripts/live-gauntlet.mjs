@@ -219,13 +219,14 @@ function record(name, cls, status, ms, extra = {}) {
 // `auditRecipeTables` fails the run if this table names a tool that no longer
 // registers, and reports (without failing) if it names a tool the registry
 // calls a write — because such a recipe can never run, and leaving it in place
-// is how the read path came to cover mutating tools. `library_genre_report`,
-// `filter_by_genre` and `library_hygiene` are genuine read-only reports whose
-// names carry no read verb, so the registry advertises them as writes; under
-// the fail-closed classification they moved to MUTATING_ARGS, where the
-// allowlist and the dry-run gate govern them. Fixing that is an OVERRIDES
-// question in src/tools/annotations.ts, not a judgement call for this harness —
-// and MUTATING_ARGS records what it costs until it is fixed.
+// is how the read path came to cover mutating tools. `library_genre_report`
+// and `filter_by_genre` were among them: genuine read-only reports whose names
+// carry no read verb, so the registry advertised them as writes and #1336's
+// fail-closed classification moved them to MUTATING_ARGS. #1347 fixed that at
+// the source — OVERRIDES rows in src/tools/annotations.ts — and their recipes
+// are back here. `library_hygiene` is the same shape and is still gated; it is
+// named in the per-run `uncalled registry writes` line rather than left to be
+// inferred from its absence.
 const SAFE_ARGS = {
   get_me: () => ({}),
   search: () => ({ query: 'radiohead', types: ['artist'], limit: 3 }),
@@ -293,6 +294,14 @@ const SAFE_ARGS = {
   spotify_doctor: () => ({}),
   // receipts (#112 idea 11)
   verify_receipt: () => 'needs a receipt id from a prior mutation; skip in safe sweep',
+  // #1347: these two are SAFE on the registry now (OVERRIDES readOnlyHint in
+  // src/tools/annotations.ts), and a classification change alone does not bring
+  // them back — the SAFE path looks the recipe up HERE, so a SAFE tool with no
+  // row is still recorded as a skip, just with a different reason. The recipes
+  // moved out of MUTATING_ARGS, where they had been unreachable since #1336
+  // classified these two names MUTATING.
+  library_genre_report: () => ({ max_results: 5 }),
+  filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
 };
 
 // Chained after get_audiobook: chapters feed get_chapter / get_several_chapters.
@@ -313,18 +322,37 @@ audiobookBuilders();
 // them is under the same dry-run gate as every other write. A recipe that
 // returns a string is a recorded skip carrying that reason.
 //
-// COVERAGE NOTE, and the honest cost of failing closed: five of the moved
-// recipes — `library_genre_report`, `filter_by_genre`, `save_scene`,
-// `delete_scene`, `cancel_wind_down` — declare no `dry_run`, so the gate will
-// skip them permanently and the sweep loses the coverage it had on the read
-// path. Every one of them is a read or a LOCAL sidecar write
-// (libraryinsights.ts reports; scenes.ts writes a JSON file next to the sweep
-// report; `cancel_wind_down` disarms a timer this harness never arms), so the
-// coverage is recoverable — but only by fixing the registry, which is not this
-// file's to change. They need OVERRIDES rows in src/tools/annotations.ts, the
+// COVERAGE NOTE, and the honest cost of failing closed. Three of the recipes
+// that moved here in #643 — `save_scene`, `delete_scene`, `cancel_wind_down` —
+// declare no `dry_run`, so the gate can never call them: a MUTATING tool is
+// only called when it is allowlisted AND its schema declares a commit path.
+// They are not a coverage regression, and this is why that matters.
+//
+// #1336 moved them off the read path, but their recipes have returned a SKIP
+// STRING since 1.30.1 — the SAFE path records a string recipe as a skip, not a
+// call. The sweep was already skipping them before #1336 and skipped them
+// after it. The coverage they appear to have lost was never coverage.
+//
+// The other two #1347 named — `library_genre_report`, `filter_by_genre` — were
+// different, and are now genuinely called again: their recipes returned real
+// arguments, so the sweep really did exercise them, and #1336 stopped it. They
+// are fixed at the source, by OVERRIDES rows in src/tools/annotations.ts, the
 // same table that already carries `playlist_staleness_report` and
-// `backup_library`. Until then the skip is reported on every run rather than
-// hidden, which is the whole point of #643.
+// `backup_library`, plus the recipes above.
+//
+// The three remaining are left gated deliberately, not by oversight:
+//   - `save_scene` / `delete_scene` write and delete the user's real
+//     `~/.spotify-mcp/scenes.json`. This harness spawns the server WITHOUT a
+//     HOME override (see the `spawn` below), so calling them would read and
+//     overwrite the developer's actual saved scenes — `delete_scene` on a name
+//     the sweep invented, against a file the sweep did not create.
+//   - `cancel_wind_down` clears the in-process ramp, and its recipe has never
+//     had a wind-down to clear; the harness arms none.
+// Reclassifying any of them read-only to satisfy the gate would be a false
+// annotation to every MCP host, not just to this script: all three write.
+// `classifyTool` reports this set by name on every run — see the
+// `uncalled registry writes` line in the classification audit — so the gap is
+// visible rather than silent, which is the whole point of #643.
 const MUTATING_ARGS = {
   whats_new: () => ({ kinds: ['albums'], since: '2026-01-01', max_results: 5, max_artists: 1 }),
   merge_playlists: () => seed.playlistId ? { sources: seed.playlistIds ?? [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME' } : 'no playlist in seeds',
@@ -353,8 +381,11 @@ const MUTATING_ARGS = {
   grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
   overlap_playlists: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlists: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
   start_podcast_session: () => ({ minutes: 30 }),
-  library_genre_report: () => ({ max_results: 5 }),
-  filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
+  // #1347: library_genre_report and filter_by_genre used to sit here and are
+  // now in SAFE_ARGS, where they are reachable again. Left in both tables they
+  // would be a recipe naming a tool the registry calls a read, which
+  // `auditRecipeTables` reports — and a dead row is how a tool looks covered
+  // while nothing calls it.
   library_hygiene: () => ({ max_results: 3 }),
   jump_to_chapter: () => 'mutating adjacent — requires device; covered by list_all_chapters instead',
   apply_scene: () => 'needs a saved scene; covered by list_scenes/save_scene instead',
@@ -615,6 +646,11 @@ const report = {
     safe: audit.safe,
     dry_run_declared: audit.dryRunDeclared,
     reviewed_reads: audit.reviewedReads,
+    // #1347: the tools this sweep structurally cannot call, measured from the
+    // registry rather than declared by hand. A reader of this report can now
+    // see which registered tools its coverage does not include.
+    uncalled_registry_writes: audit.uncalledRegistryWrites,
+    uncalled_registry_write_count: audit.uncalledRegistryWriteCount,
   },
   mutation_proof: {
     status: proof.status,
