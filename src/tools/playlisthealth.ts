@@ -351,14 +351,52 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       try { const m = raw.match(/playlist\/([a-zA-Z0-9]+)/); if(m) playlistId = m[1]; const m2 = raw.match(/spotify:playlist:([a-zA-Z0-9]+)/); if(m2) playlistId = m2[1]; } catch {}
       const encId = encodeURIComponent(playlistId);
       const itemsPath = `/playlists/${encId}/items`;
-      const items = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+      // #1311: this walk had no probe budget, so it could not tell "the
+      // playlist has exactly `fetchAllCap` items" from "I stopped at
+      // `fetchAllCap`" — and `verification: 'verified'` below means "I re-read
+      // the live playlist and it is clean", which is a claim about the WHOLE
+      // playlist. `cap + 1` is the same probe #1310's rewrite family uses: one
+      // row past the cap is the only way to see the row that overflows it.
+      const cap = getConfig().fetchAllCap;
+      const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: cap + 1 });
+      const items = walk.items.slice(0, cap);
+      // The walk's own verdict OR the clip applied above — `items.length` alone
+      // cannot see a walk that ended on a short page while Spotify's own
+      // `total` still counted more rows (#718/#864).
+      const truncated = walk.truncated || walk.items.length > cap;
+      const unreadFrom = items.length;
       const unavailable: Array<{ position: number }> = [];
       for (let i = 0; i < items.length; i++) {
         const item = items[i]?.item;
         if (item === null || item === undefined) unavailable.push({ position: i });
       }
       if (unavailable.length === 0) {
-        return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { ok: true, playlist_id: playlistId, total: items.length, unavailable_count: 0, removed: 0, removed_positions: [], verification: 'verified' });
+        // #1311: the all-clear. Issuing it over a truncated walk is the false
+        // claim this issue is filed on — the tool read the first `cap` rows,
+        // found them clean, and reported the playlist clean. So the verdict
+        // here is bounded by what was read, and it NAMES the unread region:
+        // an unavailable row past position `unreadFrom` is invisible here and
+        // still sitting in the playlist.
+        if (truncated) {
+          return textResult(
+            `No unavailable items in the first ${unreadFrom} row(s) of playlist ${playlistId}, but the walk stopped at the fetch-all cap of ${cap} row(s) — rows from 0-based position ${unreadFrom} onward were not read, so the playlist is NOT verified clean and unavailable rows past the cap may still be present. Raise SPOTIFY_MCP_FETCH_ALL_CAP above this playlist's row count and re-run.`,
+            {
+              ok: false,
+              reason: 'walk_truncated',
+              playlist_id: playlistId,
+              total: items.length,
+              rows_read: unreadFrom,
+              scan_cap: cap,
+              truncated: true,
+              unread_from_position: unreadFrom,
+              unavailable_count: 0,
+              removed: 0,
+              removed_positions: [],
+              verification: 'partial',
+            },
+          );
+        }
+        return textResult(`No unavailable items in playlist ${playlistId} (${items.length} tracks).`, { ok: true, playlist_id: playlistId, total: items.length, rows_read: unreadFrom, scan_cap: cap, truncated: false, unavailable_count: 0, removed: 0, removed_positions: [], verification: 'verified' });
       }
       const toRemove = unavailable.slice(0, args.max_removals ?? unavailable.length);
       // Validate every target before the first write. Unavailable rows have no
@@ -371,12 +409,21 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       }
       const positions = toRemove.map((row) => row.position);
       if (args.dry_run) {
-        return textResult(`[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${positions.join(', ')}.`, { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, removed_positions: positions, verification: 'dry_run' });
+        return textResult(
+          `[dry run] Would remove ${toRemove.length} unavailable item(s) from playlist ${playlistId} at positions ${positions.join(', ')}.`
+            + (truncated ? ` The walk stopped at the fetch-all cap of ${cap} row(s), so this removal set is incomplete — rows from 0-based position ${unreadFrom} onward were not read.` : ''),
+          { ok: true, dry_run: true, playlist_id: playlistId, would_remove: toRemove.length, removed_positions: positions, verification: 'dry_run', truncated, scan_cap: cap, rows_read: unreadFrom, ...(truncated ? { unread_from_position: unreadFrom } : {}) },
+        );
       }
       if (toRemove.length >= REMOVE_ELICIT_THRESHOLD) {
         const verdict = await confirmViaElicitation(server, {
           message: describeConfirmation('remove unavailable rows from playlist', playlistId, [
             `Remove ${toRemove.length} unavailable row(s) at positions ${positions.join(', ')}:`,
+            // #1311: the prompt authorises deleting rows it found by position.
+            // If the walk stopped at the cap, the set is a partial view of the
+            // playlist and a bulk delete over it deserves to say so — the gate
+            // stays exactly as fail-closed as it was, this only adds a line.
+            ...(truncated ? [`The walk stopped at the fetch-all cap of ${cap} row(s); rows from 0-based position ${unreadFrom} onward were not read, so unavailable rows may remain past the cap.`] : []),
           ]),
         });
         const refusal = requiredConfirmationRefusal(verdict);
@@ -391,8 +438,17 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         if (result?.snapshot_id) snapshotId = result.snapshot_id;
       }
       let after: PlaylistItemObject[];
+      let afterTruncated: boolean;
+      let afterRowsRead: number;
       try {
-        after = await client.getAllPages<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+        // #1311: the re-read carries the same `cap + 1` probe. It was the
+        // obvious place to catch an unavailable row the first walk missed, and
+        // it was bounded the same way, so a `verified` verdict here meant "the
+        // first `cap` rows are clean" on a playlist that may be much longer.
+        const rescan = await client.getAllPagesWithTruncation<PlaylistItemObject>(itemsPath, { limit: '100' }, { maxItems: cap + 1 });
+        after = rescan.items.slice(0, cap);
+        afterTruncated = rescan.truncated || rescan.items.length > cap;
+        afterRowsRead = after.length;
       } catch {
         return textResult(`Removal write completed, but post-write verification is unavailable for playlist ${playlistId}.`, {
           ok: false,
@@ -412,9 +468,27 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
         if (item === null || item === undefined) remainingPositions.push(i);
       }
       const removed = unavailable.length - remainingPositions.length;
-      const verified = removed === toRemove.length && remainingPositions.length === 0;
-      const result = { playlist_id: playlistId, removed, removed_positions: positions, remaining_unavailable: remainingPositions.length, remaining_positions: remainingPositions, snapshot_id: snapshotId, verification: verified ? 'verified' : 'failed' };
-      if (!verified) {
+      const readWhole = !truncated && !afterTruncated;
+      const allRemoved = removed === toRemove.length && remainingPositions.length === 0;
+      // Three distinct verdicts, and conflating any two of them is the bug
+      // #1310/#1311 are about:
+      //   verified — the whole playlist was read, before and after, and is clean.
+      //   partial  — a walk stopped at the cap, so the read certifies the rows
+      //              it reached and NOTHING about the rest. Not `failed`: the
+      //              re-read did not find rows it never saw.
+      //   failed   — the whole playlist was read and unavailable rows are still
+      //              there. That is a real negative result, and saying `partial`
+      //              instead would hide a removal that did not take.
+      const verification = readWhole ? (allRemoved ? 'verified' : 'failed') : 'partial';
+      const result = { playlist_id: playlistId, removed, removed_positions: positions, remaining_unavailable: remainingPositions.length, remaining_positions: remainingPositions, snapshot_id: snapshotId, verification, truncated: !readWhole, scan_cap: cap, rows_read: afterRowsRead, ...(!readWhole ? { unread_from_position: afterRowsRead } : {}) };
+      if (verification === 'partial') {
+        const seen = remainingPositions.length;
+        return textResult(
+          `Removed ${removed} unavailable item(s) from playlist ${playlistId}, but the verification is BOUNDED: only ${afterRowsRead} of the playlist's row(s) could be read${afterTruncated ? ' and the walk stopped at the fetch-all cap' : ''}, so rows from 0-based position ${afterRowsRead} onward are UNVERIFIED${seen > 0 ? ` and ${seen} unavailable row(s) seen in that range remain at positions ${remainingPositions.join(', ')}` : ''}. Unavailable rows past the cap may still be present — raise SPOTIFY_MCP_FETCH_ALL_CAP above this playlist's row count and re-run.`,
+          { ok: false, reason: 'walk_truncated', ...result },
+        );
+      }
+      if (verification === 'failed') {
         return textResult(`Post-write verification failed for playlist ${playlistId}: ${remainingPositions.length} unavailable row(s) remain at positions ${remainingPositions.join(', ')}.`, { ok: false, ...result });
       }
       return textResult(`Removed ${removed} unavailable item(s) from playlist ${playlistId}. Remaining unavailable: ${remainingPositions.length}. Snapshot: ${snapshotId ?? 'n/a'}`, { ok: true, ...result });

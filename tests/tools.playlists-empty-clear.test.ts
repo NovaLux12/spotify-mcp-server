@@ -110,6 +110,18 @@ async function makeHarness(options: HarnessOptions = {}): Promise<Harness> {
       }
       return [] as T[];
     },
+    // #1310: the item walk moved from the bare-array `getAllPages` to the
+    // truncation-aware `getAllPagesWithTruncation`, so a hand-rolled client has
+    // to answer it. Delegating to the same `getAllPages` above keeps ONE
+    // answer per path in this harness — a second, subtly different copy is
+    // how a stub starts disagreeing with the code it is standing in for.
+    // Every fixture here is far below the cap, so the verdict is "read whole".
+    async getAllPagesWithTruncation<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
+      const items = await this.getAllPages<T>(path, params);
+      const max = opts?.maxItems ?? items.length;
+      const truncated = items.length > max;
+      return { items: truncated ? items.slice(0, max) : items, truncated, truncatedByCap: truncated, reportedTotal: items.length, pages: 1 };
+    },
     async post<T>(path: string): Promise<T | null> {
       calls.push(`POST ${path}`);
       return { id: 'created', snapshot_id: 'snap-post' } as T;
