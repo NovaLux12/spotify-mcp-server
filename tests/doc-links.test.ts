@@ -147,6 +147,19 @@ describe('relative link resolution', () => {
     assert.deepEqual(findBrokenLinks(source, 'README.md', dir, dir), []);
   });
 
+  it('unwraps an angle-bracket destination, which is how a spaced path is written', async () => {
+    // GitHub accepts `<path with spaces.md>` as a link destination. Capturing the
+    // brackets as part of the path reported a file that exists as missing — a
+    // false RED, which is how a gate gets ignored.
+    const dir = await scratch();
+    await mkdir(join(dir, 'docs'));
+    await writeFile(join(dir, 'docs', 'real.md'), '## Present\n');
+    const source = '- [ok](<docs/real.md>)\n- [gone](<docs/absent.md>)\n';
+    const broken = findBrokenLinks(source, 'README.md', dir, dir);
+    assert.equal(broken.length, 1, `expected only the absent file to be reported, got: ${broken.join('; ')}`);
+    assert.match(broken[0], /absent\.md/);
+  });
+
   it('goes red on a planted broken link and green once it is restored', async () => {
     // The mutation discipline: a link checker that has never rejected anything
     // is decoration. Both directions are driven, so "it passed" means the
