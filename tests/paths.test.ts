@@ -24,6 +24,11 @@
  *
  * Run: node --import tsx --test tests/paths.test.ts
  */
+// Hermetic home (#1274): point HOME at a temp root so a test run cannot
+// write into the real ~/.spotify-mcp. This suite confines its own
+// filesystem work under mkdtemp(os.tmpdir()) as well.
+import './helpers/hermetic.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
