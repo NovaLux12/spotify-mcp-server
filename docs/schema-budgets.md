@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 603,781B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 604,045B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 68,409B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 17,219B | 2.8% of the enforced limit |
+| Headroom | 16,955B | 2.7% of the enforced limit |
 
-Headroom is **17,219B** of the 621,000B enforced limit — 2.8% — so the aggregate budget is **tight**.
+Headroom is **16,955B** of the 621,000B enforced limit — 2.7% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -176,7 +176,7 @@ than maintained.
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
 | receipts | 1 | 626 | 1 | 626 | 2 | 689 |
 | episodemgmt | 1 | 1,053 | 1 | 1,053 | 2 | 1,159 |
-| freshness | 1 | 2,235 | 1 | 2,235 | 2 | 2,459 |
+| freshness | 1 | 2,499 | 1 | 2,499 | 2 | 2,749 |
 | searchdive | 1 | 1,683 | 1 | 1,683 | 2 | 1,852 |
 | searchhistory | 2 | 1,096 | 2 | 1,096 | 3 | 1,206 |
 | browse | 1 | 436 | 1 | 436 | 2 | 480 |

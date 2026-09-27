@@ -1111,7 +1111,35 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // description. It happens to land on the same 2,235 the branch measured
   // before the rebase, but that is a coincidence of this description, not a
   // reason to have skipped the measurement.
-  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2235], { readOnlySafe: true, scopeKey: 'following' }),
+  // TWO issues land on this one module key, and both of them reworded the same
+  // `whats_new` description — so their baselines were never independent and
+  // neither number survived the rebase on its own. `whats_new` IS the freshness
+  // module; there is no separate `whatsnew` entry, and a rebase that treated
+  // these as two modules would silently keep whichever wrote last.
+  //
+  //   #900: 2,043 -> 2,235. The quota sentence said "N followed artists = N+1
+  //   API requests ... each lookup is an API request", which became
+  //   conditionally false when the album lookup became the shared canonical
+  //   probe: a repeat scan inside the cache window spends a probe and no
+  //   request.
+  //   #679: 2,043 -> 2,284. The same sentence stated the wrong arithmetic: the
+  //   walk pages /me/following at 50 per request, so a budget above 50 costs
+  //   MORE than one follow page, and the flat "+1" ignored the podcasts leg.
+  //
+  //   Both corrections are in the merged text, so the baseline is neither
+  //   2,235 nor 2,284: it is measured at 2,499 on the merged tree, against the
+  //   2,459 ceiling the 2,235 baseline would have derived. Re-measured, not
+  //   carried — a stale baseline here sits UNDER its own derived ceiling, so
+  //   no gate would have caught it.
+  //
+  //   Measured by the startup gate's own `serializedSchemaBytes` (the
+  //   authoritative per-module figure — compact JSON of description +
+  //   finalized inputSchema, the payload tools/list serves), which reported
+  //   "freshness ... 1 tools/2499B". Tool count, input schema and output are
+  //   unchanged by either issue; the delta is description text only. Derived
+  //   ceiling: 1 + 1 = 2 tools, ceil(2,499 * 1.1) = 2,749B. No ceiling raised
+  //   above what the measurement warrants.
+  manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2499], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', lazyModule('./searchdive.js', 'registerSearchDeepTool'), [1, 1683], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),
