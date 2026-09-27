@@ -77,6 +77,12 @@ const parameterAllowlist = new Set([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // #839: the local-sidecar corruption contract. SPEC.md and
+  // docs/configuration.md now say what a caller gets when a sidecar exists but
+  // cannot be read — the file and the parse failure, where the bytes were
+  // preserved, and how many searches were dropped while it was unreadable.
+  // All three are structuredContent keys on the reporting tool.
+  'load_error', 'preserved_as', 'refused_writes',
   // StructuredContent keys the walk/disclosure work added and ARCHITECTURE.md
   // now names. Neither is a tool or a parameter; both are what a call reports
   // back about its own result.

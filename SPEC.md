@@ -352,6 +352,26 @@ for (const module of REGISTRAR_MANIFEST) {
 ```
 For errors, throw an `Error` — the SDK converts it to an MCP error response automatically. Do not return error strings inside `content`.
 
+**Local sidecar corruption (#839).** The JSON sidecars under `~/.spotify-mcp` are user data. A file that
+exists but cannot be turned back into a store — an unreadable path, invalid JSON, or a well-formed
+document of the wrong shape — is never reported as an empty store. The shared policy lives in
+`src/sidecar.ts` and applies to every sidecar loader: the original file is left byte-for-byte alone, its
+bytes are copied to `<file>.corrupt` (or `<file>.corrupt.N`, so a second corruption cannot clobber the
+first preserved copy), and a `SidecarUnreadableError` naming the file, the actual parse or read failure,
+and the preserved path is raised. A *missing* file is not corruption — it is a first run, and it yields
+the empty store with no warning.
+
+The **write path refuses.** A writer loads the existing store before writing, so a store that cannot be
+read makes the write unreachable and the user's bytes stay where they are. Overwriting would discard the
+data the preserved copy is the only evidence of, at the path every other tool reads; "append" has no
+meaning for a file that is not valid JSON to append to. The refusal is reported, not swallowed:
+`search_history`, `search_rerun` and `search_history_stats` answer `ok: false` with `error:
+"load_error"`, `load_error` and `preserved_as`, and report `count`/`total` as `null` rather than `0`,
+because zero is a real answer — it is what a first run and an all-expired store return — and reporting
+it for a store that could not be read is a measurement the file does not support. Searches recorded
+while the store was unreadable are dropped, counted, and disclosed as `refused_writes` on the first read
+after the file is repaired; that gap is the one part of the failure the preserved copy cannot recover.
+
 ---
 
 ### 4.0.3 SpotifyClient contract

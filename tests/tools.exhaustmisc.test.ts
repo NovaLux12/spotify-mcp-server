@@ -1,11 +1,12 @@
 import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { registerExhaustMiscTools } from '../src/tools/exhaustmisc.js';
+import { __resetSearchHistoryEpisode } from '../src/tools/searchhistory.js';
 import { initConfig } from '../src/config.js';
 
 function makeClient(overrides: Record<string, unknown> = {}) {
@@ -312,6 +313,34 @@ describe('exhaustmisc — mop-up 10 tools', () => {
     assert.equal(payload.total, 0, 'a missing sidecar must read as zero entries, not as an error');
     assert.deepEqual(payload.top_queries, []);
     assert.match(res.content[0].text, /(?:^|\D)0 searches|no search history/);
+  });
+
+  // #839: read-only here, so nothing is destroyed — but "0 searches" is the
+  // claim the user would act on, and a stats tool is where they go to find
+  // out whether their history survived. Reporting zero for a file that would
+  // not parse is the same coercion as any other unreadable value dressed as a
+  // measurement.
+  it('search_history_stats names the failure instead of reporting 0 searches', async () => {
+    const truncated = JSON.stringify([
+      { id: 'sh_a', query: 'beatles abbey', types: ['track'], timestamp: new Date().toISOString(), top_result_ids: [] },
+    ]).slice(0, 40);
+    await writeFile(historyFile, truncated);
+    try {
+      const res = await searchHistoryStats();
+      const payload = res.structuredContent as Record<string, unknown>;
+      assert.equal(payload.ok, false);
+      assert.equal(payload.error, 'load_error');
+      assert.equal(payload.total, null, 'null, not 0: zero is what an empty store really says');
+      assert.equal(payload.top_queries, null);
+      assert.match(String(payload.load_error), /is not valid JSON/);
+      assert.match(res.content[0].text, /could not be read/);
+      assert.doesNotMatch(res.content[0].text, /0 searches/);
+      assert.equal(await readFile(historyFile, 'utf8'), truncated, 'and the file is still exactly as it was');
+    } finally {
+      __resetSearchHistoryEpisode();
+      await rm(historyFile, { force: true });
+      await rm(`${historyFile}.corrupt`, { force: true });
+    }
   });
 
   it('audiobook_progress counts only scanned chapters and discloses coverage', async () => {

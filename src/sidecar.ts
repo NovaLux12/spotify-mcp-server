@@ -108,23 +108,43 @@ export function preserveUnreadableSidecarSync(file: string): string | null {
   return null;
 }
 
+export interface LoadSidecarOptions {
+  /**
+   * A copy this process already made for the corruption currently on disk, or
+   * `null` when a previous attempt already failed to make one. Suppresses a
+   * *second copy* and nothing else: the read is still attempted, so the verdict
+   * always describes the file as it is right now. A loader on a hot path needs
+   * this — search history is loaded by every search, and without it one corrupt
+   * file leaves one identical `.corrupt.N` per call, fifty of them before the
+   * helper gives up. Omit it (the default) to preserve on every failure.
+   */
+  alreadyPreserved?: string | null;
+}
+
 /**
  * Read + parse + validate a JSON sidecar, preserving the bytes before throwing
  * on any read/parse/validation failure. ENOENT returns the empty value from
- * `makeEmpty`. Every other failure throws a `SidecarUnreadableError` with
- * `path`, `reason`, and `preservedAs` populated.
+ * `makeEmpty` — a first run, not a corruption. Every other failure throws a
+ * `SidecarUnreadableError` with `path`, `reason`, and `preservedAs` populated.
  */
 export async function loadSidecar<T>(
   file: string,
   makeEmpty: () => T,
   validate: (parsed: unknown) => T,
+  options: LoadSidecarOptions = {},
 ): Promise<T> {
+  // `undefined` means "no prior attempt to reuse" — only an explicit null (a
+  // prior attempt that could not copy) suppresses a fresh one.
+  const preserve = (): Promise<string | null> =>
+    options.alreadyPreserved !== undefined
+      ? Promise.resolve(options.alreadyPreserved as string | null)
+      : preserveUnreadableSidecar(file);
   let text: string;
   try {
     text = await readFile(file, 'utf8');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return makeEmpty();
-    const preserved = await preserveUnreadableSidecar(file);
+    const preserved = await preserve();
     throw new SidecarUnreadableError(
       file,
       `read failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`,
@@ -135,7 +155,7 @@ export async function loadSidecar<T>(
   try {
     parsed = JSON.parse(text);
   } catch (err) {
-    const preserved = await preserveUnreadableSidecar(file);
+    const preserved = await preserve();
     throw new SidecarUnreadableError(
       file,
       `is not valid JSON: ${(err as Error).message}`,
@@ -146,7 +166,7 @@ export async function loadSidecar<T>(
     return validate(parsed);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const preserved = await preserveUnreadableSidecar(file);
+    const preserved = await preserve();
     throw new SidecarUnreadableError(file, msg, preserved);
   }
 }

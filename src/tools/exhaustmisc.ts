@@ -190,18 +190,31 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const rf = args.response_format as ResponseFormatValue | undefined;
       const n = args.top_n ?? 10;
-      // Reuse searchhistory sidecar path
-      const { searchHistoryFile } = await import('./searchhistory.js');
-      const file = searchHistoryFile();
-      let entries: Array<{ query: string; types?: string[]; timestamp: string }> = [];
-      try {
-        const { readFile } = await import('node:fs/promises');
-        const raw = await readFile(file, 'utf8');
-        entries = JSON.parse(raw) as typeof entries;
-        if (!Array.isArray(entries)) entries = [];
-      } catch {
-        entries = [];
+      // #839: this is a read-only rollup, so nothing is at risk here — but
+      // reporting `0 searches` because the file would not parse is the same
+      // lie the store's own loader used to tell, and a stats tool is exactly
+      // where a user goes to find out whether their history is intact. The
+      // shared loader names the file and the failure instead.
+      const { readSearchHistory } = await import('./searchhistory.js');
+      const read = await readSearchHistory();
+      if (read.load_error) {
+        const structured: Record<string, unknown> = {
+          ok: false,
+          error: 'load_error',
+          load_error: read.load_error,
+          preserved_as: read.preserved_as ?? null,
+          // Not a measurement this file supports — see the readers in
+          // searchhistory.ts, which draw the same line.
+          total: null,
+          top_queries: null,
+          type_breakdown: null,
+          recent: null,
+        };
+        const prose = `Search history stats are unavailable — the store could not be read.\n${read.load_error}`;
+        if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
+        return textResult(prose, structured);
       }
+      const entries: Array<{ query: string; types?: string[]; timestamp: string }> = read.entries;
       const total = entries.length;
       const byQuery = new Map<string, number>();
       const byType = new Map<string, number>();
