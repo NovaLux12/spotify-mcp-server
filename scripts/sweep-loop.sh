@@ -20,8 +20,13 @@
 #
 # Concurrency: one loop at a time per report directory, enforced with a
 # .sweep-loop.lock directory holding the owner's pid. A second invocation
-# refuses to start; a lock whose owner is gone is reclaimed. The lock and the
-# staging file are released by traps on every exit path.
+# refuses to start; a lock whose owner is gone is reclaimed, and so is one that
+# names no owner at all — the shape a loop killed between creating the lock and
+# recording its pid leaves behind. The reclaim waits briefly for a losing
+# competitor to name itself first, so "no owner" means wreckage rather than a
+# loop that is mid-acquire. The lock and the staging file are released by traps
+# on every exit path, including a signal, which is honoured at once even during
+# the inter-batch pause.
 #
 # Exit codes:
 #   0  every registered tool is recorded (SWEEP_COMPLETE)
@@ -133,16 +138,46 @@ mkdir -p -- "$REPORT_DIR"
 LOCK="${REPORT_DIR%/}/.sweep-loop.lock"
 LOCK_HELD=0
 lock_owner=unknown
+# How long a lock that names nobody is given to name somebody before it is
+# treated as wreckage. The acquire window being waited out is a mkdir and a
+# write — microseconds — so this is orders of magnitude of headroom, and it is
+# the only thing standing between a crash artefact and reclaiming a live loop.
+LOCK_OWNER_GRACE_SECONDS=2
+
+# The pid a lock claims, or a non-zero return when it claims none. Both halves
+# of the write are needed: a lock left by a loop killed between the mkdir and
+# the write has no pid file, and one interrupted mid-write has a truncated one.
+lock_owner_pid() {
+  local raw=''
+  if [[ -f $LOCK/pid ]]; then raw=$(cat -- "$LOCK/pid" 2>/dev/null || true); fi
+  [[ $raw =~ ^[0-9]+$ ]] || return 1
+  printf '%s' "$raw"
+}
 
 acquire_lock() {
   if mkdir -- "$LOCK" 2>/dev/null; then
     printf '%s\n' "$$" >"$LOCK/pid"
     return 0
   fi
-  local owner=''
-  if [[ -f $LOCK/pid ]]; then owner=$(cat -- "$LOCK/pid" 2>/dev/null || true); fi
-  if [[ $owner =~ ^[0-9]+$ ]] && ! kill -0 "$owner" 2>/dev/null; then
-    printf 'sweep-loop: reclaiming the lock left by dead pid %s\n' "$owner" >&2
+
+  # A competitor that won this mkdir writes its pid a moment later, so a lock
+  # naming nobody is not yet proof of a crash. Give it the grace period to
+  # identify itself before concluding the lock is wreckage.
+  local owner='' waited=0
+  while :; do
+    if owner=$(lock_owner_pid); then break; fi
+    (( waited < LOCK_OWNER_GRACE_SECONDS )) || break
+    sleep 1
+    waited=$(( waited + 1 ))
+  done
+
+  if [[ -z $owner ]] || ! kill -0 "$owner" 2>/dev/null; then
+    if [[ -n $owner ]]; then
+      printf 'sweep-loop: reclaiming the lock left by dead pid %s\n' "$owner" >&2
+    else
+      printf 'sweep-loop: reclaiming %s — it names no owner, which is what a killed loop leaves behind\n' \
+        "$LOCK" >&2
+    fi
     rm -rf -- "$LOCK"
     if mkdir -- "$LOCK" 2>/dev/null; then
       printf '%s\n' "$$" >"$LOCK/pid"
@@ -150,8 +185,7 @@ acquire_lock() {
     fi
     # Lost the reclaim race: a live loop is holding the lock now, so the pid
     # read before the rm is stale and must not be the one reported.
-    owner=''
-    if [[ -f $LOCK/pid ]]; then owner=$(cat -- "$LOCK/pid" 2>/dev/null || true); fi
+    owner=$(lock_owner_pid || true)
   fi
   if [[ $owner =~ ^[0-9]+$ ]]; then lock_owner=$owner; fi
   return 1
@@ -166,19 +200,49 @@ LOCK_HELD=1
 
 WORKDIR=$(mktemp -d)
 STAGED=''
+SLEEPER_PID=''
 
+# Every step is `|| true`. This runs under `set -e`, where one failing rm used
+# to abort the function partway: the lock stayed on disk — outliving the run
+# that leaked it, which is the failure the lock exists to prevent — and the
+# script's exit status was replaced by the rm's, so a finished sweep reported
+# itself as a failure. Releasing the lock is the last thing this does and it
+# does it whatever the earlier steps did.
 cleanup() {
   local code=$?
-  if [[ -n $STAGED && -e $STAGED ]]; then rm -f -- "$STAGED"; fi
-  rm -rf -- "$WORKDIR"
+  if [[ -n $STAGED ]] && [[ -e $STAGED ]]; then rm -f -- "$STAGED" || true; fi
+  rm -rf -- "$WORKDIR" || true
   if (( LOCK_HELD == 1 )) && [[ $(cat -- "$LOCK/pid" 2>/dev/null || true) == "$$" ]]; then
-    rm -rf -- "$LOCK"
+    rm -rf -- "$LOCK" || true
   fi
   return "$code"
 }
+
+on_signal() {
+  local what=$1 code=$2
+  # A pause puts its sleep in the background; SIGKILL cannot be trapped, so
+  # without this an operator's escalating kill chain leaves the sleep behind.
+  if [[ -n $SLEEPER_PID ]]; then kill "$SLEEPER_PID" 2>/dev/null || true; fi
+  printf 'sweep-loop: %s — the report was left at its last complete batch\n' "$what" >&2
+  exit "$code"
+}
+
+# The inter-batch pause runs its sleep as a background job and waits on that.
+# bash services a trap only between commands, so a foreground `sleep` was not
+# interruptible: a signal landing during a pause waited the pause out — up to
+# INTERVAL seconds, or twice that after a quota wall — and the only way out was
+# kill -9, which runs no trap either and so leaked the lock.
+pause() {
+  local secs=$1
+  sleep "$secs" &
+  SLEEPER_PID=$!
+  wait "$SLEEPER_PID" || true
+  SLEEPER_PID=''
+}
+
 trap cleanup EXIT
-trap 'printf "sweep-loop: interrupted — the report was left at its last complete batch\n" >&2; exit 130' INT
-trap 'printf "sweep-loop: terminated — the report was left at its last complete batch\n" >&2; exit 143' TERM
+trap 'on_signal interrupted 130' INT
+trap 'on_signal terminated 143' TERM
 
 # ---- batches -----------------------------------------------------------
 hard_failures=0
@@ -269,7 +333,7 @@ for i in $(seq 1 "$MAX_BATCHES"); do
   fi
 
   if (( i < MAX_BATCHES )); then
-    sleep "$WAIT"
+    pause "$WAIT"
   fi
 done
 

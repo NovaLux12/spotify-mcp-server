@@ -118,13 +118,16 @@ type StubCall = { run: number; batch?: string; resume?: string; report?: string;
 
 type Run = { status: number | null; output: string; invocations: StubCall[] };
 
+/** A loop still in flight: its pid, its output so far, and how it ended. */
+type Running = { pid: number; output(): string; done: Promise<Run> };
+
 type Sandbox = {
   dir: string;
   report: string;
   lock: string;
   invocations(): StubCall[];
   run(env?: Record<string, string>): Run;
-  start(env?: Record<string, string>): { done: Promise<Run> };
+  start(env?: Record<string, string>): Running;
   /**
    * Puts an executable named `name` earlier in PATH and returns the PATH to
    * run the loop with, so a test can observe how a real tool was called
@@ -158,14 +161,14 @@ function sandbox(plan: StubStep[]): Sandbox {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as StubCall);
 
-  const collect = (child: ChildProcessWithoutNullStreams): Promise<Run> => {
+  const collect = (child: ChildProcessWithoutNullStreams): { output(): string; done: Promise<Run> } => {
     const { promise, resolve, reject } = Promise.withResolvers<Run>();
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += String(chunk); });
-    child.stderr.on('data', (chunk) => { output += String(chunk); });
+    let seen = '';
+    child.stdout.on('data', (chunk) => { seen += String(chunk); });
+    child.stderr.on('data', (chunk) => { seen += String(chunk); });
     child.on('error', reject);
-    child.on('close', (status) => resolve({ status, output, invocations: invocations() }));
-    return promise;
+    child.on('close', (status) => resolve({ status, output: seen, invocations: invocations() }));
+    return { output: () => seen, done: promise };
   };
 
   const run = (env: Record<string, string> = {}): Run => {
@@ -185,13 +188,21 @@ function sandbox(plan: StubStep[]): Sandbox {
     lock,
     invocations,
     run,
-    start: (env = {}) => ({
-      done: collect(spawn('bash', ['scripts/sweep-loop.sh'], {
+    start: (env = {}) => {
+      const child = spawn('bash', ['scripts/sweep-loop.sh'], {
         cwd: dir,
         encoding: 'utf8',
         env: { ...process.env, ...baseEnv, ...env },
-      })),
-    }),
+        // Its own process group, so a signal test can signal the loop alone but
+        // still clean up after it. A loop that ignores a signal has to be
+        // SIGKILLed, and SIGKILL cannot reach the `sleep` it left running: that
+        // orphan keeps the inherited stdout pipe open, and this test file would
+        // hang on teardown instead of reporting a failure.
+        detached: true,
+      });
+      assert.equal(typeof child.pid, 'number', 'the loop must be startable so its pid can be signalled');
+      return { pid: child.pid!, ...collect(child) };
+    },
     shim: (name, body) => {
       const bin = join(dir, 'shim-bin');
       mkdirSync(bin, { recursive: true });
@@ -222,6 +233,43 @@ async function until(predicate: () => boolean, timeoutMs = 10_000): Promise<void
 function seedReport(box: Sandbox, marker: string): void {
   mkdirSync(join(box.dir, 'memory'), { recursive: true });
   writeFileSync(box.report, JSON.stringify({ marker }, null, 2) + '\n');
+}
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
+/**
+ * Waits for a signalled process to go away, and says so if it does not.
+ *
+ * The point of the signal tests is that the loop *stops promptly*, so the wait
+ * is bounded well under the pause it is being interrupted from. A loop that
+ * ignores the signal is killed and the assertion fails on that, rather than
+ * being left behind to outlive the test run.
+ */
+async function waitForExit(pid: number, timeoutMs = 8_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!alive(pid)) return true;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 25);
+    await promise;
+  }
+  // The group, not just the pid: see the `detached` note on Sandbox.start. The
+  // negative group signal reaps the sleep the loop left behind, so this test
+  // fails with a message rather than hanging on an inherited pipe.
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch { /* no group left, or already gone */ }
+  try {
+    process.kill(pid, 'SIGKILL');
+  } catch { /* already gone */ }
+  return false;
 }
 
 function markerOf(report: string): string {
@@ -618,6 +666,122 @@ describe('sweep-loop.sh guard (#656)', () => {
       statSync(box.report).mode & 0o777,
       0o644,
       'mktemp creates 0600 and the rename keeps it, which would narrow the tracked report to its owner',
+    );
+  });
+
+  it('reclaims a lock that names no owner, which is what a crash between mkdir and the pid write leaves', () => {
+    // `mkdir "$LOCK"` and the write of the pid into it are two syscalls, so a
+    // loop killed in between leaves a lock directory that owns nothing. Nothing
+    // in it matches ^[0-9]+$, so the dead-owner test had no pid to test and no
+    // path to reclaim on: the lock was unreclaimable for ever, and every later
+    // run refused with "pid unknown" until an operator removed it by hand. A
+    // lock that outlives the loop that leaked it is the one failure mode the
+    // lock exists to prevent.
+    for (const damage of [
+      { label: 'no pid file at all', write: () => {} },
+      { label: 'an empty pid file', write: (lock: string) => writeFileSync(join(lock, 'pid'), '') },
+      { label: 'a pid file holding two pids', write: (lock: string) => writeFileSync(join(lock, 'pid'), '4194304\n41\n') },
+      { label: 'a pid file holding something that is not a pid', write: (lock: string) => writeFileSync(join(lock, 'pid'), 'not-a-pid\n') },
+    ]) {
+      const box = sandbox(['normal']);
+      mkdirSync(box.lock, { recursive: true });
+      damage.write(box.lock);
+
+      const result = box.run();
+
+      assert.match(result.output, /reclaiming .*\.sweep-loop\.lock/, `${damage.label}: ${result.output}`);
+      assert.equal(result.invocations.length, 1, `${damage.label}: the sweep has to actually run\n${result.output}`);
+      assert.equal(result.status, 3, `${damage.label}: ${result.output}`);
+    }
+  });
+
+  it('respects a lock whose owner identifies itself just after the mkdir, so the reclaim wait is not a hole', () => {
+    // The fix above has to tell two locks apart: wreckage, and a competing loop
+    // that won the mkdir microseconds ago and has not written its pid yet. The
+    // second is a live loop, so reclaiming it would run two sweeps against one
+    // report — the exact interleaving the lock exists to prevent. This is the
+    // guard on that distinction.
+    const box = sandbox(['normal']);
+    mkdirSync(box.lock, { recursive: true });
+    const latecomer = spawn(
+      'bash',
+      ['-c', `sleep 0.5\nprintf '%s\\n' "${process.pid}" > "$1/pid"`, 'bash', box.lock],
+      { stdio: 'ignore' },
+    );
+
+    try {
+      const result = box.run();
+
+      assert.equal(result.status, 4, result.output);
+      assert.match(
+        result.output,
+        new RegExp(`another sweep loop \\(pid ${process.pid}\\) already holds`),
+        `the owner that did name itself has to be the pid reported, not "unknown":\n${result.output}`,
+      );
+      assert.deepEqual(result.invocations, [], 'a refused loop must not drive a gauntlet');
+    } finally {
+      latecomer.kill();
+    }
+  });
+
+  it('releases the lock and keeps its exit code when a cleanup step fails', () => {
+    // cleanup() runs under `set -e`, so a single failing `rm` used to abort the
+    // function with the lock still on disk — the artefact outliving the run
+    // that leaked it — and with the script's exit status replaced by the rm's.
+    // The SWEEP_COMPLETE path is the one that leaves a staging file behind for
+    // cleanup to deal with, so that is where the failure is staged.
+    const box = sandbox(['complete']);
+    const shim = box.shim('rm', [
+      'target=""',
+      'for a in "$@"; do target=$a; done',
+      'if [[ $target == *.tmp.* ]]; then echo "rm: cannot remove \'$target\': Permission denied" >&2; exit 1; fi',
+      'exec rm "$@"',
+    ].join('\n'));
+
+    const result = box.run({ PATH: shim });
+
+    assert.equal(
+      result.status,
+      0,
+      `a completed sweep is 0 whatever the cleanup had to do; a failing rm must not relabel it:\n${result.output}`,
+    );
+    assert.equal(
+      existsSync(box.lock),
+      false,
+      'the lock has to be released even when an earlier cleanup step fails',
+    );
+  });
+
+  it('honours a signal during the inter-batch pause instead of waiting the pause out', async () => {
+    // bash services a trap only between commands, so a foreground `sleep` made
+    // a signal land whenever the pause happened to end — up to INTERVAL seconds
+    // away, and twice that after a quota wall. The operator's only way out was
+    // kill -9, which cannot run a trap either and so leaves the lock behind.
+    const box = sandbox(['normal']);
+    const child = box.start({ INTERVAL: '3600', MAX_BATCHES: '5' });
+
+    // The line is printed immediately before the pause begins, so it is the
+    // point at which the loop is provably in a 3600s sleep.
+    await until(() => /sleeping 3600s before next batch/.test(child.output()));
+    assert.ok(alive(child.pid), 'the loop must still be paused, not already past it');
+
+    const ended = Date.now();
+    process.kill(child.pid, 'SIGTERM');
+    const stopped = await waitForExit(child.pid);
+    const elapsed = Date.now() - ended;
+
+    assert.ok(stopped, `the loop ignored SIGTERM for ${elapsed}ms of a 3600s pause`);
+    const result = await child.done;
+    assert.equal(result.status, 143, result.output);
+    assert.match(result.output, /terminated/, result.output);
+    assert.equal(
+      existsSync(box.lock),
+      false,
+      'a signalled loop must still release the lock, or the next run refuses for ever',
+    );
+    assert.ok(
+      elapsed < 5_000,
+      `a signalled loop stopped in ${elapsed}ms, which is not "at once" — the pause is still blocking the trap`,
     );
   });
 });
