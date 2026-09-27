@@ -44,6 +44,7 @@ import type {
   SpotifyEpisode,
 } from '../types/spotify.js';
 import { textResult, jsonText } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 interface ExportRow {
   uri: string;
@@ -231,7 +232,7 @@ export function registerExportTools(server: McpServer, client: SpotifyClient): v
     'export_playlist',
     "Export a playlist's full item list as an M3U playlist file or a CSV spreadsheet. Pages every item; pass output_path to write a file (created with mode 0600) inside the configured output root, or omit it to get the document inline. CSV cells are formula-safe.",
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       format: z
         .enum(['m3u', 'csv'])
         .default('m3u')

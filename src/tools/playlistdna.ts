@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
+import { spotifyRef } from '../refs.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -208,7 +209,7 @@ export function registerPlaylistDnaTools(server: McpServer, client: SpotifyClien
     'grow_playlist',
     'Propose tracks to grow one of your playlists using ONLY your own listening data (no recommendations): finds tracks appearing in >=2 of your OTHER playlists, boosts ones sharing an artist with the target playlist, excludes tracks already in it (and optionally your saved library), and returns top candidates with evidence. Read-only: review the proposals, then call add_to_playlist with the URIs you want.',
     {
-      playlist_id: z.string().min(1).describe('Target playlist ID to grow'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Target playlist ID to grow'), 'playlist'),
       size: z
         .number()
         .int()

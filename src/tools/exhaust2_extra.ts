@@ -30,6 +30,7 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
 import { positionSchema } from '../positionbase.js';
 import { emit } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // local shaping helpers (slice-convention: self-contained)
@@ -409,7 +410,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
     'playlist_fill_from_search',
     'Grow a playlist to N items from search queries you supply: round-robin one pick per query per pass, first unseen track match wins, pages each query in Spotify-compliant 10-result requests, then performs chunked adds. Complements listening-data grow_playlist. Quota: one or more 10-result search pages per query + chunked adds, after a capped pre-read of the current items; a capped pre-read reports existing_truncated and an unknown resulting length.',
     {
-      playlist_id: z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to grow (ID or spotify:playlist: URI)'), 'playlist'),
       // #899: the bound is a READ-COST ceiling — one `/search` page walk per
       // query — so the rejection names that rather than a bare item count. A
       // CSV string normalises through the same bound, so it cannot carry a
@@ -638,7 +639,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
     'playlist_cover_from_track',
     'Set the playlist cover from a track album art: pick by position in the playlist, pass any track URI, or default to the first track with art. Fetches the image (largest JPEG candidate ≤ 256 KB) and PUTs /playlists/{id}/images. Quota: GET + PUT (+1 image fetch, disclosed).',
     {
-      playlist_id: z.string().describe('Playlist to re-cover (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to re-cover (ID or spotify:playlist: URI)'), 'playlist'),
       track_uri: z.string().optional().describe('Any track (spotify:track: URI or bare ID) whose album art to use. Overrides position'),
       position: positionSchema('zero', 'Playlist position of the track to source art from', { optional: true }),
       response_format: ResponseFormat,

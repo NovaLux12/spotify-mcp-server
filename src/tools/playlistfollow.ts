@@ -47,6 +47,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+import { spotifyRef } from '../refs.js';
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
@@ -106,7 +107,7 @@ function rejectInvisibleFlag(name: string, value: unknown): void {
 }
 
 const followSchema = {
-  playlist_id: z.string().describe('Playlist ID to follow'),
+  playlist_id: spotifyRef(z.string().describe('Playlist ID to follow'), 'playlist'),
   public: z
     .boolean()
     .optional()
@@ -116,7 +117,7 @@ const followSchema = {
 } as const;
 
 const unfollowSchema = {
-  playlist_id: z.string().describe('Playlist ID to unfollow'),
+  playlist_id: spotifyRef(z.string().describe('Playlist ID to unfollow'), 'playlist'),
   dry_run: DryRun,
   response_format: ResponseFormat,
 } as const;

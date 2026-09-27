@@ -15,6 +15,7 @@ import { graceful403Message, isRemovedEndpointFailure } from '../gating.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from './catalog.js';
 import type { SpotifyPaged, SpotifyTrack } from '../types/spotify.js';
 import { textResult, emit } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 interface QueueFailure {
   uri: string;
@@ -267,7 +268,7 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
     'Capture the current playback queue as a durable playlist. Reads GET /me/player/queue, creates (or appends to) a playlist, adds URIs in batches of 100 preserving order. Handles mixed track/episode URIs.',
     {
       name: z.string().optional().describe('Name for the new playlist (required when creating; omit when target_playlist_id is given)'),
-      target_playlist_id: z.string().optional().describe('Existing playlist ID to append to (alternative to name — when given, URIs are appended to this playlist)'),
+      target_playlist_id: spotifyRef(z.string().optional().describe('Existing playlist ID to append to (alternative to name — when given, URIs are appended to this playlist)'), 'playlist'),
       description: z.string().optional().describe('Playlist description (when creating a new playlist)'),
       include_current: z.boolean().default(true).describe('Include the currently-playing track/episode as the first item (default true)'),
       include_episodes: z.boolean().default(true).describe('Include episodes in the saved playlist (default true — set false for tracks only)'),

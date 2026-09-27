@@ -2264,6 +2264,24 @@ Six local, zero-network tools that parse and canonicalise references using the *
 
 The other `spotify:`-shaped patterns in `src/` are not a second parser: `src/resources/index.ts` matches a *resource address* (`spotify://playlist/<id>/tracks`) to route a host read, which is a different namespace from an entity reference, and prompt text quotes reference syntax in prose.
 
+#### What an entity-id parameter accepts (#914)
+
+Every entity-id parameter in the tool surface — `playlist_id`, `artist_id`, `album_id`, `track_id`, `show_id`, `episode_id`, `audiobook_id`, their `*_ids` array forms, and a tool's bare `id` where the tool reads one kind — takes **the same four reference forms** the table above describes, and normalises them to the bare id before the value reaches a request path. A caller that learned "URIs work" from one module no longer gets a URL-encoded URI in a path from another: before this, `get_artist_genres({artist_id: 'spotify:artist:…'})` sent `GET /artists/spotify%3Aartist%3A…` and the 404 read as a missing artist.
+
+The normaliser is **tolerant, not strict**, and the difference is the contract:
+
+| | `spotifyId(kind)` (strict) | `spotifyRef(schema, kind)` (tolerant) |
+|---|---|---|
+| `spotify:playlist:…`, share URL, `spotify://…`, bare id | → bare id | → bare id |
+| A string it cannot classify (`pl1`, `My Playlist`) | **400**, naming the rule | **passed through unchanged** |
+| Wrong kind (`spotify:track:` for a playlist parameter) | 400 | passed through, so the 404 names what was sent |
+
+So a malformed id is still Spotify's `404` and not a schema `400`, exactly as before this change. A wrong-kind reference is deliberately *not* reduced to its bare id: that would turn "you named the wrong kind" into "that playlist does not exist", which is the class of defect this normalisation removes.
+
+A parameter that is genuinely not a Spotify entity reference keeps a plain schema, and the gate names each one with a reason. The four that are id-shaped but not entity references: `receipt_lookup.id` (a receipt id minted by this server), `format_spotify_uri.id` (**the validity oracle itself** — it must accept text that is not a valid reference in order to report `valid: false`), `get_chapter.id` (a chapter is not one of the eight kinds and has no shareable URI, so there is no reference form to normalise), and `check_following_artists.ids` (already normalised in the handler with `allowShortIds`, which hoisting into the schema would drop). Device, snapshot, session, receipt, mutation, history, bookmark and category ids are exempt by name for the same reason.
+
+`tests/schema.refs.test.ts` is the guarantee, in both directions: it fails when an id-shaped parameter is declared without a resolver, and it fails when an exemption names a parameter that no longer exists or that has since been migrated. The emitted JSON Schema is byte-identical to the un-wrapped form, so none of this moved a per-module schema budget.
+
 ### 5.15 Mood expansion (`expand_mood_to_queries`, #598)
 
 One tool in the `moodexpand` module. It is `alwaysActive` (registration key `moodexpand`) because the default session serves the `prompts` set and four prompts name this tool — a helper the default prompts reference but a toolset trim can remove would be a name in prose that resolves to nothing. It calls **no** Spotify endpoint, writes no server state, and mutates nothing in the account.

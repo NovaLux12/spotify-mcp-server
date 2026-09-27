@@ -44,7 +44,7 @@ import { consentAfterGate, consentFields, provenanceNote, provenancePromptLines,
 import type { ElicitVerdict } from './confirm.js';
 import { BATCH_ADD_ELICIT_THRESHOLD } from './playlistbatch.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
-import { classifySpotifyReference, spotifyUriFromClassification } from '../refs.js';
+import { classifySpotifyReference, spotifyRef, spotifyUriFromClassification } from '../refs.js';
 import { ResponseFormat, normalizePlaylistReference } from '../shaping.js';
 import { textResult } from '../result.js';
 
@@ -279,7 +279,7 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
     'import_playlist',
     "Parse an M3U or CSV document (the inverse of export_playlist) and append its Spotify URIs to a target playlist. Pass the document inline via content, or read it from input_path (a regular file inside the configured read roots). URIs already in the playlist are skipped, so a re-run adds nothing. Adds in batches of 100. Use dry_run=true to preview without writing. Result records the document source and the use made of it (consent_note); under 100 new URIs nothing is gated.",
     {
-      playlist_id: z.string().describe('Target playlist ID, spotify:playlist: URI, or share URL'),
+      playlist_id: spotifyRef(z.string().describe('Target playlist ID, spotify:playlist: URI, or share URL'), 'playlist'),
       content: z
         .string()
         .optional()

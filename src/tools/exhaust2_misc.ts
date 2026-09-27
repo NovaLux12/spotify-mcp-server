@@ -59,6 +59,7 @@ import {
   MAX_RECEIPTS,
 } from '../receipts.js';
 import { emit, type EmitOptions } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // Shared shapes + result helpers
@@ -1496,7 +1497,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + 'saved albums — what\'s missing, with album/single/compilation breakdown. Quota: 1 read '
       + 'per artist-album page (walk stops at the fetch cap) + your saved albums, page-capped.',
     {
-      artist_id: z.string().min(1).describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().min(1).describe('Spotify artist ID'), 'artist'),
       include_singles: z.boolean().optional().default(true)
         .describe('Count singles as part of the complete set. Default true.'),
       max_results: MaxResults,
@@ -1562,7 +1563,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       tags: z.array(z.string()).min(1).describe('Genre tags to match (same values declared via tag_management)'),
       mode: z.enum(['create', 'refresh']).optional().default('create').describe('create builds a new playlist; refresh rewrites the existing one. Default create'),
       playlist_name: z.string().optional().describe('Playlist name (create mode). Default: "Tagged: <tags>".'),
-      playlist_id: z.string().optional().describe('Playlist to refresh (refresh mode). Auto-resolved from playlist_name if omitted.'),
+      playlist_id: spotifyRef(z.string().optional().describe('Playlist to refresh (refresh mode). Auto-resolved from playlist_name if omitted.'), 'playlist'),
       dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
@@ -1649,7 +1650,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Export one playlist as a paste-ready markdown table (the doc-friendly variant of '
       + 'export_playlist). 1 read.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       include_added_at: z.boolean().optional().default(false).describe('Add an Added column'),
       max_results: MaxResults,
       response_format: ResponseFormat,
@@ -1952,7 +1953,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     'Full-fidelity JSON export of one playlist: items + added_at + added_by + URIs (the '
       + 'fields CSV/M3U lose). 1 read.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       max_results: MaxResults,
       response_format: ResponseFormat,
     },

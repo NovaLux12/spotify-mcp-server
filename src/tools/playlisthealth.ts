@@ -19,6 +19,7 @@ import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { textResult, jsonText } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 /** A snapshot row plus its live position, so a diff can report where. */
 type PositionedRow = SnapTrackRow & { position: number };
@@ -91,7 +92,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       + 'find_duplicates_in_playlist\'s count are the same number. '
       + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       match_by: DuplicateMatchByParam,
       response_format: ResponseFormat,
     },
@@ -159,7 +160,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'get_playlist_followers',
     'Get follower count for a playlist, optionally including public owner profile',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       include_profiles: z.boolean().optional().describe('If true, fetch the owner public profile'),
       response_format: ResponseFormat,
     },
@@ -216,7 +217,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'playlist_collaboration_report',
     'Report who added what to a playlist (counts + first/last timestamps, most-active)',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -256,7 +257,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'snapshot_playlist',
     'Snapshot a playlist\'s current URIs+positions+timestamp to a sidecar JSON file (legacy, simple path playlistId→file). For transactional local snapshots with plsnapi naming, diff, and bundle tooling, use take_playlist_snapshot instead.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       snapshot_id: z.string().optional().describe('Custom snapshot ID (default: timestamp)'),
       response_format: ResponseFormat,
     },
@@ -283,7 +284,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'diff_since_snapshot',
     'Compare current playlist state to a stored snapshot',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       snapshot_id: z.string().min(1).describe('Snapshot ID to compare against'),
       response_format: ResponseFormat,
     },
@@ -344,7 +345,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'remove_unavailable_playlist_items',
     'Remove unavailable (null track) rows from a playlist — actionable companion to playlist_health_check. Targets only unavailable occurrences by validated position, highest first, so healthy copies are preserved. Read-only dry_run preview available.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID or Spotify URL/URI'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID or Spotify URL/URI'), 'playlist'),
       dry_run: z.boolean().optional().describe('Preview only — no writes'),
       max_removals: z.number().int().min(1).optional().describe('Destructive cap: maximum unavailable playlist rows to remove; defaults to all detected unavailable rows'),
       response_format: ResponseFormat,
@@ -582,7 +583,7 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     'list_playlist_snapshots',
     'List stored snapshots (optionally filtered by playlist_id)',
     {
-      playlist_id: z.string().optional().describe('If provided, only snapshots for this playlist'),
+      playlist_id: spotifyRef(z.string().optional().describe('If provided, only snapshots for this playlist'), 'playlist'),
       response_format: ResponseFormat,
     },
     async (args) => {

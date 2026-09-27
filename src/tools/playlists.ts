@@ -68,7 +68,7 @@ import type {
 } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { positionBaseClause, positionSchema } from '../positionbase.js';
-import { spotifyId } from '../refs.js';
+import { spotifyId, spotifyRef } from '../refs.js';
 import { textResult, jsonText, formatDuration } from '../result.js';
 
 /**
@@ -543,8 +543,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       ...sharedListFields,
       // Issue #80: accept `id` as an alias so the read tools share
       // get_playlist's parameter convention.
-      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
-      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist"),
+      playlist_id: spotifyRef(z.string().optional().describe("Playlist ID (or pass it as 'id')"), 'playlist'),
+      id: spotifyRef(z.string().optional().describe("Alias for playlist_id, matching get_playlist"), 'playlist'),
       limit: z
         .number()
         .int()
@@ -633,8 +633,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     {
       ...sharedListFields,
       // Issue #80: same `id` alias as get_playlist_items.
-      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
-      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist"),
+      playlist_id: spotifyRef(z.string().optional().describe("Playlist ID (or pass it as 'id')"), 'playlist'),
+      id: spotifyRef(z.string().optional().describe("Alias for playlist_id, matching get_playlist"), 'playlist'),
     },
     async (args) => {
       const images = await client.get<SpotifyImage[]>(
@@ -663,7 +663,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'upload_playlist_cover',
     "Replace a playlist's cover image with a base64-encoded JPEG. Requires the ugc-image-upload scope on the Spotify developer dashboard app (plus playlist-modify-public/private); without it Spotify rejects the upload with 403.",
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       jpeg_base64: z.string().min(1).describe('Base64-encoded JPEG file contents (max 256 KB decoded)'),
       dry_run: DryRun,
     },
@@ -785,7 +785,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'add_to_playlist',
     'Add tracks or episodes to a playlist. Max 100 URIs per call.',
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       uris: z.array(z.string()).min(1).max(100).describe('Track or episode URIs to add'),
       check_duplicates: z
         .boolean()
@@ -940,7 +940,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'remove_from_playlist',
     'Remove tracks or episodes from a playlist. Max 100 entries per call.',
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       uris: z
         .array(
           z.union([
@@ -1079,8 +1079,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       inputSchema: z
         .object({
           // #110: canonical `playlist_id`; legacy `id` retained as an alias.
-          playlist_id: z.string().optional().describe('Playlist ID'),
-          id: z.string().optional().describe("Alias for playlist_id"),
+          playlist_id: spotifyRef(z.string().optional().describe('Playlist ID'), 'playlist'),
+          id: spotifyRef(z.string().optional().describe("Alias for playlist_id"), 'playlist'),
           name: z.string().optional().describe('New name'),
           description: z.string().optional().describe('New description'),
           public: z.boolean().optional().describe('New public state'),
@@ -1197,7 +1197,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'reorder_playlist_items',
     'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3).',
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       // #883: both of these go onto Spotify's wire unconverted, so the base is
       // the API's, not this server's. The schema documents them zero-based and
       // the handler forwards the values untouched — which is exactly why the
@@ -1254,7 +1254,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'replace_playlist_items',
     'Replace ALL items in a playlist with the supplied URIs, overwriting the current contents. Lists longer than 100 URIs are sent in chunks internally (replace + appends).',
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       uris: z
         .array(z.string())
         .min(1)
@@ -1351,7 +1351,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       + 'group count is never unattributable. See the duplicate-matching vocabulary in SPEC section 4.',
     {
       ...sharedListFields,
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       match_by: DuplicateMatchByParam,
     },
     async (args) => {
@@ -1494,7 +1494,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       + 'Supports dry_run; removals of 10+ items ask for confirmation via elicitation. '
       + 'See the duplicate-matching vocabulary in SPEC section 4.',
     {
-      playlist_id: z.string().describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().describe('Playlist ID'), 'playlist'),
       match_by: DuplicateMatchByParam,
       include_relinked: IncludeRelinkedParam,
       dry_run: DryRun,

@@ -41,6 +41,7 @@ import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.
 import { resolvePlaylistId, walkTruncationNotice } from './playlists.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { textResult } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // helpers
@@ -101,8 +102,8 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
       // #110/#731: `playlist_id` is the canonical parameter across the playlist
       // tools, resolved through the same shared helper as get_playlist_items,
       // so `id` works here too and conflicting values fail before any I/O.
-      playlist_id: z.string().optional().describe("Playlist ID (or pass it as 'id')"),
-      id: z.string().optional().describe("Alias for playlist_id, matching get_playlist_items"),
+      playlist_id: spotifyRef(z.string().optional().describe("Playlist ID (or pass it as 'id')"), 'playlist'),
+      id: spotifyRef(z.string().optional().describe("Alias for playlist_id, matching get_playlist_items"), 'playlist'),
       query: z.string().min(1).describe('Substring to match against track/episode name, artist, album, show name'),
       kind: z.enum(['track', 'episode', 'any']).default('any').describe("Item kinds to match: 'track', 'episode', or 'any' (default — both). Mixed playlists hold both row shapes"),
       market: MARKET_CODE.optional().describe('Market for track relinking, e.g. \'US\''),
@@ -262,7 +263,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'audiobook_progress',
     'Audiobook progress rollup: chapters total, played count, current chapter, percent complete. Walks every chapter page up to the shared fetch-all cap and reports scan coverage. Quota: 1 audiobook GET + chapter page GETs.',
     {
-      audiobook_id: z.string().min(1).describe('Audiobook ID'),
+      audiobook_id: spotifyRef(z.string().min(1).describe('Audiobook ID'), 'audiobook'),
       market: MARKET_CODE.optional().describe('Market, e.g. \'US\''),
       response_format: ResponseFormat,
     },
@@ -382,7 +383,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'playlist_to_library',
     'Save all tracks of a playlist to your Liked Songs (library). Quota: GET playlist items + PUT /me/tracks (chunked 50).',
     {
-      playlist_id: z.string().min(1).describe('Source playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Source playlist ID'), 'playlist'),
       dry_run: DryRun,
       dedupe: z.boolean().optional().describe('Skip tracks already saved (default true)'),
       response_format: ResponseFormat,
@@ -514,7 +515,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'get_playlist_added_dates',
     'List when each track was added to a playlist (added_at + added_by). Quota: GET /playlists/{id}/items paged.',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID'), 'playlist'),
       sort: z.enum(['added_asc', 'added_desc']).optional().describe('Sort by added_at (default added_asc)'),
       ...sharedListFields,
     },
@@ -569,7 +570,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'split_playlist',
     'Split a playlist into N chunks (new playlists). Quota: GET all + N POST /me/playlists + N POST items.',
     {
-      playlist_id: z.string().min(1).describe('Source playlist ID'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Source playlist ID'), 'playlist'),
       parts: z.number().int().min(2).max(10).describe('Number of parts (2–10)'),
       name_prefix: z.string().optional().describe('Prefix for new playlist names (default: source name)'),
       dry_run: DryRun,
@@ -683,7 +684,7 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
     'remove_from_library_by_playlist',
     'Remove from Liked Songs any tracks that also appear in a given playlist. Quota: 2 GETs + DELETE (chunked).',
     {
-      playlist_id: z.string().min(1).describe('Playlist ID whose tracks will be removed from library'),
+      playlist_id: spotifyRef(z.string().min(1).describe('Playlist ID whose tracks will be removed from library'), 'playlist'),
       dry_run: DryRun,
       response_format: ResponseFormat,
     },

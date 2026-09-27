@@ -255,3 +255,66 @@ export function spotifyId(expectedKind?: SpotifyReferenceKind): z.ZodType<string
 export function spotifyIdArray(expectedKind?: SpotifyReferenceKind): z.ZodArray<z.ZodType<string>> {
   return z.array(spotifyId(expectedKind));
 }
+
+/**
+ * Normalise a caller-supplied reference to its bare ID, or return it unchanged
+ * when it is not one this resolver can classify.
+ *
+ * This is the tolerant half of the policy {@link spotifyId} enforces, and it
+ * exists because the two answer different questions:
+ *
+ *  - `spotifyId` is a VALIDATOR. It rejects anything that is not a well-formed
+ *    reference for `expectedKind`, so a caller that sent a name where an id
+ *    belonged gets a 400 naming the rule.
+ *  - `spotifyRef` is a NORMALISER. It answers only "what does this string
+ *    refer to", and for a string it cannot classify it has no opinion — it
+ *    returns the input and lets Spotify decide whether the entity exists.
+ *
+ * The distinction is the whole reason the entity-id parameters could be
+ * migrated at all (#914). Routing all of them through `spotifyId` would have
+ * been correct-by-the-letter and wrong in effect: it converts a 404 for a
+ * malformed id into a 400 across the largest part of the tool surface, and
+ * several of the parameters legitimately carry values this server never
+ * classified (see the call sites that keep a name-matching fallback). The
+ * defect the issue actually reports is that a `spotify:` URI or an
+ * open.spotify.com URL reached the request path unnormalised and 404'd as if
+ * the entity were missing — so normalising is the fix, and rejecting is not.
+ *
+ * The transform is a `z.preprocess` over the caller's own schema, which under
+ * the SDK's `pipeStrategy: 'input'` unwraps to exactly that schema. The
+ * emitted JSON Schema is byte-identical to the un-wrapped form, so migrating a
+ * parameter does not move the per-module schema budget (see AGENTS.md §4).
+ *
+ * Not exported: {@link spotifyRef} is the only sanctioned way to declare one of
+ * these, so an exported raw normaliser would be a second door into the same
+ * policy for a caller to reach past the schema layer.
+ */
+function normaliseSpotifyRef(
+  value: unknown,
+  expectedKind?: SpotifyReferenceKind,
+): unknown {
+  if (typeof value !== 'string') return value;
+  const trimmed = value.trim();
+  // A kind mismatch deliberately falls through unchanged. Reducing a
+  // `spotify:track:` handed to a playlist parameter to its bare ID would turn
+  // "you named the wrong kind" into "that playlist does not exist", which is
+  // the same class of defect this migration exists to remove. Passing the
+  // original through lets the 404 name what the caller actually sent.
+  return resolveSpotifyId(trimmed, expectedKind) ?? trimmed;
+}
+
+/**
+ * Wrap a caller's own zod schema so it receives a normalised bare reference
+ * (#914).
+ *
+ * The inner schema is passed through untouched, which is what keeps this
+ * behaviour-preserving: `.min(1)`, `.optional()` and the caller's own
+ * `.describe(...)` all keep their exact semantics, and an id this server
+ * cannot classify is handed to Spotify as the caller wrote it.
+ */
+export function spotifyRef<SCHEMA extends z.ZodType>(
+  schema: SCHEMA,
+  expectedKind?: SpotifyReferenceKind,
+): z.ZodType<z.output<SCHEMA>, z.input<SCHEMA>> {
+  return z.preprocess((value) => normaliseSpotifyRef(value, expectedKind), schema);
+}
