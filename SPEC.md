@@ -105,7 +105,9 @@ The package contract is generated directly from `package.json`; the census guard
     "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
     "sweep:loop": "bash scripts/sweep-loop.sh",
     "probe:edge": "node scripts/edge-probe.mjs",
-    "probe:contains": "node scripts/contains-check.mjs"
+    "probe:contains": "node scripts/contains-check.mjs",
+    "wire:equivalence": "node scripts/wire-equivalence.mjs",
+    "wire:equivalence:compare": "node scripts/wire-equivalence.mjs --compare"
   }
 }
 ```

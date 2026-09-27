@@ -59,6 +59,18 @@
         "label": "Do not reach for as any to read a payload. It is the cas…"
       },
       {
+        "hash": "c9e8b8dd0f26d19e",
+        "label": "as unknown as T and : any are ratcheted separately, by t…"
+      },
+      {
+        "hash": "d8ef4bac91ed2b58",
+        "label": "Dead locals. tsconfig.json sets strict but not noUnusedL…"
+      },
+      {
+        "hash": "b5047a7b8a149393",
+        "label": "The two void x; statements. src/tools/playlistdna.ts and…"
+      },
+      {
         "hash": "7fbdd2ccbbc062cd",
         "label": "Authorization"
       },
@@ -275,7 +287,7 @@
         "label": "3. Commands"
       },
       {
-        "hash": "4cba6f94f8fa9fa3",
+        "hash": "b732e60fd0ecdc0a",
         "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
       },
       {
@@ -5364,6 +5376,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "4cba6f94f8fa9fa3",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-09-27",
+      "reason": "AGENTS.md § Commands table gained two rows for #1481 (`npm run wire:equivalence`, `npm run wire:equivalence:compare`). The table is extended, not damaged: all 35 rows main carries are present in the merged file and 2 were added, verified by a set comparison of the two row lists (comm and diff, both 0 lost). The pin is keyed on the block's content hash, so appending a row changes it. 2026-09-27"
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "4d1196f8daf9205a",
       "label": "git checkout --ours ARCHITECTURE.md # or --theirs, for t…",
       "date": "2026-09-27",
@@ -5784,8 +5803,8 @@
     }
   ],
   "provenance": {
-    "head": "57558f7eb3acd3323e4de9216fb129dc5961751e",
-    "upstream": "57558f7eb3acd3323e4de9216fb129dc5961751e",
+    "head": "35f46f14668cf962651e0d0eacc54d03b4e1120e",
+    "upstream": "35f46f14668cf962651e0d0eacc54d03b4e1120e",
     "behind": false
   }
 }
