@@ -29,9 +29,23 @@ local build. It is the first probe for OpenClaw and other host-only agents.
    - `rate_limit`: respect an active cooldown and its `Retry-After` value.
    - `config`: use the reported token path and fetch/shaping caps; do not
      substitute a guessed path.
+   - `cache`: `read cache disabled on this reporting path` means the reporting
+     process has no read cache, not that a cache is failing — see the row's
+     detail line. The live figures come from a server session.
 4. Use `toolset_report.structuredContent.registered_tools` as the live
    registered-tool count. Use its active toolsets/modules to explain why a
    tool is missing; a toolset trim is different from a registration failure.
+
+`spotify-mcp doctor` in a shell renders **this same report** (#581) — same row
+ids, same statuses, same text, plus a `Configuration:` block of resolved config
+keys. So a row quoted from the CLI and a row quoted from the tool are the same
+claim, and there is never a reason to prefer one. Three rows are about the
+process doing the reporting and are expected to read differently there:
+`surface` (the CLI is outside the server and reports
+`registered_tools=not-observable` instead of a count), `rate_limit` (the
+process's own request counters), and `cache` (the CLI's probe client runs with
+caching off). Everything else, including the whole module view on `surface` —
+active, exposed, and hidden-by-trim/scopes/readonly — is identical.
 
 `spotify_doctor` is registered unconditionally outside toolset trimming. If the
 connection works but `spotify_doctor` is absent, the host is connected to an

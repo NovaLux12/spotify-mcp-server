@@ -1,7 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { runAuthFlow, loadTokens } from './auth.js';
-import { SpotifyClient, SpotifyApiError } from './client.js';
+import { SpotifyClient } from './client.js';
 import { initConfig, renderEnvHelp } from './config.js';
 import {
   applyToolAnnotations,
@@ -149,12 +149,24 @@ async function startMcpServer(): Promise<void> {
 
 /**
  * `spotify-mcp doctor` (#62): self-serve the most common auth/config failure
- * class. Prints the resolved configuration, token file state/expiry, then a
- * live authenticated GET /me probe. Exits non-zero when anything fails.
+ * class. Prints the resolved configuration, then the shared diagnostic report.
+ * Exits non-zero when the report is not ok.
+ *
+ * #581: the checks are NOT re-implemented here. `collectDoctorReport` and
+ * `renderDoctorProse` are the same functions the `spotify_doctor` tool calls
+ * (src/tools/doctortool.ts), so the CLI subcommand and the in-server tool
+ * cannot report different facts about the same config and token file. What is
+ * left here is the CLI-only Configuration block, which is a dump of resolved
+ * config keys rather than a check — the checks are rows, and every row is
+ * rendered by the shared renderer.
+ *
+ * Imported dynamically for the same reason the resources and prompts
+ * registrars are (#906): a static import would evaluate the doctor module on
+ * the MCP startup path, where it is already loaded through the manifest. The
+ * `doctor` command never starts a server, so it pays nothing for the import.
  */
 async function runDoctor(): Promise<void> {
   const cfg = initConfig();
-  let failed = false;
 
   console.log(`spotify-mcp ${version}`);
   console.log('');
@@ -169,74 +181,24 @@ async function runDoctor(): Promise<void> {
   // Read from the GATE (readOnlyModeEnabled), not from cfg.readonly: this row
   // is a disclosure, so it must state what module registration actually acted
   // on. The two are pinned equal in tests/config-readonly.test.ts, but the
-  // report must not depend on that pin holding at runtime.
+  // report must not depend on that pin holding at runtime. The shared report's
+  // `surface` row reads the same gate, so the two cannot disagree either.
   console.log(`  readonly          ${readOnlyModeEnabled() ? 'yes' : 'no'}`);
   if (cfg.market) console.log(`  market            ${cfg.market}`);
   if (cfg.scopes) console.log(`  scopes            ${cfg.scopes.join(', ')}`);
 
   console.log('');
-  try {
-    const tokens = await loadTokens();
-    const msLeft = tokens.expires_at - Date.now();
-    const hasRefresh = typeof tokens.refresh_token === 'string' && !!tokens.refresh_token;
-    const refreshNote = hasRefresh ? 'refresh_token present' : 'refresh_token MISSING — re-run auth';
-    if (msLeft <= 0) {
-      const secAgo = Math.round(-msLeft / 1000);
-      console.log(`Token state: EXPIRED (${secAgo}s ago, ${new Date(tokens.expires_at).toISOString()}) — next API call will auto-refresh; if refresh fails, re-run "spotify-mcp auth".`);
-      console.log(`             ${refreshNote} | file: ${cfg.tokenFile}`);
-    } else if (msLeft < 60_000) {
-      console.log(
-        `Token state: expiring in ${Math.round(msLeft / 1000)}s — will auto-refresh on next use.`,
-      );
-      console.log(`             ${refreshNote} | file: ${cfg.tokenFile}`);
-    } else {
-      const mins = Math.floor(msLeft / 60_000);
-      const hours = Math.floor(mins / 60);
-      console.log(
-        `Token state: valid, expires at ${new Date(tokens.expires_at).toISOString()} ` +
-          `(in ${hours > 0 ? `${hours}h ` : ''}${mins % 60}m) — ${refreshNote}`,
-      );
-      console.log(`             file: ${cfg.tokenFile}`);
-    }
-    if (tokens.scope) console.log(`  granted scopes: ${tokens.scope}`);
-  } catch (err) {
-    failed = true;
-    console.error(`Token state: MISSING or unreadable — ${err instanceof Error ? err.message : err}`);
-    console.error('             Run "spotify-mcp auth" first.');
-    console.error(`             file: ${cfg.tokenFile}`);
-  }
+  const { collectDoctorReport, renderDoctorProse } = await import('./tools/doctortool.js');
+  // `disableCache` as before: the CLI process reads the profile once and exits,
+  // so caching the one live request would only hide it from the report.
+  const report = await collectDoctorReport(new SpotifyClient({ disableCache: true }));
+  // Always verbose. This output is the artefact users paste when asking for
+  // help, and the detail lines are where the token path, the granted scopes
+  // and the resolved sets live.
+  console.log(renderDoctorProse(report, true));
 
   console.log('');
-  console.log('Live probe: GET /me ...');
-  const client = new SpotifyClient({ disableCache: true });
-  try {
-    const me = await client.get<{ id?: string; display_name?: string; product?: string; country?: string }>('/me');
-    if (!me || !me.id) {
-      failed = true;
-      console.error('  FAIL — endpoint returned an empty profile.');
-    } else {
-      const extra = [
-        me.product ? `product=${me.product}` : null,
-        me.country ? `country=${me.country}` : null,
-      ].filter(Boolean).join(' ');
-      console.log(`  PASS — authenticated as ${me.display_name ?? me.id} (${me.id})${extra ? ' ' + extra : ''}`);
-      if (me.product   === 'free' || me.product === 'open') {
-        console.log('  NOTE — account is Free — playback control (play/pause/skip/seek/volume/queue) will 403; Premium required.');
-      }
-    }
-  } catch (err) {
-    failed = true;
-    const detail =
-      err instanceof SpotifyApiError
-        ? `HTTP ${err.status}: ${err.message}`
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    console.error(`  FAIL — ${detail}`);
-  }
-
-  console.log('');
-  if (failed) {
+  if (!report.ok) {
     console.error('Doctor found problems. If this looks like an auth issue, re-run "spotify-mcp auth".');
     process.exit(1);
   }

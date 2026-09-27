@@ -33,6 +33,12 @@ const parameterAllowlist = new Set([
   'budget_shrunk', 'client_id', 'client_secret', 'code_challenge',
   'code_verifier', 'expires_at', 'expires_in', 'invalid_grant', 'rate_limit',
   'redirect_uri', 'refresh_token', 'registered_tools', 'requests_made',
+  // #581: the doctor is now one report behind two entry points, and SPEC.md
+  // and the doctor skill name what each one cannot agree on. These are the
+  // `DoctorSurface` structuredContent keys and the live-probe row id — a
+  // report describing its own output, not tools and not parameters.
+  'account_probe', 'active_sets', 'exposed_modules', 'hidden_by_trim',
+  'inactive_sets',
   'requests_planned', 'token_refresh', 'web_search',
   // #677: the token-endpoint failure classes. RFC 6749 §5.2 error codes the
   // refresh response carries (`invalid_client`, `server_error`) and one

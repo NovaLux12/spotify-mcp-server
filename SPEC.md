@@ -204,14 +204,57 @@ if (command === 'auth') {
   // Run OAuth flow, save tokens, exit
   await runAuthFlow();
 } else if (command === 'doctor') {
-  // Print resolved config, token state/expiry, then a live authenticated
-  // GET /me probe; exit non-zero when anything fails (#62)
+  // Print the resolved configuration, then the shared diagnostic report;
+  // exit non-zero when the report is not ok (#62, #581)
   await runDoctor();
 } else {
   // Start MCP server over stdio (the default)
   await startMcpServer();
 }
 ```
+
+#### The doctor is one report, rendered twice (#581)
+
+`spotify-mcp doctor` and the `spotify_doctor` tool are two entry points onto
+`collectDoctorReport()` in `src/tools/doctortool.ts`, rendered by
+`renderDoctorProse()`. The CLI subcommand does **not** re-implement the checks:
+for one config and one token file, both surfaces emit the same row ids, the
+same statuses and the same text. That is the whole point — before #581 the CLI
+re-derived token state and the `/me` probe inline in `src/index.ts`, so it
+could not show a scope gap, the mutation-history trail, the read-cache
+pressure or a rate-limit cooldown, and nothing stopped a new check from landing
+in only one of the two.
+
+What the CLI adds on top is a **Configuration block**: a dump of resolved
+config keys (`token file`, `profile`, `redirect URI`, `headless`, `max items`,
+`fetch-all cap`, `mutation history`, `readonly`, `market`, `scopes`). It is a
+dump, not a check — it has no pass/fail verdict and nothing in the tool's report
+contradicts it, because the checks are the rows. Three of its lines are
+deliberately CLI-only today (`redirect URI`, `headless`, and the `scopes`
+override rendering): the auth-time configuration a user is about to run
+`spotify-mcp auth` against, which the tool's own rows do not need to restate.
+
+The CLI exits `0` when `report.ok` and `1` otherwise — the shared report's
+verdict, not a second judgment. This changed two exit codes the old inline
+implementation produced: a probe that could not reach Spotify, and one that was
+rate-limited (`429`), used to exit `1` and now exit `0`, because the shared
+report classifies both as `info`/`warn` rather than failures. A rejected token
+(`401`/`403`) and any other HTTP error still exit `1`.
+
+Three rows **cannot** be byte-identical between the surfaces, and
+`PROCESS_LOCAL_DOCTOR_ROW_IDS` in `src/tools/doctortool.ts` names them so the
+difference is stated rather than discovered. Each describes the process doing
+the reporting, not the deployment:
+
+| Row | Why it differs |
+|---|---|
+| `surface` | The registered-tool **count**. The tool counts the live registry it runs inside; the CLI is a separate process with no registry, and says `registered_tools=not-observable` rather than reporting a zero that would read as "this deployment registers nothing". Every other field on that row — `active_modules`, `exposed_modules`, `hidden_by_trim`/`_scopes`/`_readonly`, `active_sets`, `inactive_sets`, the override lists, `read_only` — is env-derived and **is** identical. |
+| `rate_limit` | Cumulative and rolling-window request counters, which count the requests the reporting process has made since it started. |
+| `cache` | The read cache's entry/byte counters, which measure a cache that only exists inside a running server. The CLI's probe client is built with `disableCache: true`, so it reports `read cache disabled on this reporting path` — the client's `cacheStats()` reserves an absent set of cache fields for "the cache is off" precisely so a caller can tell that from "the cache is empty". |
+
+A fourth pair of rows, `account` / `account_probe` / `account_premium`, depends
+on what live `/me` call the reporting process could make, so their text is the
+API's answer rather than a local fact.
 
 `package.json` bin field:
 ```json
@@ -324,7 +367,7 @@ All Spotify API calls go through a single `SpotifyClient` instance. Its responsi
 - **Mutation body parsing (#674)**: a 2xx write whose body cannot be read or parsed resolves to `null` rather than raising — never a raw `SyntaxError`. A write Spotify accepted has already landed, so an unreadable body is a lost *response*, not a failed *mutation*, and reporting it as a failure invites the caller to retry a write that succeeded (queue duplicates, double playlist adds, duplicate library saves). Post-write bookkeeping (read-cache invalidation and the history line) runs as soon as the request is accepted, so it cannot be skipped by a body that will not parse. The read path is deliberately asymmetric: there `null` is a real answer meaning "204, nothing here", so an unparseable `GET` body stays an error.
 - **Token memory management**: The `SpotifyClient` holds the token state in memory (not read from disk on every request). On initialization it reads `~/.spotify-mcp/tokens.json`. On successful refresh it updates its in-memory state AND writes back to disk. This ensures the long-running MCP server process doesn't repeatedly hit disk.
 - **Request timeouts**: every outbound HTTP call (API requests and token refresh) carries an `AbortSignal.timeout` — 30 s by default, overridable via `SPOTIFY_REQUEST_TIMEOUT_MS`. Expiry raises a 408-style `SpotifyApiError`, which returns the task's permit like any other failure, so a hung connection can never shrink the pool or stall the funnel.
-- **Read cache**: immutable catalog reads go through an LRU TTL cache (~5-minute entry lifetime, 200 entries max); mutations and player calls bypass it. Since #894 the cache is bounded **by bytes** as well as by count (8 MB total, 1 MB per entry, both configurable): a count bound is not a memory bound when a single 100-track playlist page is ~150 KB, and an entry too large to fit the budget is refused rather than admitted and immediately evicted — refusals are counted, never absorbed, because a cache that silently stopped caching is worse than one that says so. Each entry is charged the exact UTF-8 length of the body it arrived as, so eviction is by least-recently-used until the byte total is back under the ceiling. Cache keys are canonical over method + path + params, with pairs sorted by name then value: `{limit, offset}` and `{offset, limit}` are one entry and one network read, while any real difference (a limit, an offset, an added param, a different path) keeps its own entry. `getRateLimitStatus()` exposes `cacheEntries` / `cacheBytes` / `cacheMaxBytes` / `cacheSkippedOversize`, and `spotify_doctor` reports them as the `cache` row.
+- **Read cache**: immutable catalog reads go through an LRU TTL cache (~5-minute entry lifetime, 200 entries max); mutations and player calls bypass it. Since #894 the cache is bounded **by bytes** as well as by count (8 MB total, 1 MB per entry, both configurable): a count bound is not a memory bound when a single 100-track playlist page is ~150 KB, and an entry too large to fit the budget is refused rather than admitted and immediately evicted — refusals are counted, never absorbed, because a cache that silently stopped caching is worse than one that says so. Each entry is charged the exact UTF-8 length of the body it arrived as, so eviction is by least-recently-used until the byte total is back under the ceiling. Cache keys are canonical over method + path + params, with pairs sorted by name then value: `{limit, offset}` and `{offset, limit}` are one entry and one network read, while any real difference (a limit, an offset, an added param, a different path) keeps its own entry. `getRateLimitStatus()` exposes `cacheEntries` / `cacheBytes` / `cacheMaxBytes` / `cacheSkippedOversize`, and `spotify_doctor` reports them as the `cache` row. Those fields are absent when the cache is off — `cacheStats()` returns an empty object rather than zeros so a caller can report "no cache" instead of "cache is empty", and the `cache` row reports exactly that distinction (see [The doctor is one report, rendered twice](#the-doctor-is-one-report-rendered-twice-581)).
 - **Rate-limit visibility**: the most recent 429 (`Retry-After` seconds, wait time, timestamp) is retained on the client, exposed via the `spotify://me/rate-limit` resource, and appended as a notice to the throttled call's result.
 - **Request/quota usage tracking (#904)**: the drain path maintains a cumulative request counter plus per-request timestamps (pruned to the longest exposed window); `getRateLimitStatus()` exposes `requestsTotal` / `requestsLastMinute` / `requestsLastHour` via the same resource and `spotify_doctor`. Heavy composite scans (`library_hygiene`, `saveddedupe` walks, `whats_new`, `swarm3library` fan-outs, `dead_library_finder`, `playlist_staleness_report`) consult the shared cooldown first (`quotaPreflight` — blocked scans return an actionable wait message and issue 0 requests) and otherwise shrink their walk budget to the remaining quota window (`quotaWindowRemaining`), disclosing `requests_made` plus `requests_planned`/`budget_shrunk` in payloads. Cache hits bypass the queue and cost no quota, so they are not counted.
 - **Mutation history**: when `SPOTIFY_MCP_HISTORY=1`, successful mutations append a whitelisted record (method, path, `snapshot_id` when present) to `~/.spotify-mcp/history/mutations.jsonl` (directory overridable via `SPOTIFY_MCP_HISTORY_DIR`). `who` names the issuing tool, captured at the single tool-invocation boundary, and is `agent` only for a mutation that did not come through a tool. History failures never fail the underlying mutation: a lost append is counted, warns once per process on stderr, and turns the `spotify_doctor` row `history` red alongside the resolved ledger path, so a trail with gaps never reads as complete.

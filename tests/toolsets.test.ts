@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -9,7 +9,6 @@ import {
   assertToolsetsUsable,
   resolveToolsets,
   resolveToolOverrides,
-  isActive,
   isModuleActive,
   toolsetEnvHelp,
 } from '../src/toolsets.js';
@@ -288,19 +287,23 @@ describe('resolveToolsets', () => {
   });
 });
 
-describe('isActive', () => {
+// #581 deleted the `isActive` alias, which was set membership with no
+// overrides and had no production caller. These cases assert that behaviour
+// against the function that is actually called now, with overrides omitted —
+// so the coverage of the semantics survives the deletion.
+describe('isModuleActive set membership, with no overrides', () => {
   const sets = resolveToolsets('playback,catalog').sets;
 
   it('activates keys owned by an active set', () => {
     for (const key of ['playback', 'search', 'catalog', 'audiobooks']) {
-      assert.equal(isActive(key, sets), true, key);
+      assert.equal(isModuleActive(key, sets), true, key);
     }
   });
 
   it('keeps scenes active through the playback key for default and trimmed specs', () => {
     for (const spec of [undefined, '  Playback  ']) {
       const { sets, unknown } = resolveToolsets(spec);
-      assert.equal(isActive('playback', sets), true, `spec: ${JSON.stringify(spec)}`);
+      assert.equal(isModuleActive('playback', sets), true, `spec: ${JSON.stringify(spec)}`);
       assert.deepEqual(unknown, []);
     }
   });
@@ -316,12 +319,12 @@ describe('isActive', () => {
       'prompts',
     ];
     for (const key of allInactive) {
-      assert.equal(isActive(key, sets), false, key);
+      assert.equal(isModuleActive(key, sets), false, key);
     }
   });
 
   it('never deactivates a key not owned by any set (defensive)', () => {
-    assert.equal(isActive('some-future-entry-point', new Set()), true);
+    assert.equal(isModuleActive('some-future-entry-point', new Set()), true);
   });
 });
 
@@ -434,10 +437,15 @@ describe('overrides combined with resolveToolsets output', () => {
     assert.deepEqual(unknown, { enable: [], disable: [] });
   });
 
-  it('keeps isActive equivalent to isModuleActive without overrides', () => {
+  it('omitting overrides is the same as passing empty ones, for every key', () => {
+    // The two-argument form is what the remaining set-membership cases use
+    // now that the `isActive` alias is gone (#581). Pinned against empty
+    // override sets so the optional argument cannot start applying something
+    // callers did not ask for.
     const sets = resolveToolsets('playback,catalog,prompts').sets;
+    const empty = { enable: new Set<string>(), disable: new Set<string>() };
     for (const key of Object.values(TOOLSETS).flat()) {
-      assert.equal(isActive(key, sets), isModuleActive(key, sets), key);
+      assert.equal(isModuleActive(key, sets), isModuleActive(key, sets, empty), key);
     }
   });
 });
@@ -475,5 +483,54 @@ describe('assertToolsetsUsable', () => {
     const line = toolsetEnvHelp();
     assert.ok(line.includes('Unknown-only'), 'missing unknown-only rule');
     assert.ok(line.toLowerCase().includes('mixed'), 'missing mixed rule');
+  });
+});
+
+describe('the no-overrides alias stays deleted (#581)', () => {
+  /**
+   * `isActive(key, sets)` was set membership with overrides silently dropped.
+   * It had no production caller left once the doctor resolved overrides and
+   * passed them (#581), and an alias that answers "is this module active?"
+   * while ignoring `SPOTIFY_MCP_ENABLE_TOOLS`/`SPOTIFY_MCP_DISABLE_TOOLS` is
+   * precisely the kind of second answer that issue was opened about — a
+   * doctor that consulted it would report a scope gap for a module the
+   * registry had hidden. Pinned here because the acceptance criterion was a
+   * grep, and a grep is not a gate.
+   */
+  it('src/toolsets.ts declares no isActive export', () => {
+    const source = readFileSync(join(ROOT, 'src', 'toolsets.ts'), 'utf8');
+    assert.doesNotMatch(
+      source,
+      /export function isActive\b/,
+      'the no-overrides alias is back; call isModuleActive with the resolved overrides instead',
+    );
+    // The doc comment that pointed at it too, so a reader following the
+    // reference does not go looking for a function that is not there.
+    assert.doesNotMatch(source, /\{@link isActive\}/, 'a stale @link to the deleted alias');
+  });
+
+  it('no module under src/ calls it', () => {
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!entry.name.endsWith('.ts')) continue;
+        // Code only. `src/toolsets.ts` documents the alias in prose — naming
+        // what was deleted and why — and a doc comment is not a call site.
+        // `isModuleActive` is blanked too, so the real function and any
+        // prefix match on it cannot trip this.
+        const text = readFileSync(full, 'utf8')
+          .replace(/\/\*[\s\S]*?\*\//g, ' ')
+          .replace(/^[ \t]*\/\/.*$/gm, ' ')
+          .replace(/isModuleActive/g, '');
+        if (/(?<![A-Za-z0-9_])isActive\s*\(/.test(text)) offenders.push(relative(ROOT, full));
+      }
+    };
+    walk(join(ROOT, 'src'));
+    assert.deepEqual(offenders, [], `these modules call the deleted alias: ${offenders.join(', ')}`);
   });
 });

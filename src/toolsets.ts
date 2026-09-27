@@ -149,14 +149,6 @@ export function assertToolsetsUsable(
 }
 
 /**
- * Set-membership-only variant of {@link isModuleActive} (no overrides).
- * Kept as the exported name used by existing call sites in index.ts.
- */
-export function isActive(key: string, sets: Set<string>): boolean {
-  return isModuleActive(key, sets);
-}
-
-/**
  * Per-tool opt-in/opt-out (#111 item 7), layered on top of the toolset trim.
  * Parses two comma-separated lists of REGISTRATION KEYS from env-driven specs:
  *
@@ -203,7 +195,14 @@ export function resolveToolOverrides(
  * Whether registration key `key` is active under the resolved toolsets plus
  * per-key overrides: `overrides.disable` wins over `overrides.enable`, which
  * wins over set membership. Keys not covered by any set stay active unless
- * explicitly disabled (same defensive default as {@link isActive}).
+ * explicitly disabled.
+ *
+ * The overrides argument is optional because it is the only reason there was
+ * ever a second name for this function. `isActive(key, sets)` was that alias —
+ * set membership with no overrides — and it had no production caller: the
+ * doctor resolved overrides and passed them (#581), so nothing was left to
+ * call it. It is deleted rather than kept, because an alias that silently
+ * ignores overrides is a second answer to "is this module active?".
  */
 export function isModuleActive(
   key: string,
