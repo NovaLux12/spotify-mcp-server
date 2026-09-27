@@ -41,6 +41,18 @@
  *    documented *as unsupported*, which is the opposite of a promise. A test
  *    below fails if that section is ever used to excuse a variable the code
  *    does read, so the escape hatch cannot quietly absorb a real knob.
+ *
+ * ## The name shape is an alternation, not the literal `SPOTIFY_` (#926)
+ *
+ * Every pattern above used to spell `SPOTIFY_` into itself separately. The
+ * server reads one variable that does not start with it — `STATSFM_USER_ID`,
+ * the default stats.fm identity, read by `loadConfig` and given its own
+ * summary-table row — so all five tests were blind to it in both directions.
+ * Deleting that row from the reference left the whole file green, which is the
+ * failure this guard exists to prevent, reproduced inside the guard. The
+ * prefixes now live in one `ENV_NAME` alternation, and a vacuity assertion
+ * below pins the non-`SPOTIFY_` read so the coverage cannot quietly narrow
+ * back. Adding a prefix there reaches all five patterns at once.
  */
 
 import './helpers/hermetic.js';
@@ -54,17 +66,35 @@ import { UNGATED_REGISTRATION_KEYS, allRegistrationKeys } from '../src/toolsets.
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
+/**
+ * The env-var name shape, as ONE alternation every pattern below is built
+ * from. `STATSFM_USER_ID` is the second prefix because it is the one name the
+ * server reads that does not start with `SPOTIFY_`: `loadConfig` reads it
+ * (src/config.ts) as the default stats.fm identity, and the configuration
+ * reference carries a summary-table row for it. The guard used to spell
+ * `SPOTIFY_` into each of the five patterns separately, which made that row
+ * invisible to every one of them — deleting it from the reference left all
+ * five tests green (verified by deleting the row and re-running). Sharing the
+ * alternation is what stops a second non-`SPOTIFY_` variable from repeating
+ * the same blind spot: adding a prefix here reaches all five at once.
+ *
+ * The trailing class on ENV_TOKEN is what forbids bare prefix fragments used
+ * in prose (`SPOTIFY_MCP_` on its own is not a variable).
+ */
+const ENV_NAME = '(?:SPOTIFY|STATSFM)_[A-Z0-9_]*[A-Z0-9]';
 /** A bare `SPOTIFY_MCP_FOO` token. The trailing class forbids the `SPOTIFY_MCP_` prefix fragments used in prose. */
-const ENV_TOKEN = /\b(SPOTIFY_[A-Z0-9_]*[A-Z0-9])\b/g;
+const ENV_TOKEN = new RegExp(`\\b(${ENV_NAME})\\b`, 'g');
 /** A read: `process.env.X` or a `NodeJS.ProcessEnv` parameter named `env`. */
-const ENV_READ = /\b(?:process\.env|env)\.(SPOTIFY_[A-Z0-9_]+)\b/g;
+const ENV_READ = new RegExp(`\\b(?:process\\.env|env)\\.(${ENV_NAME})\\b`, 'g');
 /** A module-level declaration: a constant named like an env var is not an env var. */
-const ENV_DECLARED =
-  /\b(?:const|let|var|function|class|interface|type|enum)\s+(SPOTIFY_[A-Z0-9_]+)\b/g;
+const ENV_DECLARED = new RegExp(
+  `\\b(?:const|let|var|function|class|interface|type|enum)\\s+(${ENV_NAME})\\b`,
+  'g',
+);
 /** An assignment line in .env.example, commented or not. */
-const ENV_ASSIGNED = /^[ \t]*#?[ \t]*(SPOTIFY_[A-Z0-9_]+)[ \t]*=/gm;
+const ENV_ASSIGNED = new RegExp(`^[ \\t]*#?[ \\t]*(${ENV_NAME})[ \\t]*=`, 'gm');
 /** A summary-table row in docs/configuration.md: the operator-lookup surface. */
-const ENV_TABLE_ROW = /^\|[ \t]*`(SPOTIFY_[A-Z0-9_]+)`[ \t]*\|/gm;
+const ENV_TABLE_ROW = new RegExp(`^\\|[ \\t]*\`(${ENV_NAME})\`[ \\t]*\\|`, 'gm');
 
 /** ROOT-anchored read, used at every corpus call site so a path is never built twice. */
 function read(relativePath: string): string {
@@ -272,5 +302,17 @@ describe('advertised environment variables (#590)', () => {
     assert.ok(exampleVars.length >= 8, `.env.example yielded ${exampleVars.length} variables; the assignment pattern is too narrow`);
     assert.ok(readSet.has('SPOTIFY_CLIENT_ID'), 'SPOTIFY_CLIENT_ID is not in the read set');
     assert.ok(declared.has('SPOTIFY_ID_RE'), 'the declared-identifier exclusion is not matching src/refs.ts');
+    // The non-`SPOTIFY_` prefix is the one that was silently unscanned (#926).
+    // Asserting it here is what stops a future edit from narrowing ENV_NAME back
+    // to `SPOTIFY_` alone: every test above would still pass with the read gone,
+    // which is exactly how the STATSFM_USER_ID row survived deletion.
+    assert.ok(
+      readSet.has('STATSFM_USER_ID'),
+      'STATSFM_USER_ID is not in the read set — the ENV_NAME alternation no longer covers non-SPOTIFY_ variables',
+    );
+    assert.ok(
+      declared.has('STATSFM_REGISTRATION_KEYS'),
+      'the declared-identifier exclusion is not matching the stats.fm module constants',
+    );
   });
 });
