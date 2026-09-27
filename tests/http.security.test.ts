@@ -295,7 +295,12 @@ describe('the default configuration starts no listener (#599)', () => {
       });
       try {
         const names = await child.toolNames();
-        assert.ok(names.includes('get_me'), `the stdio default served ${names.length} tools without get_me`);
+        // `search`, not `get_me`: #889 changed the unset default from the whole
+        // registry to the curated `core` set, and `get_me` registers from
+        // `catalog`, which `core` does not include. `search` is in `core` and
+        // has been in every curated default since, so this still proves the
+        // stdio path registered a working surface rather than starting empty.
+        assert.ok(names.includes('search'), `the stdio default served ${names.length} tools without search`);
       } finally {
         await child.dispose();
       }
@@ -381,9 +386,13 @@ describe('the authenticated listener serves a real MCP session (#599)', () => {
     assert.equal(response.status, 401);
     assert.match(response.headers['www-authenticate'] ?? '', /Bearer/);
     // An MCP endpoint that answers an unauthenticated caller is a disclosure
-    // of ~590 tool schemas describing writes against a real account. The
+    // of ~570 tool schemas describing writes against a real account. The
     // refusal must name no tool, no session and no count.
-    for (const leak of ['get_me', 'mcp-session-id', 'tools', 'session', 'spotify-mcp']) {
+    //
+    // `search` is listed alongside `get_me` because it is in the curated
+    // default surface (#889) and `get_me` no longer is — a probe naming only
+    // an unserved tool would pass whatever the refusal body said.
+    for (const leak of ['get_me', 'search', 'mcp-session-id', 'tools', 'session', 'spotify-mcp']) {
       assert.doesNotMatch(response.text, new RegExp(leak, 'i'), `the 401 body leaked ${leak}`);
     }
     assert.equal(response.headers['mcp-session-id'], undefined, 'a 401 must not open a session');
@@ -415,7 +424,10 @@ describe('the authenticated listener serves a real MCP session (#599)', () => {
     for (const probe of ['/', '/mcp/extra', '/../mcp', '/health']) {
       const response = await rawRequest(port, { path: probe, body: INITIALIZE });
       assert.equal(response.status, 404, `expected 404 for ${probe}, got ${response.status}`);
-      assert.doesNotMatch(response.text, /get_me|serverInfo/);
+      // `search` rather than `get_me`: the probe has to name a tool the server
+      // actually serves, or a leak of the real surface would go unnoticed just
+      // because the string being looked for is no longer registered (#889).
+      assert.doesNotMatch(response.text, /search|serverInfo/);
     }
   });
 
@@ -432,7 +444,10 @@ describe('the authenticated listener serves a real MCP session (#599)', () => {
       await client.connect(transport);
       const listed = await client.listTools();
       assert.ok(listed.tools.length > 100, `only ${listed.tools.length} tools were served`);
-      assert.ok(listed.tools.some((t) => t.name === 'get_me'), 'get_me is missing from the HTTP tool list');
+      // `search`, not `get_me` — see the note in the stdio-default test above:
+      // #889 made the unset default the curated `core` set, which does not
+      // include `catalog`, where `get_me` registers.
+      assert.ok(listed.tools.some((t) => t.name === 'search'), 'search is missing from the HTTP tool list');
 
       // A real call, so the session is proven to route to a working client
       // rather than merely answering the handshake.
@@ -444,9 +459,9 @@ describe('the authenticated listener serves a real MCP session (#599)', () => {
       // is not a real app, so the token endpoint refuses it. A transport-level
       // failure cannot produce `kind: "auth"` with a Spotify `fix` string — only
       // a call that was really dispatched and really reached accounts.spotify.com.
-      const result = await client.callTool({ name: 'get_me', arguments: {} });
+      const result = await client.callTool({ name: 'search', arguments: { query: 'x', types: ['track'] } });
       const envelope = (result.structuredContent as { error?: { tool?: string; kind?: string } } | undefined)?.error;
-      assert.equal(envelope?.tool, 'get_me', `tools/call did not reach the tool layer: ${JSON.stringify(result).slice(0, 400)}`);
+      assert.equal(envelope?.tool, 'search', `tools/call did not reach the tool layer: ${JSON.stringify(result).slice(0, 400)}`);
       assert.equal(envelope?.kind, 'auth', `expected the Spotify auth envelope, got ${JSON.stringify(envelope)}`);
       // The Spotify credential must not be in the payload either.
       assert.doesNotMatch(JSON.stringify(result), /DO-NOT-LEAK/);
