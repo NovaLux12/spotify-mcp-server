@@ -26,17 +26,20 @@ import './helpers/hermetic.js';
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { SpotifyClient } from '../src/client.js';
 import { registerAccountsTools } from '../src/tools/accounts.js';
 import { installActingAccountBoundary, resetActingAccountProbe, resolveActingAccount } from '../src/actingaccount.js';
-import { accountsFile, readAccounts, resetActingAccount } from '../src/accounts.js';
+import { accountsFile, readAccounts, registerAccount, resetActingAccount } from '../src/accounts.js';
 import type { TokenData } from '../src/types/spotify.js';
+
+const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -712,7 +715,7 @@ describe('registry file (#602)', () => {
 
   it('refuses to overwrite a registry that is not JSON', async () => {
     // The guard lives on the READ, and every write path in this repo
-    // (`switch_account`, and the auth walkthrough) reads before it writes —
+    // (`switch_account`, the only one) reads before it writes —
     // so the file that cannot be parsed is also a file that cannot be
     // overwritten. This test drives that sequence rather than calling
     // `writeAccounts` directly, because the direct call is not the contract.
@@ -746,5 +749,113 @@ describe('registry file (#602)', () => {
     } finally {
       process.env.SPOTIFY_MCP_ACCOUNTS_FILE = join(root, 'accounts.json');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Who is allowed to say they write the registry (#1465)
+// ---------------------------------------------------------------------------
+
+/**
+ * The files that describe the registry, and therefore assert an author for it.
+ *
+ * Each of these carried the same false claim: that `spotify-mcp auth --profile`
+ * writes `accounts.json`. It does not — `src/auth.ts` imports neither
+ * `accounts.js` nor anything that does, so the auth walkthrough has no path to
+ * `writeAccounts` at all — and the only writer in the tree is the
+ * `switch_account` handler. The claim is unfalsifiable from the outside: the
+ * command exits 0, writes a plausible token file, and leaves the registry
+ * untouched, so a user following the docs has no way to tell they are wrong.
+ */
+const REGISTRY_CLAIM_FILES = [
+  'docs/configuration.md',
+  'SPEC.md',
+  'src/accounts.ts',
+  'PRIVACY.md',
+];
+
+/**
+ * The auth COMMAND, and a verb that makes it a WRITER, in the same sentence.
+ *
+ * The command has to be matched as the command and not as the letters `auth`:
+ * these files are full of "authenticate" and "authenticated", and a bare
+ * `auth` substring matches all of them, so the guard spent its first run
+ * failing on a sentence that had never made the claim.
+ */
+const AUTH_COMMAND = /spotify-mcp auth\b|\bauth --profile\b/;
+const WRITER_VERB = /\b(?:written|writes|writer|writers|populated)\b/;
+
+/** The same, excused — a sentence that denies it is allowed to say so. */
+const NEGATES = /\b(?:not|never|no|only|instead|rather than)\b/i;
+
+describe('the registry has one writer, and the prose says so (#1465)', () => {
+  it('never names `auth` as a writer of accounts.json without denying it', () => {
+    const offenders: string[] = [];
+    for (const file of REGISTRY_CLAIM_FILES) {
+      const text = readFileSync(join(ROOT, file), 'utf8');
+      // Sentences, not the whole file: the registry is described in prose that
+      // also has to MENTION auth — to say it is not the writer, or to say it
+      // creates a token file. Scoping to the sentence is what lets the correct
+      // text pass while the false claim fails; a whole-file grep could not
+      // tell "auth writes this" apart from "auth does not write this".
+      for (const sentence of text.split(/(?<=[.!?])\s+|\n/)) {
+        if (AUTH_COMMAND.test(sentence) && WRITER_VERB.test(sentence) && !NEGATES.test(sentence)) {
+          offenders.push(`${file}: ${sentence.trim().slice(0, 120)}`);
+        }
+      }
+    }
+    assert.deepEqual(
+      offenders,
+      [],
+      'a sentence claims `auth` writes accounts.json, which it cannot do:\n'
+      + offenders.join('\n'),
+    );
+  });
+
+  it('names switch_account as the writer, in the docs and in the source', () => {
+    for (const file of REGISTRY_CLAIM_FILES) {
+      const text = readFileSync(join(ROOT, file), 'utf8');
+      assert.ok(
+        text.includes('switch_account'),
+        `${file} describes the registry and should name its only writer`,
+      );
+    }
+  });
+
+  it('tells a user who cannot register an account to re-run a thing that registers', () => {
+    // The remediation half of #1465, and the half that cost a user an
+    // afternoon. This message is handed to an MCP caller through
+    // `switch_account`'s `registration_warning` and its prose line, so a name
+    // in it is advice someone will act on. The old text named
+    // `spotify-mcp auth --profile`, which creates a token file and never
+    // reaches this function: following it cannot produce the promised result
+    // in any state. Asserting the ABSENCE of that command is the regression —
+    // a test that only checked the new name would still pass against a
+    // message that offered both.
+    let message = '';
+    assert.throws(
+      () => registerAccount(
+        { profile: 'work', tokenFile: '/tmp/nowhere/tokens.work.json', identity: undefined },
+        [],
+      ),
+      (err: unknown) => {
+        message = err instanceof Error ? err.message : String(err);
+        return true;
+      },
+    );
+    assert.ok(message.length > 0, 'registerAccount must throw a readable message');
+    assert.match(
+      message,
+      /switch_account/,
+      'the remediation must name the one thing that writes the registry',
+    );
+    assert.doesNotMatch(
+      message,
+      /auth --profile/,
+      'the remediation must not name a command that cannot register an account',
+    );
+    // The failure is still described: a message that dropped the diagnosis to
+    // fix the advice would trade one unhelpful text for another.
+    assert.match(message, /account_id/);
   });
 });
