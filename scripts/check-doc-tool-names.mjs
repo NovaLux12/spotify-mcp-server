@@ -162,16 +162,43 @@ const parameterAllowlist = new Set([
   'created_new_playlist', 'duplicates_skipped',
   'unavailable_items_skipped', 'batches_sent',
   'rows_read', 'reported_total',
-  // #1388: playlist_balance's coverage fields. The tool splits what its bounded
-  // walk returned, so it reports how much it read (`items_read`), how large the
-  // source playlist is (`items_total`, `null` when Spotify's own count was
-  // unreadable) and whether the two are the same. The description names them so
-  // a host can tell a partial split from a whole one without reading prose —
-  // which is the whole point of the disclosure, and the reason they belong here
-  // rather than being described in words only. structuredContent keys on that
-  // tool, on the same reasoning as `rows_read` above and `truncated_by_cap`
-  // below.
-  'items_read', 'items_total',
+  // #1423: the neighbours of the bounded-read disclosure that are NOT part of
+  // it, named in SPEC.md §5 so a new tool does not reinvent one of them as a
+  // fourth spelling. All four are structuredContent keys naming a result the
+  // call reports about its own work — `item_walk_cap` is take_playlist_snapshot's
+  // ceiling beside `reported_total`; the three `<entity>_scanned` keys count
+  // entities a scan examined and carry no total beside them, which is exactly
+  // why they are not `rows_read`.
+  'item_walk_cap',
+  // `cap_reached` is take_playlist_snapshot's truncation verdict, named beside
+  // `reported_total` because the tool writes a snapshot file rather than
+  // answering a question about a live read, so it says "the cap was reached"
+  // instead of carrying a `truncated` flag. A structuredContent key on that
+  // tool, on the same reasoning as `item_walk_cap` above.
+  'cap_reached',
+  'playlists_scanned', 'saved_albums_scanned', 'releases_scanned',
+  // #1423 again, for the family the same paragraph rules out: fifteen
+  // `swarm4_playlists` tools emit `<field>_total` / `_returned` / `_withheld`
+  // / `_truncated` through `budgetedArray`, which builds the key by computation
+  // so no literal for it exists anywhere in the tree. `items_total` is the
+  // common one and is a released structuredContent key. `swarm4_playlists` is
+  // the MODULE those tools live in — a source file, named because the
+  // distinction only matters to someone editing that file. Neither is a tool or
+  // a parameter.
+  'items_total', 'swarm4_playlists',
+  // #1388, RENAMED by #1423: playlist_balance's coverage fields. The tool
+  // splits what its bounded walk returned, so it reports how much it read and
+  // how large the source playlist is. It shipped `items_read` / `items_total`;
+  // #1423 moved it onto the repo-wide pair `rows_read` / `reported_total`
+  // (allowlisted above) so one name means the same thing everywhere, and
+  // dropped `items_total` entirely — it is now a dead spelling.
+  //
+  // `items_read` stays allowlisted for exactly one tool: `listening_streaks`,
+  // which counts /me/player/recently-played history entries rather than
+  // collection rows, carries no reported total, and shipped in v2.1.0 — so it
+  // is a released wire-contract key that #1423 deliberately did not rename.
+  // A new appearance of this name in a doc is the thing to look at.
+  'items_read',
   // #1311: remove_unavailable_playlist_items' bounded-verdict fields. The
   // tool reports `verification: partial` over a walk that stopped at the cap
   // and names where the unread region starts, so a caller can tell a bounded

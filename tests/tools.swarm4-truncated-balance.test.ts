@@ -128,11 +128,11 @@ describe('#1388 a truncated read must be disclosed, not reported as the playlist
     const payload = payloadOf(out);
 
     assert.equal(payload.truncated, true, 'the split must report that the read was truncated');
-    assert.equal(payload.items_read, cap, 'and how many rows it actually read');
-    assert.equal(payload.items_total, cap + 1, "and the playlist's own size, so the gap is computable");
+    assert.equal(payload.rows_read, cap, 'and how many rows it actually read');
+    assert.equal(payload.reported_total, cap + 1, "and the playlist's own size, so the gap is computable");
     assert.ok(
-      (payload.items_total as number) > (payload.items_read as number),
-      'items_total must be the SOURCE size, not the read size echoed back',
+      (payload.reported_total as number) > (payload.rows_read as number),
+      'reported_total must be the SOURCE size, not the read size echoed back',
     );
   });
 
@@ -179,11 +179,11 @@ describe('#1388 a truncated read must be disclosed, not reported as the playlist
 
     assert.equal(partial.truncated, true);
     assert.equal(whole.truncated, false, 'a 200-row playlist at a 500 cap is a whole read');
-    assert.equal(whole.items_read, 200);
-    assert.equal(whole.items_total, 200);
+    assert.equal(whole.rows_read, 200);
+    assert.equal(whole.reported_total, 200);
     assert.notEqual(
-      partial.items_total,
-      partial.items_read,
+      partial.reported_total,
+      partial.rows_read,
       'a partial split must be distinguishable from a whole one by fields alone',
     );
     // The truncation-only fields must not be fabricated on a whole read, so a
@@ -245,7 +245,7 @@ describe('#1388 a truncated read must be disclosed, not reported as the playlist
 
   it('a source whose own count is unreadable reports null, never the read size', async () => {
     // The rule from `loadPlaylistFull`: an unread count is never substituted
-    // with the count that could be read. `items_total: 500` on a walk that
+    // with the count that could be read. `reported_total: 500` on a walk that
     // stopped at 500 would turn "I don't know how big this is" into "this is
     // the whole thing", which is the defect again, one layer in.
     const cap = getConfig().fetchAllCap;
@@ -272,8 +272,8 @@ describe('#1388 a truncated read must be disclosed, not reported as the playlist
 
     const payload = payloadOf(await split(h, A));
     assert.equal(payload.truncated, true, 'the walk stopped early, so it is still truncated');
-    assert.equal(payload.items_total, null, 'an unread total is null — never the rows that were read');
-    assert.equal(payload.items_read, cap);
+    assert.equal(payload.reported_total, null, 'an unread total is null — never the rows that were read');
+    assert.equal(payload.rows_read, cap);
   });
 
   it('a whole read is unchanged: no disclosure, no cap, no refusal', async () => {
@@ -287,8 +287,8 @@ describe('#1388 a truncated read must be disclosed, not reported as the playlist
     const out = await split(h, A);
     const payload = payloadOf(out);
     assert.equal(payload.truncated, false, 'exactly the cap is a whole read');
-    assert.equal(payload.items_read, cap);
-    assert.equal(payload.items_total, cap);
+    assert.equal(payload.rows_read, cap);
+    assert.equal(payload.reported_total, cap);
     assert.equal(h.stub.created.length, 3, 'and the split still happens');
     assert.equal(
       h.stub.created.flatMap((c) => h.stub.urisOf(c.id)).length,
@@ -362,8 +362,8 @@ describe('#1388 the shortfall is disclosed wherever a count is reported', () => 
     const out = await h.invoke('playlist_balance', { playlist_id: B, parts: 3, dry_run: true });
     const payload = payloadOf(out);
     assert.equal(payload.ok, false);
-    assert.equal(payload.items_read, 2, 'the count is named for what it is');
-    assert.equal(payload.items_total, 2, 'and the source count beside it');
+    assert.equal(payload.rows_read, 2, 'the count is named for what it is');
+    assert.equal(payload.reported_total, 2, 'and the source count beside it');
     assert.equal(payload.truncated, false, 'a 2-row playlist read whole is not truncated');
   });
 });
@@ -385,8 +385,8 @@ describe('#1388 the disclosure cannot be dropped by accident', () => {
       /p\.truncated/,
       'playlist_balance must read the truncation verdict #1362 already put on the LoadedPlaylist',
     );
-    assert.match(tool, /items_read/, 'and report what it read, by a name that says so');
-    assert.match(tool, /items_total/, "beside the playlist's own size");
+    assert.match(tool, /rows_read/, 'and report what it read, by a name that says so');
+    assert.match(tool, /reported_total/, "beside the playlist's own size");
     assert.doesNotMatch(
       tool,
       /^\s*items:\s*n\s*,?\s*$/m,

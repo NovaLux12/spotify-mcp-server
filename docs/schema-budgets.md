@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 598,814B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 598,816B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 66,492B | 11.1% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 13,186B | 2.2% of the enforced limit |
+| Headroom | 13,184B | 2.2% of the enforced limit |
 
-Headroom is **13,186B** of the 612,000B enforced limit — 2.2% — so the aggregate budget is **tight**.
+Headroom is **13,184B** of the 612,000B enforced limit — 2.2% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -229,7 +229,7 @@ than maintained.
 | swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
 | swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
-| swarm4playlists | 18 | 23,226 | 18 | 23,226 | 19 | 25,549 |
+| swarm4playlists | 18 | 23,228 | 18 | 23,228 | 19 | 25,551 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared
