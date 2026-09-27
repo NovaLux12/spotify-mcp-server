@@ -212,6 +212,21 @@ export async function createHarnessHome({ label = 'harness', realEnv = process.e
   for (const key of Object.keys(env)) {
     if (key.startsWith('SPOTIFY_MCP_')) delete env[key];
   }
+  // Measurement bookkeeping, not configuration. `node --test
+  // --experimental-test-coverage` puts a `NODE_V8_COVERAGE` directory in the
+  // environment of every process it starts, and a spawned server that collects
+  // into it has its coverage merged into the report — under `<repo>/dist`,
+  // which is the COMPILED mirror of every `src` module. That double-counts the
+  // whole codebase at a second path and drags the global line figure under the
+  // gate, for a file nobody is trying to cover.
+  //
+  // The variable is set to the EMPTY STRING, not deleted, and that is not a
+  // stylistic choice. Deleting the key from the env object does NOT stop the
+  // child: Node re-injects `NODE_V8_COVERAGE` into the environment of a process
+  // spawned from a coverage-instrumented parent, so the child collects anyway
+  // (verified on Node 24 — a spawn with `env: {}` still collected). An empty
+  // value is falsy to the collector and does suppress it.
+  env.NODE_V8_COVERAGE = '';
   // The structural half: every `join(homedir(), '.spotify-mcp', …)` default now
   // resolves under the sandbox. `USERPROFILE` is the Windows spelling and CI
   // runs there, exactly as `tests/helpers/hermetic.ts` does it.

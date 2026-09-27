@@ -319,6 +319,11 @@ function harnessSandbox(script: string): { dir: string; envOut: string; fakeHome
           STUB_ENV_OUT: envOut,
           // The helper's registry comes from the real build, not the stub.
           SPOTIFY_MCP_DIST_ROOT: join(ROOT, 'dist'),
+          // The empty string, not a deletion: Node re-injects this into the
+          // environment of any process spawned from a coverage-instrumented
+          // parent, so removing the key would leave the sandbox's copies of the
+          // harness scripts collecting into the report under `os.tmpdir()`.
+          NODE_V8_COVERAGE: '',
         },
       });
       if (res.error) throw res.error;
@@ -609,8 +614,18 @@ async function callSaveScene(home: string, sceneName: string, label: string): Pr
   env.USERPROFILE = home;
   env.SPOTIFY_CLIENT_ID = 'harness-isolation-probe';
   for (const key of Object.keys(env)) {
+    // `SPOTIFY_MCP_*` would redirect stores out of the home under test.
     if (key.startsWith('SPOTIFY_MCP_')) delete env[key];
   }
+  // This child is not part of any measurement. Left collecting, the runner
+  // merges the server's coverage into the report under `<repo>/dist` — the
+  // compiled mirror of every `src` module — and the global line figure falls
+  // under the gate for a file nobody is trying to cover. The EMPTY STRING, not
+  // a deletion: Node re-injects `NODE_V8_COVERAGE` into the environment of a
+  // process spawned from a coverage-instrumented parent, so removing the key
+  // does not stop the collection (verified on Node 24; `env: {}` still
+  // collected). The same assignment is in `createHarnessHome`.
+  env.NODE_V8_COVERAGE = '';
   const child = StdioJsonRpcChild.spawn({
     label,
     command: process.execPath,
