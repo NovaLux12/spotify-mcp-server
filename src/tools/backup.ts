@@ -41,7 +41,7 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
-import { backupRetentionDays, resolveOutputPath } from '../paths.js';
+import { backupRetentionDays, backupRootDir, resolveOutputPath } from '../paths.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import type {
   FollowedArtistsResponse,
@@ -189,9 +189,15 @@ export interface LibraryBackup {
 // Sidecar location + sequencing
 // ---------------------------------------------------------------------------
 
-/** Backup dir; SPOTIFY_MCP_BACKUP_DIR overrides the whole directory. */
+/**
+ * Backup dir; SPOTIFY_MCP_BACKUP_DIR overrides the whole directory.
+ *
+ * The definition now lives in ../paths.js as `backupRootDir` so the read-side
+ * roots (#623) and this writer cannot drift apart; this stays as the name
+ * every existing `from './backup.js'` import already uses.
+ */
 export function backupDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_BACKUP_DIR ?? join(homedir(), '.spotify-mcp', 'backups');
+  return backupRootDir(env);
 }
 
 export const BACKUP_FILE_RE = /^backup-(\d{4}-\d{2}-\d{2})-(\d+)(\.partial)?\.json$/;

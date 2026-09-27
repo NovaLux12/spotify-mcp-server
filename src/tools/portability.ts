@@ -26,7 +26,7 @@ import { getConfig } from '../config.js';
 import { appendFile, chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
-import { exportRootDir, resolveOutputPath, writeOutputFile } from '../paths.js';
+import { exportRootDir, READ_ROOTS_ENV_HINT, ownStoreRoots, readLocalFile, readRoots, resolveOutputPath, writeOutputFile } from '../paths.js';
 import { csvTable } from '../csvsafe.js';
 import type {
   SpotifyPaged,
@@ -469,7 +469,11 @@ const PROFILE_STATE_SCHEMA_VERSION = 1;
 
 async function tryReadJson(path: string): Promise<unknown | null> {
   try {
-    const raw = await readFile(path, 'utf8');
+    // A store this server wrote itself: the root is its own directory, which
+    // is what makes a caller-influenced id unable to walk out of it. The
+    // regular-file and size-cap checks are the ones that matter here — a FIFO
+    // dropped into the data dir would otherwise block the read forever.
+    const raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'profile state', target: path });
     return JSON.parse(raw);
   } catch {
     return null;
@@ -886,11 +890,14 @@ type StoreRead =
 async function readStoreForExport(path: string): Promise<StoreRead> {
   let raw: string;
   try {
-    raw = await readFile(path, 'utf8');
+    raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'export_sidecar_archive', target: path });
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return { state: 'absent' };
-    return { state: 'unreadable', reason: code ?? (e instanceof Error ? e.message : String(e)) };
+    // A refusal carries its own reason ("not a regular file", "over the …,
+    // document limit") and that reason is what `unreadable` reports, so the
+    // export never counts a store it could not read as empty (#760/#623).
+    return { state: 'unreadable', reason: e instanceof Error ? e.message : String(e) };
   }
   try {
     return { state: 'read', value: JSON.parse(raw) };
@@ -1232,8 +1239,17 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       let doc: Record<string, unknown>;
+      // The read is validated BEFORE the parse, and deliberately OUTSIDE the
+      // try/catch below: a refusal that says "outside the allowed read roots"
+      // or "over the document limit" must reach the caller intact, not be
+      // flattened into a generic "Could not read archive" (#623).
+      const raw = await readLocalFile({
+        roots: readRoots(),
+        tool: 'import_profile_state',
+        target: args.input_path as string,
+        envHint: READ_ROOTS_ENV_HINT,
+      });
       try {
-        const raw = await readFile(args.input_path, 'utf8');
         doc = JSON.parse(raw) as Record<string, unknown>;
       } catch (e) {
         throw new Error(`Could not read archive "${args.input_path}": ${e instanceof Error ? e.message : String(e)}`);
@@ -1384,12 +1400,17 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
         if (!Array.isArray(value)) return;
         const histPath = historyFilePath();
         const present = await fileExists(histPath);
-        // An unreadable ledger reports no count rather than a fabricated zero.
+        // An unreadable ledger reports no count rather than a fabricated zero,
+        // and a guard refusal (not a regular file, over the cap) is "unreadable"
+        // on exactly those terms — it must never become a row count.
         const existingKeys = present
-          ? await readFile(histPath, 'utf8').then(
-            (raw) => raw.split('\n').filter((l) => l.trim().length > 0).length,
-            () => null,
-          )
+          ? await readLocalFile({
+              roots: ownStoreRoots(histPath),
+              tool: 'import_profile_state',
+              target: histPath as string,
+            })
+            .then((raw) => raw.split('\n').filter((l) => l.trim().length > 0).length)
+            .catch(() => null)
           : 0;
         const data = `${value.map((r) => JSON.stringify(r)).join('\n')}\n`;
         if (args.mode === 'overwrite') {
@@ -1809,7 +1830,20 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const readJson = async (p: string) => JSON.parse(await readFile(p, 'utf8'));
+      // Both sides are caller-supplied paths, so both go through the one
+      // read guard: confined to the allowed roots, regular files only,
+      // size-capped. This is the sharpest read primitive in the server —
+      // whatever it parses is echoed back — so it is the last place that
+      // should be reading a file the server was merely asked about.
+      const readJson = async (p: string) =>
+        JSON.parse(
+          await readLocalFile({
+            roots: readRoots(),
+            tool: 'library_snapshot_diff',
+            target: p as string,
+            envHint: READ_ROOTS_ENV_HINT,
+          }),
+        ) as Record<string, unknown>;
       const before = await readJson(args.before_path);
       const after = await readJson(args.after_path);
       const extractUris = (doc: Record<string, unknown>): Set<string> => {
@@ -1955,7 +1989,12 @@ export function registerPortabilityTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
       const inputPath = args.input_path ?? join(portabilityDir(), 'library.json');
-      const raw = await readFile(inputPath, 'utf8');
+      const raw = await readLocalFile({
+        roots: readRoots(),
+        tool: 'import_from_sidecar',
+        target: inputPath as string,
+        envHint: READ_ROOTS_ENV_HINT,
+      });
       const doc = JSON.parse(raw) as Record<string, unknown>;
       // #736: every collection the exporter writes is planned, not just tracks.
       const plan = planSidecarRestore(doc);

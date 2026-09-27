@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, delimiter, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
@@ -71,6 +71,18 @@ const withPortabilityRoot=async<T>(dir:string,run:()=>Promise<T>)=>{
   const prev=process.env.SPOTIFY_MCP_PORTABILITY_DIR;
   process.env.SPOTIFY_MCP_PORTABILITY_DIR=dir;
   try{ return await run(); } finally { if(prev===undefined) delete process.env.SPOTIFY_MCP_PORTABILITY_DIR; else process.env.SPOTIFY_MCP_PORTABILITY_DIR=prev; }
+};
+
+/** #623: `input_path` / `before_path` / `after_path` are caller-supplied reads,
+ *  confined to the allowed read roots. A fixture directory therefore has to be
+ *  opted in — the same SPOTIFY_MCP_ALLOW_PATHS an operator sets to let a tool
+ *  read a document from outside the server's own stores. Every fixture stays
+ *  under mkdtemp; no real data dir is involved. */
+const withAllowedReadRoot=async<T>(dir:string,run:()=>Promise<T>)=>{
+  const prev=process.env.SPOTIFY_MCP_ALLOW_PATHS;
+  process.env.SPOTIFY_MCP_ALLOW_PATHS=prev?`${prev}${delimiter}${dir}`:dir;
+  try{ return await run(); }
+  finally { if(prev===undefined) delete process.env.SPOTIFY_MCP_ALLOW_PATHS; else process.env.SPOTIFY_MCP_ALLOW_PATHS=prev; }
 };
 
 // #753 fixtures: an archive is a row in /me/playlists that may or may not be
@@ -375,7 +387,9 @@ describe('export_all_playlists CSV formula neutralisation (#630)',()=>{
         stores:{ mutations_history:[{ method:'DELETE', path:'/me/library', target:'abc' }] },
       }));
       const { invoke }=harness();
-      await invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' });
+      // #623: the archive is a caller-supplied read, so its scratch directory
+      // is opted in as an allowed read root for this call.
+      await withAllowedReadRoot(dir,()=>invoke('import_profile_state',{ input_path:archive, mode:'overwrite', response_format:'concise' }));
 
       assert.equal((await stat(histPath)).mode & 0o777,0o600);
       assert.equal((await stat(histDir)).mode & 0o777,0o700);
@@ -419,7 +433,9 @@ const withSidecar=async<T>(doc:unknown,run:(p:string)=>Promise<T>)=>{
   try{
     const p=join(dir,'library.json');
     await writeFile(p,JSON.stringify(doc));
-    return await run(p);
+    // #623: import_from_sidecar reads this file through the confined read
+    // guard, so the fixture dir is opted in for the duration of the call.
+    return await withAllowedReadRoot(dir,()=>run(p));
   } finally { await rm(dir,{recursive:true,force:true}); }
 };
 const mutating=(c:{calls:RecordedCall[]})=>c.calls.filter((x)=>x.method==='PUT'||x.method==='POST'||x.method==='DELETE');
@@ -783,7 +799,12 @@ const PROFILE_ENV=['SPOTIFY_MCP_EXPORT_DIR','SPOTIFY_MCP_SCENES_FILE','SPOTIFY_M
 const withProfileStores=async<T>(paths:Record<string,string>,run:()=>Promise<T>)=>{
   const prev:Record<string,string|undefined>={};
   for(const k of PROFILE_ENV){ prev[k]=process.env[k]; if(paths[k]!==undefined) process.env[k]=paths[k]; }
-  try{ return await run(); } finally { for(const k of PROFILE_ENV){ if(prev[k]===undefined) delete process.env[k]; else process.env[k]=prev[k]; } }
+  // #623: import_profile_state reads its `input_path` through the confined read
+  // guard, and the archive fixture lives in the same scratch directory as the
+  // stores, so that directory is opted in for the duration of the call.
+  const dataDir=paths.SPOTIFY_MCP_DATA_DIR;
+  try{ return dataDir===undefined?await run():await withAllowedReadRoot(dataDir,run); }
+  finally { for(const k of PROFILE_ENV){ if(prev[k]===undefined) delete process.env[k]; else process.env[k]=prev[k]; } }
 };
 
 const scratch=async()=>mkdtemp(join(tmpdir(),'i760-'));
@@ -1331,7 +1352,9 @@ describe('library_snapshot_diff (counts come from the URIs actually in the files
       const after=join(dir,'after.json');
       await writeFile(before,JSON.stringify(lib('spotify:album:aaaaaaaaaaaaaaaaaaaaaa')));
       await writeFile(after,JSON.stringify(lib('spotify:album:bbbbbbbbbbbbbbbbbbbbbb')));
-      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      // #623: before_path/after_path are caller-supplied reads; opt the
+      // fixture directory in as an allowed read root.
+      const out=await withAllowedReadRoot(dir,()=>harness().invoke('library_snapshot_diff',{before_path:before,after_path:after}));
       const payload=out.structuredContent!;
       assert.equal(payload.added_count,1);
       assert.equal(payload.removed_count,1);
@@ -1348,7 +1371,9 @@ describe('library_snapshot_diff (counts come from the URIs actually in the files
       const after=join(dir,'after.json');
       await writeFile(before,JSON.stringify({playlists:[{id:'p0',uri:'spotify:playlist:p0000000000000000000',items:[{uri:'spotify:track:inside000000000000000'}]}]}));
       await writeFile(after,JSON.stringify({playlists:[{id:'p0',uri:'spotify:playlist:p0000000000000000000',items:[{uri:'spotify:track:inside000000000000000'},{uri:'spotify:track:brandnew00000000000000'}]}]}));
-      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      // #623: before_path/after_path are caller-supplied reads; opt the
+      // fixture directory in as an allowed read root.
+      const out=await withAllowedReadRoot(dir,()=>harness().invoke('library_snapshot_diff',{before_path:before,after_path:after}));
       assert.equal(out.structuredContent!.added_count,1);
       assert.deepEqual(out.structuredContent!.added_sample,['spotify:track:brandnew00000000000000']);
     } finally { await rm(dir,{recursive:true,force:true}); }
@@ -1362,7 +1387,9 @@ describe('library_snapshot_diff (counts come from the URIs actually in the files
       const uris=(n:number)=>Array.from({length:n},(_,i)=>({uri:`spotify:album:${String(i).padStart(22,'0')}`}));
       await writeFile(before,JSON.stringify({albums:[]}));
       await writeFile(after,JSON.stringify({albums:uris(14)}));
-      const out=await harness().invoke('library_snapshot_diff',{before_path:before,after_path:after});
+      // #623: before_path/after_path are caller-supplied reads; opt the
+      // fixture directory in as an allowed read root.
+      const out=await withAllowedReadRoot(dir,()=>harness().invoke('library_snapshot_diff',{before_path:before,after_path:after}));
       const payload=out.structuredContent!;
       assert.equal(payload.added_count,14);
       assert.equal((payload.added_sample as string[]).length,10);

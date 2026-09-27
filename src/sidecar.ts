@@ -14,8 +14,9 @@
  * is what let four loaders drift apart — the shared module is the one place
  * to fix.
  */
-import { copyFile, readFile, chmod } from 'node:fs/promises';
-import { copyFileSync, existsSync, readFileSync, chmodSync, constants as FS } from 'node:fs';
+import { copyFile, chmod, lstat } from 'node:fs/promises';
+import { copyFileSync, existsSync, lstatSync, chmodSync, constants as FS } from 'node:fs';
+import { ownStoreRoots, readLocalFile, readLocalFileSync } from './paths.js';
 
 export class SidecarUnreadableError extends Error {
   readonly path: string;
@@ -66,6 +67,13 @@ function formatSidecarMessage(path: string, reason: string, preservedAs: string 
  * is what `library_genre_report` callers have always been able to assume.
  */
 export async function preserveUnreadableSidecar(file: string): Promise<string | null> {
+  // A quarantine that COPIES the file opens it for reading, so it inherits
+  // the hazard the read guard just refused: copyFile() on a FIFO blocks
+  // forever, and on a device node never returns. Only a regular file can be
+  // preserved; anything else stays in place, which the caller's error already
+  // says ("could not be moved aside, so it is still in place") rather than
+  // implying the bytes are safe somewhere else (#623).
+  if (!(await isRegularFile(file))) return null;
   for (let n = 0; n < 50; n++) {
     const target = n === 0 ? `${file}.corrupt` : `${file}.corrupt.${n}`;
     try {
@@ -92,6 +100,9 @@ export async function preserveUnreadableSidecar(file: string): Promise<string | 
  * separate inline preservation that would drift again (#1051).
  */
 export function preserveUnreadableSidecarSync(file: string): string | null {
+  // Same reason as the async twin above: a quarantine copy opens the file, so
+  // it must never be attempted on a FIFO or a device node.
+  if (!isRegularFileSync(file)) return null;
   for (let n = 0; n < 50; n++) {
     const target = n === 0 ? `${file}.corrupt` : `${file}.corrupt.${n}`;
     try {
@@ -106,6 +117,39 @@ export function preserveUnreadableSidecarSync(file: string): string | null {
     return target;
   }
   return null;
+}
+
+/**
+ * The reason a read failed, for the `SidecarUnreadableError`.
+ *
+ * A raw errno loses the point: the #623 guard refuses with a message that
+ * says WHICH of the three hazards applied — outside the read roots, not a
+ * regular file, or over the size cap — and that is the thing the operator has
+ * to act on. So an errno keeps the terse form, and a guard refusal (no errno,
+ * a full sentence) is reported as itself.
+ */
+function describeReadFailure(err: unknown): string {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code) return `read failed: ${code}`;
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** True iff `file` is a regular file — the only thing a quarantine may copy. */
+async function isRegularFile(file: string): Promise<boolean> {
+  try {
+    return (await lstat(file)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/** Synchronous twin of `isRegularFile`. */
+function isRegularFileSync(file: string): boolean {
+  try {
+    return lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
 }
 
 export interface LoadSidecarOptions {
@@ -141,15 +185,19 @@ export async function loadSidecar<T>(
       : preserveUnreadableSidecar(file);
   let text: string;
   try {
-    text = await readFile(file, 'utf8');
+    // Every sidecar read in the server funnels through here, so this is where
+    // the #623 guard belongs: a regular-file check (a FIFO planted in the data
+    // dir would otherwise block the serialized request queue forever) and a
+    // size cap (an unbounded read of a huge file exhausts memory), plus
+    // confinement to the store's own directory so a caller-influenced id
+    // cannot walk out of it. A refusal becomes a SidecarUnreadableError
+    // carrying ITS reason, so "is a FIFO" is never reported as a bare
+    // "read failed: EISDIR".
+    text = await readLocalFile({ roots: ownStoreRoots(file), tool: 'sidecar', target: file });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return makeEmpty();
     const preserved = await preserve();
-    throw new SidecarUnreadableError(
-      file,
-      `read failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`,
-      preserved,
-    );
+    throw new SidecarUnreadableError(file, describeReadFailure(err), preserved);
   }
   let parsed: unknown;
   try {
@@ -189,15 +237,12 @@ export function loadSidecarSync<T>(
 ): T {
   let text: string;
   try {
-    text = readFileSync(file, 'utf8');
+    // Same guard as the async loader above, over the same three decisions.
+    text = readLocalFileSync({ roots: ownStoreRoots(file), tool: 'sidecar', target: file });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return makeEmpty();
     const preserved = preserveUnreadableSidecarSync(file);
-    throw new SidecarUnreadableError(
-      file,
-      `read failed: ${(err as NodeJS.ErrnoException).code ?? (err as Error).message}`,
-      preserved,
-    );
+    throw new SidecarUnreadableError(file, describeReadFailure(err), preserved);
   }
   let parsed: unknown;
   try {

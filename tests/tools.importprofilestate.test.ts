@@ -72,10 +72,15 @@ beforeEach(async () => {
   process.env.SPOTIFY_MCP_GENRE_TAGS_FILE = join(dir, 'genre-tags.json');
   process.env.SPOTIFY_MCP_PLAYBACKEXT_FILE = join(dir, 'playback-ext.json');
   process.env.SPOTIFY_MCP_DATA_DIR = dir;
+  // #623: `input_path` is a caller-supplied read confined to the allowed read
+  // roots, so the scratch directory holding the archive is opted in — the same
+  // SPOTIFY_MCP_ALLOW_PATHS an operator sets. The archive lives beside the
+  // stores, so one entry covers both. Everything stays under mkdtemp.
+  process.env.SPOTIFY_MCP_ALLOW_PATHS = dir;
 });
 
 afterEach(async () => {
-  for (const key of ['SPOTIFY_MCP_SCENES_FILE', 'SPOTIFY_MCP_SEARCH_HISTORY_FILE', 'SPOTIFY_MCP_GENRE_TAGS_FILE', 'SPOTIFY_MCP_PLAYBACKEXT_FILE', 'SPOTIFY_MCP_DATA_DIR', 'SPOTIFY_MCP_HISTORY_DIR']) {
+  for (const key of ['SPOTIFY_MCP_SCENES_FILE', 'SPOTIFY_MCP_SEARCH_HISTORY_FILE', 'SPOTIFY_MCP_GENRE_TAGS_FILE', 'SPOTIFY_MCP_PLAYBACKEXT_FILE', 'SPOTIFY_MCP_DATA_DIR', 'SPOTIFY_MCP_HISTORY_DIR', 'SPOTIFY_MCP_ALLOW_PATHS']) {
     delete process.env[key];
   }
   await rm(dir, { recursive: true, force: true });

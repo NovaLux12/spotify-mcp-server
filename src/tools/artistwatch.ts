@@ -21,6 +21,7 @@ import { randomBytes } from 'node:crypto';
 import { classifySpotifyReference } from '../refs.js';
 import { mapLimit } from '../concurrency.js';
 import type { SpotifyArtistAlbumRow, SpotifyPaged } from '../types/spotify.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 /**
  * Store plumbing (#764).
@@ -62,7 +63,11 @@ async function quarantineCorruptSidecar(path: string): Promise<string | undefine
   for (let n = 1; n <= 50; n += 1) {
     const backup = n === 1 ? `${path}.corrupt` : `${path}.corrupt.${n}`;
     try {
-      await writeFile(backup, await readFile(path), { mode: 0o600, flag: 'wx' });
+      // #623: quarantine copies the store's bytes, so it must not open a FIFO
+      // or a device node standing where the sidecar should be. Guarded read;
+      // a refusal falls to the catch below, which reports the file as not
+      // quarantinable — the original is left in place, never truncated.
+      await writeFile(backup, await readLocalFile({ roots: ownStoreRoots(path), tool: 'artist_watchlist', target: path }), { mode: 0o600, flag: 'wx' });
       await chmod(backup, 0o600);
       return backup;
     } catch (err) {
@@ -97,7 +102,11 @@ function quarantineNote(backup: string | undefined): string {
 async function readStoreFile(path: string): Promise<WatchlistStore> {
   let raw: string;
   try {
-    raw = await readFile(path, 'utf8');
+    // #623: server-owned store, confined to its own directory, regular files
+    // only, size-capped. A refusal is reported with its own reason below, so
+    // a FIFO at the watchlist path is named as a FIFO rather than hanging the
+    // probe loop or being written off as a missing store.
+    raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'artist_watchlist', target: path });
   } catch (err) {
     // ENOENT propagates so the caller can decide between the legacy path and an
     // empty store; every other read failure is corruption.

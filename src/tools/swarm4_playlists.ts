@@ -52,6 +52,7 @@ import type {
 import type { LibraryBackup } from './backup.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -376,7 +377,11 @@ async function readSnapshot(file: string): Promise<LibraryBackup> {
   const path = join(backupDir(), file);
   let raw: string;
   try {
-    raw = await readFile(path, 'utf8');
+    // #623: `file` is a snapshot name the caller may have supplied, and the
+    // path is built from the backup dir. Confined, regular-file-only and
+    // size-capped. A refusal falls into the "not found" branch below, which
+    // is the honest report for a name that is not a readable snapshot.
+    raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'library backup snapshot', target: path });
   } catch {
     const all = await listSnapshotFiles();
     const hint = all.length > 0

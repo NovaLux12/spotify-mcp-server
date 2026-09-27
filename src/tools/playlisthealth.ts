@@ -16,6 +16,7 @@ import {
 } from './confirm.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 /** A snapshot row plus its live position, so a diff can report where. */
 type PositionedRow = SnapTrackRow & { position: number };
@@ -288,7 +289,11 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       // "not found" is what makes this a client error the caller can act on
       // (a wrong or expired snapshot id), but the ids themselves must not be
       // echoed: one is a caller-supplied URL and the other a local path.
-      try { snapshot = JSON.parse(await readFile(filePath, 'utf8')) as SnapshotData; } catch { throw new Error('Snapshot not found for the requested playlist.'); }
+      // #623: the snapshot path is built from caller-supplied ids, so it is
+      // confined to the snapshot directory, must be a regular file, and is
+      // size-capped. A refusal is reported as "not found" — the same class of
+      // answer as a wrong id, and the file's own path is never echoed.
+      try { snapshot = JSON.parse(await readLocalFile({ roots: ownStoreRoots(filePath), tool: 'playlist_health', target: filePath })) as SnapshotData; } catch { throw new Error('Snapshot not found for the requested playlist.'); }
       const encId = encodeURIComponent(args.playlist_id);
       const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       // Multiset semantics, not set membership: a playlist that gains or loses
@@ -512,7 +517,10 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let jsonFiles = files.filter((f) => f.endsWith('.json'));
       if (args.playlist_id) { const prefix = `${sanitizeId(args.playlist_id)}__`; jsonFiles = jsonFiles.filter((f) => f.startsWith(prefix)); }
       const snapshots: Array<{ snapshot_id: string; playlist_id: string; created_at: string; total: number; file: string }> = [];
-      for (const f of jsonFiles) { try { const raw = await readFile(join(dir, f), 'utf8'); const data = JSON.parse(raw) as SnapshotData; snapshots.push({ snapshot_id: data.snapshot_id, playlist_id: data.playlist_id, created_at: data.created_at, total: data.total, file: join(dir, f) }); } catch { /* skip */ } }
+      // #623: same guard per file — a snapshot name is server-listed, but the
+      // bytes behind it are still confined, regular-file-only and size-capped,
+      // so a FIFO under a snapshot name is skipped rather than opened.
+      for (const f of jsonFiles) { try { const raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'playlist_snapshots', target: join(dir, f) }); const data = JSON.parse(raw) as SnapshotData; snapshots.push({ snapshot_id: data.snapshot_id, playlist_id: data.playlist_id, created_at: data.created_at, total: data.total, file: join(dir, f) }); } catch { /* skip */ } }
       snapshots.sort((a, b) => a.created_at.localeCompare(b.created_at));
       const structured = { snapshots, count: snapshots.length };
       const text = snapshots.length === 0 ? 'No snapshots found.' : `Found ${snapshots.length} snapshot(s):\n${snapshots.map((s) => `  ${s.playlist_id}/${s.snapshot_id} — ${s.total} items @ ${s.created_at}`).join('\n')}`;

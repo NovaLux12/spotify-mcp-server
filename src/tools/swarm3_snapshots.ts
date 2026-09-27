@@ -31,6 +31,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 // ---------------------------------------------------------------------------
 // On-disk contract
@@ -142,7 +143,9 @@ async function nextSeq(dir: string, re: RegExp, dateStamp: string, group: number
 
 /** Parse + minimally validate one snapshot file. Throws Error on corrupt data. */
 async function readSnapshotFile(path: string): Promise<PlaylistSnapshot> {
-  const raw = await readFile(path, 'utf8');
+  // #623: confined to the snapshot directory, regular files only,
+  // size-capped — a FIFO where a snapshot belongs would otherwise hang here.
+  const raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'playlist snapshot', target: path });
   const parsed = JSON.parse(raw) as Partial<PlaylistSnapshot>;
   if (!parsed || typeof parsed !== 'object') throw new Error('not a JSON object');
   if (!parsed._meta || typeof parsed._meta !== 'object') throw new Error('missing _meta block');

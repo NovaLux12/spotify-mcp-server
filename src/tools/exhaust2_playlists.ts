@@ -56,6 +56,7 @@ import type {
   SpotifyPlaylistSimple,
   SpotifyTrack,
 } from '../types/spotify.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -1680,7 +1681,13 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         fileName = files.sort().pop();
         if (!fileName) throw new Error('No local backups found — run backup_library first.');
       }
-      const raw = JSON.parse(await readFile(join(dir, fileName), 'utf8')) as {
+      // #623: `fileName` is chosen from a readdir of the backup dir, and the
+      // read is still confined, regular-file-only and size-capped — the file
+      // is server-named, not caller-named, so a FIFO planted under that name
+      // must be refused rather than opened.
+      const raw = JSON.parse(
+        await readLocalFile({ roots: ownStoreRoots(dir), tool: 'library delta', target: join(dir, fileName) }),
+      ) as {
         liked_tracks?: Array<{ uri?: string; name?: string }>;
         saved_albums?: Array<{ uri?: string; name?: string }>;
       };
