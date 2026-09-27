@@ -298,6 +298,14 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 Both doc gates accept `--census-file <path>` so CI generates the census once and
 feeds the same JSON to both. Do not run them independently in a loop.
 
+`npm run count:tools -- --out <path>` writes the census to a file and installs
+it only if the run succeeded, so the file's existence means generation
+succeeded. CI uses it rather than a shell redirect, because a redirect truncates
+its target *before* the command runs: a failed census left a zero-byte
+`.surface-census.json` behind, and the three readers above — all of which are
+guarded, so all of them ran anyway — reported a JSON parse error that named
+neither the census nor the failure (#1487).
+
 **A tool count belongs in a generated block, or nowhere.** The count that
 appears in a `.ts` comment or in prose is a claim about a tree nobody pinned,
 and it goes stale on the next tool that lands. A comment that genuinely needs

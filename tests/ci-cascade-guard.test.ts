@@ -183,11 +183,30 @@ function readRun(block: string[]): string {
 // The file dependency graph, as the workflow declares it
 // ---------------------------------------------------------------------------
 
-/** Files a step creates: a shell redirect target, or a `tee` target. */
+/**
+ * Files a step creates: a shell redirect target, a `tee` target, or the value
+ * of a `--out` flag.
+ *
+ * `--out` is here because of #1487, and the reason is worth stating rather than
+ * leaving as a third regex. The census step used to capture itself with
+ * `> .surface-census.json`, so that was the only shape in the workflow. When
+ * it moved to `node scripts/surface-census.mjs --out .surface-census.json` —
+ * so a failed run would leave no artifact at all — the redirect went with it,
+ * and this function quietly stopped seeing a producer for the census file. A
+ * file with no writer is `continue`d past as "an input, not an output of this
+ * job", so **rule 1 went blind for the whole census chain while still reporting
+ * green.** The precondition suite below is what caught it, and it caught it
+ * for the right reason: the artifact "stopped being written into `run:`".
+ *
+ * So this function has to know every way this workflow creates a file, and a
+ * new one has to be taught to it — a guard that cannot see the producer is a
+ * guard that cannot see the cascade.
+ */
 function writtenBy(script: string): string[] {
   const written = new Set<string>();
   for (const [, file] of script.matchAll(/(?:^|[^0-9<>|])>\s*([^\s|&;<>()]+)/g)) written.add(file);
   for (const [, file] of script.matchAll(/\btee\s+(?:-a\s+)?([^\s|&;<>()]+)/g)) written.add(file);
+  for (const [, file] of script.matchAll(/(?:^|\s)--out[=\s]+([^\s|&;<>()]+)/g)) written.add(file);
   return [...written];
 }
 
@@ -461,7 +480,11 @@ describe('the workflow is read at all (#1473)', () => {
     // Rule 1 is only as good as the graph it walks. If the artifact stopped
     // being written into `run:`, or its name moved out of a `run:` line, the
     // cascade would be invisible to every rule in this file — and they would
-    // all still pass.
+    // all still pass. That is not hypothetical: #1487 changed the census step
+    // from a shell redirect to `--out`, and until `writtenBy` learned the new
+    // shape this precondition is what caught the graph going blind. The
+    // "no cascade" subtest below kept passing the whole time, which is exactly
+    // what a vacuous rule looks like from the outside.
     const writers = produced.get(CENSUS_FILE) ?? [];
     assert.deepEqual(
       writers.map((i) => steps[i].name),
