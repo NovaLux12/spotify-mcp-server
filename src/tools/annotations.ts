@@ -510,11 +510,13 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // this is the only signal a host gets before deciding to auto-approve.
   //
   // It is an override rather than a new DESTRUCTIVE_PREFIXES entry on purpose.
-  // #1099 renames the pair to follow_playlist/unfollow_playlist, and
-  // `unfollow` is ALREADY in DESTRUCTIVE_PREFIXES — so the renamed tool is
-  // classified correctly with no row here at all, and this entry retires with
-  // the old name. Widening the prefix list instead would leave a live `unpin`
-  // rule behind after the rename, encoding a verb the tool no longer has.
+  // #1099 renamed the pair to follow_playlist/unfollow_playlist and kept the
+  // old names callable for one release as deprecated aliases, so this row is
+  // STILL LOADED — `unfollow_playlist` needs no row of its own because
+  // `unfollow` is already in DESTRUCTIVE_PREFIXES, but the alias it backs still
+  // does. This entry retires in 2.1 with the alias. Widening the prefix list
+  // instead would leave a live `unpin` rule behind after the alias is gone,
+  // encoding a verb no tool then has.
   //
   // This is a static host hint applied after registration (AGENTS.md §4): it
   // never prompts and it does not replace the elicitation gate. The gate in
@@ -1034,7 +1036,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26214]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 5348]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
-  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [2, 1449], { scopeKey: 'playlistfollow' }),
+  manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3065], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
   manifestEntry('analytics', 'personalization', lazyModule('./analytics.js', 'registerAnalyticsTools'), [4, 2817], { readOnlySafe: true }),

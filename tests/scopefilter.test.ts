@@ -76,7 +76,7 @@ describe('moduleBlockedByScopes', () => {
   // #1005: /me/library authorises THREE alternative scopes. The case a
   // per-tool `user-follow-modify` check would have broken is the first one —
   // a caller holding only playlist-modify-public is authorised, so hiding
-  // pin_playlist from them trades a raw 403 for an invisible valid tool.
+  // the follow pair from them trades a raw 403 for an invisible valid tool.
   it('playlistfollow is unblocked by playlist-modify-public ALONE (#1005)', () => {
     assert.equal(moduleBlockedByScopes('playlistfollow', scopesFor('playlist-modify-public')), false);
   });
