@@ -107,6 +107,16 @@ const parameterAllowlist = new Set([
   // describing itself, not a request parameter — same category as the
   // `DoctorSurface` rows above.
   'matched_artists', 'unmatched_artists',
+  // #847: the `get_queue` structuredContent keys SPEC §5.1 and §5.15 name.
+  // The queue-read collapse put six tools' answers under `runtime`,
+  // `duplicates` and `profile`, and a migration note has to name the fields
+  // it is promising still exist — including the `timeline` row shape and the
+  // two nullability clauses that keep a failed read from becoming a number.
+  // A call's own output describing itself, not request parameters, the same
+  // category as `matched_artists` above and the `DoctorSurface` rows.
+  'context_label', 'current_track_remaining_error',
+  'current_track_remaining_ms', 'duration_ms', 'estimated_total_wait_ms',
+  'is_episode', 'plays_at_ms', 'total_remaining_ms', 'total_runtime_ms',
   // #602: the account registry's own vocabulary. `account_id` and
   // `display_name` are the two keys the acting-account echo adds to EVERY
   // tool result; the rest are `list_accounts` / `switch_account`

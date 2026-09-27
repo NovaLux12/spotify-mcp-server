@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 595,920B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 595,978B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 65,805B | 11.0% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 16,080B | 2.6% of the enforced limit |
+| Headroom | 16,022B | 2.6% of the enforced limit |
 
-Headroom is **16,080B** of the 612,000B enforced limit — 2.6% — so the aggregate budget is **tight**.
+Headroom is **16,022B** of the 612,000B enforced limit — 2.6% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -166,7 +166,7 @@ than maintained.
 | search | 1 | 1,821 | 1 | 1,821 | 2 | 2,004 |
 | catalog | 31 | 27,222 | 31 | 27,222 | 32 | 29,945 |
 | library | 13 | 12,814 | 13 | 12,814 | 14 | 14,096 |
-| playback | 16 | 13,076 | 16 | 13,076 | 17 | 14,384 |
+| playback | 16 | 13,132 | 16 | 13,132 | 17 | 14,446 |
 | following | 3 | 2,502 | 3 | 2,502 | 4 | 2,753 |
 | users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
@@ -229,7 +229,7 @@ than maintained.
 | swarm3playback | 20 | 12,113 | 20 | 12,113 | 21 | 13,325 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
 | swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
-| swarm4playlists | 18 | 23,226 | 18 | 23,226 | 19 | 25,549 |
+| swarm4playlists | 18 | 23,228 | 18 | 23,228 | 19 | 25,551 |
 <!-- END:generated schema-budget-table -->
 
 To change a baseline, measure the real `tools/list` output, update the shared

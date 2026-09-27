@@ -1,6 +1,6 @@
 /** swarm3 playback slice — 500-tool swarm v1.26.0 (issue #442). Owned by playback builder. */
 /**
- * 24 playback/queue/device tools. House conventions honoured here:
+ * 20 playback/queue/device tools. House conventions honoured here:
  *   • shaping.ts helpers only (resolveMaxResults / truncateItems / describeDryRun).
  *   • Read tools accept response_format and emit structuredContent alongside text.
  *   • Mutating tools carry dry_run (default TRUE) and return a deterministic PLAN
@@ -39,28 +39,13 @@ import type {
   SpotifyVolumeTarget,
 } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { textResult, emit } from '../result.js';
 
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
 type PlayableItem = SpotifyTrack | SpotifyEpisode;
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
-
-const textResult = (text: string, structured?: Record<string, unknown>): ToolResult => ({
-  content: [{ type: 'text', text }],
-  ...(structured ? { structuredContent: structured } : {}),
-});
-
-const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
-
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? jsonText(payload) : prose }],
-    structuredContent: payload,
-  };
-}
 
 /**
  * `dry_run` for the playback mutations (#836). This module used to declare its
@@ -396,7 +381,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Shuffle: ${state.shuffle_state} · Repeat: ${state.repeat_state}`,
         `  Context: ${state.context ? `${state.context.type} ${state.context.uri}` : 'none'}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -436,7 +421,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Bookmark captured → ${dir}/${bookmarkPath(id)}`,
         `  "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${bookmark.device_name ?? bookmark.device_id ?? 'unknown device'}"`,
       ].join('\n');
-      return shape(rf, prose, structured);
+      return emit(rf, prose, structured);
     },
   );
 
@@ -485,7 +470,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       ];
       if (isDry(args)) {
         const prose = describeDryRun('resume playback position', `bookmark ${bookmark.id}`, steps);
-        return shape(rf, prose, { dry_run: true, bookmark, steps });
+        return emit(rf, prose, { dry_run: true, bookmark, steps });
       }
       if (!targetId) {
         return textResult('Bookmark has no device id and no matching device is available — cannot resume.', { resumed: false });
@@ -513,7 +498,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         // Seek can race the transfer on slow devices; retry once after the transfer settles.
         await client.put(`/me/player/seek?position_ms=${bookmark.position_ms}&device_id=${encodeURIComponent(targetId)}`);
       }
-      return shape(rf, `Resumed "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${device?.name ?? targetId}".`, {
+      return emit(rf, `Resumed "${bookmark.track_name}" at ${formatMs(bookmark.position_ms)} on "${device?.name ?? targetId}".`, {
         resumed: true,
         bookmark,
       });
@@ -550,7 +535,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...(lines.length ? lines : ['  (none yet — use capture_playback_position while something is playing)']),
         ...(cut.footer ? [`(${cut.footer})`] : []),
       ].join('\n');
-      return shape(rf, prose, { items: cut.items, pagination: { total: cut.total, returned: cut.returned, truncated: cut.truncated } });
+      return emit(rf, prose, { items: cut.items, pagination: { total: cut.total, returned: cut.returned, truncated: cut.truncated } });
     },
   );
 
@@ -575,10 +560,10 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const file = `${dir}/${bookmarkPath(args.bookmark_id)}`;
       if (isDry(args)) {
         const prose = describeDryRun('delete playback bookmark', file, [`"${bookmark.track_name}" @ ${formatMs(bookmark.position_ms)}`]);
-        return shape(rf, prose, { dry_run: true, bookmark });
+        return emit(rf, prose, { dry_run: true, bookmark });
       }
       await unlink(file);
-      return shape(rf, `Deleted bookmark ${args.bookmark_id} (${file}).`, { deleted: true, bookmark });
+      return emit(rf, `Deleted bookmark ${args.bookmark_id} (${file}).`, { deleted: true, bookmark });
     },
   );
 
@@ -597,7 +582,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `${devices.length} device(s) available:`,
         ...(lines.length ? lines : ['  (none — open Spotify on a device first)']),
       ].join('\n');
-      return shape(rf, prose, { items: devices, total: devices.length });
+      return emit(rf, prose, { items: devices, total: devices.length });
     },
   );
 
@@ -619,7 +604,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Volume report for ${devices.length} device(s) — active: ${active ? `"${active.name}" at ${volumeDisplay(active)}` : 'none'}:`,
         ...(lines.length ? lines : ['  (none)']),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         items: devices.map((d) => ({
           id: d.id,
           name: d.name,
@@ -653,7 +638,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `[plan] Set volume to ${args.volume}% on ${selected.length} device(s)${skippedNoIdNote(skippedNoId)}:`,
         ...(steps.length ? steps.map((s) => `  - ${s}`) : ['  (no volume-capable devices with a device id matched)']),
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         volume: args.volume,
         steps,
         devices: selected.map((d) => d.id),
@@ -685,7 +670,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           `${selected.length} device(s) → ${args.volume}%${skippedNoIdNote(skippedNoId)}`,
           steps,
         );
-        return shape(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
+        return emit(rf, prose, { dry_run: true, volume: args.volume, steps, skipped_no_id: skippedNoId });
       }
       const applied: string[] = [];
       const failed: string[] = [];
@@ -698,7 +683,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         }
       }
       const prose = `Volume set to ${args.volume}% on ${applied.length}/${selected.length} device(s)${skippedNoIdNote(skippedNoId)}${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`;
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         applied: true,
         volume: args.volume,
         applied_devices: applied,
@@ -708,13 +693,19 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 10/11. get_queue_snapshot, queue_runtime_report — REMOVED by #847, along
-  // with queue_duplicate_check (13) and predict_next_tracks (16). All four read
-  // the same GET /me/player/queue and each answered a subset of what
-  // `get_queue` now returns from ONE read via `include: ['runtime']` /
-  // `include: ['duplicates']`. The local analyses live in
-  // src/queueanalysis.ts; only the registrations are gone.
+  // ---------------------------------------------------------------------------
+  // #847 removed: get_queue_snapshot (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['runtime']` — the queue contents and their total runtime, from the same single read. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
+
+  // ---------------------------------------------------------------------------
+  // #847 removed: queue_runtime_report (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['runtime']` — every field, nested under `runtime`. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 12. split_queue_plan — plan queue → playlist chunks (mutator, dry_run)
@@ -770,7 +761,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
           describeDryRun('split queue into playlist chunks', `${chunkPlans.length} chunk(s) of ≤${args.chunk_minutes ?? 30}m`, lines),
           steps.length ? '\nCalls that dry_run=false would make:\n' + steps.map((s) => `  - ${s}`).join('\n') : '',
         ].filter(Boolean).join('\n');
-        return shape(rf, prose, { dry_run: true, chunks: chunkPlans });
+        return emit(rf, prose, { dry_run: true, chunks: chunkPlans });
       }
 
       const me = await client.get<{ id?: string }>('/me');
@@ -803,12 +794,16 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       }
       const receiptLines = receiptsLines(allReceipts);
       const prose = `Created ${created.length} playlist(s) from the queue.`;
-      return shape(rf, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(allReceipts, expectedItems), created: true, chunks: created, receipts: receiptRecords(allReceipts) });
+      return emit(rf, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(allReceipts, expectedItems), created: true, chunks: created, receipts: receiptRecords(allReceipts) });
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 13. queue_duplicate_check — REMOVED by #847, see note at 10/11.
+  // ---------------------------------------------------------------------------
+  // #847 removed: queue_duplicate_check (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `get_queue` with `include: ['duplicates']` — every field, nested under `duplicates`. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 14. queue_prune_plan — plan-only dedupe/skip plan
@@ -841,7 +836,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...(lines.length ? lines : ['  (nothing to prune — queue is already clean)']),
         keep.length ? `\nClean re-queue list (${keep.length} items):\n  ${keep.map((e) => e.uri).join('\n  ')}` : '',
       ].filter(Boolean).join('\n');
-      return shape(rf, prose, { drop: drop.map((e) => e.uri), keep: keep.map((e) => e.uri), dropped_count: drop.length });
+      return emit(rf, prose, { drop: drop.map((e) => e.uri), keep: keep.map((e) => e.uri), dropped_count: drop.length });
     },
   );
 
@@ -861,7 +856,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       const ctx = state.context;
       const base = snapshotOf(state, new Date(state.timestamp).toISOString());
       if (!ctx) {
-        return shape(rf, `Playing "${itemTitle(state.item)}" with no context (single track / autoplay).`, { ...base, context_enumerated: false });
+        return emit(rf, `Playing "${itemTitle(state.item)}" with no context (single track / autoplay).`, { ...base, context_enumerated: false });
       }
       let positionInContext: number | null = null;
       let contextTotal: number | null = null;
@@ -1002,7 +997,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Current: "${itemTitle(state.item)}" at ${formatMs(state.progress_ms ?? 0)}`,
         `  ${positionText}`,
       ].join('\n');
-      return shape(rf, prose, {
+      return emit(rf, prose, {
         ...base,
         context_enumerated: positionInContext !== null,
         position_in_context: positionInContext,
@@ -1022,10 +1017,12 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
     },
   );
 
-  // -------------------------------------------------------------------------
-  // 16. predict_next_tracks — REMOVED by #847, see note at 10/11. Its
-  // lookahead role is `peek_next`; its per-item ETA role is `get_queue` with
-  // `include: ['runtime']`.
+  // ---------------------------------------------------------------------------
+  // #847 removed: predict_next_tracks (#668)
+  // ---------------------------------------------------------------------------
+  // Retired into `runtime.timeline` from `get_queue` with `include: ['runtime']` — the same rows and the same cumulative `plays_at_ms`; `peek_next` with `count` is the item list. The analyses it ran now live in
+  // src/queueanalysis.ts, computed over one read instead of one read per
+  // tool, and the tests it had moved with it to tests/queue.tools.test.ts.
 
   // -------------------------------------------------------------------------
   // 17. shuffle_state_report
@@ -1053,7 +1050,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Device: ${state.device ? `"${state.device.name}" [${state.device.type}]` : 'unknown'}`,
         `  Context: ${state.context?.uri ?? 'none'} · ${state.is_playing ? 'playing' : 'paused'}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1107,7 +1104,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Playback health check: ${healthy ? 'HEALTHY' : 'DEGRADED'}`,
         ...probes.map((p) => `  ${p.ok ? '✓' : '✗'} ${p.probe}: ${p.detail}`),
       ].join('\n');
-      return shape(rf, prose, { healthy, probes });
+      return emit(rf, prose, { healthy, probes });
     },
   );
 
@@ -1135,7 +1132,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       await writeSession(dir, session);
       const playing = state ? `"${itemTitle(state.item)}" on "${state.device?.name ?? '?'}"` : 'nothing playing';
       const prose = `Listening session started (${id}) — ${playing}.\nLog: ${dir}/${sessionPath(id)}`;
-      return shape(rf, prose, { started: true, session });
+      return emit(rf, prose, { started: true, session });
     },
   );
 
@@ -1174,7 +1171,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `  Started: "${start.track_name ?? '?'}" → ended ${state ? `"${itemTitle(state.item)}" on "${state.device?.name ?? '?'}"` : 'nothing playing'}`,
         `  Log: ${dir}/${sessionPath(session.id)}`,
       ].join('\n');
-      return shape(rf, prose, { closed: true, session: closed });
+      return emit(rf, prose, { closed: true, session: closed });
     },
   );
 
@@ -1213,7 +1210,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
             ]
           : []),
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1262,7 +1259,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
       ];
       if (isDry(args)) {
         const prose = describeDryRun('transfer playback with state', `"${target.name}" [${target.type}]`, steps);
-        return shape(rf, prose, { dry_run: true, target: { id: target.id, name: target.name }, captured, steps });
+        return emit(rf, prose, { dry_run: true, target: { id: target.id, name: target.name }, captured, steps });
       }
       const failed: string[] = [];
       await client.put('/me/player', { device_ids: [target.id], play: args.play ?? true }).catch(() => { failed.push('transfer'); });
@@ -1291,7 +1288,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         await client.put(`/me/player/repeat?state=${captured.repeat_state}${qsAmp}`).catch(() => { failed.push('repeat'); });
       }
       const prose = `Transferred playback to "${target.name}" with state restored${failed.length ? ` (failed steps: ${failed.join(', ')})` : ''}.`;
-      return shape(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
+      return emit(rf, prose, { transferred: failed.length === 0, target: { id: target.id, name: target.name }, captured, failed_steps: failed });
     },
   );
 
@@ -1335,7 +1332,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         ...picked.map((e, i) => `  ${i + 1}. "${e.name}" (${formatMs(e.duration_ms)})`),
         `  Then: PUT /me/player/pause — after queue position ${lastPosition}`,
       ].join('\n');
-      return shape(rf, prose, payload);
+      return emit(rf, prose, payload);
     },
   );
 
@@ -1371,7 +1368,7 @@ export function registerSwarm3PlaybackTools(server: McpServer, client: SpotifyCl
         `Device census — ${devices.length} device(s) across ${groups.length} type(s):`,
         ...groups.map((g) => `  ${g.type}: ×${g.count} — ${g.names.map((n) => `"${n}"`).join(', ')}${g.volume_min !== null ? ` (vol ${g.volume_min}–${g.volume_max}%)` : ''}`),
       ].join('\n');
-      return shape(rf, prose, { groups, total_devices: devices.length });
+      return emit(rf, prose, { groups, total_devices: devices.length });
     },
   );
 }

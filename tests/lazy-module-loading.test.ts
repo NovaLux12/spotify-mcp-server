@@ -36,7 +36,7 @@
  * to do with this change. What is asserted instead is the machine-independent
  * fact those thresholds were a proxy for: how many tool modules the process
  * evaluates. Measured on both dists of the same tree, that is 18 under
- * `playback` where it was 69, for the identical 106 tools.
+ * `playback` where it was 69, for the identical 100 tools.
  * `scripts/measure-startup.mjs` is the harness for the wall-clock and RSS
  * numbers; ARCHITECTURE.md records the interleaved A/B, including the part
  * that does not flatter the change (peak RSS rises under a trimmed toolset,
@@ -225,7 +225,7 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     const playback = await recordStartup('playback');
 
     // 18 measured on the machine this landed on; 69 before the change, for the
-    // identical 106-tool surface. The bound is deliberately loose so an
+    // identical 100-tool surface. The bound is deliberately loose so an
     // unrelated future transitive import does not redden the build, while
     // still failing loudly if the gate stops gating — a revert to static
     // imports puts every one of the 66 back.
@@ -233,7 +233,8 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
       playback.toolModules.length <= 25,
       `TOOLSETS=playback evaluated ${playback.toolModules.length} tool modules: ${playback.toolModules.join(', ')}`,
     );
-    assert.equal(playback.toolCount, 106, 'the playback surface itself must not change');
+    // #847 retired six queue readers from this toolset, so 106 became 100.
+    assert.equal(playback.toolCount, 100, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -284,7 +285,8 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    assert.equal(full.toolCount, 570, 'the full (TOOLSETS=all) surface must be unchanged');
+    // #847 retired six queue readers, so 570 became 564.
+    assert.equal(full.toolCount, 564, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

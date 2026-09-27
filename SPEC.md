@@ -638,7 +638,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **564 tools** (all 564 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 142,503 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **564 tools** (all 564 attributed to the 67 files under `src/tools/`), organized by 46 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 142,559 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -811,23 +811,6 @@ Short lookahead at the queue: the next N items with durations and total runway. 
 | `response_format` | enum | no | |
 
 **Quota:** 1 read. The per-item ETA the retired `predict_next_tracks` returned is `runtime.timeline` from `get_queue` with `include: ["runtime"]` — it needs a second endpoint, which this lookahead does not pay for.
-
----
-
-#### Queue-read migration (#847)
-
-Eight registered tools read `GET /me/player/queue`. Two are left; the other six are retired and a call naming one is refused with `kind: "unknown_tool"`, `reason: "retired_tool_alias"`, and a `fix` naming the exact replacement call.
-
-| Retired name | Call that replaces it | What moved |
-|---|---|---|
-| `describe_queue` | `get_queue` with `view: "enriched"` | `context_label` and `total_remaining_ms`. Its `include_context: false` has no equivalent — `view: "raw"` is the "do not resolve the context" answer, and the total is not returned there. |
-| `get_queue_snapshot` | `get_queue` with `include: ["runtime"]` | `total_runtime_ms`; its `total` is now `runtime.upcoming_count`. |
-| `queue_runtime_report` | `get_queue` with `include: ["runtime"]` | Every field, unchanged, now nested under `runtime`. |
-| `queue_duplicate_check` | `get_queue` with `include: ["duplicates"]` | Every field, now nested under `duplicates`. |
-| `queue_profile` | `get_queue` with `include: ["profile"]` | Every field, now nested under `profile`. Still counts the playing item. |
-| `predict_next_tracks` | `peek_next` with `count` for the item list; `get_queue` with `include: ["runtime"]` for the ETA | Every field. `items[]` is `runtime.timeline` — same rows, same cumulative `plays_at_ms`, widened with the album/show/artist context and not capped. `current_track_remaining_ms` is `runtime.current_track_remaining_ms`. |
-
-**These six are deliberately NOT reachable through `SPOTIFY_MCP_LEGACY_ALIASES=1`.** The eight `taste_*` aliases that flag restores were argument-identical to their canonical tools, so rewriting the name preserved the call. None of these six is: `queue_runtime_report` sends no arguments and its answer is the runtime analysis, while `get_queue` with no arguments answers with the raw queue. A name-only rewrite would return a different, entirely plausible answer under a name that used to be right — the same defect class as #803 and #830. The flag means "same call, new name", not "same name, different question".
 
 ---
 
@@ -2123,6 +2106,22 @@ Six local, zero-network tools that parse and canonicalise references using the *
 **The policy, stated once.** A reference is a bare catalog id of exactly 22 URL-safe characters (`user` ids are one or more URL-safe characters), a `spotify:<kind>:<id>` URI, a `spotify://<kind>/<id>` link, or an `open.spotify.com` share URL — including its localised `/intl-<locale>/` form and any query string. The host check is exact-string: `open.spotify.com.evil.test` is rejected. Kinds come from a `Map`, not an object literal, so `spotify:constructor:<id>` cannot resolve a kind. A kind mismatch (`spotify:playlist:…` where a track was expected) is rejected, not reinterpreted.
 
 The other `spotify:`-shaped patterns in `src/` are not a second parser: `src/resources/index.ts` matches a *resource address* (`spotify://playlist/<id>/tracks`) to route a host read, which is a different namespace from an entity reference, and prompt text quotes reference syntax in prose.
+
+### 5.15 Queue-read migration (#847)
+
+Eight registered tools read `GET /me/player/queue`. Two are left; the other six are retired and a call naming one is refused with `kind: "unknown_tool"`, `reason: "retired_tool_alias"`, and a `fix` naming the exact replacement call.
+
+| Retired name | Call that replaces it | What moved |
+|---|---|---|
+| `describe_queue` | `get_queue` with `view: "enriched"` | `context_label` and `total_remaining_ms`. Its `include_context: false` has no equivalent — `view: "raw"` is the "do not resolve the context" answer, and the total is not returned there. |
+| `get_queue_snapshot` | `get_queue` with `include: ["runtime"]` | `total_runtime_ms`; its `total` is now `runtime.upcoming_count`. |
+| `queue_runtime_report` | `get_queue` with `include: ["runtime"]` | Every field, unchanged, now nested under `runtime`. |
+| `queue_duplicate_check` | `get_queue` with `include: ["duplicates"]` | Every field, now nested under `duplicates`. |
+| `queue_profile` | `get_queue` with `include: ["profile"]` | Every field, now nested under `profile`. Still counts the playing item. |
+| `predict_next_tracks` | `peek_next` with `count` for the item list; `get_queue` with `include: ["runtime"]` for the ETA | Every field. `items[]` is `runtime.timeline` — same rows, same cumulative `plays_at_ms`, widened with the album/show/artist context and not capped. `current_track_remaining_ms` is `runtime.current_track_remaining_ms`. |
+
+**These six are deliberately NOT reachable through `SPOTIFY_MCP_LEGACY_ALIASES=1`.** The eight `taste_*` aliases that flag restores were argument-identical to their canonical tools, so rewriting the name preserved the call. None of these six is: `queue_runtime_report` sends no arguments and its answer is the runtime analysis, while `get_queue` with no arguments answers with the raw queue. A name-only rewrite would return a different, entirely plausible answer under a name that used to be right — the same defect class as #803 and #830. The flag means "same call, new name", not "same name, different question".
+
 
 ## 6. Resources
 

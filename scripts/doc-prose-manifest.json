@@ -2025,12 +2025,52 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "f893bbcb5997f4c8",
-        "label": "getqueue Get the current playback queue."
+        "hash": "64174ad41209825a",
+        "label": "getqueue Read the playback queue. This and peeknext are …"
       },
       {
-        "hash": "fd7e8cfa2ec64fa8",
+        "hash": "089c51ca39b529c4",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "5f92ff11ed9c5f03",
+        "label": "Quota: exactly one GET /me/player/queue per call, whatev…"
+      },
+      {
+        "hash": "93342f1083c07fd2",
         "label": "Returns: currently playing item, plus the up-next list (…"
+      },
+      {
+        "hash": "93919fcf18191b1e",
+        "label": "runtime.currenttrackremainingms needs a second endpoint.…"
+      },
+      {
+        "hash": "63445fa3d53d8b36",
+        "label": "peeknext Short lookahead at the queue: the next N items …"
+      },
+      {
+        "hash": "5cb52c2779a8f8e2",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "3c2e2b5b300cef1a",
+        "label": "Quota: 1 read. The per-item ETA the retired predictnextt…"
+      },
+      {
+        "hash": "0ec1a2064e576595",
+        "label": "Queue-read migration (#847)"
+      },
+      {
+        "hash": "99735d4ceb7d6401",
+        "label": "Eight registered tools read GET /me/player/queue. Two ar…"
+      },
+      {
+        "hash": "15958b39063cb1d3",
+        "label": "| Retired name | Call that replaces it | What moved | |-…"
+      },
+      {
+        "hash": "0d718e4d575069af",
+        "label": "These six are deliberately NOT reachable through SPOTIFY…"
       },
       {
         "hash": "b74cd36a3aecdf2c",
@@ -5464,6 +5504,20 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "f893bbcb5997f4c8",
+      "label": "getqueue Get the current playback queue.",
+      "date": "2026-09-27",
+      "reason": "#847 rewrote the get_queue section of SPEC.md. The two pinned paragraphs read 'Get the current playback queue.' and 'Returns: currently playing item, plus the up-next list (...)', which described a tool that did one thing; get_queue now also carries the view/enriched context label and the runtime, duplicate and profile analyses, so both sentences are replaced by the view/include contract in the same section."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fd7e8cfa2ec64fa8",
+      "label": "Returns: currently playing item, plus the up-next list (…",
+      "date": "2026-09-27",
+      "reason": "#847 rewrote the get_queue section of SPEC.md. The two pinned paragraphs read 'Get the current playback queue.' and 'Returns: currently playing item, plus the up-next list (...)', which described a tool that did one thing; get_queue now also carries the view/enriched context label and the runtime, duplicate and profile analyses, so both sentences are replaced by the view/include contract in the same section."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "fe5c9a358f83aced",
       "label": "Note: streaming is not included — that scope is for the …",
       "date": "2026-09-27",
@@ -5471,8 +5525,8 @@
     }
   ],
   "provenance": {
-    "head": "696b8e3598bca7022024d15e0d6984ca1e5b1a2f",
-    "upstream": "696b8e3598bca7022024d15e0d6984ca1e5b1a2f",
+    "head": "b8b211724976cebbdeef40ca3237b7c7c95e8be8",
+    "upstream": "25ef2c287a83b050e0bb345678b43bea84d7273f",
     "behind": false
   }
 }

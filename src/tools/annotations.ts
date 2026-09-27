@@ -1246,9 +1246,9 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // replaced six cross-reference descriptions. It is 866B for six tools that
   // cost 2,686B between them, and the six are gone rather than reworded.
   // Re-measure with `npm run count:tools` before raising it again.
-  // Then 13,076 -> 13,132B (+56) when the `runtime` analysis gained
-  // `timeline` — the per-item `plays_at_ms` the retired `predict_next_tracks`
-  // returned, so the union claim is the union and not a summary of it. The
+  // Re-measured when the `runtime` analysis gained `timeline` — the per-item
+  // `plays_at_ms` the retired `predict_next_tracks` returned, so the union
+  // claim is the union and not a summary of it: 13,076 -> 13,132B (+56). The
   // cost is one clause in the `include` description; the payload it restores
   // is free, because `structuredContent` is not part of the schema a host
   // pays for. Re-measure with `npm run count:tools` before raising it again.
@@ -1543,11 +1543,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // cost in words: the quota-circle glyphs and the cross-sell breadcrumbs
   // come out of the 15 descriptions. The two deltas compose, and neither is
   // measured off the other's tree — this figure is the merged measurement.
-  // Then 15 -> 14 tools and 11,773 -> 11,098B (-675) for #847: describe_queue
-  // is retired into `get_queue` view='enriched', and peek_next's description
-  // gained the decision rule that used to be spread across a See-also chain.
-  // 737B of the reduction is describe_queue's own row; the rest is the
-  // cross-sell breadcrumbs those two descriptions carried.
+  // Re-measured after #847, which retired describe_queue into `get_queue`
+  // view='enriched' and gave peek_next the decision rule that used to be
+  // spread across a See-also chain: 15 -> 14 tools and 11,773 -> 11,098B
+  // (-675). 737B of the reduction is describe_queue's own row; the rest is
+  // the cross-sell breadcrumbs those two descriptions carried.
   manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [14, 11098], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5713], { scopeKey: 'playlists' }),
@@ -1583,9 +1583,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `weekday_heatmap` no longer point at `listening_report` / `listening_heatmap`
   // by name, because those are derived analytics the default registry does not
   // serve and a description must not advertise a tool that is absent. +45B.
-  // #847: 23 -> 22 tools, 17,518 -> 17,050B. queue_profile is retired into
-  // `get_queue` include=['profile']; the module's other 22 tools are
-  // untouched, so the whole delta is that one row leaving the surface.
+  // Re-measured after #847 retired queue_profile into `get_queue`
+  // include=['profile']: 23 -> 22 tools, 17,518 -> 17,050B. The module's
+  // other 22 tools are untouched, so the whole delta is that one row leaving
+  // the surface.
   manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [22, 17050], { scopeKey: 'playback' }),
   manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 24403], { scopeKey: 'playlists' }),
   // [27, 24316] measured from the real registrar (tools: 592). The +450B over
@@ -1641,10 +1642,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
     gatedSurface: { gatedBy: 'SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS', toolCount: 24, schemaBytes: 18951 },
   }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
-  // #847: 24 -> 20 tools, 14,043 -> 12,113B. get_queue_snapshot,
-  // queue_runtime_report, queue_duplicate_check and predict_next_tracks are
-  // retired into `get_queue`; the four local analyses they ran live on in
-  // src/queueanalysis.ts, and the queue planners that remain
+  // Re-measured after #847 retired get_queue_snapshot, queue_runtime_report,
+  // queue_duplicate_check and predict_next_tracks into `get_queue`:
+  // 24 -> 20 tools, 14,043 -> 12,113B. The four local analyses they ran live
+  // on in src/queueanalysis.ts, and the queue planners that remain
   // (split_queue_plan, queue_prune_plan, sleep_timer_plan) are unchanged.
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [20, 12113], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 29163], { scopeKey: 'playlists' }),

@@ -6,10 +6,10 @@
  * (sleep_timer, playback_timer_status, mute, unmute, volume_ramp, room_level, volume_report),
  * devices (switch_device, pause_everywhere), shuffle-play (surprise_me,
  * skip_n, daily_pick), podcasts (episode_bookmark, episode_resume,
- * queue_next_episode), queue honesty (queue_replace_via_playlist), intel
- * (session_stats, most_replayed, last_heard, weekday_heatmap), checkpoints
- * (checkpoint_playback, continue_last). #847 retired queue_profile into
- * `get_queue` include=['profile'].
+ * queue_next_episode), queue honesty (queue_replace_via_playlist,
+ * queue_profile — the last of these retired by #847 into `get_queue`
+ * include:['profile']), intel (session_stats, most_replayed, last_heard,
+ * weekday_heatmap), checkpoints (checkpoint_playback, continue_last).
  *
  * Local sidecar store lives next to the other playback sidecars
  * (~/.spotify-mcp/exhaust2-playback.json, 0600; override with
@@ -48,20 +48,11 @@ import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
+import { textResult, emit } from '../result.js';
 
 // ---------------------------------------------------------------------------
 // shared helpers (house style)
 // ---------------------------------------------------------------------------
-
-type ToolOut = { content: Array<{ type: 'text'; text: string }>; structuredContent?: Record<string, unknown> };
-
-function textResult(text: string, structured?: Record<string, unknown>): ToolOut {
-  return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
-}
-function emit(fmt: ResponseFormatValue | undefined, echo: Record<string, unknown>, text: string): ToolOut {
-  if (fmt === 'json') return { content: [{ type: 'text', text: JSON.stringify(echo, null, 2) }], structuredContent: echo };
-  return { content: [{ type: 'text', text }], structuredContent: echo };
-}
 
 /** Human-readable duration for gaps ("3d 4h", "12m"). */
 export function humanGap(ms: number): string {
@@ -489,7 +480,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
             });
           });
       }, ms));
-      return emit(fmt, { ok: true, dry_run: false, duration_min: args.duration_min, device_id: target, now_playing: state?.item?.name ?? null, expires_at: new Date(Date.now() + ms).toISOString() }, `Sleep timer set: pausing ${device} in ${args.duration_min} min. Music keeps playing until then. Call sleep_timer again to replace the timer.`);
+      return emit(fmt, `Sleep timer set: pausing ${device} in ${args.duration_min} min. Music keeps playing until then. Call sleep_timer again to replace the timer.`, { ok: true, dry_run: false, duration_min: args.duration_min, device_id: target, now_playing: state?.item?.name ?? null, expires_at: new Date(Date.now() + ms).toISOString() });
     },
   );
 
@@ -521,7 +512,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const store = await loadExhaust2Store();
       store.muteMemory[memoryKey] = { volume: previous, muted_at: new Date().toISOString(), device_id: deviceId, device_name: deviceName };
       await saveExhaust2Store(store);
-      return emit(fmt, { ok: true, dry_run: false, previous_volume: previous, device_id: deviceId, remembered_for: memoryKey }, `Muted ${deviceName ?? deviceId ?? 'active device'} (was ${previous}% — remembered for unmute).`);
+      return emit(fmt, `Muted ${deviceName ?? deviceId ?? 'active device'} (was ${previous}% — remembered for unmute).`, { ok: true, dry_run: false, previous_volume: previous, device_id: deviceId, remembered_for: memoryKey });
     },
   );
 
@@ -553,7 +544,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         return { content: [{ type: 'text', text: describeDryRun('unmute', deviceId ?? 'active device', steps) }], structuredContent: { ok: true, dry_run: true, plan: steps, volume, source } };
       }
       await client.put(volumeQuery(volume, deviceId));
-      return emit(fmt, { ok: true, dry_run: false, volume, source, device_id: deviceId }, `Unmuted → volume ${volume}% (${source}).`);
+      return emit(fmt, `Unmuted → volume ${volume}% (${source}).`, { ok: true, dry_run: false, volume, source, device_id: deviceId });
     },
   );
 
@@ -581,7 +572,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         return { content: [{ type: 'text', text: describeDryRun('switch_device', target?.name ?? deviceId, steps) }], structuredContent: { ok: true, dry_run: true, resolved_device_id: deviceId, play: args.play ?? true } };
       }
       await client.put('/me/player', { device_ids: [deviceId], play: args.play ?? true });
-      return emit(fmt, { ok: true, dry_run: false, resolved_device_id: deviceId, device_name: target?.name ?? null, play: args.play ?? true }, `Playback transferred → "${target?.name ?? deviceId}" (${args.play ?? true ? 'playing' : 'paused'}).`);
+      return emit(fmt, `Playback transferred → "${target?.name ?? deviceId}" (${args.play ?? true ? 'playing' : 'paused'}).`, { ok: true, dry_run: false, resolved_device_id: deviceId, device_name: target?.name ?? null, play: args.play ?? true });
     },
   );
 
@@ -653,7 +644,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         return { content: [{ type: 'text', text: describeDryRun('surprise_me', pickLabel, steps) }], structuredContent: { ok: true, dry_run: true, chosen_type: chosen, pick: pickLabel, play_body: playBody, seed: args.seed ?? null } };
       }
       await client.put(`/me/player/play${qs}`, playBody);
-      return emit(fmt, { ok: true, dry_run: false, chosen_type: chosen, pick: pickLabel, seed: args.seed ?? null }, `Surprise: playing ${pickLabel}.`);
+      return emit(fmt, `Surprise: playing ${pickLabel}.`, { ok: true, dry_run: false, chosen_type: chosen, pick: pickLabel, seed: args.seed ?? null });
     },
   );
 
@@ -680,7 +671,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       for (let i = 0; i < args.n; i++) {
         try { await client.post(`/me/player/next${qs}`); skipped++; } catch { failed.push(i + 1); }
       }
-      return emit(fmt, { ok: failed.length === 0, n: args.n, skipped, failed, api_calls: args.n }, `Skipped ${skipped}/${args.n} track(s) via ${args.n} sequential next calls${failed.length ? ` — failed at skip ${failed.join(', ')}` : ''}.`);
+      return emit(fmt, `Skipped ${skipped}/${args.n} track(s) via ${args.n} sequential next calls${failed.length ? ` — failed at skip ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, n: args.n, skipped, failed, api_calls: args.n });
     },
   );
 
@@ -707,7 +698,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       for (const d of live) {
         try { await client.put(`/me/player/pause?device_id=${encodeURIComponent(d.id!)}`); paused++; } catch { failed.push(d.name); }
       }
-      return emit(fmt, { ok: failed.length === 0, paused, total: live.length, failed }, `Paused ${paused}/${live.length} device(s)${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
+      return emit(fmt, `Paused ${paused}/${live.length} device(s)${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, paused, total: live.length, failed });
     },
   );
 
@@ -790,7 +781,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         finishTimer(timer, 'completed');
       };
       replaceTimer(timer, exhaust2Timers.setTimeout(() => runStep(), spacing));
-      return emit(fmt, { ok: true, dry_run: false, from, to: args.target_percent, steps: steps.length, spacing_minutes: Math.round((spacing / 60_000) * 100) / 100, end_state: args.end_state, device_id: deviceId, status: timerStatus(timer) }, `Volume ramp started: ${from}% → ${args.target_percent}% over ${args.minutes} min (${steps.length} steps, end_state=${args.end_state}). Starting a new ramp replaces this one; read playback_timer_status for later progress and per-step failures.`);
+      return emit(fmt, `Volume ramp started: ${from}% → ${args.target_percent}% over ${args.minutes} min (${steps.length} steps, end_state=${args.end_state}). Starting a new ramp replaces this one; read playback_timer_status for later progress and per-step failures.`, { ok: true, dry_run: false, from, to: args.target_percent, steps: steps.length, spacing_minutes: Math.round((spacing / 60_000) * 100) / 100, end_state: args.end_state, device_id: deviceId, status: timerStatus(timer) });
     },
   );
 
@@ -807,7 +798,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         ? [exhaust2TimerStatus(args.kind)].filter((timer): timer is Exhaust2TimerStatus => timer !== null)
         : listPlaybackTimerStatuses();
       if (timers.length === 0) {
-        return emit(fmt, { ok: true, count: 0, timers: [] }, 'No playback timer status is available.');
+        return emit(fmt, 'No playback timer status is available.', { ok: true, count: 0, timers: [] });
       }
       const lines = timers.flatMap((timer) => [
         `${timer.kind} ${timer.state}: ${timer.steps_applied} applied, ${timer.steps_failed} failed, ${timer.steps_planned} planned`,
@@ -815,7 +806,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
           `  ✗ step ${failure.step} (${failure.action}, +${failure.at_minute}m): ${failure.error}`,
         ),
       ]);
-      return emit(fmt, { ok: true, count: timers.length, timers }, lines.join('\n'));
+      return emit(fmt, lines.join('\n'), { ok: true, count: timers.length, timers });
     },
   );
 
@@ -851,7 +842,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       };
       store.episodeBookmarks[id] = bookmark;
       await saveExhaust2Store(store);
-      return emit(fmt, { ok: true, bookmark, path: exhaust2PlaybackFile() }, `Bookmarked "${bookmark.episode_name}" (${bookmark.show_name ?? 'unknown show'}) at ${Math.round(bookmark.progress_ms / 1000)}s → ${id}`);
+      return emit(fmt, `Bookmarked "${bookmark.episode_name}" (${bookmark.show_name ?? 'unknown show'}) at ${Math.round(bookmark.progress_ms / 1000)}s → ${id}`, { ok: true, bookmark, path: exhaust2PlaybackFile() });
     },
   );
 
@@ -888,7 +879,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       if (deviceId) { try { await client.put('/me/player', { device_ids: [deviceId], play: true }); } catch { failed.push('transfer'); } }
       try { await client.put(`/me/player/play${qs}`, { uris: [bm.episode_uri], position_ms: bm.progress_ms }); } catch (e) { failed.push('play'); }
       try { await client.put(`/me/player/seek${qs}${qs ? '&' : '?'}position_ms=${bm.progress_ms}`); } catch (e) { failed.push('seek'); }
-      return emit(fmt, { ok: failed.length === 0, bookmark: bm.id, episode: bm.episode_name, progress_ms: bm.progress_ms, device_id: deviceId, failed }, `Resuming "${bm.episode_name}" at ${Math.round(bm.progress_ms / 1000)}s on ${deviceId ?? 'active device'}${failed.length ? ` — failed steps: ${failed.join(', ')}` : ''}.`);
+      return emit(fmt, `Resuming "${bm.episode_name}" at ${Math.round(bm.progress_ms / 1000)}s on ${deviceId ?? 'active device'}${failed.length ? ` — failed steps: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, bookmark: bm.id, episode: bm.episode_name, progress_ms: bm.progress_ms, device_id: deviceId, failed });
     },
   );
 
@@ -923,7 +914,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         return { content: [{ type: 'text', text: describeDryRun('queue_next_episode', candidate.name, steps) }], structuredContent: { ok: true, dry_run: true, candidate: { id: candidate.id, name: candidate.name, uri: candidate.uri }, skipped_played: candidates.filter((e) => played.has(e.uri) || e.resume_point?.fully_played).length } };
       }
       await client.post(`/me/player/queue?${params}`);
-      return emit(fmt, { ok: true, candidate: { id: candidate.id, name: candidate.name, uri: candidate.uri }, release_date: candidate.release_date ?? null }, `Queued next unplayed episode: "${candidate.name}" (${candidate.release_date ?? 'unknown date'}).`);
+      return emit(fmt, `Queued next unplayed episode: "${candidate.name}" (${candidate.release_date ?? 'unknown date'}).`, { ok: true, candidate: { id: candidate.id, name: candidate.name, uri: candidate.uri }, release_date: candidate.release_date ?? null });
     },
   );
 
@@ -1012,7 +1003,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       await client.put(`/me/player/play${playQs}`, { context_uri: pl.uri ?? `spotify:playlist:${plId}` });
       const receiptLines = receiptsLines(receipts);
       const prose = `Queued ${items.length} item(s) (snapshot ${snapshot.length}, after filters) into playlist "${name}" and started it as the context — the live queue is effectively replaced.${unknownNote}`;
-      return emit(fmt, { ...writeVerdict(receipts, items.length), snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, ...queueDisclosure, receipts: receiptRecords(receipts), disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' }, receiptLines ? `${prose}\n${receiptLines}` : prose);
+      return emit(fmt, receiptLines ? `${prose}\n${receiptLines}` : prose, { ...writeVerdict(receipts, items.length), snapshot: snapshot.length, kept: items.length, playlist_id: plId, playlist_name: name, ...queueDisclosure, receipts: receiptRecords(receipts), disclosure: 'live queue replaced via context switch (no queue-clear endpoint exists)' });
     },
   );
 
@@ -1050,7 +1041,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         `  median tracks/session: ${median} | mean: ${mean} | avg length: ${avgLen} min`,
         `  longest session: ${longest.tracks.length} tracks (${longest.start} → ${longest.end})`,
       ].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 
@@ -1087,7 +1078,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         ...t.items.map((e, i) => `  ${i + 1}. "${e.name}" — ${e.artists} · ${e.plays} play${e.plays === 1 ? '' : 's'} · last ${e.last}`),
         ...(t.footer ? [`(${t.footer})`] : []),
       ].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 
@@ -1127,7 +1118,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
           ? `  • ${r.artist}: last played ${r.last_played} (${r.gap} ago) — "${r.last_track}"`
           : `  • ${r.artist}: not played in the scanned window`),
       ].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 
@@ -1158,16 +1149,16 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const rows = [...grid.entries()].sort((a, b) => b[1] - a[1]).map(([cell, plays]) => `${cell.padEnd(18)}${plays}`);
       const echo = { ok: true, plays: items.length, grid: Object.fromEntries(grid), busiest };
       const text = [`Weekday × daypart heatmap over ${items.length} plays:`, header, ...rows, '', `Busiest slot: ${busiest.cell} (${busiest.plays} plays).`].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 
-  // 17. queue_profile (#374) — REMOVED by #847. It was a composition
-  // profile of one GET /me/player/queue, and `get_queue` with
-  // `include: ['profile']` returns the same numbers — unique artists, albums
-  // and shows, the track-vs-episode mix, and the longest single-artist run —
-  // from that same single read. `trackArtists` stays: four other tools here use
-  // it, and deleting the tool was not a reason to re-derive the helper.
+  // 17. queue_profile (#374) — REMOVED by #847. It was a composition profile
+  // of one GET /me/player/queue, and `get_queue` with include:['profile']
+  // returns the same numbers — unique artists, albums and shows, the
+  // track-vs-episode mix, the longest single-artist run — from that same one
+  // read. `trackArtists` stays: four other tools here use it, and deleting
+  // the tool was not a reason to re-derive the helper.
 
   // 18. checkpoint_playback (#375) — auto-named timestamped checkpoint
   server.tool(
@@ -1187,7 +1178,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const cp: Exhaust2Checkpoint = { id, saved_at: iso, note: args.note, playback: state };
       store.checkpoints[id] = cp;
       await saveExhaust2Store(store);
-      return emit(fmt, { ok: true, checkpoint: { id, saved_at: iso, note: args.note ?? null, item: state?.item?.name ?? null, progress_ms: state?.progress_ms ?? null }, path: exhaust2PlaybackFile() }, `Checkpoint saved: ${id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`);
+      return emit(fmt, `Checkpoint saved: ${id}${state?.item ? ` (${state.item.name} @ ${state.progress_ms ?? 0}ms)` : ' (no active item)'}${args.note ? ` — ${args.note}` : ''}`, { ok: true, checkpoint: { id, saved_at: iso, note: args.note ?? null, item: state?.item?.name ?? null, progress_ms: state?.progress_ms ?? null }, path: exhaust2PlaybackFile() });
     },
   );
 
@@ -1222,7 +1213,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       try { await client.put(`/me/player/play${qs}`, { uris: [p.item.uri], position_ms: p.progress_ms ?? 0 }); } catch { failed.push('play'); }
       if (typeof p.shuffle_state === 'boolean') { try { await client.put(`/me/player/shuffle?state=${p.shuffle_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('shuffle'); } }
       if (p.repeat_state) { try { await client.put(`/me/player/repeat?state=${p.repeat_state}${deviceId ? `&device_id=${encodeURIComponent(deviceId)}` : ''}`); } catch { failed.push('repeat'); } }
-      return emit(fmt, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: p.item.uri, progress_ms: p.progress_ms ?? 0, device_id: deviceId, failed }, `Continuing from checkpoint "${newest.id}" → ${p.item.uri} @ ${p.progress_ms ?? 0}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
+      return emit(fmt, `Continuing from checkpoint "${newest.id}" → ${p.item.uri} @ ${p.progress_ms ?? 0}ms${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, checkpoint: newest.id, saved_at: newest.saved_at, item: p.item.uri, progress_ms: p.progress_ms ?? 0, device_id: deviceId, failed });
     },
   );
 
@@ -1253,7 +1244,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       for (const d of targets) {
         try { await client.put(volumeQuery(active.volume_percent!, d.id!)); applied++; } catch { failed.push(d.name); }
       }
-      return emit(fmt, { ok: failed.length === 0, source: { id: active.id, name: active.name, volume: active.volume_percent }, applied, total: targets.length, failed }, `Room levelled: ${applied}/${targets.length} device(s) → ${active.volume_percent}%${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`);
+      return emit(fmt, `Room levelled: ${applied}/${targets.length} device(s) → ${active.volume_percent}%${failed.length ? ` — failed: ${failed.join(', ')}` : ''}.`, { ok: failed.length === 0, source: { id: active.id, name: active.name, volume: active.volume_percent }, applied, total: targets.length, failed });
     },
   );
 
@@ -1288,7 +1279,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
             `Volume snapshot across ${devices.length} device(s):`,
             ...rows.map((r) => `  • ${r.name} (${r.type}${r.is_active ? ', active' : ''}): ${r.volume_percent ?? '?'}%${r.preset_label ? ` · preset "${r.preset_label}" = ${r.preset_volume}%${r.preset_delta !== null ? ` (live Δ${r.preset_delta > 0 ? '+' : ''}${r.preset_delta})` : ')'}` : ''}`),
           ].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 
@@ -1324,7 +1315,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
         `  🎵 "${pick.name}" — ${pick.artists} · ${pick.plays} play${pick.plays === 1 ? '' : 's'} in the recent window`,
         `(picked from a ${pool.length}-track highlight pool via date seed)`,
       ].join('\n');
-      return emit(fmt, echo, text);
+      return emit(fmt, text, echo);
     },
   );
 }
