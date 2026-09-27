@@ -17,6 +17,7 @@ import type { Stats } from 'node:fs';
 import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { storePath } from './config.js';
 
 /**
  * Output root for tools that have no directory of their own
@@ -24,7 +25,7 @@ import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep 
  * NEW ENV VAR SPOTIFY_MCP_EXPORT_DIR — default ~/.spotify-mcp/exports.
  */
 export function exportRootDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_EXPORT_DIR ?? join(homedir(), '.spotify-mcp', 'exports');
+  return storePath('exports', env);
 }
 
 /**
@@ -87,7 +88,7 @@ export async function realpathAllowingMissing(target: string): Promise<string> {
  * re-exports it, so every existing `from './backup.js'` import is unchanged.
  */
 export function backupRootDir(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_BACKUP_DIR ?? join(homedir(), '.spotify-mcp', 'backups');
+  return storePath('backups', env);
 }
 
 /** Synchronous twin of `realpathAllowingMissing`; same ENOENT/ENOTDIR rule. */
@@ -373,6 +374,26 @@ function decideInputPath(
 }
 
 /** `~` expansion + absolutising, shared so both entry points agree. */
+/**
+ * Expand a caller-supplied path against the PROCESS home and cwd.
+ *
+ * ## Why this `homedir()` is not one of ours (#711)
+ *
+ * `target` is the string a CALLER passed — a file they are importing, a
+ * document they are reading. Two reasons it does not belong in the store
+ * registry:
+ *
+ *  - The registry is an inventory of places THIS SERVER WRITES. This expands
+ *    somewhere the server only ever reads, and only because the user named it.
+ *  - `logout` must not be handed a path it does not own. A registry entry here
+ *    would make a user's chosen import path an erasure candidate, and the
+ *    refusal that would then protect it is a refusal that reads as a bug to
+ *    anyone who meant to clean up their own files.
+ *
+ * The process home is also the right home: it is what `~` meant to the user
+ * whose shell they typed the path into, and this function's callers confine the
+ * result to a read root before any byte is read.
+ */
 function absolutizeTarget(target: string): string {
   const expanded = target === '~'
     ? homedir()
@@ -560,7 +581,11 @@ export function readRoots(env: NodeJS.ProcessEnv = process.env): string[] {
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   return [
-    env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability'),
+    // Through the registry, so a read root cannot disagree with the directory
+    // the tool that writes there resolved (#711). This line used to be a THIRD
+    // copy of the portability default, alongside the one in `portability.ts`
+    // and the one in its own `listeningHistoryDir`.
+    storePath('portability', env),
     backupRootDir(env),
     exportRootDir(env),
     ...extra,

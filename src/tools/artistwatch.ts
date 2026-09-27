@@ -4,7 +4,7 @@ import { capFor, chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import {
   DryRun,
   ResponseFormat,
@@ -15,7 +15,6 @@ import {
   listStructuredContent,
 } from '../shaping.js';
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { classifySpotifyReference } from '../refs.js';
@@ -37,10 +36,8 @@ import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 /** The file, named for the caller so a failure is never anonymous. */
 export function artistWatchlistPath(env: NodeJS.ProcessEnv = process.env): string {
-  // Aligned with every other sidecar (~/.spotify-mcp), with
-  // SPOTIFY_MCP_DATA_DIR kept as the documented directory override.
-  const dir = env.SPOTIFY_MCP_DATA_DIR?.trim();
-  return join(dir ? dir : join(homedir(), '.spotify-mcp'), 'artist-watchlist.json');
+  // Directory and file name both come from the registry; see LOCAL_STORES.
+  return storePath('artist-watchlist', env);
 }
 
 /**

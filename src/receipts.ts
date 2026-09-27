@@ -61,10 +61,9 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { truthyEnv } from './config.js';
+import { storePath, truthyEnv } from './config.js';
 import { accountFileName, accountFileNames, accountStoreKey } from './accountkey.js';
 import { getTokenFilePath } from './auth.js';
 import { ownStoreRoots, resolveInputPathSync } from './paths.js';
@@ -329,12 +328,14 @@ export function receiptsFilePath(
   return join(receiptsDir(env), accountFileName(RECEIPT_FILE, tokenFile));
 }
 
+/**
+ * The receipt store's DIRECTORY, taken from the registry's `receipts` row
+ * (#711). Same shape as `historyDir`: the row resolves the full path for the
+ * default account and `dirname` of that is the directory for every account,
+ * because the account key changes the file name and not the directory.
+ */
 function receiptsDir(env: NodeJS.ProcessEnv): string {
-  return (
-    env.SPOTIFY_MCP_RECEIPTS_DIR ??
-    env.SPOTIFY_MCP_HISTORY_DIR ??
-    join(homedir(), '.spotify-mcp')
-  );
+  return dirname(storePath('receipts', env));
 }
 
 /**

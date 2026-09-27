@@ -21,7 +21,6 @@ import { capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -46,6 +45,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
 import { loadSidecar } from '../sidecar.js';
+import { storePath } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // shared helpers (house style)
@@ -173,7 +173,7 @@ function isAttributable(m: QueueRowMeta | undefined): m is QueueRowMeta {
 // ---------------------------------------------------------------------------
 
 export function exhaust2PlaybackFile(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_EXHAUST2_PLAYBACK_FILE ?? join(homedir(), '.spotify-mcp', 'exhaust2-playback.json');
+  return storePath('exhaust2-playback', env);
 }
 
 interface MuteMemory {

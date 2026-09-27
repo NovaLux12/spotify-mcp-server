@@ -18,7 +18,6 @@ import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { chmod, copyFile, link, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { constants as FS } from 'node:fs';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -26,7 +25,7 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { PlaybackDryRun, ResponseFormat } from '../shaping.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';
 import { addToQueueBatch } from './queueops.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
@@ -42,7 +41,7 @@ function emit(fmt: string | undefined, echo: Record<string, unknown>, text: stri
 }
 
 export function playbackExtFile(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_PLAYBACKEXT_FILE ?? join(homedir(), '.spotify-mcp', 'playback-ext.json');
+  return storePath('playback-extensions', env);
 }
 interface PlaybackSnapshot {
   name: string;

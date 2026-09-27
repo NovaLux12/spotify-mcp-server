@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import { SpotifyApiError } from '../client.js';
 import { DryRun, ResponseFormat } from '../shaping.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
@@ -47,19 +47,23 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
 
 export function snapshotDir(env: NodeJS.ProcessEnv = process.env): string {
-  // An explicitly supplied env is authoritative and short-circuits the
-  // process-wide config snapshot. `getConfig()` lazily initialises from
-  // process.env and caches for the life of the process, so consulting it for a
-  // caller that handed us its own env would resolve a path from state that
-  // caller never asked about — and a resolver whose result is later used to
-  // erase files must not do that.
-  if (env === process.env) {
-    const cfg = getConfig() as unknown as Record<string, unknown>;
-    if (typeof cfg.dataDir === 'string' && cfg.dataDir.length > 0) return cfg.dataDir as string;
-  }
-  const envDir = env.SPOTIFY_MCP_DATA_DIR;
-  if (envDir && envDir.length > 0) return envDir;
-  return join(homedir(), '.spotify-mcp', 'playlist-snapshots');
+  // Deliberately NOT via `getConfig()`. A config snapshot is read once at
+  // startup and cached for the life of the process, so consulting it would
+  // answer a caller that handed us its own `env` from state that caller never
+  // supplied — and this resolver's result is used to ERASE files (#1358, #711).
+  //
+  // This branch used to read a `dataDir` field off that snapshot, guarded by
+  // `env === process.env` so it could only fire for a caller that had NOT
+  // supplied an env. The field does not exist on `SpotifyMcpConfig`, so it was
+  // dead — but it was dead in the one direction that matters, because the day
+  // someone adds a `dataDir` field meaning "the data directory", it resolves to
+  // `~/.spotify-mcp` and silently moves every playlist-health snapshot out of
+  // `playlist-snapshots/` and into the directory that holds every other store.
+  //
+  // The registry row keeps the distinction that field would have destroyed:
+  // `SPOTIFY_MCP_DATA_DIR` sets this directory, and its DEFAULT is
+  // `~/.spotify-mcp/playlist-snapshots`, not `~/.spotify-mcp`.
+  return storePath('playlist-health-snapshots', env);
 }
 
 function sanitizeId(id: string): string {

@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   chmodSync,
@@ -19,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SavedTrackItem, SavedAlbumItem } from '../types/spotify.js';
-import { getConfig } from '../config.js';
+import { getConfig, storePath } from '../config.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -82,7 +81,7 @@ export interface GenreTagStore {
 }
 
 export function genreTagsPath(env: NodeJS.ProcessEnv = process.env): string {
-  return env.SPOTIFY_MCP_GENRE_TAGS_FILE ?? join(homedir(), '.spotify-mcp', 'genre-tags.json');
+  return storePath('genre-tags', env);
 }
 
 

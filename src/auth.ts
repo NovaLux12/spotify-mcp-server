@@ -2,7 +2,6 @@ import { createHash, randomBytes } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
 import { chmod, mkdir, open as openFile, rename, stat, unlink } from 'fs/promises';
 import { ownStoreRoots, readLocalFile } from './paths.js';
-import { homedir } from 'os';
 import { basename, join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
@@ -16,6 +15,7 @@ import {
   DEFAULT_SCOPES as SCOPE_DEFAULTS,
   KNOWN_SPOTIFY_SCOPES,
   isKnownScope,
+  tokenFilePathForProfile,
   truthyEnv,
 } from './config.js';
 
@@ -375,12 +375,13 @@ export function activeProfile(cliProfile?: string, env: NodeJS.ProcessEnv = proc
  * so the emptiness check lives in the argv parser, not here.
  */
 export function getTokenFile(cliProfile?: string, env: NodeJS.ProcessEnv = process.env): string {
-  if (env.SPOTIFY_MCP_TOKEN_FILE) return env.SPOTIFY_MCP_TOKEN_FILE;
+  // The PATH is the registry's (config.ts) — this used to spell
+  // `join(homedir(), '.spotify-mcp', …)` a second time, which is exactly the
+  // duplicate the store registry exists to remove (#711). The PROFILE still
+  // comes from here, because argv is an input `config.ts` must not read: the
+  // CLI is parsed before anything in this module has an argv.
   const profile = activeProfile(cliProfile, env);
-  if (profile) {
-    return join(homedir(), '.spotify-mcp', `tokens.${profile}.json`);
-  }
-  return join(homedir(), '.spotify-mcp', 'tokens.json');
+  return tokenFilePathForProfile(profile, env);
 }
 
 /**
