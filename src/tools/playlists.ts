@@ -982,6 +982,30 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           ? { uri: entry }
           : { uri: entry.uri, positions: entry.positions },
       );
+      // Receipt (#112 idea 11): removal verifies ABSENCE; for targeted positions pass targetedPositions so #233 verification is per-position
+      const targetedPositions = tracks.some((t) => t.positions !== undefined)
+        ? tracks.flatMap((t) => t.positions !== undefined ? t.positions.map((p) => ({ uri: t.uri, position: p })) : [])
+        : undefined;
+      // #626: a positional removal is verified by comparing the post-write row
+      // count against the pre-write one, so the baseline has to be captured
+      // BEFORE the delete — after it, the playlist total is the post-mutation
+      // one and comparing it to itself would prove nothing. It is read only
+      // when positions were used, since that is the only path that compares
+      // counts; a bare-URI removal verifies by absence and needs no baseline.
+      //
+      // Best-effort on purpose: a failed read leaves `before` unset, and the
+      // receipt then reports UNVERIFIED naming the missing baseline. An
+      // unreadable baseline is a reason to withhold a claim, never a reason to
+      // block a write the user asked for — this adds a precondition to the
+      // VERIFIED verdict, and removes none.
+      let before: number | undefined;
+      if (targetedPositions) {
+        try {
+          before = await getPlaylistRowTotal(args.playlist_id);
+        } catch {
+          before = undefined;
+        }
+      }
       const body: Record<string, unknown> = { tracks };
       if (args.snapshot_id !== undefined) body.snapshot_id = args.snapshot_id;
 
@@ -989,10 +1013,6 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         `/playlists/${encodeURIComponent(args.playlist_id)}/items`,
         body,
       );
-      // Receipt (#112 idea 11): removal verifies ABSENCE; for targeted positions pass targetedPositions so #233 verification is per-position
-      const targetedPositions = tracks.some((t) => t.positions !== undefined)
-        ? tracks.flatMap((t) => t.positions !== undefined ? t.positions.map((p) => ({ uri: t.uri, position: p })) : [])
-        : undefined;
       // Also count total rows removed for the result text (#241)
       const removedRows = tracks.reduce((sum, t) => sum + (t.positions?.length ?? 1), 0);
       const receipt = await issueReceipt(client, {
@@ -1001,6 +1021,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         uris: tracks.map((t) => t.uri),
         expectPresent: false,
         ...(targetedPositions ? { targetedPositions } : {}),
+        ...(before !== undefined ? { before } : {}),
         ...(removedRows !== tracks.length ? { expectedRemovedCount: removedRows } : {}),
       });
       // #58: echo exactly which URIs were touched for the audit trail.

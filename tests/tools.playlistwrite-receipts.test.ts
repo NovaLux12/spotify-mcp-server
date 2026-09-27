@@ -500,7 +500,15 @@ describe('#879 swarm3_playlistops targeted removals verify by row', () => {
     assert.equal(sc.ok, false, 'a dropped DELETE must not report a completed removal');
     const receipts = receiptsOf(out);
     assert.equal(receipts[0].verified, false);
-    assert.match((receipts[0].reason ?? '') + JSON.stringify(receipts[0].missing), /row count|still-present|missing/);
+    // #626: a row-count failure is reported in `unmet`, not filed into
+    // `missing` — `missing` is uris the walk did not find and is consumed as
+    // data. The assertion is that a human-readable reason is surfaced
+    // somewhere, so it now reads the field the reason actually lives in.
+    assert.match(
+      (receipts[0].reason ?? '') + (receipts[0].unmet ?? '') + JSON.stringify(receipts[0].missing),
+      /row count|still-present|missing/,
+      'a failed receipt must say why it failed',
+    );
   });
 });
 
