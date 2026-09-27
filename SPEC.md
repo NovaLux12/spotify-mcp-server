@@ -1894,6 +1894,10 @@ The acting-account echo is not a substitute for any of this, and still is not. I
 #### `spotify_doctor`
 The `account` row names the acting account's `account_id`, its `id`, its `display_name`, and **the token file the identity was read through** — a report that named the account but not the file could not answer "which of the accounts on this box am I looking at". An absent `account_id` is reported as `not returned`, never substituted with the `id`: a near-miss built from `id` would look like a registry match.
 
+**The `scopes` row asks about the tools this run registers, and the scope gate does not silence it (#681).** The row compares the auth-time grant against the write tools the *effective* configuration exposes — the modules `SPOTIFY_MCP_TOOLSETS`, `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS` and `SPOTIFY_MCP_READONLY` actually leave registered, resolved through the same `isModuleActive(key, sets, overrides)` call `src/index.ts` makes. It reads `active_modules`, **not** `exposed_modules`: a module appears in the surface's scope-hidden list only *because* its write scope is missing, so filtering the requirements by the scope-filtered surface cancelled the check against its own subject — the larger the gap, the quieter the row, and only a token whose `scope` was empty (which fails open) ever produced a warning.
+
+Requirements are **either-of** where the scope gate is either-of: a caller holding only `playlist-modify-public` can create a playlist, so the doctor does not also ask for `playlist-modify-private`. `upload_playlist_cover` is its own group requiring `ugc-image-upload` **in addition to** a playlist-modify scope, and is not reported at all when neither modify scope is granted — the precondition gap is the actionable one. Under `SPOTIFY_MCP_READONLY` the row is a single `info` explaining that write tools are unregistered, because "the grant is sufficient" would be a verdict on a comparison that did not happen. Skipped requirements are named in the row's detail (`not checked — …`) so an absent gap is legible rather than silent.
+
 
 ## 6. Resources
 

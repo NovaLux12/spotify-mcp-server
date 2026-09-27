@@ -18,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
-import { initConfig } from '../src/config.js';
+import { initConfig, DEFAULT_SCOPES } from '../src/config.js';
 import { registerDoctorTool } from '../src/tools/doctortool.js';
 
 // ---------------------------------------------------------------------------
@@ -234,13 +234,16 @@ describe('spotify_doctor', () => {
   });
 
   it('full grant scope → scopes pass row', async () => {
-    const full =
-      'user-read-private user-modify-playback-state playlist-modify-public playlist-modify-private user-library-modify user-follow-modify';
-    await writeTokenFile({ ...VALID_TOKENS(), scope: full });
+    // The grant the server actually asks for by default, read from config
+    // rather than retyped. The hand-written list this replaced was missing
+    // `ugc-image-upload`, so it stopped being a full grant the moment #681 made
+    // the check cover `upload_playlist_cover` — and the test then failed for
+    // the right reason, which is the argument for sourcing it.
+    await writeTokenFile({ ...VALID_TOKENS(), scope: DEFAULT_SCOPES.join(' ') });
     const { invoke } = harness();
     const res = await invoke();
     const row = res.structuredContent?.rows?.find((r) => r.id === 'scopes');
-    assert.equal(row?.status, 'pass');
+    assert.equal(row?.status, 'pass', `unexpected gap on the default grant: ${row?.summary} — ${row?.detail}`);
   });
 
   it('pre-upgrade token without scope field → scopes-unknown warn', async () => {

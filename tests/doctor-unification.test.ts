@@ -556,10 +556,17 @@ describe('#581 — the CLI and the tool, for one config and one token file', () 
     assert.equal(cliScopes[0].status, toolScopes[0].status);
     assert.equal(cliScopes[0].summary, toolScopes[0].summary, 'the CLI and the tool must give identical scope advice');
     assert.equal(cliScopes[0].detail, toolScopes[0].detail);
+    // The control for this test: the grant really does leave a gap, so the
+    // comparison above is not two empty rows agreeing. `PARTIAL_GRANT` carries
+    // `playlist-modify-private` but not `playlist-modify-public`, and the
+    // playlists requirement is EITHER-OF (#681, matching the gate in
+    // scopefilter.ts), so the modify scopes are satisfied and the live gaps on
+    // this grant are `user-library-modify` and `ugc-image-upload`.
+    assert.equal(toolScopes[0].status, 'warn', 'the control: this grant leaves a real gap');
     assert.match(
       toolScopes[0].detail ?? '',
-      /playlist-modify-public/,
-      'the control for this test: the grant really does leave playlist-modify-public missing',
+      /user-library-modify/,
+      'the control: the gap named is one this grant really leaves',
     );
   });
 
@@ -708,12 +715,23 @@ describe('#581 — the CLI and the tool, for one config and one token file', () 
     useTokenFile({ access_token: 'at', refresh_token: 'rt', expires_at: FUTURE, scope: PARTIAL_GRANT });
 
     // Control first: with `playlists` registered, this grant leaves a real gap.
+    // `PARTIAL_GRANT` has no `ugc-image-upload`, so the cover-upload
+    // requirement — which is keyed on the `playlists` module and requires a
+    // playlist-modify scope the grant does carry — is unsatisfied. That is the
+    // gap the override has to be able to silence below, so naming it here is
+    // what keeps the second half of this test from passing vacuously.
     delete process.env.SPOTIFY_MCP_DISABLE_TOOLS;
     const enabled = await collectDoctorReport(stubClient(), fakeServer(3).server);
+    const controlDetail = rowMap(enabled.rows).get('scopes')?.[0].detail ?? '';
     assert.match(
-      rowMap(enabled.rows).get('scopes')?.[0].detail ?? '',
-      /playlist-modify-public/,
+      controlDetail,
+      /ugc-image-upload/,
       'the control: the doctor reports the gap when the module is registered',
+    );
+    assert.match(
+      controlDetail,
+      /upload_playlist_cover/,
+      'the control: and names the tool that will 403',
     );
 
     process.env.SPOTIFY_MCP_DISABLE_TOOLS = 'playlists';
@@ -730,17 +748,42 @@ describe('#581 — the CLI and the tool, for one config and one token file', () 
     ] as const) {
       const scopeRows_ = rowMap(rows as DoctorRow[]).get('scopes') ?? [];
       assert.equal(scopeRows_.length, 1, `${label} must still emit a scopes row`);
-      // The gap is named in the summary, never in the detail — the detail is
-      // the granted list, which legitimately still contains the scope that
-      // kept `playlists` registered. Asserting on the status is the direct
-      // statement: the doctor stopped claiming a gap.
-      assert.equal(
-        scopeRows_[0].status,
-        'pass',
-        `${label} still reports a gap for a module that is not registered: ${scopeRows_[0].summary}`,
+      // The claim under test: with `playlists` not registered, no playlist
+      // write scope appears among the reported GAPS — neither the module's own
+      // requirement nor the cover-upload one keyed on it.
+      //
+      // Scoped to the gap segment of the detail rather than the whole row,
+      // because the row is `gaps | not checked — … | granted: …`. The
+      // "not checked" segment NAMES the skipped requirements (that is the
+      // disclosure which makes the silence legible) and the granted list
+      // legitimately still contains `playlist-modify-private`, so a whole-row
+      // match would fail on text that is not a claim.
+      const text = scopeRows_.map((row) => `${row.summary} ${row.detail ?? ''}`).join('\n');
+      const gapsSegment = scopeRows_
+        .map((row) => (row.detail ?? '').split(' | ')[0] ?? '')
+        .join('\n');
+      assert.doesNotMatch(
+        gapsSegment,
+        /upload_playlist_cover|playlist-modify/,
+        `${label} still reports a playlist write scope as a gap for a module that is not registered:\n${text}`,
       );
-      assert.doesNotMatch(scopeRows_[0].summary, /lacks required scopes/);
-      assert.doesNotMatch(scopeRows_[0].summary, /playlist-modify-public/);
+      // Non-vacuity: the row is not simply empty, and the library gap this
+      // grant genuinely leaves is still reported. Before #681 that gap was
+      // itself suppressed whenever its module was hidden by the scope gate,
+      // so a blanket `status === 'pass'` passed here partly because the check
+      // was broken.
+      assert.match(
+        gapsSegment,
+        /user-library-modify/,
+        `${label} dropped a gap that has nothing to do with the override:\n${text}`,
+      );
+      // The disclosure is what makes the absence honest rather than a silence.
+      assert.match(
+        text,
+        /playlist cover upload: module playlists is not registered/,
+        `${label} did not say why the playlist requirements were skipped:\n${text}`,
+      );
+      assert.equal(scopeRows_[0].status, 'warn', `${label}: the surviving library gap should still warn`);
     }
     assert.ok(
       tool.structuredContent.surface.hidden_by_trim.includes('playlists'),
@@ -749,12 +792,13 @@ describe('#581 — the CLI and the tool, for one config and one token file', () 
   });
 
   it('never asks for user-library-* scopes when the library module is trimmed', async () => {
-    // The issue's literal acceptance criterion. Note what it can and cannot
-    // prove: with a grant missing `user-library-modify`, the library module is
-    // ALSO hidden by the scope gate, so the gap is absent either way and this
-    // assertion alone would not catch a doctor that ignored the override.
-    // The biting form of the same check — an override that removes a module
-    // which IS scope-gapped — is the test above.
+    // The issue's literal acceptance criterion. This used to be unable to
+    // distinguish a correct answer from a broken one: with a grant missing
+    // `user-library-modify` the library module was ALSO hidden by the scope
+    // gate, and the check filtered its requirements by the scope-filtered
+    // surface, so the gap vanished either way. #681 reads `active_modules`
+    // instead, which makes the gap visible — and makes this assertion bite for
+    // the first time: the only thing that can remove it now is the override.
     useTokenFile({
       access_token: 'at',
       refresh_token: 'rt',
