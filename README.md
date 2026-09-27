@@ -163,7 +163,9 @@ guarantee tightened:
 
 0. **`get_show_episodes` is removed.** Use `list_show_episodes` (same endpoint,
    same arguments, minus the drifted alias). It was the only name that changed;
-   everything else in the 591-tool surface keeps its name.
+   everything else in the surface keeps its name. The exact registry totals are
+   generated at the top of this file, so this sentence deliberately carries no
+   count of its own to fall behind.
 
 1. **Destructive writes fail closed.** Any confirmation-gated bulk write now
    refuses when the client cannot elicit, instead of proceeding unprompted.

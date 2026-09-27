@@ -42,12 +42,13 @@ Registration is core-first and deterministic:
 6. discovery, library operations, portability, analytics, and specialised slices
 7. swarm/specialised modules
 
-The first 64 names are the stable core prefix asserted by
-`tests/tool.surface.test.ts`: all of `search`, then all of `catalog`, then all of
-`library`, then all of `playback`. Every manifest module is registered exactly once,
-and the audit proves each live tool belongs to exactly one module. The aggregate
-ceilings constrain module weight; they do not constitute a complete historical
-tool-name inventory.
+The stable core prefix asserted by `tests/tool.surface.test.ts` runs from the
+start of `search` to the end of `playback`; the test derives its length from the
+first four manifest baselines, so this page deliberately does not repeat the
+count. Every manifest module is registered exactly once, and the audit proves
+each live tool belongs to exactly one module. The aggregate ceilings constrain
+module weight; they do not constitute a complete historical tool-name
+inventory.
 
 ### Baseline raises
 
@@ -63,12 +64,9 @@ stale baseline silently loses its 10% headroom for the next contributor.
   artist", "N small API calls" — that became conditionally false once those
   lookups became the one shared canonical release probe: a repeat scan inside
   the read-cache window spends a probe and no request. They now say that.
-  Measured by driving `dist/index.js` over stdio and byte-counting the live
-  `tools/list` payload on both sides of the branch at base `7e1fbd1`: the
-  registry is **592 tools** before and after, and the aggregate moved
-  **606,460 → 607,104 bytes (+644)** against the 621,000-byte enforced ceiling,
-  leaving 13,896 bytes of headroom. No aggregate raise, and no ceiling moved to
-  make a breach disappear.
+  The registry was 592 tools before and after; the change's cost against the
+  aggregate ceiling is in the generated block below, not here. No aggregate
+  raise, and no ceiling moved to make a breach disappear.
 
   These figures describe the tree this branch sits on. `main` moves under this
   work, and both module baselines have already drifted once under it
@@ -93,43 +91,52 @@ The per-module ceilings above bound one module each. A second gate bounds the
 whole default surface: `AGGREGATE_SURFACE_LIMITS` in `src/tools/annotations.ts`
 caps the total serialized `tools/list` payload a host session receives. It is
 **not** a description-plus-inputSchema figure — each tool is serialized as
-`{name, title, description, inputSchema, annotations, execution, _meta}`, so
-roughly 11.5% of the budgeted bytes are names, titles and metadata that the
+`{name, title, description, inputSchema, annotations, execution, _meta}`, so a
+measurable share of the budgeted bytes are names, titles and metadata that the
 per-module table excludes. Size a raise against the aggregate number.
 
-`defaultMaxBytes` is 607,000B and the enforced limit is that plus 1,000B for
-annotation metadata applied after registration, so **608,000B is the real
-ceiling**. Measured on the tree carrying #1004 and the whole wave (592 tools):
-**607,715B — 285B of headroom, which is not headroom.**
+<!-- BEGIN:generated aggregate-budget -->
+| Figure | Value | Where it comes from |
+|---|---:|---|
+| `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
+| `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
+| `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
+| Measured `tools/list` payload | 607,227B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 68,978B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 13,773B | 2.2% of the enforced limit |
 
-**The budget is effectively exhausted.** The wave the 607,000 raise was sized
-for has spent the headroom again, without a single PR asking to: the same
-condition that forced that raise (94B left) is back. #1004's own warrant is
-+136B, so raising for it here would be a ~7x raise against its warrant — the
-reflex this budget exists to prevent. The next honest sentence should land in a
-conversation with whoever owns the surface, not in a failed startup.
+Headroom is **13,773B** of the 621,000B enforced limit — 2.2% — so the aggregate budget is **tight**.
 
-#1004 needed no raise of its own. It cost +136B in the per-module metric —
-`exhaust2catalog` 19,176 -> 19,241 and `swarm3analytics` 18,880 -> 18,951 — and
-that is the three artist-reading tools having to re-quote their request quota
-now that they read `GET /artists/{id}` one at a time
-(`track_enrichment_batch`, `artist_genres_compact`, `top_genre_census`), since
-the batch lookup they used to cite was removed by Spotify in February 2026. Its
-branch proposed a 604,000B raise, sized against a 603,999B base that predated
-the in-flight wave; the 607,000B raise that landed on `main` first supersedes
-it, and the merged tree still measures under that ceiling.
+Regenerate with `npm run count:tools -- --write`. `--check` fails when any
+figure above stops matching the constants or the live measurement, so a
+ceiling raise lands in this file as a diff you can read, not as prose that
+quietly keeps describing the old one.
+<!-- END:generated aggregate-budget -->
 
-**Re-measure before trusting any figure here.** The number recorded with the
-603,000 raise said "measured 603,100B" and was already stale by ~900B: the figure
-had drifted as later changes landed, leaving one byte of real headroom — a budget
-whose stated headroom has silently evaporated breaches on the next honest
-sentence. One recorded on a sibling branch (#782) was *low* by ~27KB, quietly
-overstating the headroom by many times over. Both errors are in the same
-direction the prose invites: write the number you expect, not the one you
-measured. Measure by building the registry the way `src/index.ts` does and
-calling `collectAggregateSurfaceMeasurement`;
-`assertAggregateSurfaceBudget` puts the measured byte count in its error message
-if you lower the limit to force one.
+**Nothing in that block is hand-typed, and that is the whole point.** The
+version of this page that carried those numbers inline had frozen at an
+intermediate raise: the ceiling, the enforced limit, the measurement, the
+headroom, and the "the budget is effectively exhausted" conclusion drawn from
+them were all copied off a tree that no longer existed, and together they
+understated the real headroom by an order of magnitude. The conclusion is now a
+band over the measured ratio, so it moves when the surface moves and nobody has
+to remember to re-argue it (#1241).
+
+**A raise is argued for, never spent.** The history of raises, and the measured
+warrant behind each, lives in the `TOOL_SURFACE_BUDGET` comment trail in
+`src/tools/annotations.ts` — which is where a number that has to stay true
+belongs. Copying one out of there into this page is precisely how the two
+diverged.
+
+**Re-measure before trusting a recorded figure.** Recorded budgets on this
+project have been stale in both directions: one overstated the pressure by a
+rounding error, another overstated the headroom by tens of kilobytes. Both
+errors point the same way, because prose invites you to write the number you
+expect. Measure by building the registry the way `src/index.ts` does and calling
+`collectAggregateSurfaceMeasurement`; `assertAggregateSurfaceBudget` puts the
+measured byte count in its error message if you lower the limit to force one.
+The census does exactly that, which is why the block above is generated rather
+than maintained.
 
 <!-- BEGIN:generated schema-budget-table -->
 | Module | Tools | Schema bytes | Baseline tools | Baseline bytes | Effective tool ceiling | Effective byte ceiling |
