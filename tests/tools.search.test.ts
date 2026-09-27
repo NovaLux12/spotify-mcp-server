@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,7 +33,7 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory() {
+async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 
@@ -412,7 +412,7 @@ test('search records the executed query with its top result uris (#766)', async 
     getResponse: () => ({ tracks: { items: [trackFixture(), trackFixture({ id: 'trk2', uri: 'spotify:track:trk2', name: 'Another One' })], total: 2 } }),
   });
   await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'], limit: 3 });
-  const entries = await readHistory();
+  const entries = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.query, 'queen');
   assert.deepEqual(entries[0]!.types, ['track']);
@@ -428,7 +428,7 @@ test('search records only the requested types, in request order (#766)', async (
     }),
   });
   await invoke(findTool(registered, 'search'), { query: 'queen', types: ['artist', 'track'] });
-  const [entry] = await readHistory();
+  const [entry] = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.deepEqual(entry!.types, ['artist', 'track']);
   // Tracks rank first because they were asked for first, not because the
   // response happened to list them first.
@@ -440,7 +440,7 @@ test('search skips null market-filtered slots when recording top results (#766)'
     getResponse: () => ({ tracks: { items: [null, trackFixture()], total: 2 } }),
   });
   await invoke(findTool(registered, 'search'), { query: 'queen', types: ['track'] });
-  const [entry] = await readHistory();
+  const [entry] = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.deepEqual(entry!.top_result_ids, ['spotify:track:trk1']);
 });
 

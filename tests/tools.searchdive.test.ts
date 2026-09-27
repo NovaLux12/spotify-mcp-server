@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,7 +33,7 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory() {
+async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 
@@ -339,7 +339,7 @@ test('a truncated window footer advertises offset, not a fetch_all this tool lac
 test('search_deep records the window it walked (#766)', async () => {
   const { registered } = makeHarness({ getResponse: (_p, params) => fullTrackPage(Number(params?.offset ?? 0)) });
   await invoke(findTool(registered, 'search_deep'), { query: 'queen', pages: 2, market: 'GB', offset: 20 });
-  const entries = await readHistory();
+  const entries = await readHistory({ tokenFile: DEFAULT_TOKEN_FILE });
   assert.equal(entries.length, 1, 'one walk, one entry — not one per page');
   assert.equal(entries[0]!.query, 'queen');
   assert.deepEqual(entries[0]!.types, ['track']);

@@ -113,7 +113,7 @@ export interface HistoryWriteStatus {
 /** What spotify_doctor reports: where the ledger lives and how lossy it got. */
 export function historyWriteStatus(
   env: NodeJS.ProcessEnv = process.env,
-  tokenFile = '',
+  tokenFile: string,
 ): HistoryWriteStatus {
   return {
     enabled: isHistoryEnabled(env),
@@ -171,19 +171,39 @@ export interface HistoryRecord {
   [key: string]: unknown;
 }
 
-interface HistoryReadOptions {
+/** The settings every `readHistory` shape shares. */
+interface HistoryReadOptionsBase {
   /** Max records to return, oldest-dropped. Default DEFAULT_HISTORY_READ_LIMIT. */
   limit?: number;
-  /** Override the file to read (rotation archive derived from it). */
-  file?: string;
   /** Env used to resolve the file path. Default process.env. */
   env?: NodeJS.ProcessEnv;
-  /**
-   * The acting account's token file, which selects the ledger to read.
-   * Omitted means the default account's ledger.
-   */
-  tokenFile?: string;
 }
+
+/**
+ * A `readHistory` call must say WHICH ledger to read, one way or the other
+ * (#1385).
+ *
+ * The two shapes are mutually exclusive on purpose. `tokenFile` names the
+ * account and lets the store derive the path; `file` names the path outright,
+ * which is what a caller inspecting a specific ledger on disk wants. The
+ * combination this replaces — both optional — made "neither" a legal call, and
+ * neither resolved to the DEFAULT account's ledger. A reader that never said
+ * which account it was therefore got the default account's mutations, which is
+ * the cross-account merge the account key exists to prevent.
+ */
+export type HistoryReadOptions =
+  | (HistoryReadOptionsBase & {
+      /** Override the file to read (rotation archive derived from it). */
+      file: string;
+      tokenFile?: never;
+    })
+  | (HistoryReadOptionsBase & {
+      /**
+       * The acting account's token file, which selects the ledger to read.
+       */
+      tokenFile: string;
+      file?: never;
+    });
 
 /** Live file rotates past this many bytes; SPOTIFY_MCP_HISTORY_MAX_BYTES overrides. */
 export const DEFAULT_HISTORY_MAX_BYTES = 1_048_576;
@@ -242,7 +262,7 @@ function historyDir(env: NodeJS.ProcessEnv): string {
  * account on the machine (#1364). See `src/accountkey.ts` for why the key is
  * the token file rather than Spotify's `account_id`.
  */
-export function historyFilePath(env: NodeJS.ProcessEnv = process.env, tokenFile = ''): string {
+export function historyFilePath(env: NodeJS.ProcessEnv = process.env, tokenFile: string): string {
   const dir = historyDir(env);
   return join(dir, accountFileName(HISTORY_FILE, tokenFile));
 }
@@ -298,7 +318,7 @@ export interface HistoryLedgerStats {
  */
 export async function historyLedgerStats(
   env: NodeJS.ProcessEnv = process.env,
-  tokenFile = '',
+  tokenFile: string,
 ): Promise<HistoryLedgerStats> {
   const file = historyFilePath(env, tokenFile);
   const archive = `${file}${HISTORY_ARCHIVE_SUFFIX}`;
@@ -405,7 +425,7 @@ async function writeHistoryRecord(
  */
 export async function appendHistory(
   record: MutationRecord,
-  tokenFile = '',
+  tokenFile: string,
 ): Promise<void> {
   if (!isHistoryEnabled()) return;
   const file = historyFilePath(process.env, tokenFile);
@@ -479,7 +499,7 @@ function parseRecord(line: string): HistoryRecord | null {
  * of any size therefore costs the same resident memory. Records are returned
  * oldest-first, matching append order.
  */
-export async function readHistory(options: HistoryReadOptions = {}): Promise<HistoryRecord[]> {
+export async function readHistory(options: HistoryReadOptions): Promise<HistoryRecord[]> {
   const limit = Math.max(0, Math.trunc(options.limit ?? DEFAULT_HISTORY_READ_LIMIT));
   if (limit === 0) return [];
   const file = options.file ?? historyFilePath(options.env, options.tokenFile);

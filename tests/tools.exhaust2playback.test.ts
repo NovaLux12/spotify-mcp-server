@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test, { afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -47,6 +47,9 @@ function makeHarness(
 ) {
   const calls: Call[] = [];
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: async (path: string, params?: Record<string, string>) => {
       const err = opts.getError?.(path, params);
       if (err !== undefined) {

@@ -23,7 +23,7 @@
  * rows, the re-read), not on the call being recorded. A stub that swallowed
  * the call could not make a deleted file come back.
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, it } from 'node:test';
@@ -145,6 +145,9 @@ function makeHarness(options: StubOptions = {}) {
   };
 
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, params });
       const key = options.state === undefined ? 'state' : 'state';

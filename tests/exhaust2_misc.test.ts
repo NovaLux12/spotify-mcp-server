@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, mock, before, after, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
@@ -35,6 +35,9 @@ type Handler = (args: Record<string, unknown>) => Promise<{
 
 function makeClient(overrides: Record<string, unknown> = {}) {
   return {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: mock.fn(async () => null),
     getAllPages: mock.fn(async () => []),
     put: mock.fn(async () => null),
@@ -800,7 +803,12 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   });
 
   it('undo_preview diffs what a receipt-driven revert would do', async () => {
-    const stub = { get: async () => ({ items: [{ item: { uri: 'spotify:track:a' } }], total: 1, next: null }) };
+    // The receipt is filed under the same account the handler reads it back
+    // under, so both sides have to name one (#1385).
+    const stub = {
+      tokenFile: DEFAULT_TOKEN_FILE,
+      get: async () => ({ items: [{ item: { uri: 'spotify:track:a' } }], total: 1, next: null }),
+    };
     const receipt = await issueReceipt(stub as never, { kind: 'playlist_items', id: 'p1', uris: ['spotify:track:a'] });
     const h = getHandler('undo_preview', makeClient());
     const res = await h({ mutation_id: receipt.receipt_id, response_format: 'concise' });
@@ -817,7 +825,7 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
   // #587 — `since` reads the receipt's issue time. Before, it compared the
   // DIGITS in the id, so a boot-scoped id or a past date matched nothing.
   it('receipt_lookup filters by issue time, not by the digits in the receipt id', async () => {
-    const receipt = await issueReceipt({ get: async () => [true] } as never, {
+    const receipt = await issueReceipt({ tokenFile: DEFAULT_TOKEN_FILE, get: async () => [true] } as never, {
       kind: 'library',
       uris: ['spotify:track:since-filter'],
     });

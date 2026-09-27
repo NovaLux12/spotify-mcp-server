@@ -23,7 +23,7 @@
  * silently.
  */
 
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import assert from 'node:assert/strict';
 import { describe, it, afterEach } from 'node:test';
@@ -93,6 +93,9 @@ function makeStubClient(responder: Responder) {
   const calls: RecordedCall[] = [];
   const client = {
     calls,
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       calls.push({ method: 'GET', path, arg: params });
       return responder(path, params) as T | null;

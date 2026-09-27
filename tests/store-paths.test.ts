@@ -50,6 +50,7 @@ import {
 } from '../src/logout.js';
 import { historyFilePath, historyFilePaths } from '../src/history.js';
 import { receiptsFilePath } from '../src/receipts.js';
+import { resolveTokenFile } from '../src/config.js';
 import { accountsFile } from '../src/accounts.js';
 import { backupRootDir, exportRootDir, readRoots } from '../src/paths.js';
 import { artistWatchlistPath } from '../src/tools/artistwatch.js';
@@ -307,8 +308,14 @@ describe('the store registry is the only place a store path is spelled', () => {
     const owners: Record<string, (env: NodeJS.ProcessEnv) => string> = {
       token: (env) => storePath('token', env),
       accounts: accountsFile,
-      mutations: historyFilePath,
-      receipts: receiptsFilePath,
+      // #1385: these two key their FILE NAME by the acting account, so they
+      // are not one-argument resolvers any more — naming no account is an
+      // error, not the default account. `resolveTokenFile(env)` is the same
+      // resolver the registry rows use, which is what keeps this a comparison
+      // of the DEFAULT account against the registry rather than a comparison
+      // of two different accounts.
+      mutations: (env) => historyFilePath(env, resolveTokenFile(env)),
+      receipts: (env) => receiptsFilePath(env, resolveTokenFile(env)),
       scenes: scenesFilePath,
       'genre-tags': genreTagsPath,
       'playback-extensions': playbackExtFile,
@@ -427,7 +434,7 @@ describe('the store registry is the only place a store path is spelled', () => {
     // token resolver — but a split this subtle is exactly where two halves
     // drift, so the boundary is pinned here.
     const box = sandbox();
-    const defaultLedger = historyFilePath(box.env);
+    const defaultLedger = historyFilePath(box.env, resolveTokenFile(box.env));
     assert.equal(
       defaultLedger,
       storePath('mutations', box.env),
@@ -435,7 +442,7 @@ describe('the store registry is the only place a store path is spelled', () => {
       + 'one account with no key — so this disagreement needs no profile to appear',
     );
     assert.equal(
-      receiptsFilePath(box.env),
+      receiptsFilePath(box.env, resolveTokenFile(box.env)),
       storePath('receipts', box.env),
       'the receipt store and the registry disagree about the default account',
     );

@@ -4,7 +4,7 @@
  * batched creates, and empty-result error.
  */
 
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { describe, it, afterEach } from 'node:test';
 import { z } from 'zod';
@@ -60,6 +60,9 @@ function harness(opts: {
   const saved = opts.savedTracks ?? [];
 
   const client = {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
       gets.push(`${path}?${JSON.stringify(params)}`);
       if (path === '/me/top/tracks') {

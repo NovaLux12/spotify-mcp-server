@@ -12,7 +12,7 @@
  * would then delete real records. `assertStoreIsolated` below is the tripwire
  * for that mistake.
  */
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -427,9 +427,9 @@ test('the history ledger reports its size and record count, and both cap truthfu
   try {
     const { appendHistory, readHistory } = await import('../src/history.js');
     for (let i = 0; i < 60; i++) {
-      await appendHistory({ method: 'POST', path: `/playlists/p${i}/items` });
+      await appendHistory({ method: 'POST', path: `/playlists/p${i}/items` }, DEFAULT_TOKEN_FILE);
     }
-    const stats = await historyLedgerStats();
+    const stats = await historyLedgerStats(process.env, DEFAULT_TOKEN_FILE);
     const max = historyMaxBytes();
     assert.equal(stats.cap_bytes, max * 2, 'the cap is live + one rotated generation');
     assert.ok(stats.bytes > 0, 'the live file must be reported');
@@ -455,7 +455,7 @@ test('doctor reports the history ledger path and size', async () => {
   process.env.SPOTIFY_MCP_HISTORY = '1';
   try {
     const { appendHistory } = await import('../src/history.js');
-    for (let i = 0; i < 5; i++) await appendHistory({ method: 'PUT', path: `/me/tracks?ids=x` });
+    for (let i = 0; i < 5; i++) await appendHistory({ method: 'PUT', path: `/me/tracks?ids=x` }, DEFAULT_TOKEN_FILE);
     const { collectDoctorReport } = await import('../src/tools/doctortool.js');
     const { SpotifyClient } = await import('../src/client.js');
     const report = await collectDoctorReport(new SpotifyClient({} as never));

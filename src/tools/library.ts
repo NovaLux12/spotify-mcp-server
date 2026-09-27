@@ -127,7 +127,7 @@ function receiptLines(
  */
 async function mutationOutVerified(
   rf: ResponseFormatValue,
-  client: { get<T>(path: string, params?: Record<string, string>): Promise<T | null> },
+  client: ReceiptClient,
   kind: 'library',
   prose: string,
   n: number,

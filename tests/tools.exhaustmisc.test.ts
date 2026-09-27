@@ -1,4 +1,4 @@
-import './helpers/hermetic.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 import { after, before, describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
@@ -13,6 +13,9 @@ import { initConfig } from '../src/config.js';
 
 function makeClient(overrides: Record<string, unknown> = {}) {
   return {
+    // The real SpotifyClient always sets this at construction; a stub that
+    // omits it is not a client the stores can key by (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: mock.fn(async () => null),
     getAllPages: mock.fn(async () => []),
     // #731: search_within_playlist walks through the truncation-carrying

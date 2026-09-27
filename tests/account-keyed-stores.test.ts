@@ -50,7 +50,7 @@ import './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 
@@ -139,6 +139,65 @@ async function withAccounts<T>(
 const PERSIST_ON = { SPOTIFY_MCP_RECEIPTS: '1' };
 const PERSIST_OFF = { SPOTIFY_MCP_RECEIPTS: '' };
 const HISTORY_ON = { SPOTIFY_MCP_HISTORY: '1' };
+
+// ---------------------------------------------------------------------------
+// The shipped `verify_receipt` registration
+// ---------------------------------------------------------------------------
+
+/**
+ * The `receipts` manifest row, registered the way `src/index.ts` registers it.
+ * `registerVerifyReceiptTool` is private in `src/tools/annotations.ts`, so
+ * going through the manifest is the only way to reach the registration that
+ * actually ships.
+ *
+ * The `client` argument is the point of these tests. An earlier version of the
+ * registrar dropped it, and a test that registered with `undefined` as the
+ * client could not have told the difference: every account would read as the
+ * default one and the suite would stay green over the defect. So this takes
+ * the CLIENT rather than a token file, which is also what lets the #1385 cases
+ * register a registrar that carries no account at all.
+ *
+ * Declared at module scope because two describe blocks use it — one proving the
+ * wiring is present, one proving the fallback is gone.
+ */
+async function verifyReceiptToolFor(client: unknown): Promise<{
+  name: string;
+  handler: (args: Record<string, unknown>) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+    structuredContent?: Record<string, unknown>;
+  }>;
+}> {
+  const tools: Array<{
+    name: string;
+    handler: (args: Record<string, unknown>) => Promise<never>;
+  }> = [];
+  const server = {
+    tool: (
+      name: string,
+      _description: string,
+      _shape: unknown,
+      handler: (args: Record<string, unknown>) => Promise<never>,
+    ) => {
+      tools.push({ name, handler });
+      return { name };
+    },
+  };
+
+  const context = {
+    readOnly: false,
+    isModuleActive: () => true,
+    scopeBlocked: () => false,
+  };
+  const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
+  assert.ok(module, 'the receipts module must be in the registrar manifest');
+  for (const loaded of await loadManifestRegistrars([module], context)) {
+    registerManifestModule(server as never, client as SpotifyClient, loaded, context);
+  }
+  const tool = tools.find((t) => t.name === 'verify_receipt');
+  assert.ok(tool, 'verify_receipt must be registered by the receipts manifest module');
+  return tool as never;
+}
 
 // ---------------------------------------------------------------------------
 // The key itself
@@ -407,63 +466,6 @@ describe('the mutation ledger is account-keyed (#1364)', () => {
 // ---------------------------------------------------------------------------
 
 describe('verify_receipt is account-keyed through the shipped manifest wiring', () => {
-  /**
-   * The `receipts` manifest row, registered the way `src/index.ts` registers
-   * it. `registerVerifyReceiptTool` is private in `src/tools/annotations.ts`,
-   * so going through the manifest is the only way to reach the registration
-   * that actually ships.
-   *
-   * The `client` argument is the point of this test. An earlier version of the
-   * registrar dropped it, and a test that registered with `undefined` as the
-   * client could not have told the difference: every account would read as the
-   * default one and the suite would stay green over the defect.
-   */
-  async function verifyReceiptToolFor(tokenFile: string): Promise<{
-    name: string;
-    handler: (args: Record<string, unknown>) => Promise<{
-      content: Array<{ type: string; text: string }>;
-      isError?: boolean;
-      structuredContent?: Record<string, unknown>;
-    }>;
-  }> {
-    const tools: Array<{
-      name: string;
-      handler: (args: Record<string, unknown>) => Promise<never>;
-    }> = [];
-    const server = {
-      tool: (
-        name: string,
-        _description: string,
-        _shape: unknown,
-        handler: (args: Record<string, unknown>) => Promise<never>,
-      ) => {
-        tools.push({ name, handler });
-        return { name };
-      },
-    };
-
-    const context = {
-      readOnly: false,
-      isModuleActive: () => true,
-      scopeBlocked: () => false,
-    };
-    const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
-    assert.ok(module, 'the receipts module must be in the registrar manifest');
-    for (const loaded of await loadManifestRegistrars([module], context)) {
-      registerManifestModule(
-        server as never,
-        // Only the `tokenFile` matters to this tool, and it is the same field
-        // the real `SpotifyClient` carries and re-points on `switchAccount`.
-        { tokenFile } as unknown as SpotifyClient,
-        loaded,
-        context,
-      );
-    }
-    const tool = tools.find((t) => t.name === 'verify_receipt');
-    assert.ok(tool, 'verify_receipt must be registered by the receipts manifest module');
-    return tool as never;
-  }
-
   it('refuses another account\'s receipt id instead of attesting to it', async () => {
     await withAccounts(PERSIST_OFF, async ({ def, work }) => {
       const issued = await issueReceipt(stubClient(work), {
@@ -471,8 +473,8 @@ describe('verify_receipt is account-keyed through the shipped manifest wiring', 
         uris: ['spotify:track:private-to-work'],
       });
 
-      const asWork = await verifyReceiptToolFor(work);
-      const asDefault = await verifyReceiptToolFor(def);
+      const asWork = await verifyReceiptToolFor({ tokenFile: work } as unknown as SpotifyClient);
+      const asDefault = await verifyReceiptToolFor({ tokenFile: def } as unknown as SpotifyClient);
 
       const own = await asWork.handler({ receipt_id: issued.receipt_id });
       assert.equal(own.isError, undefined, 'the issuing account still resolves its own receipt');
@@ -557,5 +559,169 @@ describe('logout covers every account\'s store, not just the active one', () => 
     } finally {
       box.restore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1385 — an unnamed account is refused, not answered with the default one
+// ---------------------------------------------------------------------------
+
+/**
+ * `accountStoreKey('')` used to return `''`, and `''` is the DEFAULT account's
+ * key. Every account-keyed store in this file therefore carried a fail-open
+ * default: a caller that never passed a token file read and wrote the one store
+ * that must never be shared, re-merging the accounts #1364 separated — and
+ * silently, because the result was a plausible receipt lookup rather than an
+ * error.
+ *
+ * What these pin is the distinction between two things that are both "the empty
+ * key" and are NOT the same input:
+ *
+ *   - the DEFAULT account, which reaches the empty key by naming its own
+ *     `tokens.json` path, and must keep working exactly as before; and
+ *   - a caller that named NO account, which must fail.
+ *
+ * So a fix that made `accountStoreKey` throw for the real default account is
+ * caught here too. That is the issue's "no behavioural difference except that
+ * the default disappears" claim, tested rather than asserted in a comment.
+ */
+describe('an unnamed account is refused, not answered with the default account (#1385)', () => {
+  it('refuses to derive a key from an empty or blank token file', () => {
+    assert.throws(
+      () => accountStoreKey(''),
+      /empty token file/,
+      "an empty token file names no account, and answering it with the default account's key is the merge",
+    );
+    assert.throws(
+      () => accountStoreKey('   '),
+      /empty token file/,
+      'a whitespace-only path is not a path',
+    );
+  });
+
+  it('still lets the DEFAULT account reach its own un-keyed store by naming its file', () => {
+    // The half of the contract that protects the single-account install. An
+    // operator on one account has no profile: their token file is
+    // `~/.spotify-mcp/tokens.json`, and their `receipts.jsonl` must stay the
+    // file that account reads and writes.
+    assert.equal(accountStoreKey('/home/x/.spotify-mcp/tokens.json'), '');
+    assert.equal(
+      receiptsFilePath({ SPOTIFY_MCP_RECEIPTS_DIR: '/d' }, '/home/x/.spotify-mcp/tokens.json'),
+      '/d/receipts.jsonl',
+      'the default account keeps its pre-#1364 filename — this is the no-migration guarantee',
+    );
+  });
+
+  it('a client that named no account cannot file a receipt into the default account\'s store', async () => {
+    await withAccounts(PERSIST_ON, async ({ dir }) => {
+      // The shape the optional `ReceiptClient.tokenFile` used to allow: a
+      // client that answers `get` and says nothing about whose account it is.
+      const unwired = { get: async () => [true] } as unknown as ReceiptClient;
+
+      await assert.rejects(
+        () => issueReceipt(unwired, { kind: 'library', uris: ['spotify:track:from-nowhere'] }),
+        /empty token file/,
+        'this must fail loudly rather than be filed under the default account',
+      );
+
+      // Nothing was written anywhere. Against the old code this receipt existed
+      // in `receipts.jsonl` — the default account's trail — which is exactly
+      // how one account's mutation becomes readable as another's own.
+      assert.deepEqual(
+        readdirSync(dir),
+        [],
+        'an unnamed account must leave no trail behind, least of all the default account\'s',
+      );
+    });
+  });
+
+  it('an account that names itself still writes and reads its own store', async () => {
+    // The counterpart to the case above, so the refusal cannot be satisfied by
+    // breaking issuance: a `work` receipt is written, and is readable ONLY as
+    // `work`. Same `withAccounts` fixtures, same persistence setting.
+    await withAccounts(PERSIST_ON, async ({ dir, def, work }) => {
+      const issued = await issueReceipt(stubClient(work), {
+        kind: 'library',
+        uris: ['spotify:track:to-work'],
+      });
+      assert.ok(verifyReceipt(issued.receipt_id, work), 'a named account reads its own receipt');
+      assert.equal(
+        verifyReceipt(issued.receipt_id, def),
+        undefined,
+        'and no other account does',
+      );
+      assert.deepEqual(readdirSync(dir), ['receipts.work.jsonl'], 'only the named account wrote a trail');
+    });
+  });
+
+  it('the ledger refuses an unnamed account too, and the named one still writes', async () => {
+    // The mutation ledger keys the same way, so the same hole existed there.
+    // `appendHistory` resolves its path outside the try that absorbs ordinary
+    // ledger problems (#591), so the refusal PROPAGATES: an unwired caller is a
+    // bug in the caller, not a history failure, and the issue asks for a loud
+    // failure rather than a silently misfiled audit line. Every production
+    // call site passes `client.tokenFile`, which is a required `string`, so
+    // this is unreachable from the shipped code.
+    await withAccounts(HISTORY_ON, async ({ dir, work }) => {
+      await assert.rejects(
+        () => appendHistory({ method: 'POST', path: '/unwired' }, '' as unknown as string),
+        /empty token file/,
+        "an unnamed account must not be written to the default account's ledger",
+      );
+
+      // Against the old code this line is what `readdirSync` would have shown:
+      // the default account's `mutations.jsonl`, holding a mutation that
+      // belonged to no account it could name.
+      assert.deepEqual(
+        readdirSync(dir),
+        [],
+        'an unnamed account wrote a ledger line somewhere, which is a merge waiting to be read back',
+      );
+
+      await appendHistory({ method: 'POST', path: '/wired' }, work);
+      assert.deepEqual(
+        readdirSync(dir),
+        ['mutations.work.jsonl'],
+        'a named account is unaffected by the refusal',
+      );
+    });
+  });
+});
+
+describe('the shipped verify_receipt wiring does not fall back to the default account (#1385)', () => {
+  it('refuses a lookup when the registrar was given no account', async () => {
+    await withAccounts(PERSIST_OFF, async ({ work }) => {
+      const issued = await issueReceipt(stubClient(work), {
+        kind: 'library',
+        uris: ['spotify:track:private-to-work'],
+      });
+
+      // The registrar's second parameter used to be `client?: SpotifyClient`
+      // and its handler read `client?.tokenFile ?? ''`. Registering it with no
+      // client was therefore legal, and it then answered from the default
+      // account's store — so this lookup returned `found: true` for another
+      // account's receipt id, which is the cross-account attestation #1364
+      // closed and this re-opened at the wiring.
+      const unwired = await verifyReceiptToolFor(undefined);
+
+      await assert.rejects(
+        () => unwired.handler({ receipt_id: issued.receipt_id }),
+        /empty token file/,
+        "a registrar with no account must not answer from the default account's store",
+      );
+    });
+  });
+
+  it('still resolves its own account\'s receipt, so the refusal is not a blanket disable', async () => {
+    await withAccounts(PERSIST_OFF, async ({ work }) => {
+      const issued = await issueReceipt(stubClient(work), {
+        kind: 'library',
+        uris: ['spotify:track:own'],
+      });
+      const wired = await verifyReceiptToolFor({ tokenFile: work } as unknown as SpotifyClient);
+      const own = await wired.handler({ receipt_id: issued.receipt_id });
+      assert.equal(own.isError, undefined, 'a wired registrar is unaffected');
+      assert.equal(own.structuredContent?.found, true);
+    });
   });
 });
