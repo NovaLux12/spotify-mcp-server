@@ -251,8 +251,9 @@ export function proseDrift(manifest, documents) {
         + 'A reword or a deliberate deletion is legitimate: `npm run count:tools -- --prose-sync --retire "<reason>"` '
         + 'records it. A paragraph that vanished because a conflict here was resolved with --ours or --theirs is not: '
         + 'the generator only owns the text between the markers, so it cannot restore this. '
-        + 'Take the merge base of ARCHITECTURE.md (and every other mixed file), run `npm run count:tools -- --write`, '
-        + 'and restore the prose from the side you dropped.',
+        + 'Restore the paragraph by hand from the side you dropped (`git show <ref>:ARCHITECTURE.md`, and the same '
+        + 'for every other mixed file), and only then run `npm run count:tools -- --write` — `--write` repairs the '
+        + 'generated blocks and exits 1 for exactly as long as this paragraph is missing.',
       );
     }
   }

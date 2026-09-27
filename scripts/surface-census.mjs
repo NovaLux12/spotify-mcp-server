@@ -477,7 +477,10 @@ if (args.includes('--prose-sync')) {
       + '\n\nA reword or a deliberate deletion is legitimate — re-run with --retire "<reason>" to record it.'
       + '\nProse that vanished because a conflict in a mixed file was resolved with --ours or --theirs is not:'
       + ' the generator only owns the text between the markers and cannot restore it.'
-      + '\nRecover with the merge base of the file, then `npm run count:tools -- --write`.',
+      + '\nRecover the prose by hand from the side you dropped (`git show <ref>:ARCHITECTURE.md`),'
+      + ' and only then re-run `npm run count:tools -- --write` — `--write` repairs generated blocks'
+      + ' and exits 1 for as long as a pinned paragraph is missing.'
+      + '\n`npm run count:tools -- --prose-report` names the paragraphs that are gone without writing anything.',
     );
     process.exit(1);
   }

@@ -2,12 +2,20 @@
  * Shared policy for local JSON sidecars (#839, #1051).
  *
  * ENOENT reads as empty. Every other read failure, every JSON parse failure,
- * and every validation failure is SURFACED. The corrupt bytes are moved aside
- * to `<file>.corrupt` (or `<file>.corrupt.N` when `<file>.corrupt` already
- * exists) at 0600, opened O_EXCL so a second corruption cannot clobber the
- * earlier preserved copy, and the error names the earlier copy as still
- * intact. The error is a `SidecarUnreadableError`, never a silent empty
+ * and every validation failure is SURFACED. The corrupt bytes are COPIED to
+ * `<file>.corrupt` (or `<file>.corrupt.N` when `<file>.corrupt` already
+ * exists) at 0600, by `fs.copyFile` with the `COPYFILE_EXCL` flag
+ * (`FS.COPYFILE_EXCL`, not the unrelated `O_EXCL` of `open(2)`) so a second
+ * corruption cannot clobber the earlier preserved copy, and the original is
+ * left on disk untouched; the error says so and names the earlier copy as
+ * still intact. The error is a `SidecarUnreadableError`, never a silent empty
  * store.
+ *
+ * "Copied", not moved: nothing here renames or unlinks the original, so the
+ * bytes exist in two places afterwards. `tests/searchhistory-corrupt.test.ts`
+ * and `tests/tools.libraryinsights.test.ts` assert both halves — the `.corrupt`
+ * copy is byte-identical *and* the original still reads back with its corrupt
+ * contents — and that pair is what keeps this header from drifting again.
  *
  * This is the loader for playbackext, exhaust2_playback, exhaust2_misc,
  * libraryinsights (genre tags), and scenes. Re-deriving the policy per module
