@@ -355,6 +355,10 @@
         "label": "Changing or deleting prose needs --prose-sync. That comm…"
       },
       {
+        "hash": "71c8832aa6743c3b",
+        "label": "A retirement reason is a claim about a tree, and --prose…"
+      },
+      {
         "hash": "46f9c03312575710",
         "label": "The pin is hand-maintained on purpose. It is not in a ge…"
       },
@@ -793,8 +797,12 @@
         "label": "Module map"
       },
       {
-        "hash": "2e6987c183a71f1c",
+        "hash": "c31a5d418b1bf6a2",
         "label": "The table is generated from every TypeScript file recurs…"
+      },
+      {
+        "hash": "542aeb88e54977ae",
+        "label": "That column replaced a per-file line count (#1398), and …"
       },
       {
         "hash": "360697d299fea756",
@@ -857,6 +865,22 @@
       {
         "hash": "35867ae1bf2eaf6f",
         "label": "What you get by default, and what to do about the rest. …"
+      },
+      {
+        "hash": "376b91ad51a28283",
+        "label": "🚧 3.0 is landing"
+      },
+      {
+        "hash": "d2735e85f6b92c6f",
+        "label": "3.0 is the release where the open issue list goes to zer…"
+      },
+      {
+        "hash": "88bc9bd7a2a4d076",
+        "label": "It also removes tools, because Spotify deleted the endpo…"
+      },
+      {
+        "hash": "1c6f9aa3f8a99d55",
+        "label": "→ [Read the 3.0 roadmap](docs/v3-roadmap.md)"
       },
       {
         "hash": "cb3f91d54eee30e5",
@@ -1053,6 +1077,10 @@
       {
         "hash": "3ec20248158477aa",
         "label": "Docs"
+      },
+      {
+        "hash": "2047e831da68f8a8",
+        "label": "[docs/v3-roadmap.md](docs/v3-roadmap.md) — what's coming…"
       },
       {
         "hash": "1882df2a6a0df193",
@@ -1849,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "6a3623334baae931",
+        "hash": "d31c370da5da0cbe",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1861,12 +1889,8 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "eec41f1a9cb91dc4",
+        "hash": "46c5ce02d1cbde05",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
-      },
-      {
-        "hash": "4bea924e972ca055",
-        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -1875,6 +1899,26 @@
       {
         "hash": "2649f1e3e8e99071",
         "label": "fetchall (paged reads) — walk every page via client.getA…"
+      },
+      {
+        "hash": "a79f49fe67e162ac",
+        "label": "Bounded-read disclosure (#1423) — one name, repo-wide. A…"
+      },
+      {
+        "hash": "829bf6b270be53ce",
+        "label": "| Field | Meaning | |---|---| | rowsread | Rows the boun…"
+      },
+      {
+        "hash": "06a129bc66c35460",
+        "label": "with truncated beside them, truncatedbycap when the cap …"
+      },
+      {
+        "hash": "ff1a286fb9b176b8",
+        "label": "Why it is stated once, here. The field was spelled four …"
+      },
+      {
+        "hash": "965bfe849aa9cfbf",
+        "label": "Four neighbours are deliberately not part of this conven…"
       },
       {
         "hash": "bb87e423bbd4d413",
@@ -2917,8 +2961,8 @@
         "label": "So it discloses, and the disclosure is the caller's to a…"
       },
       {
-        "hash": "20554d496e1b6580",
-        "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…"
+        "hash": "2d3652ae5bd59a9e",
+        "label": "| Field | Meaning | |---|---| | rowsread | Rows the walk…"
       },
       {
         "hash": "a82895555e5c8faa",
@@ -2933,7 +2977,7 @@
         "label": "The tool description changed with it, and that is the pa…"
       },
       {
-        "hash": "991317132a97dccb",
+        "hash": "f3089cfab14298aa",
         "label": "A playlist at or below the cap is unchanged: truncated: …"
       },
       {
@@ -3249,8 +3293,16 @@
         "label": "Second upstream: long-range listening history, cross-ran…"
       },
       {
-        "hash": "8515c523b806c0cb",
+        "hash": "ebae9c5747a78916",
         "label": "Identity. stats.fm has no OAuth: a user-scoped read need…"
+      },
+      {
+        "hash": "6d3d08a165520d9d",
+        "label": "Sending both spellings is accepted only when they agree …"
+      },
+      {
+        "hash": "77a75972223cae15",
+        "label": "On the wire the name is a path segment, not a parameter.…"
       },
       {
         "hash": "bd9c280ab78254de",
@@ -3259,6 +3311,10 @@
       {
         "hash": "ebd62049ade63333",
         "label": "Endpoint tools (statsfm)"
+      },
+      {
+        "hash": "e94ef172cf855b2a",
+        "label": "statsfmrecentstreams also takes a named range of today|w…"
       },
       {
         "hash": "f377b6fbbba34445",
@@ -3289,7 +3345,7 @@
         "label": "Ten composites register in src/tools/tastecomposites.ts …"
       },
       {
-        "hash": "455ba684a6f018a0",
+        "hash": "cd55ea0bdba5d11b",
         "label": "statsfmuser is the identity argument on all eleven, and …"
       },
       {
@@ -3533,6 +3589,46 @@
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
       },
       {
+        "hash": "01c495efa531b454",
+        "label": "5.15 Mood expansion (expandmoodtoqueries, #598)"
+      },
+      {
+        "hash": "4d56cdccd07154a9",
+        "label": "One tool in the moodexpand module. It is alwaysActive (r…"
+      },
+      {
+        "hash": "f014981c3c143b6a",
+        "label": "Inputs: mood (string, required, ≥1 char — free text, e.g…"
+      },
+      {
+        "hash": "febc8be672c9ea3c",
+        "label": "Two paths, one output shape. The tool returns { mood, so…"
+      },
+      {
+        "hash": "1acdd257c113ca3d",
+        "label": "| source | When | model / attempts | |---|---|---| | \"sa…"
+      },
+      {
+        "hash": "4f1eba0856af7a2c",
+        "label": "Why the gate is this server's own. In SDK 1.30 Server.cr…"
+      },
+      {
+        "hash": "6931562532ce61fe",
+        "label": "The model contract. One createMessage per attempt, maxTo…"
+      },
+      {
+        "hash": "eada901b8aea5acd",
+        "label": "Failures are structured, and never a guess. An unreadabl…"
+      },
+      {
+        "hash": "c9c35701a78635ce",
+        "label": "The static map is a fallback, not a stand-in. MOODEXPANS…"
+      },
+      {
+        "hash": "58b6a5c1df2a3e34",
+        "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
+      },
+      {
         "hash": "f3e70de12e2dc0f1",
         "label": "6. Resources"
       },
@@ -3553,24 +3649,32 @@
         "label": "Each parameterised resource registers three entries, not…"
       },
       {
-        "hash": "db38a05132a6a5e3",
-        "label": "The {+qs} catch-all is what routes the read; the {?…} te…"
+        "hash": "0c44ce16df872864",
+        "label": "Expansion is the host's job, so the server's job is to m…"
+      },
+      {
+        "hash": "427c8f5ccf60d641",
+        "label": "The SDK's own matcher did not meet that obligation, so t…"
       },
       {
         "hash": "2afbbe36e8c64f1d",
         "label": "spotify://me/top/tracks{?format,timerange,limit,offset} …"
       },
       {
-        "hash": "86de2eeed5d4b2aa",
+        "hash": "ae426fb11efa31fe",
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "f6c48865c9488f32",
-        "label": "The {?…} template is still registered and still earns it…"
+        "hash": "32f6226ccd12e7a5",
+        "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "d2eaf7ac231c23e4",
-        "label": "Pre-existing, not introduced here. spotify://me/saved/tr…"
+        "hash": "fd63592042568bb1",
+        "label": "The {+qs} twin is the catch-all for query strings this s…"
+      },
+      {
+        "hash": "dba777829aa263b2",
+        "label": "A read of the advertised uriTemplate string itself also …"
       },
       {
         "hash": "882adcaf3fea8221",
@@ -3963,7 +4067,7 @@
         "label": "Cookbook — copy-paste agent recipes"
       },
       {
-        "hash": "4749428a7c7e6971",
+        "hash": "fc4e2dcbb2cccb88",
         "label": "Conventions: JSON tool args are shown inline; replace PL…"
       },
       {
@@ -3979,8 +4083,8 @@
         "label": "Risk: creates a new playlist and bulk-adds tracks to it;…"
       },
       {
-        "hash": "e0ddf0845a25e87a",
-        "label": "1. Call statsfmstreamsstats with userid: \"<your-statsfm-…"
+        "hash": "a03432232b111bb2",
+        "label": "1. Call statsfmstreamsstats with statsfmuser: \"<your-sta…"
       },
       {
         "hash": "c95b8f005a75b6e5",
@@ -3995,7 +4099,7 @@
         "label": "Risk: queues a track to your active device; preview firs…"
       },
       {
-        "hash": "a5ed32ad2f77ff55",
+        "hash": "e6774155db0491bb",
         "label": "1. Call whatsnew with since: \"last-check\" and dryrun: tr…"
       },
       {
@@ -4063,7 +4167,7 @@
         "label": "Risk: bulk-adds candidate tracks to a playlist; preview …"
       },
       {
-        "hash": "08de96a450dd44dc",
+        "hash": "01a1ae9cb32040d0",
         "label": "1. Call growplaylist with playlistid: \"PLAYLISTID\"; it f…"
       },
       {
@@ -4079,8 +4183,8 @@
         "label": "Risk: read-only — no Spotify or sidecar writes."
       },
       {
-        "hash": "b804055146e34e8b",
-        "label": "1. Call statsfmfriends for each explicit public userid, …"
+        "hash": "0457956b1626c291",
+        "label": "1. Call statsfmfriends for each explicit public statsfmu…"
       },
       {
         "hash": "bec49c778579b214",
@@ -4111,7 +4215,7 @@
         "label": "Risk: read-only — set SPOTIFYMCPREADONLY=1 so write-capa…"
       },
       {
-        "hash": "9837eff8a9776ecd",
+        "hash": "8723380e30dfc7c6",
         "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…"
       },
       {
@@ -4547,6 +4651,160 @@
         "label": "A cap that truncates silently is worse than no cap. A ca…"
       }
     ],
+    "docs/v3-roadmap.md": [
+      {
+        "hash": "942d7d1150f0395c",
+        "label": "The road to 3.0"
+      },
+      {
+        "hash": "a1ac11babaccb2f6",
+        "label": "3.0 is not a feature release with a bugfix chaser attach…"
+      },
+      {
+        "hash": "9ea240289e692b87",
+        "label": "That is a strange thing for a changelog to promise, so l…"
+      },
+      {
+        "hash": "b4a18d20e284dca7",
+        "label": "The reason that promise is makeable is that most of the …"
+      },
+      {
+        "hash": "156f7a78856b8478",
+        "label": "One idea underneath all of it"
+      },
+      {
+        "hash": "9d62fcd732d27a4c",
+        "label": "Almost every issue in the tracker is a variant of a sing…"
+      },
+      {
+        "hash": "7d431a3a5ab47f9d",
+        "label": "A stats.fm friend on a throttled or private account had …"
+      },
+      {
+        "hash": "68b030607f3c1fda",
+        "label": "None of those were hard bugs. All of them were a server …"
+      },
+      {
+        "hash": "a4c693ec99646f02",
+        "label": "3.0's whole character is the decision to say so when it …"
+      },
+      {
+        "hash": "19ac0d01f9cf55ad",
+        "label": "What it is made of"
+      },
+      {
+        "hash": "1996401c0ba773fa",
+        "label": "The backlog is organised as a set of epics, and they are…"
+      },
+      {
+        "hash": "99e4d8b7de074b54",
+        "label": "Kill the 153k-token tool payload. A model does not read …"
+      },
+      {
+        "hash": "d1ffeab056344f32",
+        "label": "Tool contracts — naming, params, defaults, pagination. T…"
+      },
+      {
+        "hash": "063b3fab735e9d7a",
+        "label": "MCP protocol surface. Annotations, output schemas, lazy …"
+      },
+      {
+        "hash": "7278830426a808e1",
+        "label": "Client stability, rate limits and caching. Honour Retry-…"
+      },
+      {
+        "hash": "19a18256c8c60c17",
+        "label": "Local file and data safety. Which files exist, which of …"
+      },
+      {
+        "hash": "c05bfe20f6763478",
+        "label": "Auth, tokens and the read-only guarantee. Minimum scopes…"
+      },
+      {
+        "hash": "a8436fd822563e21",
+        "label": "Test and CI trust. A test that cannot fail is worse than…"
+      },
+      {
+        "hash": "5275d9592c90b73d",
+        "label": "Architecture and code hygiene, performance and context e…"
+      },
+      {
+        "hash": "4a8d2554b6e6f98f",
+        "label": "The live list is the issue tracker. This page deliberate…"
+      },
+      {
+        "hash": "c1e4b9c92f4b1ef6",
+        "label": "The part where 3.0 deletes features"
+      },
+      {
+        "hash": "154a570bffa9b859",
+        "label": "Worth stating plainly, because it is unusual and it is n…"
+      },
+      {
+        "hash": "913ec0cebb3cfecd",
+        "label": "In February 2026 Spotify removed a large batch of Web AP…"
+      },
+      {
+        "hash": "5d0ab2886826b420",
+        "label": "So 3.0 removes tools. Not because they were badly built,…"
+      },
+      {
+        "hash": "4a7b80ac6828b837",
+        "label": "What changes for you"
+      },
+      {
+        "hash": "8c88680359f47f39",
+        "label": "Destructive bulk writes fail closed. If the client canno…"
+      },
+      {
+        "hash": "b23656edb5cc063c",
+        "label": "The 2.0 playlist input spellings are gone. They were cal…"
+      },
+      {
+        "hash": "0a8f8922f94eb354",
+        "label": "Unknown arguments are rejected rather than ignored, so a…"
+      },
+      {
+        "hash": "606dd582244eb869",
+        "label": "A smaller default surface. Fewer tools in the context wi…"
+      },
+      {
+        "hash": "f238f52e1094b41a",
+        "label": "Run the doctor tool after upgrading. It reports the regi…"
+      },
+      {
+        "hash": "57eb7a3cfe0cda15",
+        "label": "Why any of this is worth believing"
+      },
+      {
+        "hash": "6c2a31d8adbb29f0",
+        "label": "Because this repository is audited by its own CI, and it…"
+      },
+      {
+        "hash": "e7b396d742be7ce6",
+        "label": "Documentation counts are not typed by hand — they are ge…"
+      },
+      {
+        "hash": "2fd53e7d1730ebd7",
+        "label": "The interesting part is not that those gates exist. It i…"
+      },
+      {
+        "hash": "709e2f0f91f3855e",
+        "label": "After the merge"
+      },
+      {
+        "hash": "f6d5cc231063eb9a",
+        "label": "3.0 closes the backlog. It does not end the project, and…"
+      },
+      {
+        "hash": "cb3f91d54eee30e5",
+        "label": ""
+      },
+      {
+        "hash": "743835976323f768",
+        "label": "Questions about migrating? [docs/faq.md](faq.md) covers …"
+      }
+    ],
     "docs/wave2-composites.md": [
       {
         "hash": "2c6e8ecc8c64eda7",
@@ -4949,6 +5207,13 @@
   "retired": [
     {
       "file": "AGENTS.md",
+      "hash": "118767fe31aa6582",
+      "label": "A retirement reason is a claim about a tree, and --prose…",
+      "date": "2026-09-27",
+      "reason": "Reworded in #1440 to document the contradiction evidence the behind-refusal carries; same rule, stated in full."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "1d592fc01b13a615",
       "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
       "date": "2026-09-27",
@@ -5004,11 +5269,32 @@
       "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
     },
     {
+      "file": "ARCHITECTURE.md",
+      "hash": "2e6987c183a71f1c",
+      "label": "The table is generated from every TypeScript file recurs…",
+      "date": "2026-09-27",
+      "reason": "reworded the module-map introduction for #1398: it described the removed LOC column, and the replacement explains what Schema bytes measures and why a line count was the wrong signal"
+    },
+    {
       "file": "docs/cookbook.md",
       "hash": "06d58c6b9c65cbe8",
       "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "08de96a450dd44dc",
+      "label": "1. Call growplaylist with playlistid: \"PLAYLISTID\"; it f…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "4749428a7c7e6971",
+      "label": "Conventions: JSON tool args are shown inline; replace PL…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
     },
     {
       "file": "docs/cookbook.md",
@@ -5019,10 +5305,38 @@
     },
     {
       "file": "docs/cookbook.md",
+      "hash": "9837eff8a9776ecd",
+      "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "a5ed32ad2f77ff55",
+      "label": "1. Call whatsnew with since: \"last-check\" and dryrun: tr…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "b804055146e34e8b",
+      "label": "1. Call statsfmfriends for each explicit public userid, …",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "docs/cookbook.md",
       "hash": "bc40b051aa9710e4",
       "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…",
       "date": "2026-09-27",
       "reason": "manifest was generated against a tree older than fb324933; the prose is present in the current files in a reworded layout, and README.md and docs/cookbook.md are byte-identical to fb324933"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "e0ddf0845a25e87a",
+      "label": "1. Call statsfmstreamsstats with userid: \"<your-statsfm-…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
     },
     {
       "file": "README.md",
@@ -5075,10 +5389,17 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "46c5ce02d1cbde05",
-      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "hash": "20554d496e1b6580",
+      "label": "| Field | Meaning | |---|---| | itemsread | Rows the wal…",
       "date": "2026-09-27",
-      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
+      "reason": "#1423 renamed the bounded-read disclosure fields to rows_read and reported_total across SPEC.md, so the pinned Field/Meaning table row and the at-or-below-the-cap paragraph were deliberately reworded, not lost to a conflict"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "455ba684a6f018a0",
+      "label": "statsfmuser is the identity argument on all eleven, and …",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
     },
     {
       "file": "SPEC.md",
@@ -5103,6 +5424,27 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "8515c523b806c0cb",
+      "label": "Identity. stats.fm has no OAuth: a user-scoped read need…",
+      "date": "2026-09-27",
+      "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "86de2eeed5d4b2aa",
+      "label": "Every named parameter must be present, and in declaratio…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "991317132a97dccb",
+      "label": "A playlist at or below the cap is unchanged: truncated: …",
+      "date": "2026-09-27",
+      "reason": "#1423 renamed the bounded-read disclosure fields to rows_read and reported_total across SPEC.md, so the pinned Field/Meaning table row and the at-or-below-the-cap paragraph were deliberately reworded, not lost to a conflict"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "b1e3950f484ccc49",
       "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…",
       "date": "2026-09-27",
@@ -5117,10 +5459,10 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "d31c370da5da0cbe",
-      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "hash": "d2eaf7ac231c23e4",
+      "label": "Pre-existing, not introduced here. spotify://me/saved/tr…",
       "date": "2026-09-27",
-      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
     },
     {
       "file": "SPEC.md",
@@ -5138,17 +5480,17 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "db38a05132a6a5e3",
+      "label": "The {+qs} catch-all is what routes the read; the {?…} te…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "e3ad71b5cfba881d",
       "label": "Returns: per group: track label, occurrence count and ki…",
       "date": "2026-09-27",
       "reason": "rewritten by #885: find_duplicates_in_playlist's SPEC section now documents the shared match_by vocabulary and cross-tool consistency, superseding the per-tool description"
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "e5bffe189dce4d58",
-      "label": "Row cap and emit-once (#895) — capRowSections and emitOn…",
-      "date": "2026-09-27",
-      "reason": "Reworded, not deleted: reconciled the #895 json-mode contract with the measured code. SPEC claimed 'json' returns the raw payload as text and that json-mode text is 're-emitted from the capped object'; both were false for the 46 tools routed through a module's shared emitOnce renderer without a capRowSections call (20 of 24 in swarm3_playlistops.ts, 26 of 27 in exhaust2_misc.ts), which get a summary text block and only the MAX_RESPONSE_BYTES backstop. The row-cap/emit-once bullet also understated capRowSections coverage as 'the swarm3 playlist-diff surfaces' while naming no exhaust2misc site. Paragraphs present and expanded; no prose lost."
     },
     {
       "file": "SPEC.md",
@@ -5159,10 +5501,22 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "f6c48865c9488f32",
+      "label": "The {?…} template is still registered and still earns it…",
+      "date": "2026-09-27",
+      "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "fe5c9a358f83aced",
       "label": "Note: streaming is not included — that scope is for the …",
       "date": "2026-09-27",
       "reason": "rewritten by #700: the flat 'OAuth scopes requested' list is replaced by an OAuth scope profiles section, since the default profile no longer requests every scope"
     }
-  ]
+  ],
+  "provenance": {
+    "head": "db4ea03de337a54aa4fd97b369574e7828458b6e",
+    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
+    "behind": false
+  }
 }
