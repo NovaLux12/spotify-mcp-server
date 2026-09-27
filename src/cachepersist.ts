@@ -28,6 +28,7 @@
  * silently stopped persisting looks exactly like a cache that is working.
  */
 import { chmod, mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmodSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { getTokenFile } from './auth.js';
 import { loadSidecar } from './sidecar.js';
@@ -294,6 +295,78 @@ export async function savePersistedCache(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CachePersistStats> {
   const file = cachePersistPath(env, opts);
+  const doc = buildPersistDocument(entries, opts);
+  await mkdir(dirname(file), { recursive: true, mode: PERSIST_DIR_MODE });
+  // Temp-then-rename: a crash mid-write leaves the previous file intact
+  // instead of a truncated one that reads as a smaller cache.
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    await writeFile(tmp, doc.body, { encoding: 'utf8', mode: PERSIST_FILE_MODE });
+    await rename(tmp, file);
+  } catch (err) {
+    await (await import('node:fs/promises')).unlink(tmp).catch(() => {});
+    throw err;
+  }
+  // Mode is re-asserted after the rename: `writeFile`'s mode only applies at
+  // creation, so a file that already existed with looser permissions would
+  // otherwise keep them.
+  await chmod(file, PERSIST_FILE_MODE);
+  return { ...doc.stats, failed: 0 };
+}
+
+/**
+ * The same write, performed SYNCHRONOUSLY (#1266).
+ *
+ * This exists only for the process-shutdown path, where an `await` cannot be
+ * honoured: the `exit` event runs its listeners synchronously and the process
+ * is torn down the moment they return, so a pending `writeFile` promise issued
+ * there is discarded rather than awaited. Issuing `writeFileSync` is the only
+ * way a save started at `exit` can still reach the disk.
+ *
+ * It is deliberately NOT the debounced path. {@link savePersistedCache} remains
+ * the asynchronous writer that a burst of reads coalesces into, and the
+ * blocking cost below is paid at most once, at termination, and only when a
+ * save is actually pending.
+ *
+ * Shares {@link buildPersistDocument} with the async writer, so the
+ * single-serialization-per-entry property and the exact byte cap hold here too
+ * rather than being re-derived (and eventually re-broken) in a second copy.
+ */
+export function savePersistedCacheSync(
+  entries: PersistedEntry[],
+  opts: CachePersistOptions = {},
+  env: NodeJS.ProcessEnv = process.env,
+): CachePersistStats {
+  const file = cachePersistPath(env, opts);
+  const doc = buildPersistDocument(entries, opts);
+  mkdirSync(dirname(file), { recursive: true, mode: PERSIST_DIR_MODE });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, doc.body, { encoding: 'utf8', mode: PERSIST_FILE_MODE });
+    renameSync(tmp, file);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // The temp file is already gone, which is the state we wanted anyway.
+    }
+    throw err;
+  }
+  chmodSync(file, PERSIST_FILE_MODE);
+  return { ...doc.stats, failed: 0 };
+}
+
+/**
+ * Serialize the document, enforcing the allowlist and the cap.
+ *
+ * Split out of the writers so there is exactly one implementation of the size
+ * arithmetic that the #1249 review measured. Both writers call this; a second
+ * copy of the loop is how the O(n²) serialization came back the first time.
+ */
+function buildPersistDocument(
+  entries: PersistedEntry[],
+  opts: CachePersistOptions,
+): { body: string; stats: CachePersistStats } {
   const maxBytes = capFor(opts);
   const allowed = entries.filter((e) => isPersistableKey(e.key));
   const refused = entries.length - allowed.length;
@@ -317,21 +390,8 @@ export async function savePersistedCache(
     total += delta;
   }
 
-  const body = DOC_OPEN + kept.join(',') + DOC_CLOSE;
-  await mkdir(dirname(file), { recursive: true, mode: PERSIST_DIR_MODE });
-  // Temp-then-rename: a crash mid-write leaves the previous file intact
-  // instead of a truncated one that reads as a smaller cache.
-  const tmp = `${file}.${process.pid}.tmp`;
-  try {
-    await writeFile(tmp, body, { encoding: 'utf8', mode: PERSIST_FILE_MODE });
-    await rename(tmp, file);
-  } catch (err) {
-    await (await import('node:fs/promises')).unlink(tmp).catch(() => {});
-    throw err;
-  }
-  // Mode is re-asserted after the rename: `writeFile`'s mode only applies at
-  // creation, so a file that already existed with looser permissions would
-  // otherwise keep them.
-  await chmod(file, PERSIST_FILE_MODE);
-  return { persisted: kept.length, bytes: total, failed: 0, refused, oversize };
+  return {
+    body: DOC_OPEN + kept.join(',') + DOC_CLOSE,
+    stats: { persisted: kept.length, bytes: total, failed: 0, refused, oversize },
+  };
 }

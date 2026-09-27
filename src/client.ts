@@ -14,6 +14,10 @@ import {
   isPersistableKey,
   loadPersistedCache,
   savePersistedCache,
+  savePersistedCacheSync,
+  type CachePersistOptions,
+  type CachePersistStats,
+  type PersistedEntry,
 } from './cachepersist.js';
 import { getConfig } from './config.js';
 import { appendHistory, currentToolName } from './history.js';
@@ -772,6 +776,13 @@ class CachePersistController {
   private oversize = 0;
   private loaded: Promise<void> | null = null;
   private pendingSave: ReturnType<typeof setTimeout> | null = null;
+  /**
+   * The snapshot a pending save would write, or null when nothing is queued.
+   *
+   * Held as state rather than closed over by the timer callback so a flush can
+   * perform exactly the save the timer was going to perform (#1266).
+   */
+  private pendingEntries: PersistedEntry[] | null = null;
 
   constructor(
     private readonly file: string,
@@ -817,26 +828,164 @@ class CachePersistController {
     return this.loaded;
   }
 
-  /** Queue a debounced save of the current cache contents. */
+  /**
+   * Queue a debounced save of the current cache contents.
+   *
+   * The entries are held here, not captured in the closure, so a {@link flush}
+   * can write exactly what the timer would have written. Both race for that
+   * snapshot and whoever takes it clears the field, so a save happens once and
+   * its stats are counted once.
+   */
   scheduleSave(cache: LruTtlCache<unknown> | null): void {
     if (!cache) return;
     // Snapshot at schedule time and write that, so a later mutation's
     // invalidation (which the next schedule will capture) is never undone by a
     // save that was queued before it.
-    const entries = cache.snapshot();
+    this.pendingEntries = cache.snapshot();
     if (this.pendingSave !== null) clearTimeout(this.pendingSave);
     this.pendingSave = this.schedule(() => {
       this.pendingSave = null;
-      savePersistedCache(entries, { ...this.opts, file: this.file }).then(
-        (stats) => {
-          this.refused += stats.refused;
-          this.oversize += stats.oversize;
-        },
-        () => {
-          this.failed += 1;
-        },
-      );
+      this.runSave(savePersistedCache);
     }, CACHE_PERSIST_DEBOUNCE_MS);
+  }
+
+  /**
+   * Write the pending save now instead of waiting out the debounce (#1266).
+   *
+   * Resolves once the write has landed. Safe to call when nothing is pending,
+   * and safe to call twice: the pending snapshot is taken by whichever of the
+   * timer and this call gets there first, so a flush cannot double-count a save
+   * that already ran.
+   */
+  async flush(): Promise<void> {
+    if (this.pendingSave !== null) {
+      clearTimeout(this.pendingSave);
+      this.pendingSave = null;
+    }
+    await this.runSave(savePersistedCache);
+  }
+
+  /**
+   * The synchronous flush, for the `exit` event and signal handlers (#1266).
+   *
+   * `exit` listeners run synchronously and the process is gone the moment they
+   * return, so this cannot await — see {@link savePersistedCacheSync}. The
+   * counters are still updated, so a caller that inspects `stats()` after a
+   * flush sees a save that actually happened, or a failure that actually
+   * occurred, rather than a silent no-op.
+   */
+  flushSync(): void {
+    if (this.pendingSave !== null) {
+      clearTimeout(this.pendingSave);
+      this.pendingSave = null;
+    }
+    const entries = this.pendingEntries;
+    if (entries === null) return;
+    this.pendingEntries = null;
+    try {
+      const stats = savePersistedCacheSync(entries, { ...this.opts, file: this.file });
+      this.refused += stats.refused;
+      this.oversize += stats.oversize;
+    } catch {
+      this.failed += 1;
+    }
+  }
+
+  /**
+   * Run one save against the pending snapshot, if there still is one.
+   *
+   * Taking the snapshot BEFORE the write is what makes this safe to call from
+   * both the timer and {@link flush}: the second caller finds `null` and does
+   * nothing, so one queued save is never written or counted twice.
+   */
+  private async runSave(
+    save: (entries: PersistedEntry[], opts: CachePersistOptions) => Promise<CachePersistStats>,
+  ): Promise<void> {
+    const entries = this.pendingEntries;
+    if (entries === null) return;
+    this.pendingEntries = null;
+    try {
+      const stats = await save(entries, { ...this.opts, file: this.file });
+      this.refused += stats.refused;
+      this.oversize += stats.oversize;
+    } catch {
+      this.failed += 1;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Shutdown flush (#1266)
+// ---------------------------------------------------------------------------
+
+/**
+ * The controller whose pending save a terminating process must still write.
+ *
+ * A single slot rather than a set: the server constructs one client per
+ * process, so there is exactly one file to flush. A set would grow for the
+ * lifetime of any process that made several clients (every test run does) and
+ * would then write every one of those files during `exit`.
+ */
+let activePersist: CachePersistController | null = null;
+
+/** Whether the process-level hooks have been installed. */
+let exitFlushInstalled = false;
+
+/**
+ * Flush a pending save when the process is going away (#1266).
+ *
+ * The debounce is a 250 ms timer, and a pending timer keeps the event loop
+ * alive, so a process that simply runs out of work still fires it — the loss
+ * needs a termination that skips the loop, which is exactly what a host that
+ * restarts the server per session does.
+ *
+ * What each hook can and cannot do was measured on this Node rather than
+ * assumed, and the three cases need different mechanisms:
+ *
+ *   - `process.exit()` and an uncaught throw both run `exit` listeners, and
+ *     run them SYNCHRONOUSLY — a promise started there is discarded, never
+ *     awaited. Hence the synchronous write.
+ *   - SIGINT/SIGTERM with Node's default disposition run NO JavaScript at all:
+ *     no `exit` event, no `beforeExit`. A handler has to be installed for the
+ *     process to get a chance to save, and it re-raises afterwards so the
+ *     default termination (and the 128+n exit status a supervisor reads) is
+ *     unchanged.
+ *   - `beforeExit` is deliberately not used. It fires only once the loop has
+ *     drained, and the pending debounce timer is what keeps the loop alive, so
+ *     by the time it could run the save has already happened.
+ */
+function installExitFlush(): void {
+  if (exitFlushInstalled) return;
+  exitFlushInstalled = true;
+
+  process.on('exit', () => {
+    try {
+      activePersist?.flushSync();
+    } catch {
+      // An `exit` listener that throws would replace the real exit reason with
+      // a spurious failure. A cache is an optimisation; losing it must not
+      // change how the process reports why it stopped.
+    }
+  });
+
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    // `once`, not `on`: the handler re-raises the signal at the end, and a
+    // persistent listener would receive that re-raise and call itself again.
+    // With `once` the second delivery finds no listener, so the default
+    // disposition applies and the process dies of the signal as it would have
+    // without this handler (exit status 128 + signum). This is the same shape
+    // `ensureExitCleanup` in src/tools/scenes.ts uses.
+    process.once(signal, () => {
+      try {
+        activePersist?.flushSync();
+      } catch {
+        // Same reasoning as the `exit` listener: never let the cache change
+        // the termination semantics.
+      }
+      // Re-raise so installing this handler does not turn "SIGTERM stops the
+      // server" into "SIGTERM is ignored".
+      process.kill(process.pid, signal);
+    });
   }
 }
 
@@ -941,7 +1090,26 @@ export class SpotifyClient {
     // Restore before the first read can miss: a load that lands after a read
     // would make the second process pay the fetch anyway, and the restored
     // entries are deadline-checked on load so nothing expired is revived.
-    if (this._persist) void this._persist.load(this.cache);
+    if (this._persist) {
+      // Installed only when persistence is actually on, so a process that
+      // never writes a cache file registers no process-level handlers (#1266).
+      activePersist = this._persist;
+      installExitFlush();
+      void this._persist.load(this.cache);
+    }
+  }
+
+  /**
+   * Write any debounced cache-persist save now, and wait for it (#1266).
+   *
+   * The server installs its own flush on the termination paths, so a host does
+   * not have to call this; it is the explicit seam for a host that ends a
+   * session by other means (a graceful RPC shutdown, a supervisor that closes
+   * stdin and then waits), and for tests. A no-op when persistence is off or
+   * nothing is queued, and calling it twice does not save twice.
+   */
+  async flushCachePersist(): Promise<void> {
+    await this._persist?.flush();
   }
 
   /**
