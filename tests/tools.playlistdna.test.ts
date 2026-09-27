@@ -13,6 +13,8 @@ import { describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import type { SpotifyClient } from '../src/client.js';
 import type { PlaylistItemObject, SpotifyPaged, SpotifyPlaylistSimple } from '../src/types/spotify.js';
 import { registerPlaylistDnaTools, describeCandidate, ARTIST_BONUS } from '../src/tools/playlistdna.js';
@@ -43,52 +45,20 @@ interface RegisteredTool {
 }
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: RecordedCall[] = [];
-  let respond: Responder = responder;
-  return {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return respond(path, params) as T | null;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so the
+  // cap comes from `getConfig().fetchAllCap` and the short-page / total breaks
+  // are the production ones. This file's hand-copied loop (hardcoded `?? 500`)
+  // could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder, {
+    writes: {
+    POST: responder as LegacyResponder,
+    PUT: responder as LegacyResponder,
+    DELETE: responder as LegacyResponder,
+    // The old putRaw recorded the upload and answered nothing — a real 202.
+    PUT_RAW: () => undefined,
     },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'POST', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'PUT', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    async putRaw(path: string, body: string): Promise<void> {
-      calls.push({ method: 'PUT_RAW', path, arg: body });
-    },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'DELETE', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get().
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
-  };
+  });
+  return { calls: client.calls, client };
 }
 
 function harness(responder: Responder = () => null) {
@@ -108,11 +78,12 @@ function harness(responder: Responder = () => null) {
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerPlaylistDnaTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerPlaylistDnaTools(fakeServer, stub.client);
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);

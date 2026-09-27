@@ -18,6 +18,8 @@ import { z } from 'zod';
 import { registerRestoreTools } from '../src/tools/restore.js';
 import type { LibrarySnapshot } from '../src/tools/restore.js';
 import type { SpotifyClient } from '../src/client.js';
+import { StubSpotifyClient } from './helpers/stub-client.js';
+import type { StubCall } from './helpers/stub-client.js';
 import { CHUNK_CAPS } from '../src/chunk.js';
 
 // ---------------------------------------------------------------------------
@@ -61,15 +63,32 @@ interface LiveState {
  * a caller that asks for a bare array gets the capped one — which is the whole
  * point of #737, and why a single-page stub could never have caught it.
  *
- * `fetchAllCap` stands in for SPOTIFY_MCP_FETCH_ALL_CAP (default 500).
+ * `fetchAllCap` is handed to the REAL client constructor, so it reaches the
+ * production walk through `this.fetchAllCap` — not through a local copy of it.
  */
 function makeClient(state: LiveState, opts: { fetchAllCap?: number; containsBody?: unknown } = {}) {
-  const calls: Call[] = [];
-  const fetchAllCap = opts.fetchAllCap ?? 500;
-  const client = {
-    calls,
-    async get(_path: string, params?: Record<string, string>) {
-      calls.push({ method: 'GET', path: _path, params });
+  // #659: this file reimplemented `getAllPagesWithTruncation` — the verdict
+  // logic for #864/#718 — behind its own `?? fetchAllCap`. Any change to the
+  // real walk's cap, short-page break or reportedTotal reached no test in this
+  // file. The shared stub runs the production implementation and the cap is set
+  // through the constructor, which is where SPOTIFY_MCP_FETCH_ALL_CAP lands.
+  const client = new StubSpotifyClient({ fetchAllCap: opts.fetchAllCap ?? 500 });
+  // This file's assertions destructure a recorded call's argument as `params`
+  // on a GET and `body` on a write; the shared stub records one `arg`. The
+  // alias is applied to the very object the stub pushed — from inside the
+  // responder, which receives that same object — so the two names cannot drift
+  // from what was actually sent, and no second recorder exists to drift.
+  const alias = (c: StubCall): void => {
+    if (c.method === 'GET') (c as { params?: unknown }).params = c.arg;
+    else (c as { body?: unknown }).body = c.arg;
+  };
+  // `h.client.calls` is the shared stub's own record; keep the `params`/`body`
+  // aliases this file's assertions use.
+  client.route('GET', /^.*$/, {
+    respond: (call) => {
+      alias(call);
+      const params = call.arg as Record<string, string> | undefined;
+      const _path = call.path;
       if (_path === '/me/library/contains') {
         // `containsBody` replaces the answer outright so a test can hand the
         // tool a body that is not one boolean per requested URI.
@@ -88,73 +107,35 @@ function makeClient(state: LiveState, opts: { fetchAllCap?: number; containsBody
         // let a regression to it pass here, so it fails as the real API does.
         throw new Error('GET /me/following/contains was removed, use GET /me/library/contains');
       }
+      if (_path === '/me/playlists') {
+        // Spotify's own paging shape: items[], total, limit, offset. The walk
+        // that consumes it is the production one, inherited from SpotifyClient.
+        const limit = Number(params?.limit ?? 50) || 50;
+        const offset = Number(params?.offset ?? 0) || 0;
+        return {
+          items: state.playlists.slice(offset, offset + limit).map((p) => ({ ...p })),
+          total: state.playlists.length,
+          limit,
+          offset,
+        };
+      }
       return null;
     },
-    async getAllPagesWithTruncation<T>(
-      _path: string,
-      _params?: Record<string, string>,
-      walkOpts?: { maxItems?: number },
-    ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
-      calls.push({ method: 'GET', path: `${_path} (paged)` });
-      const maxItems = walkOpts?.maxItems ?? fetchAllCap;
-      if (_path !== '/me/playlists') {
-        return { items: [] as T[], truncated: false, truncatedByCap: false, reportedTotal: null };
-      }
-      const total = state.playlists.length;
-      const all: T[] = [];
-      let offset = 0;
-      let reportedTotal: number | null = null;
-      for (;;) {
-        const limit = Number(_params?.limit ?? 50) || 50;
-        // Spotify's own paging shape: items[], total, limit, offset.
-        const items = state.playlists.slice(offset, offset + limit);
-        reportedTotal = total;
-        all.push(...(items.map((p) => ({ ...p })) as T[]));
-        if (all.length >= maxItems) {
-          return {
-            items: all.slice(0, maxItems),
-            truncated: all.length > maxItems || all.length < total,
-            truncatedByCap: true,
-            reportedTotal,
-          };
-        }
-        if (items.length === 0 || items.length < limit) break;
-        offset += limit;
-        if (offset >= total) break;
-      }
-      return {
-        items: all,
-        truncated: reportedTotal !== null && all.length < reportedTotal,
-        truncatedByCap: false,
-        reportedTotal,
-      };
-    },
-    async getAllPages<T>(
-      _path: string,
-      _params?: Record<string, string>,
-      walkOpts?: { maxItems?: number },
-    ): Promise<T[]> {
-      return (await client.getAllPagesWithTruncation<T>(_path, _params, walkOpts)).items;
-    },
-    async post(_path: string, body?: unknown) {
-      calls.push({ method: 'POST', path: _path, body });
-      if (_path === '/me/playlists') {
+  });
+  client.route('POST', /^.*$/, {
+    respond: (call) => {
+      alias(call);
+      if (call.path === '/me/playlists') {
         const id = `pl_restored_${state.playlists.length + 1}`;
-        state.playlists.push({ id, name: (body as { name: string }).name });
+        state.playlists.push({ id, name: (call.arg as { name: string }).name });
         return { id };
       }
       return {};
     },
-    async put(_path: string, body?: unknown) {
-      calls.push({ method: 'PUT', path: _path, body });
-      return null;
-    },
-    async delete(_path: string, body?: unknown) {
-      calls.push({ method: 'DELETE', path: _path, body });
-      return null;
-    },
-  };
-  return client;
+  });
+  client.route('PUT', /^.*$/, { respond: (call) => { alias(call); return null; } });
+  client.route('DELETE', /^.*$/, { respond: (call) => { alias(call); return null; } });
+  return client as unknown as SpotifyClient & { calls: Call[] };
 }
 
 type ElicitVerdict = 'accept' | 'decline' | 'unsupported';

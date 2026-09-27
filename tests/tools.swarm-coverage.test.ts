@@ -30,6 +30,8 @@ import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder, StubCall } from './helpers/stub-client.js';
 import { initConfig } from '../src/config.js';
 import { registerSwarm3LibraryTools } from '../src/tools/swarm3_library.js';
 import { registerSwarm3PlaybackTools } from '../src/tools/swarm3_playback.js';
@@ -48,7 +50,6 @@ type Registered = {
 
 function makeHarness(register: (s: McpServer, c: SpotifyClient) => void, responder: (path: string, body: unknown, method?: string) => unknown) {
   const registered: Registered[] = [];
-  const calls: Array<{ method: string; path: string; arg?: unknown }> = [];
   const server = {
     tool(name: string, desc: string, schema: z.ZodRawShape, handler: Registered['handler']) {
       registered.push({ name, description: desc, schema, handler });
@@ -57,42 +58,17 @@ function makeHarness(register: (s: McpServer, c: SpotifyClient) => void, respond
       registered.push({ name, description: config.description ?? '', schema: config.inputSchema as unknown as z.ZodType, handler });
     },
   } as unknown as McpServer;
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return responder(path, params, 'GET') as T | null;
+  // #659: the fourth verbatim copy of the walk, hardcoded `?? 500` again, and
+  // the client was an object literal cast to SpotifyClient — which is exactly
+  // how a dropped argument hides. The shared stub records { method, path, arg }
+  // and runs the production loop over the same responder.
+  const client = new StubFromResponder(responder as LegacyResponder, {
+    writes: {
+      POST: responder as LegacyResponder,
+      PUT: responder as LegacyResponder,
+      DELETE: responder as LegacyResponder,
     },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'POST', path, arg: body });
-      return responder(path, body, 'POST') as T | null;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'PUT', path, arg: body });
-      return responder(path, body, 'PUT') as T | null;
-    },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'DELETE', path, arg: body });
-      return responder(path, body, 'DELETE') as T | null;
-    },
-    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
-      // For dry_run paths this should not be reached; for non-dry_run we delegate to GET paging via responder
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = 0;
-      for (;;) {
-        const page = await (client as unknown as { get: (p: string, pr?: Record<string, string>) => Promise<{ items: T[]; total?: number; limit?: number; offset?: number; next?: string | null } | null> }).get(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit = typeof (page as unknown as { limit?: number }).limit === 'number' && (page as unknown as { limit: number }).limit > 0 ? (page as unknown as { limit: number }).limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof (page as unknown as { total?: number }).total === 'number' && offset >= (page as unknown as { total: number }).total) break;
-      }
-      return all;
-    },
-  } as unknown as SpotifyClient & { calls: typeof calls };
+  });
   register(server, client);
   const find = (name: string) => {
     const t = registered.find((x) => x.name === name);
@@ -112,7 +88,7 @@ function makeHarness(register: (s: McpServer, c: SpotifyClient) => void, respond
     }
     return t.handler(args);
   };
-  return { registered, client: client as unknown as { calls: typeof calls }, find, invoke, text: (r: { content: Array<{ type: string; text: string }> }) => r.content[0].text };
+  return { registered, client: client as unknown as { calls: StubCall[] }, find, invoke, text: (r: { content: Array<{ type: string; text: string }> }) => r.content[0].text };
 }
 
 describe('canonical list_show_episodes', () => {

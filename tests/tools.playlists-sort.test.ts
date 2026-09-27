@@ -18,7 +18,9 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
+import type { PlaylistItemObject } from '../src/types/spotify.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder, StubCall } from './helpers/stub-client.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
 import { registerSwarm4PlaylistsTools } from '../src/tools/swarm4_playlists.js';
 
@@ -34,11 +36,9 @@ interface RegisteredTool {
   handler: (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
-interface RecordedCall {
-  method: 'GET' | 'POST' | 'PUT' | 'PUT_RAW' | 'DELETE';
-  path: string;
-  arg?: unknown;
-}
+// #659: the shared stub already records exactly this shape — { method, path,
+// arg } — so the per-file recorder is gone rather than maintained alongside it.
+type RecordedCall = StubCall;
 
 const writes = (calls: RecordedCall[]) =>
   calls.filter((c) => c.method === 'PUT' || c.method === 'POST' || c.method === 'DELETE');
@@ -98,59 +98,33 @@ function harness(items: PlaylistItemObject[]) {
     },
   } as unknown as McpServer;
 
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      if (path.includes('/items')) {
-        const offset = Number(params?.offset ?? 0);
-        return { items: items.slice(offset, offset + 100), total: items.length, limit: 100, offset } as unknown as T;
-      }
-      const id = decodeURIComponent(path.replace('/playlists/', ''));
-      return { id, name: `Playlist ${id}` } as unknown as T;
-    },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'POST', path, arg: body });
-      return { snapshot_id: 'snap-post' } as unknown as T;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'PUT', path, arg: body });
-      return { snapshot_id: 'snap-put' } as unknown as T;
-    },
-    async putRaw(): Promise<void> {},
-    async delete<T>(): Promise<T | null> {
-      return null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get so the sort
-    // tools see the same rows a real walk would.
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
+  // #659: the sort tools' paging came from a hand-copied loop with a hardcoded
+  // `?? 500` cap, and `putRaw()`/`delete()` took no parameters at all — so a
+  // body-key or Content-Type regression here was invisible. The shared stub
+  // runs the production walk and records every argument.
+  const read: LegacyResponder = (path, params) => {
+    if (path.includes('/items')) {
+      const offset = Number((params as Record<string, string> | undefined)?.offset ?? 0);
+      return { items: items.slice(offset, offset + 100), total: items.length, limit: 100, offset };
+    }
+    const id = decodeURIComponent(path.replace('/playlists/', ''));
+    return { id, name: `Playlist ${id}` };
   };
-
-  const typed = client as unknown as SpotifyClient;
+  const client = new StubFromResponder(read, {
+    writes: {
+      POST: () => ({ snapshot_id: 'snap-post' }),
+      PUT: () => ({ snapshot_id: 'snap-put' }),
+      DELETE: () => null,
+      PUT_RAW: () => undefined,
+    },
+  });
+  const typed: SpotifyClient = client;
   registerPlaylistTools(server, typed);
   registerSwarm4PlaylistsTools(server, typed);
 
   return {
-    calls,
+    calls: client.calls,
+    client,
     descriptionOf: (name: string) => registered.find((t) => t.name === name)?.description ?? '',
     // Schema-validating invoke: mirrors how the MCP server screens args
     // before a handler ever sees them.
