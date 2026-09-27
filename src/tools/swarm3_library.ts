@@ -2,7 +2,7 @@
  * swarm3 library slice — feature swarm v1.25.0 (500-tool push, branch swarm3-500-tools).
  *
  * Owned by the library builder. All 24 tools in this slice are registered
- * here and nowhere else (index.ts/toolsets.ts are NOT edited by this slice).
+ * here and nowhere else (neither index.ts nor toolsets.ts is edited here).
  *
  * House conventions honoured here:
  *   • shaping.ts helpers only (ResponseFormat / MaxResults / resolveMaxResults /
