@@ -1370,7 +1370,16 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
   // Tool count unchanged at 10.
-  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 7990], { readOnlySafe: true }),
+  //
+  // #895: 4 of the 10 gained `max_results` (taste_daily_brief,
+  // taste_weekly_recap, taste_novelty_loyalty, taste_listening_clock) so the
+  // shared row cap has somewhere to be read from — without it a capped
+  // composite silently used the configured default and the caller had no way
+  // to ask for a different bound. MEASURED with `npm run count:tools` on
+  // 2026-09-27: 7990 B -> 8582 B (+592 B, 4 x the ~148 B the `MaxResults`
+  // fragment costs on the taste module). Tool count unchanged at 10; the
+  // derived ceiling is 8779 B, so this is inside budget with 197 B spare.
+  manifestEntry('tastecomposites', 'tastecomposites', lazyModule('./taste_composites.js', 'registerTasteCompositeTools'), [10, 8582], { readOnlySafe: true }),
   // #927: `taste_to_playlist` declares the same optional `statsfm_user`, so it
   // moves with the module it imports the schema from. MEASURED with
   // `npm run count:tools` on 2026-09-27: 1723 B -> 1718 B, -5 B. Tool count

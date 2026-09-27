@@ -36,8 +36,10 @@ import {
   describeDryRun,
   DryRunScan,
   readString,
+  capRowSections,
+  emitOnce,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type { PlaybackState } from '../types/spotify.js';
 import { getConfig, storePath } from '../config.js';
 import { loadTokens } from '../auth.js';
@@ -69,16 +71,51 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
   return { content: [{ type: 'text', text }], ...(structured ? { structuredContent: structured } : {}) };
 }
 
-/** Prose or JSON body; structuredContent is always attached (#52). */
+/**
+ * Prose or JSON body; `structuredContent` is always attached (#52).
+ *
+ * #895: json mode used to stringify the SAME object into the text block, so
+ * all 56 call sites charged the host twice for one payload. The text block is
+ * now a bounded summary of the sections beside it. The prose modes are
+ * untouched — their text is already prose, so there is no second copy.
+ */
 function emit(
   fmt: ResponseFormatValue | string | undefined,
   prose: string,
   payload: Record<string, unknown>,
 ): ToolResult {
-  if (fmt === 'json') {
-    return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }], structuredContent: payload };
-  }
+  if (fmt === 'json') return emitOnce(payload, summarizeExhaust2);
   return { content: [{ type: 'text', text: prose }], structuredContent: payload };
+}
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction: capped-section counts
+ * plus at most six scalar counters, never a row.
+ */
+const SUMMARY_COUNT_FIELDS = 6;
+
+function summarizeExhaust2(payload: Record<string, unknown>): string {
+  const sections = payload.sections as Record<string, SectionCap> | undefined;
+  const parts: string[] = [];
+  if (sections) {
+    for (const [key, section] of Object.entries(sections)) {
+      parts.push(
+        section.unreadable
+          ? `${key} (unreadable)`
+          : `${key}: ${section.returned}/${section.total}`,
+      );
+    }
+  }
+  const counts = Object.entries(payload)
+    .filter(([, value]) => typeof value === 'number' && Number.isFinite(value))
+    .slice(0, SUMMARY_COUNT_FIELDS)
+    .map(([key, value]) => `${key}=${value as number}`);
+  const tail = [
+    parts.length > 0 ? `Sections: ${parts.join(', ')}.` : '',
+    counts.length > 0 ? `Counts: ${counts.join(', ')}.` : '',
+  ].filter(Boolean).join(' ');
+  return `Full payload in structuredContent.${tail.length > 0 ? ` ${tail}` : ''}`;
 }
 
 const HOUR_MS = 3_600_000;
@@ -577,7 +614,13 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         discovery_ratio: discoveryRatio,
         saved_tracks: saved.length,
       };
-      if (args.output_format === 'json' || rf === 'json') return emit(rf, JSON.stringify(payload, null, 2), payload);
+      // #895: this used to stringify the payload and hand the STRING to emit()
+      // as the prose, which emit() then ignored in favour of stringifying the
+      // same object again for the text block. Two serializations, one of them
+      // thrown away. `tops` is left whole on purpose: it is bounded upstream at
+      // `limit: '50'` per range, not an unbounded scan, so a row cap here would
+      // trim an already-bounded answer and say nothing useful in its place.
+      if (args.output_format === 'json' || rf === 'json') return emit(rf, '', payload);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const lines: string[] = [`# Year in review — ${year}`, ''];
       for (const r of ranges) {
@@ -933,7 +976,12 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
           return !Number.isFinite(added) || added <= cutoff;
         })
         .map((s) => ({ uri: s.track!.uri, name: s.track!.name ?? 'unknown', added_at: s.added_at ?? '' }));
-      const payload = {
+      // #895: `candidates` and `details` are the same rows shipped twice, whole,
+      // in every mode — a scan of a large library returned the full dead-track
+      // set to a caller that had asked for `max_results`. Both are capped, and
+      // `count` keeps the exact pre-cap total so "how many were there" survives.
+      const capForScan = resolveMaxResults(args.max_results, getConfig().maxItems);
+      const payload = capRowSections({
         ok: true, scanned: { saved_tracks: saved.length, playlists: playlistsScanned, recent_plays: recent.length },
         candidates: candidates.map((c) => c.uri),
         details: candidates,
@@ -941,11 +989,12 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         estimated_requests_max: estimatedRequestsMax,
         ...quotaDelta(client, snapshot),
         ...shrinkWarrant,
-      };
+      }, ['candidates', 'details'], capForScan);
       if (candidates.length === 0) return emit(rf, 'No dead tracks found — nothing to remove.', payload);
       await modifyLibrary(client, candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string'), 'remove');
-      const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
-      const t = truncateItems(candidates, maxResults);
+      // The SAME cap the payload rows already went through, so the prose list
+      // and `sections.details` cannot disagree about how many rows exist.
+      const t = truncateItems(candidates, capForScan);
       const lines = [`Removed ${candidates.length} dead track(s):`];
       t.items.forEach((c) => lines.push(`  • ${c.name} (saved ${c.added_at || 'unknown'})`));
       if (t.footer) lines.push(`(${t.footer})`);

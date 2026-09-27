@@ -1865,6 +1865,10 @@
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
+        "hash": "e5bffe189dce4d58",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
+      },
+      {
         "hash": "470609f52057944b",
         "label": "Paging signal (any tool that reads one offset page of a …"
       },

@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 591,276B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 591,868B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 66,492B | 11.2% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 20,724B | 3.4% of the enforced limit |
+| Headroom | 20,132B | 3.3% of the enforced limit |
 
-Headroom is **20,724B** of the 612,000B enforced limit — 3.4% — so the aggregate budget is **tight**.
+Headroom is **20,132B** of the 612,000B enforced limit — 3.3% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -180,7 +180,7 @@ than maintained.
 | analytics | 3 | 1,908 | 3 | 1,908 | 5 | 3,099 |
 | statsfm | 30 | 24,073 | 30 | 24,073 | 31 | 26,481 |
 | taste | 8 | 7,062 | 8 | 7,062 | 9 | 7,769 |
-| tastecomposites | 10 | 7,990 | 10 | 7,990 | 11 | 8,789 |
+| tastecomposites | 10 | 8,582 | 10 | 8,582 | 11 | 9,441 |
 | tasteplaylist | 1 | 1,718 | 1 | 1,718 | 2 | 1,890 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | accounts | 2 | 1,644 | 2 | 1,644 | 3 | 1,809 |

@@ -41,7 +41,9 @@ import {
   PlaylistListFields,
   playlistListFields,
   ResponseFormat,
+  capRowSections,
   describeDryRun,
+  emitOnce,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -50,7 +52,7 @@ import {
   withPlaylistInputMetadata,
   withPlaylistInputNote,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+import type { ResponseFormatValue, SectionCap } from '../shaping.js';
 import type {
   PlaylistItemObject,
   SpotifyAlbumSimple,
@@ -66,12 +68,32 @@ type ToolResult = { content: TextContent[]; structuredContent?: Record<string, u
 // Shared shaping helpers
 // ---------------------------------------------------------------------------
 
-/** #51/#52 shaping: json mode stringifies the payload; payload rides as structuredContent. */
+/**
+ * #51/#52 shaping: the payload rides as `structuredContent` in every mode.
+ *
+ * #895: json mode used to stringify the SAME object into the text block, so
+ * every call in this slice charged the host twice for one payload. The text
+ * block is now a bounded summary of the capped sections beside it. The prose
+ * modes are untouched — their text is already prose, so there is no second
+ * copy to remove.
+ */
 function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  return {
-    content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload,
-  };
+  if (rf === 'json') return emitOnce(payload, summarizeSections);
+  return { content: [{ type: 'text', text: prose }], structuredContent: payload };
+}
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction — counts only.
+ */
+function summarizeSections(payload: Record<string, unknown>): string {
+  const sections = payload.sections as Record<string, SectionCap> | undefined;
+  if (!sections) return 'Full payload in structuredContent.';
+  const parts = Object.entries(sections).map(([key, section]) =>
+    section.unreadable
+      ? `${key} (unreadable)`
+      : `${key}: ${section.returned}/${section.total}`);
+  return `Full payload in structuredContent:\nSections: ${parts.join(', ')}.`;
 }
 
 /** Field aliases used throughout this slice (same fragments, local names). */
@@ -959,13 +981,16 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         .filter(([, rows]) => rows.length === loaded.length)
         .sort((a, b) => a[1][0].position - b[1][0].position)
         .map(([uri, rows]) => ({ uri, name: rows[0].name, in_playlists: rows.map((r) => r.position + 1) }));
-      const view = truncateItems(common, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: the payload shipped `common` whole beside a prose block capped to
+      // `max_results`. One cap, both channels.
+      const payload = capRowSections({
         ok: true,
         playlists: loaded.map((p, i) => ({ id: p.id, name: nameOf[i], tracks: rowsPer[i].length })),
         intersection_count: common.length,
         common_tracks: common,
-      };
+      }, ['common_tracks'], cap);
+      const view = truncateItems(payload.common_tracks as typeof common, cap);
       return shape(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
         ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
@@ -998,13 +1023,15 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const occurrences = new Map<string, number>();
       for (const seq of seqs) for (const uri of new Set(seq)) occurrences.set(uri, (occurrences.get(uri) ?? 0) + 1);
       const uniquePer = seqs.map((seq) => [...new Set(seq)].filter((u) => occurrences.get(u) === 1).length);
-      const view = truncateItems(union, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: the payload shipped the whole union beside a capped prose block.
+      const payload = capRowSections({
         ok: true,
         playlists: loaded.map((p, i) => ({ id: p.id, name: nameOf[i], tracks: seqs[i].length, unique: uniquePer[i] })),
         union_count: union.length,
         union_uris: union,
-      };
+      }, ['union_uris'], cap);
+      const view = truncateItems(payload.union_uris as string[], cap);
       return shape(rf, withPlaylistInputNote([
         `Union preview of ${loaded.length} playlists: ${union.length} distinct track(s) (read-only).`,
         ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
@@ -1175,8 +1202,10 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         .sort((a, b) => a[1][0] - b[1][0])
         .map(([uri, positions]) => ({ uri, positions }));
       const excess = groups.reduce((n, g) => n + g.positions.length - 1, 0);
-      const view = truncateItems(groups, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: both plans shipped whole beside a capped prose block. They are
+      // the same rows as `groups`, capped once, independently of each other.
+      const payload = capRowSections({
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
@@ -1184,7 +1213,8 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         excess_copies: excess,
         keep_first_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(1) })),
         keep_last_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(0, -1) })),
-      };
+      }, ['keep_first_plan', 'keep_last_plan'], cap);
+      const view = truncateItems(groups, cap);
       return shape(rf, [
         `"${p.name ?? p.id}" duplicates: ${groups.length} group(s), ${excess} excess cop(ies).`,
         ...view.items.map((g, i) => `  ${i + 1}. ${g.uri} at positions ${g.positions.map((p) => p + 1).join(', ')}`),
@@ -1700,15 +1730,19 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       }
       const distinct = contributors.size;
       const verdict = distinct <= 1 ? 'SOLO' : distinct <= 3 ? 'LIGHT COLLAB' : 'HEAVY COLLAB';
-      const batchView = truncateItems(batches, resolveMaxResults(args.max_results, getConfig().maxItems));
-      const payload = {
+      const cap = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // #895: `batchView` was computed for the prose and then ignored — the
+      // payload carried every batch, so one long journal scaled the response
+      // with the playlist while the sentence beside it promised a cap.
+      const payload = capRowSections({
         ok: true,
         playlist: p.id,
         playlist_name: p.name,
         batches,
         contributors: Object.fromEntries([...contributors.entries()].sort((a, b) => b[1] - a[1])),
         verdict,
-      };
+      }, ['batches'], cap);
+      const batchView = truncateItems(payload.batches as typeof batches, cap);
       return shape(rf, [
         `Edit journal for "${p.name ?? p.id}" — ${batches.length} add-batch(es), ${rows.length} item(s). Verdict: ${verdict}.`,
         ...batchView.items.map((b, i) => `  ${i + 1}. ${b.date}: +${b.added} (positions ${b.first_position}+) by ${b.by.join(', ')}`),

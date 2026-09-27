@@ -310,13 +310,21 @@ describe('overlap_playlists name resolution (#903)', () => {
 
     for (const threshold of [3, 1]) {
       const h = overlapHarness(fixtures);
+      // #895: json mode now caps `shared` like every other mode and discloses
+      // what it withheld, so the ordering this test is about is compared over
+      // the returned window and the FULL count is checked beside it.
       const out = await h.run({ playlists: refs, min_overlap: threshold, response_format: 'json' });
-      const data = JSON.parse(out.content[0].text) as { shared: Array<{ id: string; name: string; count: number }> };
+      const data = out.structuredContent as {
+        shared: Array<{ id: string; name: string; count: number }>;
+        sections: Record<string, { returned: number; total: number }>;
+      };
       const want = threshold === 3 ? expected : referenceOverlap([fixtures[OVERLAP_1], fixtures[OVERLAP_2], fixtures[OVERLAP_3]], 1);
 
       // Same rows, same order, same names — including that a shared id takes
       // its name from the FIRST playlist that holds it.
-      assert.deepEqual(data.shared, want);
+      assert.equal(data.sections.shared.total, want.length, 'the withheld rows are still counted');
+      assert.equal(data.sections.shared.returned, data.shared.length);
+      assert.deepEqual(data.shared, want.slice(0, data.shared.length));
       assert.equal(data.shared[0].name, 'Name P1 s0000');
       assert.equal(data.shared[0].count, 3);
     }
@@ -333,9 +341,15 @@ describe('overlap_playlists name resolution (#903)', () => {
     for (const row of expected.slice(0, 5)) {
       assert.ok(text.includes(`• ${row.id} "Name P1 ${row.id}" — in 3/3 playlists`), `row ${row.id} rendered`);
     }
-    // A structuredContent row set matches the reference too.
-    const structured = out.structuredContent as { shared: Array<{ id: string; name: string; count: number }> };
-    assert.deepEqual(structured.shared, expected);
+    // #895: the payload rows are the capped window, in the same order as the
+    // prose, and `sections` says how many rows exist behind them.
+    const structured = out.structuredContent as {
+      shared: Array<{ id: string; name: string; count: number }>;
+      sections: Record<string, { returned: number; total: number }>;
+    };
+    assert.deepEqual(structured.shared, expected.slice(0, 5));
+    assert.equal(structured.sections.shared.total, expected.length);
+    assert.equal(structured.sections.shared.returned, 5);
   });
 
   it('resolves names from the first playlist that holds a repeated id', async () => {
@@ -348,7 +362,9 @@ describe('overlap_playlists name resolution (#903)', () => {
     const fixtures = { [OVERLAP_1]: withNull[0], [OVERLAP_2]: withNull[1] };
     const h = overlapHarness(fixtures);
     const out = await h.run({ playlists: [OVERLAP_1, OVERLAP_2], min_overlap: 1, response_format: 'json' });
-    const data = JSON.parse(out.content[0].text) as { shared: Array<{ id: string; name: string; count: number }> };
+    // #895: the payload rides in `structuredContent`; the text block beside it
+    // is a bounded summary, not a second serialization of the same object.
+    const data = out.structuredContent as { shared: Array<{ id: string; name: string; count: number }> };
     assert.deepEqual(data.shared, referenceOverlap([fixtures[OVERLAP_1], fixtures[OVERLAP_2]], 1));
   });
 
@@ -527,8 +543,10 @@ describe('balance_playlist_pairs commit path (#903)', () => {
     const { total, target, moves, deletes, adds } = referenceBalance(buckets);
     assert.ok(moves.length > 0, 'the fixture must produce a real plan');
 
-    // The plan is identical, row for row and in order.
-    const payload = JSON.parse(out.content[0].text) as {
+    // The plan is identical, row for row and in order. `response_format:
+    // 'json'` is this tool's documented full-plan opt-in, so `moves` is not
+    // capped here — the point of #895 is that the plan is not serialized twice.
+    const payload = out.structuredContent as {
       total: number;
       target: number;
       moves: RefMove[];
@@ -624,9 +642,11 @@ describe('balance_playlist_pairs commit path (#903)', () => {
     assert.equal(payload.moves.length, payload.moves_total);
     assert.equal(payload.moves_withheld, 0);
     assert.equal(payload.moves_truncated, false);
-    // The json text body carries the same complete plan.
-    const body = JSON.parse(out.content[0].text) as { moves: unknown[] };
-    assert.equal(body.moves.length, payload.moves_total);
+    // #895: the text block is a bounded SUMMARY of the plan, not a second copy
+    // of it. `structuredContent` is the complete plan, and the text says so.
+    assert.doesNotMatch(out.content[0].text, /"from_playlist"/, 'the plan must not be serialized twice');
+    assert.match(out.content[0].text, /structuredContent/);
+    assert.equal(payload.moves.length, payload.moves_total);
   });
 
   it('no longer scans buckets or rows per planned move', async () => {

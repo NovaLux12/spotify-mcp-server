@@ -471,7 +471,7 @@ describe('find_duplicate_saved_tracks edges', () => {
 // ---------------------------------------------------------------------------
 
 describe('find_duplicate_saved_tracks json mode', () => {
-  it('returns raw groups as structuredContent twin of the text payload', async () => {
+  it('returns raw groups in structuredContent, emitted once (#895)', async () => {
     const tracks = [
       savedTrack({ id: 'j1', name: 'Json Song', artistNames: ['Data'], durationMs: 200_000, addedAt: '2026-01-01T00:00:00Z' }),
       savedTrack({ id: 'j2', name: 'Json Song', artistNames: ['Data'], durationMs: 200_400, addedAt: '2026-02-01T00:00:00Z' }),
@@ -479,9 +479,14 @@ describe('find_duplicate_saved_tracks json mode', () => {
     const out = await harness(libraryResponder(tracks)).invoke('find_duplicate_saved_tracks', {
       response_format: 'json',
     });
-    const raw = JSON.parse(textOf(out)) as Payload;
-    // Raw text and structuredContent carry the identical payload.
-    assert.deepEqual(raw, payloadOf(out));
+    // #895: the payload is emitted ONCE. It rides in `structuredContent` and
+    // the text block beside it is a bounded summary — the two used to be the
+    // same bytes, charged twice on every call.
+    const raw = payloadOf(out) as Payload;
+    const text = textOf(out);
+    assert.notEqual(text, JSON.stringify(raw, null, 2));
+    assert.match(text, /structuredContent/);
+    assert.ok(Buffer.byteLength(text, 'utf8') < Buffer.byteLength(JSON.stringify(raw), 'utf8'));
     assert.equal(raw.ok, true);
     assert.equal(raw.counts.exact_groups, 1);
     assert.equal(raw.groups.length, 1);

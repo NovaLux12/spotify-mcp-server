@@ -17,6 +17,8 @@ import {
   PlaylistPairFields,
   PlaylistRef,
   batchSummary,
+  capRowSections,
+  emitOnce,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -25,6 +27,7 @@ import {
   withPlaylistInputMetadata,
   withPlaylistInputNote,
   type ResponseFormatValue,
+  type SectionCap,
 } from '../shaping.js';
 import type {
   PlaylistItemObject,
@@ -42,6 +45,36 @@ function textResult(text: string, structured?: Record<string, unknown>): ToolRes
 
 /** Raw-JSON rendering for response_format='json' (#51); shared by all three tools. */
 const jsonText = (data: unknown): string => JSON.stringify(data, null, 2);
+
+/**
+ * The row arrays `diff_playlists` publishes (#895), capped per section.
+ *
+ * Each section gets its own `max_results`, which is what the prose path has
+ * always rendered and what the tool's description promises. One shared budget
+ * across the three would starve a section the caller can see described in full.
+ */
+const DIFF_ROW_ARRAYS = ['only_in_a', 'only_in_b', 'moved'] as const;
+
+/** The row array `overlap_playlists` publishes (#895). */
+const OVERLAP_ROW_ARRAYS = ['shared'] as const;
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction: it names the section
+ * counts and never interpolates a row.
+ */
+function summarizeSections(head: string) {
+  return (payload: Record<string, unknown>): string => {
+    const sections = payload.sections as Record<string, SectionCap> | undefined;
+    if (!sections) return `${head} Full payload in structuredContent.`;
+    const parts = Object.entries(sections).map(([key, section]) =>
+      section.unreadable ? `${key} (unreadable)` : `${key}: ${section.returned}/${section.total}`);
+    return `${head} Full payload in structuredContent:\nSections: ${parts.join(', ')}.`;
+  };
+}
+
+const summarizeDiff = summarizeSections('Playlist diff.');
+const summarizeOverlap = summarizeSections('Playlist overlap.');
 
 // Hard cap for fetch-all pagination loops (#55), same as playlists.ts.
 const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
@@ -495,53 +528,21 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       moved.sort((x, y) => x.a_position - y.a_position);
 
       const cap = resolveMaxResults(args.max_results);
-      const renderedCount = Math.min(onlyInA.length, cap) + Math.min(onlyInB.length, cap) + Math.min(moved.length, cap);
-      const truncation = { returned: renderedCount, total: onlyInA.length + onlyInB.length + moved.length };
-      if (args.response_format === 'json') {
-        const payload = withPlaylistInputMetadata({
-          ok: true,
-          dry_run: args.dry_run ?? false,
-          truncated,
-          scan_cap: sourceCap,
-          playlist_a: playlistA,
-          playlist_b: playlistB,
-          a_total: idsA.length,
-          b_total: idsB.length,
-          only_in_a: onlyInA,
-          only_in_b: onlyInB,
-          moved,
-          truncation,
-          requests_read: requestsRead,
-        }, input);
-        return textResult(jsonText(payload), payload);
-      }
-
-      // Rendered rows are capped per section; the counts stay exact (#53).
-      const section = (title: string, rows: string[]): string[] => {
-        const view = truncateItems(rows, cap);
-        const out = ['', `${title} (${rows.length}):`];
-        if (view.items.length === 0) out.push('  (none)');
-        else out.push(...view.items.map((r) => `  • ${r}`));
-        if (view.footer) out.push(`(${view.footer})`);
-        return out;
-      };
-
-      const lines = [
-        `Diff between A (playlist_a=${playlistA}, ${idsA.length} tracks) and B (playlist_b=${playlistB}, ${idsB.length} tracks)`,
-        ...section('Only in A', onlyInA.map((id) => `${id} @ position ${posA.get(id)}`)),
-        ...section('Only in B', onlyInB.map((id) => `${id} @ position ${posB.get(id)}`)),
-        ...section(
-          'Moved (same track, different position)',
-          moved.map((m) => `${m.id} @ A:${m.a_position} → B:${m.b_position}`),
-        ),
-      ];
-      if (truncationNote) lines.push(truncationNote);
-      // #899: the read cost is incurred whether or not rows were dropped.
-      lines.push(`(Read cost: ${requestsRead} paged read request(s) across both playlists.)`);
-      return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
+      // #895: the cap is computed ONCE, here, and both channels read the same
+      // capped arrays. The previous code capped the prose rows and shipped the
+      // whole arrays in the payload, so `truncation.returned` claimed 50 while
+      // the JSON beside it carried 2,500 — a payload reporting rows it had not
+      // actually sent, and the 500 KB case the issue measured.
+      const shaped = capRowSections({
         ok: true,
         dry_run: args.dry_run ?? false,
-        truncated,
+        /**
+         * The SOURCE walk hit `scan_cap` — a different quantity from the
+         * top-level `truncated`, which `capRowSections` writes to mean "rows
+         * were withheld from this payload". One flag cannot mean both, so the
+         * walk keeps the name the rest of the repo gives it.
+         */
+        truncated_by_cap: truncated,
         scan_cap: sourceCap,
         playlist_a: playlistA,
         playlist_b: playlistB,
@@ -550,9 +551,39 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         only_in_a: onlyInA,
         only_in_b: onlyInB,
         moved,
-        truncation,
         requests_read: requestsRead,
-      }, input));
+      }, DIFF_ROW_ARRAYS, cap);
+      const payload = withPlaylistInputMetadata(shaped, input);
+      if (args.response_format === 'json') {
+        return emitOnce(payload, summarizeDiff);
+      }
+
+      // Rendered rows are the same capped rows the machine channel carries;
+      // the counts stay exact (#53).
+      const sections = shaped.sections;
+      const section = (title: string, key: 'only_in_a' | 'only_in_b' | 'moved', rows: string[]): string[] => {
+        const view = truncateItems(rows, cap);
+        const out = ['', `${title} (${sections[key].total}):`];
+        if (view.items.length === 0) out.push('  (none)');
+        else out.push(...view.items.map((r) => `  • ${r}`));
+        if (view.footer) out.push(`(${view.footer})`);
+        return out;
+      };
+
+      const lines = [
+        `Diff between A (playlist_a=${playlistA}, ${idsA.length} tracks) and B (playlist_b=${playlistB}, ${idsB.length} tracks)`,
+        ...section('Only in A', 'only_in_a', onlyInA.map((id) => `${id} @ position ${posA.get(id)}`)),
+        ...section('Only in B', 'only_in_b', onlyInB.map((id) => `${id} @ position ${posB.get(id)}`)),
+        ...section(
+          'Moved (same track, different position)',
+          'moved',
+          moved.map((m) => `${m.id} @ A:${m.a_position} → B:${m.b_position}`),
+        ),
+      ];
+      if (truncationNote) lines.push(truncationNote);
+      // #899: the read cost is incurred whether or not rows were dropped.
+      lines.push(`(Read cost: ${requestsRead} paged read request(s) across both playlists.)`);
+      return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
     },
   );
 
@@ -634,27 +665,31 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
         .sort((a, b) => b.count - a.count || a.firstSeen - b.firstSeen);
 
       const cap = resolveMaxResults(args.max_results);
+      // #895: one cap, read by both channels — the prose rows and the
+      // `shared` array are the same list, and the previous code shipped the
+      // whole list in the payload while `truncation.returned` reported the
+      // capped count.
+      const shaped = capRowSections({
+        ok: true,
+        dry_run: args.dry_run ?? false,
+        /** The source walk hit `scan_cap` — not the same as the payload's `truncated`. */
+        truncated_by_cap: truncated,
+        scan_cap: sourceCap,
+        playlists: refs,
+        threshold,
+        total_shared: shared.length,
+        shared: shared.map(({ id, name, count }) => ({ id, name, count })),
+        requests_read: requestsRead,
+      }, OVERLAP_ROW_ARRAYS, cap);
+      const payload = withPlaylistInputMetadata(shaped, input);
+      if (args.response_format === 'json') {
+        return emitOnce(payload, summarizeOverlap);
+      }
+
       const view = truncateItems(
         shared.map((e) => `${e.id}${e.name ? ` "${e.name}"` : ''} — in ${e.count}/${refs.length} playlists`),
         cap,
       );
-      const truncation = { returned: view.items.length, total: shared.length };
-      if (args.response_format === 'json') {
-        const payload = withPlaylistInputMetadata({
-          ok: true,
-          dry_run: args.dry_run ?? false,
-          truncated,
-          scan_cap: sourceCap,
-          playlists: refs,
-          threshold,
-          total_shared: shared.length,
-          shared: shared.map(({ id, name, count }) => ({ id, name, count })),
-          truncation,
-          requests_read: requestsRead,
-        }, input);
-        return textResult(jsonText(payload), payload);
-      }
-
       const lines = [
         `Tracks present in at least ${threshold} of ${refs.length} playlists: ${shared.length}`,
         ...(view.items.length > 0 ? view.items.map((row) => `  • ${row}`) : ['  (none)']),
@@ -664,18 +699,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       // #899: read-only, so this is the whole cost of the call. Unconditional —
       // the truncation note above only speaks when rows were dropped.
       lines.push(`(Read cost: ${requestsRead} paged read request(s) across ${refs.length} playlist(s).)`);
-      return textResult(withPlaylistInputNote(lines.join('\n'), input), withPlaylistInputMetadata({
-        ok: true,
-        dry_run: args.dry_run ?? false,
-        truncated,
-        scan_cap: sourceCap,
-        playlists: refs,
-        threshold,
-        total_shared: shared.length,
-        shared: shared.map(({ id, name, count }) => ({ id, name, count })),
-        truncation,
-        requests_read: requestsRead,
-      }, input));
+      return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
     },
   );
 }
