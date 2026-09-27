@@ -1563,16 +1563,24 @@ describe('get_followed_artists', () => {
 });
 
 describe('check_following_artists', () => {
-  it('sends bare IDs to /me/following/contains with type=artist', async () => {
+  // #638: `GET /me/following/contains` was removed by Spotify's February 2026
+  // changes. The read half of following migrated to `GET /me/library/contains`
+  // with `uris=` (and `spotify:artist:` is one of the library CHECK types);
+  // the write half has no target at all. The old test pinned the removed
+  // request shape, so it is repointed — every prose and ordering assertion
+  // below is unchanged.
+  it('sends spotify:artist: URIs to /me/library/contains and no other route', async () => {
     const h = harness(() => [true, false, true], registerFollowingTools);
 
     const out = await h.invoke('check_following_artists', { ids: ['aa', 'bb', 'cc'] });
 
+    // deepEqual over the whole call log: a request to any other path — the
+    // removed `/me/following/contains` included — makes this fail.
     assert.deepEqual(wireCalls(h.client.calls), [
       {
         method: 'GET',
-        path: '/me/following/contains',
-        arg: { type: 'artist', ids: 'aa,bb,cc' },
+        path: '/me/library/contains',
+        arg: { uris: 'spotify:artist:aa,spotify:artist:bb,spotify:artist:cc' },
       },
     ]);
 
@@ -1592,6 +1600,30 @@ describe('check_following_artists', () => {
     const h = harness(() => [false], registerFollowingTools);
     const out = await h.invoke('check_following_artists', { ids: ['zzz'] });
     assert.match(textOf(out), /✗ spotify:artist:zzz \(id: zzz\)/);
+  });
+
+  // A body that is not one boolean per requested id is an unread, not a row of
+  // falses. Spotify's error body for this endpoint has shipped as a truthy
+  // object, and spreading it positionally would report every artist as NOT
+  // followed — the most damaging possible answer to "am I following these?"
+  // because it is a false negative the caller acts on.
+  it('rejects rather than reporting "not followed" on a malformed body (#638)', async () => {
+    const ids = ['aa', 'bb'];
+    const cases: Array<[string, unknown]> = [
+      ['non-array body', { error: { status: 403, message: 'Forbidden' } }],
+      ['short array', [true]],
+      ['long array', [true, false, true]],
+      ['null body', null],
+      ['non-boolean element', [true, 'yes']],
+    ];
+    for (const [label, body] of cases) {
+      const h = harness(() => body, registerFollowingTools);
+      await assert.rejects(
+        h.invoke('check_following_artists', { ids }),
+        /Could not check following status/,
+        `${label} must reject, not render a result`,
+      );
+    }
   });
 });
 
@@ -2585,8 +2617,15 @@ describe('elicitation-gated destructive mutations (#111 item 5)', () => {
 
 // Unpin and restore share the same fail-closed verdict contract as removal.
 describe('destructive confirmation parity across remove/unpin/restore', () => {
+  // #638: the `followed_artists` row is still here, and still un-restorable —
+  // Spotify removed the follow write, so `PUT /me/following?type=artist` has no
+  // successor and this category can now only ever plan zero writes. A
+  // confirmation-parity test needs a write that actually happens, so the
+  // `liked_tracks` row carries it and the artist row is left in place to prove
+  // an unrestorable category does not by itself trigger a prompt or a write.
   const snapshot = {
     _meta: { created: '2026-09-25T00:00:00.000Z' },
+    liked_tracks: [{ uri: 'spotify:track:t1', name: 'Track' }],
     followed_artists: [{ uri: 'spotify:artist:a1', name: 'Artist' }],
   };
 
@@ -2601,11 +2640,18 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     }
   }
 
-  const restoreResponder: Responder = (path) =>
-    path === '/me/following/contains' ? [false] : null;
+  // #638: follow state and library-saved state are both read through the
+  // unified `GET /me/library/contains`, which must answer one boolean per
+  // requested URI. Everything here is absent, so the track is planned and the
+  // artist comes back unrestorable.
+  const restoreResponder: Responder = (path, arg) => {
+    if (path !== '/me/library/contains') return null;
+    const uris = (arg as { uris?: string } | null)?.uris?.split(',').filter(Boolean) ?? [];
+    return uris.map(() => false);
+  };
   const restoreArgs = (backup_path: string) => ({
     backup_path,
-    categories: ['followed_artists'],
+    categories: ['liked_tracks', 'followed_artists'],
     dry_run: false,
   });
 

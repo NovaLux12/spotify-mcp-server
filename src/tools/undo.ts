@@ -29,7 +29,6 @@ import {
   type Receipt,
 } from '../receipts.js';
 import { DryRun, ResponseFormat, LIBRARY_WRITE_CHUNK } from '../shaping.js';
-import { savedBucketWrite } from './library.js';
 
 /**
  * Undo is opt-OUT of preview (#627): the schema itself advertises the safe
@@ -280,31 +279,22 @@ async function invertReceipt(
         }
       }
     } else if (receipt.kind === 'library') {
-      // A receipt from the legacy per-type tools records the buckets it
-      // actually wrote (#1095). Inverting it must use the same per-type
-      // endpoints, because on the very credential the legacy tools serve —
-      // one without unified `/me/library` access — a `/me/library` write
-      // would 403 instead of undoing. Receipts without `writes` (the unified
-      // `save_to_library` / `remove_from_library`, or any older receipt)
-      // continue to invert through `/me/library`.
-      if (receipt.writes && receipt.writes.length > 0) {
-        for (const { type, ids } of receipt.writes) {
-          const target = savedBucketWrite(type, ids);
-          attemptedRequests++;
-          if (direction === 'added') await client.delete(target.path, target.body);
-          else await client.put(target.path, target.body);
-          requests++;
-        }
-      } else {
-        for (const part of chunk(uris, LIBRARY_WRITE_CHUNK)) {
-          // `LIBRARY_WRITE_CHUNK` is the documented 40-uri cap; URLSearchParams
-          // keeps caller-supplied URIs from reshaping the query (#624).
-          const qs = new URLSearchParams({ uris: part.join(',') }).toString();
-          attemptedRequests++;
-          if (direction === 'added') await client.delete(`/me/library?${qs}`);
-          else await client.put(`/me/library?${qs}`);
-          requests++;
-        }
+      // #638: this used to branch on the receipt's `writes` field and replay a
+      // legacy `save_items` / `remove_saved_items` mutation through the same
+      // per-type endpoint it had been written with, because those tools
+      // existed for credentials that could not reach `/me/library`. Spotify's
+      // February 2026 changes removed every one of those endpoints, so the
+      // branch could only ever produce a 404/410 — and the field is gone with
+      // the tools. `/me/library` is now the only library write in the server,
+      // for the mutator and for its inverse alike.
+      for (const part of chunk(uris, LIBRARY_WRITE_CHUNK)) {
+        // `LIBRARY_WRITE_CHUNK` is the documented 40-uri cap; URLSearchParams
+        // keeps caller-supplied URIs from reshaping the query (#624).
+        const qs = new URLSearchParams({ uris: part.join(',') }).toString();
+        attemptedRequests++;
+        if (direction === 'added') await client.delete(`/me/library?${qs}`);
+        else await client.put(`/me/library?${qs}`);
+        requests++;
       }
     }
   } catch {

@@ -659,7 +659,7 @@ describe('tool surface: budget', () => {
       'get_artist_singles', 'get_artist_appearances', 'market_validate', 'browse_category_deepdive',
       'show_episode_search',
       'get_saved_tracks', 'get_saved_albums', 'get_saved_shows', 'get_saved_episodes',
-      'save_items', 'remove_saved_items', 'check_saved_items', 'save_to_library', 'remove_from_library',
+      'save_to_library', 'remove_from_library',
       'get_saved_counts', 'search_saved_albums', 'search_saved_shows', 'search_saved_episodes',
       'search_saved_audiobooks', 'check_in_library', 'search_saved_tracks',
       'get_now_playing', 'get_currently_playing', 'play_from_search', 'play', 'pause', 'skip_next',

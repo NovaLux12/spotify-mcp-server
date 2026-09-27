@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
-import { capFor } from '../chunk.js';
+import { capFor, chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -477,10 +477,14 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         }
         return { content: [{ type: 'text', text: msg }], structuredContent: { artist_id: args.artist_id, total: albums.length, saved: 0 } };
       }
-      const albumCap = capFor('albums');
-      for (let i = 0; i < toSave.length; i += albumCap) {
-        const chunk = toSave.slice(i, i + albumCap).map((a) => a.id);
-        await (client as unknown as { put(path: string, body?: unknown): Promise<void> }).put('/me/albums', { ids: chunk });
+      // #638: `PUT /me/albums` was removed by Spotify's February 2026 changes;
+      // `PUT /me/library` is the documented replacement and takes
+      // `spotify:album:` URIs, 40 per request. The `client as unknown as {...}`
+      // cast that used to reach `put` here is gone with it -- `client.put` is
+      // a real method, the cast was only there because the old call took a
+      // body this endpoint no longer accepts.
+      for (const part of chunk(toSave.map((a) => `spotify:album:${a.id}`), 'library_writes')) {
+        await client.put(`/me/library?uris=${part.join(',')}`);
       }
       const msg = `Saved ${toSave.length} new release(s) for "${args.artist_id}": ${toSave.map((a) => `"${a.name}"`).join(', ')}`;
       if (args.response_format === 'json') {

@@ -116,7 +116,7 @@ wrapped":
 | `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
-| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` still ship and name the removal rather than returning a silent empty list; #638 owns deleting them |
+| ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them |
 | `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
@@ -153,16 +153,34 @@ shape left to give the failure:
 
 | Endpoint | Status |
 |---|---|
-| `PUT/DELETE /me/following?type=artist` | **No replacement — unrecoverable, see below.** `follow_artists` and `unfollow_artists` still ship and still call it (#594, #638 own the removal) |
-| `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` | Replaced by `PUT/DELETE /me/library`; shipped call sites still use the old path (#594, #638) |
-| `PUT/DELETE /playlists/{id}/followers` | Replaced by `PUT/DELETE /me/library` with a `spotify:playlist:` URI (#594) |
+| `PUT/DELETE /me/following?type=artist` | **No replacement — unrecoverable, see below.** `follow_artists` / `unfollow_artists` were **deleted** (#638); the read half survives as `check_following_artists` on `GET /me/library/contains` |
+| `PUT/DELETE /me/{tracks,albums,shows,episodes,audiobooks}` | Replaced by `PUT/DELETE /me/library`. Every call site migrated and `save_items` / `remove_saved_items` were **deleted** (#638) |
+| `GET /me/{tracks,albums,shows,episodes,audiobooks,following}/contains` | Replaced by `GET /me/library/contains`. Every call site migrated and `check_saved_items` was **deleted** (#638) |
+| `GET /browse/categories`, `GET /browse/categories/{id}`, `GET /browse/categories/{id}/playlists` | **No replacement.** `get_categories` / `get_category_playlists` were **deleted** (#638) |
+| `PUT/DELETE /playlists/{id}/followers` | Replaced by `PUT/DELETE /me/library` with a `spotify:playlist:` URI (#594) — already migrated, no live call site |
+| `GET /playlists/{id}/followers/contains` | Replaced by `GET /me/library/contains` (#862) — already migrated, no live call site |
 | `POST/GET/PUT/DELETE /playlists/{id}/tracks` | Superseded by the `/items` equivalents; no shipped tool calls it (#638) |
+| `POST/GET /users/{id}/playlists`, `GET /users/{id}` | No replacement. `get_user_profile` / `get_user_playlists` / `get_user_playlists_by_id` still call them and **explain the 403** rather than degrading — that is why they are here and not deleted |
 
-Where a shipped tool still meets one of these — `isRemovedEndpointFailure` in
-`src/gating.ts` is the shared predicate — name the removal rather than passing
-on a status that reads as a missing object, an empty page, or a scope problem.
-That is the whole contract for this bucket: the call is the bug, not the
-handling.
+A tool in this bucket is **broken, not merely degraded** — a `403`-tolerant
+wrapper will happily turn a removed endpoint into a soft, wrong answer, so
+graceful handling is not a mitigation and you should not add nicer errors to
+re-wrap one. Two honest outcomes exist and nothing between them: **delete the
+tool** when the endpoint has no replacement, or **migrate the call** to the
+replacement the changelog names. Both happened under #638:
+
+| Removed tool | Replacement |
+|---|---|
+| `follow_artists`, `unfollow_artists` | none — see below; the read half is `check_following_artists` |
+| `save_items`, `remove_saved_items` | `save_to_library`, `remove_from_library` (`/me/library`) |
+| `check_saved_items` | `check_in_library` (`/me/library/contains`) |
+| `get_categories`, `get_category_playlists` | none — no endpoint serves the browse category tree |
+
+A caller that reaches for a retired name now gets an unknown-tool error. The
+retired names are listed in `retiredToolNames` in
+`scripts/check-doc-tool-names.mjs` **only** so a migration note can name what it
+replaces; the doc gate still rejects any other unbackticked name, so that set
+cannot become a graveyard.
 
 **Following an artist is no longer expressible, and there is no migration.**
 `PUT`/`DELETE /me/library` accept track, album, episode, show, audiobook, user
@@ -283,7 +301,7 @@ prefix. Name suffixes prove nothing — most `*_plan` tools accept a commit path
 so a new plan or preview tool is a write until someone verifies its handler and
 adds it to `NEVER_MUTATING_PLANS`. Every write states `destructiveHint`
 explicitly, because MCP's default is `true` and silence would advertise
-`save_to_library` as dangerous as `remove_saved_items`. Do not add `title`
+`save_to_library` as dangerous as `remove_from_library`. Do not add `title`
 keys; hosts fall back to the tool name and duplicating it cost ~25 KB.
 
 ---

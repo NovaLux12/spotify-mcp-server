@@ -313,8 +313,47 @@ function playStateOf(ep: { fullyPlayed: boolean | null; resumePositionMs: number
 }
 
 /**
- * Library membership for the given episode ids via `/me/episodes/contains`
- * (50 ids per request). Returns `null` membership when the check could not be
+ * #638: which of these URIs are already in the user's library, read through
+ * `GET /me/library/contains`.
+ *
+ * The per-type `GET /me/{tracks,albums,shows,episodes,audiobooks}/contains`
+ * family was removed by Spotify's February 2026 changes and
+ * `/me/library/contains` is the documented replacement; it answers the same
+ * question for any URI mix in one request.
+ *
+ * The strictness is the point. Every caller in this module turns this answer
+ * into "saved" or "NOT saved", and a body that is not one boolean per
+ * requested URI would otherwise be read positionally: a null, a short array,
+ * or Spotify's error object each collapse to "none of these are saved", which
+ * is a confident wrong answer about the user's own library. So anything that
+ * is not exactly `uris.length` booleans is a failed read, and a failed read
+ * is never an empty set. `throws` reports the shape mismatch; the callers that
+ * prefer a soft answer catch and say so.
+ */
+async function libraryContains(
+  client: SpotifyClient,
+  uris: readonly string[],
+): Promise<boolean[]> {
+  const flags: boolean[] = [];
+  for (let i = 0; i < uris.length; i += capFor('library_reads')) {
+    const part = uris.slice(i, i + capFor('library_reads'));
+    const res = await client.get<boolean[]>('/me/library/contains', { uris: part.join(',') });
+    if (!Array.isArray(res) || res.length !== part.length || res.some((v) => typeof v !== 'boolean')) {
+      throw new Error(
+        'GET /me/library/contains returned a body that is not one boolean per requested URI '
+        + `(${Array.isArray(res) ? `${res.length} boolean(s)` : 'non-array body'} for ${part.length} URI(s)). `
+        + 'Treated as an unreadable check, NOT as "nothing is saved" — reporting "not saved" on a '
+        + 'response this shape would be a wrong answer about the caller\'s own library.',
+      );
+    }
+    flags.push(...res);
+  }
+  return flags;
+}
+
+/**
+ * Library membership for the given episode ids, via `/me/library/contains`
+ * (50 URIs per request). Returns `null` membership when the check could not be
  * read, so a failed lookup is reported as unavailable instead of being read as
  * "not saved". `requests` counts the calls actually issued so the caller can
  * disclose the cost of a wide brief instead of charging it silently.
@@ -327,15 +366,14 @@ async function fetchSavedEpisodeIdSet(
   const saved = new Set<string>();
   let requests = 0;
   try {
-    const episodeCap = capFor('episodes');
-    for (let i = 0; i < ids.length; i += episodeCap) {
-      const chunk = ids.slice(i, i + episodeCap);
+    const cap = capFor('library_reads');
+    for (let i = 0; i < ids.length; i += cap) {
+      const part = ids.slice(i, i + cap);
       // Counted before the await: a request that throws still consumed quota, and
       // the caller must be told what the failed library leg cost.
       requests++;
-      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: chunk.join(',') });
-      if (!Array.isArray(contains)) return { saved: null, requests };
-      chunk.forEach((id, index) => {
+      const contains = await libraryContains(client, part.map((id) => `spotify:episode:${id}`));
+      part.forEach((id, index) => {
         if (contains[index] === true) saved.add(id);
       });
     }
@@ -657,7 +695,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 8. subscribe_to_show ------------------------------------------------------
   server.tool(
     'subscribe_to_show',
-    'Save one or more shows to your library (PUT /me/shows) — previews a deterministic PLAN by '
+    'Save one or more shows to your library via PUT /me/library (the Feb 2026 replacement for the removed PUT /me/shows) — previews a deterministic PLAN by '
       + 'default; pass dry_run=false to commit.',
     {
       show_ids: spotifyIdArray('show').min(1).max(50).describe('Show IDs/URIs to save (1–50)'),
@@ -675,7 +713,10 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           plan: changes,
         });
       }
-      await client.put(`/me/shows?ids=${ids.map(encodeURIComponent).join(',')}`);
+      // #638: `PUT /me/shows` was removed by Spotify's February 2026
+      // changes; `PUT /me/library` is the documented replacement and takes
+      // `spotify:show:` URIs in one request whatever the type mix.
+      await client.put(`/me/library?uris=${ids.map((id) => `spotify:show:${id}`).join(',')}`);
       return shape(args.response_format, `Saved ${ids.length} show(s) to your library.\n${batchSummary(ids.length, ids)}`, {
         ok: true,
         dry_run: false,
@@ -688,7 +729,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 9. unsubscribe_from_show --------------------------------------------------
   server.tool(
     'unsubscribe_from_show',
-    'Remove ONE saved show from your library (DELETE /me/shows) — removal verb: also see remove_saved_shows (bulk), delete_playlist_snapshot (local snapshots). After confirming what it is — '
+    'Remove ONE saved show from your library via DELETE /me/library (the Feb 2026 replacement for the removed DELETE /me/shows) — removal verb: also see remove_saved_shows (bulk), delete_playlist_snapshot (local snapshots). After confirming what it is — '
       + 'previews a PLAN naming the show by default; pass dry_run=false to commit.',
     {
       show_id: spotifyId('show').describe('Show ID, spotify:show: URI, or open.spotify.com/show URL'),
@@ -710,7 +751,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           publisher,
         });
       }
-      await client.delete(`/me/shows?ids=${encodeURIComponent(args.show_id)}`);
+      // #638: `DELETE /me/shows` was removed; see subscribe_to_show.
+      await client.delete(`/me/library?uris=spotify:show:${encodeURIComponent(args.show_id)}`);
       return shape(args.response_format, `Removed "${name}" (${publisher}) from your saved shows.`, {
         ok: true,
         dry_run: false,
@@ -724,7 +766,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 10. remove_saved_shows ----------------------------------------------------
   server.tool(
     'remove_saved_shows',
-    'Bulk-remove shows from your library (DELETE /me/shows) — removal verb family: also see unsubscribe_from_show (single), remove_saved_episode (episodes). After cross-checking which of the '
+    'Bulk-remove shows from your library via DELETE /me/library (the Feb 2026 replacement for the removed DELETE /me/shows) — removal verb family: also see unsubscribe_from_show (single), remove_saved_episode (episodes). After cross-checking which of the '
       + 'given IDs are actually saved — previews a PLAN by default; pass dry_run=false to commit.',
     {
       show_ids: spotifyIdArray('show').min(1).max(50).describe('Show IDs/URIs to remove (1–50)'),
@@ -733,12 +775,14 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const ids = args.show_ids;
-      const contains = await client.get<boolean[]>(
-        `/me/shows/contains`,
-        { ids: ids.join(',') },
-      );
+      // #638: `/me/shows/contains` was removed; `libraryContains` reads the
+      // same fact through the replacement and throws rather than degrading to
+      // an empty set, which would have reported every given show as not saved
+      // and then "removed" nothing while claiming the ids were skipped as
+      // not-saved.
+      const contains = await libraryContains(client, ids.map((id) => `spotify:show:${id}`));
       const savedSet = new Set<string>();
-      (contains ?? []).forEach((isSaved, i) => {
+      contains.forEach((isSaved, i) => {
         if (isSaved && ids[i]) savedSet.add(ids[i]);
       });
       const removable = ids.filter((id) => savedSet.has(id));
@@ -755,7 +799,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         });
       }
       if (removable.length > 0) {
-        await client.delete(`/me/shows?ids=${removable.map(encodeURIComponent).join(',')}`);
+        // #638: `DELETE /me/shows` was removed; see subscribe_to_show. The
+        // 50-id input cap is under `/me/library`'s 40-uri write cap, so this
+        // is still a single request — the two caps happen to nest correctly
+        // here, and a future input-cap raise would need a chunk loop.
+        await client.delete(`/me/library?uris=${removable.map((id) => `spotify:show:${id}`).join(',')}`);
       }
       return shape(args.response_format,
         `Removed ${removable.length} saved show(s); skipped ${notSaved.length} not-saved id(s).\n${batchSummary(removable.length, removable)}`,
@@ -809,7 +857,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 12. check_episode_saved ---------------------------------------------------
   server.tool(
     'check_episode_saved',
-    'Check which episodes are already saved in your library (GET /me/episodes/contains) — '
+    'Check which episodes are already saved in your library via GET /me/library/contains (the Feb 2026 replacement for the removed GET /me/episodes/contains) — '
       + 'batch yes/no, no guessing. Read-only.',
     {
       episode_ids: spotifyIdArray('episode').min(1).max(50).describe('Episode IDs/URIs to check (1–50)'),
@@ -817,8 +865,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const ids = args.episode_ids;
-      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: ids.join(',') });
-      const results = ids.map((id, i) => ({ episode_id: id, saved: contains?.[i] === true }));
+      // #638: `/me/episodes/contains` was removed. The old `contains?.[i] ===
+      // true` turned a null body into "0 of N saved" — a confident claim
+      // about the user's library, derived from a response that said nothing.
+      const contains = await libraryContains(client, ids.map((id) => `spotify:episode:${id}`));
+      const results = ids.map((id, i) => ({ episode_id: id, saved: contains[i] }));
       const savedCount = results.filter((r) => r.saved).length;
       const prose = [
         `${savedCount} of ${ids.length} episode(s) saved in your library:`,
@@ -835,7 +886,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 13. save_episode ----------------------------------------------------------
   server.tool(
     'save_episode',
-    'Save episodes to your library (PUT /me/episodes) — previews a PLAN with episode names by '
+    'Save episodes to your library via PUT /me/library (the Feb 2026 replacement for the removed PUT /me/episodes) — previews a PLAN with episode names by '
       + 'default; pass dry_run=false to commit.',
     {
       episode_ids: spotifyIdArray('episode').min(1).max(50).describe('Episode IDs/URIs to save (1–50)'),
@@ -857,7 +908,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           plan: changes,
         });
       }
-      await client.put(`/me/episodes?ids=${ids.map(encodeURIComponent).join(',')}`);
+      // #638: `PUT /me/episodes` was removed; see subscribe_to_show.
+      await client.put(`/me/library?uris=${ids.map((id) => `spotify:episode:${id}`).join(',')}`);
       return shape(args.response_format, `Saved ${ids.length} episode(s) to your library.\n${batchSummary(ids.length, ids)}`, {
         ok: true,
         dry_run: false,
@@ -870,7 +922,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   // 14. remove_saved_episode ---------------------------------------------------
   server.tool(
     'remove_saved_episode',
-    'Remove episodes from your library (DELETE /me/episodes) — removal verb: also see remove_saved_shows (shows), delete_playlist_snapshot (local). After cross-checking which are '
+    'Remove episodes from your library via DELETE /me/library (the Feb 2026 replacement for the removed DELETE /me/episodes) — removal verb: also see remove_saved_shows (shows), delete_playlist_snapshot (local). After cross-checking which are '
       + 'actually saved — previews a PLAN by default; pass dry_run=false to commit.',
     {
       episode_ids: spotifyIdArray('episode').min(1).max(50).describe('Episode IDs/URIs to remove (1–50)'),
@@ -879,9 +931,12 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     },
     async (args) => {
       const ids = args.episode_ids;
-      const contains = await client.get<boolean[]>('/me/episodes/contains', { ids: ids.join(',') });
+      // #638: `/me/episodes/contains` was removed; `libraryContains` reads the
+      // same fact through the replacement and throws rather than degrading to
+      // an empty set (see remove_saved_shows for why that matters).
+      const contains = await libraryContains(client, ids.map((id) => `spotify:episode:${id}`));
       const savedSet = new Set<string>();
-      (contains ?? []).forEach((isSaved, i) => {
+      contains.forEach((isSaved, i) => {
         if (isSaved && ids[i]) savedSet.add(ids[i]);
       });
       const removable = ids.filter((id) => savedSet.has(id));
@@ -898,7 +953,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         });
       }
       if (removable.length > 0) {
-        await client.delete(`/me/episodes?ids=${removable.map(encodeURIComponent).join(',')}`);
+        // #638: `DELETE /me/episodes` was removed; see subscribe_to_show.
+        await client.delete(`/me/library?uris=${removable.map((id) => `spotify:episode:${id}`).join(',')}`);
       }
       return shape(args.response_format,
         `Removed ${removable.length} saved episode(s); skipped ${notSaved.length} not-saved id(s).\n${batchSummary(removable.length, removable)}`,
@@ -1397,11 +1453,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       + 'resume_point: which new drops are NOT yet saved or started — a listen-next brief. Every row '
       + 'is labelled from its own play state, and a row whose resume_point is missing or carries '
       + 'no readable offset is labelled "play state unknown" rather than called new. Defaults to the last 14 days. Quota: M saved-show '
-      + 'lookups (M = max_shows) + ceil(episodes/50) /me/episodes/contains calls; both counts are '
+      + 'lookups (M = max_shows) + ceil(episodes/50) /me/library/contains calls; both counts are '
       + 'reported as shows_checked and library_requests.',
     {
       since: SinceDate.optional().describe('Inclusive release-date floor YYYY-MM-DD. Default 14 days ago'),
-      max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50; this also bounds the /me/episodes/contains calls (1 per 50 episodes found)'),
+      max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 50; this also bounds the /me/library/contains calls (1 per 50 episodes found)'),
       ...sharedListFieldsShow(),
     },
     async (args) => {
@@ -1421,7 +1477,8 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           if (releaseKey != null && releaseKey >= sinceKey) newEps.push(toEpisodeRow(ep));
         }
       }
-      // Library membership via /me/episodes/contains (50 ids per request). The
+      // Library membership via /me/library/contains (50 uris per request, the
+      // #638 replacement for the removed per-type /me/episodes/contains). The
       // music /me/player/recently-played feed never carries podcast episodes, so
       // it is deliberately NOT consulted to decide episode state (#818). The
       // request count is published: a wide brief costs more than its show lookups.
@@ -1460,12 +1517,12 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
           return `  ${b.unlistened ? '▶' : '·'} ${b.releaseDate || '?'} · ${b.showName}: ${b.name} [${flags.join(', ')}]`;
         }),
         savedIds == null
-          ? '(library check unavailable — /me/episodes/contains could not be read, so "not saved" is unconfirmed)'
+          ? '(library check unavailable — /me/library/contains could not be read, so "not saved" is unconfirmed)'
           : undetermined.length > 0
             ? `(${undetermined.length} episode(s) have no readable resume_point or no library read — labelled "play state unknown", NOT called new)`
             : '',
         libraryRequests > 0
-          ? `(Quota: ${checked} show lookup(s) + ${libraryRequests} /me/episodes/contains call(s) over ${newEps.length} episode(s) — lower max_shows to cut the library leg)`
+          ? `(Quota: ${checked} show lookup(s) + ${libraryRequests} /me/library/contains call(s) over ${newEps.length} episode(s) — lower max_shows to cut the library leg)`
           : '',
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');

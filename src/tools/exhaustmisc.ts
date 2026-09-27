@@ -30,7 +30,7 @@ import {
   withPlaylistInputNote,
   type ResponseFormatValue,
 } from '../shaping.js';
-import { CHUNK_CAPS, capFor } from '../chunk.js';
+import { CHUNK_CAPS, capFor, chunk } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import { resolvePlaylistId, walkTruncationNotice } from './playlists.js';
@@ -348,11 +348,12 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No orphan tracks to remove.', structured);
       }
-      // Spotify DELETE /me/tracks?ids= accepts at most 50 IDs per request.
-      const ids = orphans.map((o) => o.track.id);
-      const trackCap = capFor('tracks');
-      for (let i = 0; i < ids.length; i += trackCap) {
-        await client.delete(`/me/tracks?ids=${ids.slice(i, i + trackCap).join(',')}`);
+      // #638: `DELETE /me/tracks` was removed by Spotify's February 2026
+      // changes; `DELETE /me/library` is the documented replacement and takes
+      // `spotify:track:` URIs, 40 per request.
+      const uris = orphans.map((o) => o.track.uri);
+      for (const part of chunk(uris, 'library_writes')) {
+        await client.delete(`/me/library?uris=${part.join(',')}`);
       }
       const text = `Removed ${orphans.length} orphan track(s): ${batchSummary(orphans.length, orphanUris)}`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
@@ -414,10 +415,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult(`All ${trackUris.length} tracks already saved — nothing to do.`, structured);
       }
-      const trackCap = capFor('tracks');
-      for (let i = 0; i < toSave.length; i += trackCap) {
-        const chunk = toSave.slice(i, i + trackCap);
-        await client.put('/me/tracks', { ids: chunk });
+      // #638: `PUT /me/tracks` was removed; see unsave_orphan_tracks.
+      for (const part of chunk(toSave.map((id) => `spotify:track:${id}`), 'library_writes')) {
+        await client.put(`/me/library?uris=${part.join(',')}`);
       }
       const text = `Saved ${toSave.length} track(s) from playlist ${args.playlist_id} to library (skipped ${skipped}).`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
@@ -702,10 +702,9 @@ export function registerExhaustMiscTools(server: McpServer, client: SpotifyClien
         if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };
         return textResult('No tracks from that playlist are in your library — nothing to remove.', structured);
       }
-      const trackCap = capFor('tracks');
-      for (let i = 0; i < toRemove.length; i += trackCap) {
-        const chunk = toRemove.slice(i, i + trackCap);
-        await client.delete(`/me/tracks?ids=${chunk.join(',')}`);
+      // #638: `DELETE /me/tracks` was removed; see unsave_orphan_tracks.
+      for (const part of chunk(toRemove.map((id) => `spotify:track:${id}`), 'library_writes')) {
+        await client.delete(`/me/library?uris=${part.join(',')}`);
       }
       const text = `Removed ${toRemove.length} track(s) from library that were in playlist ${args.playlist_id}: ${batchSummary(toRemove.length, toRemove.map((id) => `spotify:track:${id}`))}`;
       if (rf === 'json') return { content: [{ type: 'text', text: JSON.stringify(structured, null, 2) }], structuredContent: structured };

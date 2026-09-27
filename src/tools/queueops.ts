@@ -329,11 +329,13 @@ export function registerQueueOpsTools(server: McpServer, client: SpotifyClient):
       if (targetId) {
         playlistId = targetId;
       } else {
-        // Create new playlist — need current user id
-        const me = await client.get<{ id: string }>('/me');
-        if (!me?.id) throw new Error('Could not resolve current user id to create playlist');
+        // #638: `POST /users/{user_id}/playlists` was removed by Spotify's
+        // February 2026 changes; `POST /me/playlists` is the documented
+        // replacement and needs no user id, so the `/me` read that only
+        // existed to interpolate one is gone too. The body shape is
+        // identical to `create_playlist`'s, which already posts here.
         const created = await client.post<{ id: string; external_urls?: { spotify?: string }; snapshot_id?: string }>(
-          `/users/${me.id}/playlists`,
+          '/me/playlists',
           { name: name!, description: (args.description as string | undefined) ?? `Saved from queue on ${new Date().toISOString().slice(0, 10)}`, public: false },
         );
         if (!created?.id) throw new Error('Failed to create playlist');

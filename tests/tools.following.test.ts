@@ -2,6 +2,12 @@
  * Tests for src/tools/following.ts (issues #34, #35, and wave-B shaping
  * #51/#52/#53/#57/#58).
  *
+ * #638 removed the follow WRITE tools: `follow_artists` and
+ * `unfollow_artists` targeted `PUT`/`DELETE /me/following?type=artist`, which
+ * Spotify deleted in February 2026 with no replacement. `check_following_artists`
+ * survives on the migrated read, `GET /me/library/contains`, and its strict
+ * response validation is pinned below.
+ *
  * Same stub harness pattern as tests/tools.playlists-following.test.ts:
  * stub MCP server + stub SpotifyClient that records every call.
  *
@@ -117,121 +123,25 @@ const followedArtist = (id: string, name: string, genres: string[] = []) => ({
 });
 
 // ---------------------------------------------------------------------------
-// follow_artists (#34)
-// ---------------------------------------------------------------------------
-
-describe('follow_artists', () => {
-  it('sends PUT /me/following with type=artist and comma-joined ids in the query string', async () => {
-    const h = makeHarness();
-    await h.invoke('follow_artists', { ids: ['artist1', 'artist2', 'artist3'] });
-
-    assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'PUT');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=artist1,artist2,artist3');
-  });
-
-  it('sends no request body', async () => {
-    const h = makeHarness();
-    await h.invoke('follow_artists', { ids: ['solo'] });
-
-    assert.equal(h.calls[0].arg, undefined);
-  });
-
-  it('rejects an empty ids array and more than 50 ids via schema bounds', () => {
-    const h = makeHarness();
-    const tool = h.registered.find((t) => t.name === 'follow_artists');
-    assert.ok(tool);
-
-    assert.throws(() => tool.validate({ ids: [] }));
-    assert.throws(() => tool.validate({ ids: Array.from({ length: 51 }, (_, i) => `a${i}`) }));
-    // Boundary: exactly 50 must pass validation.
-    assert.doesNotThrow(() =>
-      tool.validate({ ids: Array.from({ length: 50 }, (_, i) => `a${i}`) }),
-    );
-  });
-
-  it('confirms the number of artists followed', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a', 'b'] });
-
-    assert.match(textOf(out), /Followed 2 artist/);
-  });
-
-  it('dry_run makes zero client calls and previews artist URIs (#57)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a'], dry_run: true });
-
-    assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
-    const text = textOf(out);
-    assert.match(text, /^\[dry run\] follow_artists on <<untrusted: followed artists >> — nothing was changed\./);
-    assert.match(text, /Would affect 1 item:/);
-    assert.ok(text.includes('spotify:artist:a'));
-
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.dry_run, true);
-    assert.deepEqual(sc.would_affect, ['spotify:artist:a']);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// unfollow_artists (#35)
-// ---------------------------------------------------------------------------
-
-describe('unfollow_artists', () => {
-  it('sends DELETE /me/following with type=artist and comma-joined ids in the query string', async () => {
-    const h = makeHarness();
-    await h.invoke('unfollow_artists', { ids: ['artist1', 'artist2'] });
-
-    assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'DELETE');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=artist1,artist2');
-  });
-
-  it('sends no request body', async () => {
-    const h = makeHarness();
-    await h.invoke('unfollow_artists', { ids: ['solo'] });
-
-    assert.equal(h.calls[0].arg, undefined);
-  });
-
-  it('rejects an empty ids array and more than 50 ids via schema bounds', () => {
-    const h = makeHarness();
-    const tool = h.registered.find((t) => t.name === 'unfollow_artists');
-    assert.ok(tool);
-
-    assert.throws(() => tool.validate({ ids: [] }));
-    assert.throws(() => tool.validate({ ids: Array.from({ length: 51 }, (_, i) => `a${i}`) }));
-    // Boundary: exactly 50 must pass validation.
-    assert.doesNotThrow(() =>
-      tool.validate({ ids: Array.from({ length: 50 }, (_, i) => `a${i}`) }),
-    );
-  });
-
-  it('confirms the number of artists unfollowed', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['a', 'b', 'c'] });
-
-    assert.match(textOf(out), /Unfollowed 3 artist/);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Registration alongside the existing read-side tools
+// Registration: the three read-side tools that survive #638
 // ---------------------------------------------------------------------------
 
 describe('following module registrations', () => {
-  it('registers both new write tools next to the existing read tools', () => {
+  it('registers exactly the three surviving read tools and neither removed write tool', () => {
     const h = makeHarness();
     const names = h.registered.map((t) => t.name);
 
-    for (const expected of [
+    assert.deepEqual(names, [
       'get_followed_artists',
       'check_following_artists',
-      'follow_artists',
-      'unfollow_artists',
-    ]) {
-      assert.ok(names.includes(expected), `expected "${expected}" to be registered`);
-    }
+      'following_analytics',
+    ]);
+    // #638: the follow/unfollow WRITE tools are gone, not merely renamed.
+    // They targeted PUT/DELETE /me/following?type=artist, which Spotify
+    // removed in February 2026 with no replacement, so nothing can carry
+    // their contract forward under another name.
+    assert.ok(!names.includes('follow_artists'), 'follow_artists must not be registered');
+    assert.ok(!names.includes('unfollow_artists'), 'unfollow_artists must not be registered');
   });
 });
 
@@ -324,6 +234,12 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
       max_results: 2,
     });
 
+    // #638: the read half of following migrated to the library contains read.
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].method, 'GET');
+    assert.equal(h.calls[0].path, '/me/library/contains');
+    assert.deepEqual(h.calls[0].arg, { uris: 'spotify:artist:a,spotify:artist:b,spotify:artist:c' });
+
     const text = textOf(out);
     assert.match(text, /^Following check:/);
     assert.match(text, /✓ spotify:artist:a \(id: a\)/);
@@ -350,44 +266,110 @@ describe('check_following_artists shaping (#51/#52/#53)', () => {
   });
 });
 
-describe('mutation summaries + dry_run on follow tools (#57/#58)', () => {
-  it('follow_artists echoes "{n} items affected" with artist URIs (#58)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a', 'b'] });
-    assert.match(
-      textOf(out),
-      /2 items affected: spotify:artist:a, spotify:artist:b/,
+// ---------------------------------------------------------------------------
+// #638: the read half of following migrated from GET /me/following/contains
+// (removed by Spotify's February 2026 changes) to GET /me/library/contains.
+// The write half has no target at all, so these tests pin both the endpoint
+// move and the strict shape validation that replaced the old
+// `if (!result) throw` + `result[i] ?? false` — which reported every artist
+// as "✗ not followed" whenever the body was anything but a clean boolean
+// array.
+// ---------------------------------------------------------------------------
+
+describe('check_following_artists reads GET /me/library/contains (#638)', () => {
+  it('sends one spotify:artist: URI per requested id, in request order, and never touches /me/following/contains', async () => {
+    const h = makeHarness(() => [true, true, true]);
+
+    await h.invoke('check_following_artists', { ids: ['a1', 'a2', 'a3'] });
+
+    // The removed endpoint is not called under any spelling.
+    assert.ok(
+      !h.calls.some((c) => c.path.includes('/me/following/contains')),
+      'the removed /me/following/contains endpoint must not be called',
+    );
+    assert.equal(h.calls.length, 1, 'one library-contains read covers the whole batch');
+    assert.equal(h.calls[0].method, 'GET');
+    assert.equal(h.calls[0].path, '/me/library/contains');
+    assert.deepEqual(
+      h.calls[0].arg,
+      { uris: 'spotify:artist:a1,spotify:artist:a2,spotify:artist:a3' },
+      'order is preserved so each boolean lines up with the id that asked for it',
     );
   });
 
-  it('unfollow_artists echoes the removed URIs (#58)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['only1'] });
-    assert.match(textOf(out), /1 item affected: spotify:artist:only1/);
+  it('rejects rather than reporting every row as not followed when the body is not an array', async () => {
+    // Spotify's error body for this endpoint has shipped as a truthy object;
+    // the old guard (`if (!result) throw`) let it through, and the old
+    // `result[i] ?? false` then reported all three artists as not followed.
+    const h = makeHarness(() => ({ error: { status: 403, message: 'Forbidden' } }));
+
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] }),
+      (err: Error) => {
+        assert.match(err.message, /Could not check following status/);
+        assert.match(err.message, /GET \/me\/library\/contains returned a non-array body/);
+        assert.match(err.message, /3 requested URI\(s\)/);
+        return true;
+      },
+    );
   });
 
-  it('unfollow_artists dry_run makes zero client calls and previews artist URIs (#57)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('unfollow_artists', { ids: ['a', 'b'], dry_run: true });
+  it('rejects when the boolean array is shorter than the requested ids', async () => {
+    const h = makeHarness(() => [true]);
 
-    assert.equal(h.calls.length, 0, 'dry_run must not touch the API');
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] }),
+      (err: Error) => {
+        assert.match(err.message, /Could not check following status/);
+        assert.match(err.message, /returned 1 booleans for 3 requested URI\(s\)/);
+        return true;
+      },
+    );
+  });
+
+  it('rejects when the boolean array is longer than the requested ids', async () => {
+    const h = makeHarness(() => [true, false, true, true]);
+
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] }),
+      /returned 4 booleans for 3 requested URI\(s\)/,
+    );
+  });
+
+  it('rejects when an element is not a boolean', async () => {
+    // A null or object element at the right length is still an unread body:
+    // coercing it would invent a follow verdict.
+    const h = makeHarness(() => [true, null, false]);
+
+    await assert.rejects(
+      () => h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] }),
+      (err: Error) => {
+        assert.match(err.message, /Could not check following status/);
+        assert.match(err.message, /returned a non-boolean element/);
+        return true;
+      },
+    );
+  });
+
+  it('reports a well-formed response, including a genuine false row', async () => {
+    const h = makeHarness(() => [true, false, true]);
+
+    const out = await h.invoke('check_following_artists', { ids: ['a', 'b', 'c'] });
+
     const text = textOf(out);
-    assert.match(text, /^\[dry run\] unfollow_artists on <<untrusted: followed artists >> — nothing was changed\./);
-    assert.match(text, /Would affect 2 items:/);
-    assert.ok(text.includes('spotify:artist:a') && text.includes('spotify:artist:b'));
+    assert.match(text, /^Following check:/);
+    assert.match(text, /✓ spotify:artist:a \(id: a\)/);
+    // The false row is a real answer from the server, not a default.
+    assert.match(text, /✗ spotify:artist:b \(id: b\)/);
+    assert.match(text, /✓ spotify:artist:c \(id: c\)/);
+    assert.ok(!text.includes('(id: d)'));
 
-    const sc = out.structuredContent as Record<string, unknown>;
-    assert.equal(sc.dry_run, true);
-    assert.deepEqual(sc.would_affect, ['spotify:artist:a', 'spotify:artist:b']);
-  });
-
-  it('follow_artists json output reports ok/affected (#51)', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['a'], response_format: 'json' });
-    const payload = JSON.parse(out.content[0].text);
-    assert.equal(payload.ok, true);
-    assert.equal(payload.affected, 1);
-    assert.deepEqual(payload.uris, ['spotify:artist:a']);
+    const sc = out.structuredContent as { items: Array<{ id: string; follows: boolean }> };
+    assert.deepEqual(sc.items, [
+      { id: 'a', uri: 'spotify:artist:a', follows: true },
+      { id: 'b', uri: 'spotify:artist:b', follows: false },
+      { id: 'c', uri: 'spotify:artist:c', follows: true },
+    ]);
   });
 });
 
@@ -459,46 +441,40 @@ describe('get_followed_artists fetch_all (#744)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Artist reference normalisation in the follow family (#745)
+// Artist reference normalisation in check_following_artists (#745)
 // ---------------------------------------------------------------------------
 
-describe('follow family normalises artist references (#745)', () => {
-  it('sends bare ids on the wire when the caller passes spotify:artist: URIs', async () => {
-    const h = makeHarness();
-    const out = await h.invoke('follow_artists', { ids: ['spotify:artist:a', 'b'] });
+describe('check_following_artists normalises artist references (#745)', () => {
+  it('sends one spotify:artist: URI per requested id when the caller passes URIs', async () => {
+    const h = makeHarness(() => [true, false]);
+    const out = await h.invoke('check_following_artists', {
+      ids: ['spotify:artist:a', 'b'],
+    });
 
-    // The URI and the bare id reach the same wire call.
+    // The URI and the bare id reach the same wire call, and the rows echo the
+    // normalised ids so the caller can see what was sent.
     assert.equal(h.calls.length, 1);
-    assert.equal(h.calls[0].method, 'PUT');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
-    // …and the normalised ids are echoed so the caller can see what was sent.
-    const sc = out.structuredContent as { affected: number; uris: string[] };
-    assert.equal(sc.affected, 2);
-    assert.deepEqual(sc.uris, ['spotify:artist:a', 'spotify:artist:b']);
-  });
-
-  it('normalises unfollow_artists and check_following_artists the same way', async () => {
-    const h = makeHarness(() => [true]);
-
-    await h.invoke('unfollow_artists', { ids: ['spotify:artist:xyz789'] });
-    assert.equal(h.calls[0].method, 'DELETE');
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=xyz789');
-
-    const out = await h.invoke('check_following_artists', { ids: ['spotify:artist:xyz789'] });
-    assert.deepEqual(h.calls[1].arg, { type: 'artist', ids: 'xyz789' });
+    assert.deepEqual(h.calls[0].arg, {
+      uris: 'spotify:artist:a,spotify:artist:b',
+    });
     const sc = out.structuredContent as { items: Array<{ id: string; uri: string }> };
-    assert.deepEqual(sc.items, [{ id: 'xyz789', uri: 'spotify:artist:xyz789', follows: true }]);
+    assert.deepEqual(sc.items, [
+      { id: 'a', uri: 'spotify:artist:a', follows: true },
+      { id: 'b', uri: 'spotify:artist:b', follows: false },
+    ]);
   });
 
   it('accepts a CSV string and rejects a wrong-kind reference by name', async () => {
     const h = makeHarness(() => [true, false]);
 
     // Hosts that serialise array params as CSV hand us one string.
-    await h.invoke('follow_artists', { ids: 'a,spotify:artist:b' });
-    assert.equal(h.calls[0].path, '/me/following?type=artist&ids=a,b');
+    await h.invoke('check_following_artists', { ids: 'a,spotify:artist:b' });
+    assert.deepEqual(h.calls[0].arg, {
+      uris: 'spotify:artist:a,spotify:artist:b',
+    });
 
     await assert.rejects(
-      () => h.invoke('follow_artists', { ids: ['spotify:track:x'] }),
+      () => h.invoke('check_following_artists', { ids: ['spotify:track:x'] }),
       /Invalid artist reference "spotify:track:x".*expected artist/,
     );
     assert.equal(h.calls.length, 1, 'the rejected reference never reached Spotify');

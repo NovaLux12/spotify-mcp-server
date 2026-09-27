@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import { SpotifyApiError } from '../src/client.js';
 import { GATED_PATH_PATTERNS, graceful403Message, installGatedPathContract, isGatedError, isGatedPath } from '../src/gating.js';
 import { registerExhaust2EnggatingTools } from '../src/tools/exhaust2_enggating.js';
-import { registerBrowseTools } from '../src/tools/browse.js';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
 import { registerCatalogTools } from '../src/tools/catalog.js';
 import { spawn } from 'node:child_process';
@@ -233,23 +232,31 @@ test('registerExhaust2EnggatingTools registers no tools and installs nothing (#7
 });
 
 // ------------------------------------------------- #428 end-to-end over browse
+//
+// #638 removed `get_categories` / `get_category_playlists` outright rather than
+// re-wrapping them: a removed endpoint has no graceful shape left, and a
+// 403-tolerant wrapper would only have turned the removal into a soft, wrong
+// answer. `browse_category_deepdive` is the surviving caller of the same two
+// paths, so the #428 contract is now asserted against it — one leg on the
+// category read, one on the playlists read it follows up with.
 
-test('get_categories returns the graceful message instead of raw Forbidden (#428)', async () => {
+test('browse_category_deepdive returns the graceful message instead of raw Forbidden (#428)', async () => {
   const client = makeFakeClient((path) =>
     path.startsWith('/browse/categories') ? new SpotifyApiError(403, 'Forbidden') : null,
   );
-  const browse: RegisteredTool[] = [];
-  registerBrowseTools(makeServer(browse) as never, client as never);
+  const catalog: RegisteredTool[] = [];
+  registerCatalogTools(makeServer(catalog) as never, client as never);
   installGatedPathContract(client as never);
 
   await assert.rejects(
-    find(browse, 'get_categories').handler({}),
+    find(catalog, 'browse_category_deepdive').handler({ category_id: 'mood' }),
     (err: Error & { cause?: unknown }) => {
       // #765: the wrapper keeps the SpotifyApiError instance, so
       // isRemovedEndpointFailure still matches on the 403 status and the
-      // tool throws browseCategoriesUnavailable with the gated Spotify
+      // tool throws browseCategoryUnavailable with the gated Spotify
       // message embedded in the detail line and as the error cause.
-      assert.match(err.message, /browse-categories lookup/);
+      assert.match(err.message, /browse-category lookup/);
+      assert.match(err.message, /\(\/browse\/categories\/mood\)/);
       assert.match(err.message, /Spotify answered 403/);
       assert.match(err.message, /Forbidden/);
       assert.match(err.message, /removed by Spotify’s February 2026 Web API changes/);
@@ -262,19 +269,22 @@ test('get_categories returns the graceful message instead of raw Forbidden (#428
   );
 });
 
-test('get_category_playlists gets the graceful contract through the same choke point (#428)', async () => {
-  const client = makeFakeClient((path) =>
-    path.startsWith('/browse/categories') ? new SpotifyApiError(403, 'Forbidden') : null,
-  );
-  const browse: RegisteredTool[] = [];
-  registerBrowseTools(makeServer(browse) as never, client as never);
+test('browse_category_deepdive discloses a gated 403 on its playlists read too (#428)', async () => {
+  // The category read succeeds; only the follow-up `/playlists` read is gated.
+  // Both legs must carry the same contract, and the second must name the path
+  // that actually failed rather than the one the tool started on.
+  const client = makeFakeClient((path) => {
+    if (path === '/browse/categories/mood') return { id: 'mood', name: 'Mood' };
+    if (path === '/browse/categories/mood/playlists') return new SpotifyApiError(403, 'Forbidden');
+    return null;
+  });
+  const catalog: RegisteredTool[] = [];
+  registerCatalogTools(makeServer(catalog) as never, client as never);
   installGatedPathContract(client as never);
 
   await assert.rejects(
-    find(browse, 'get_category_playlists').handler({ category_id: 'mood' }),
+    find(catalog, 'browse_category_deepdive').handler({ category_id: 'mood' }),
     (err: Error & { cause?: unknown }) => {
-      // Same shape as get_categories: the 403 is gated, the tool surfaces
-      // the removal path with the Spotify message embedded.
       assert.match(err.message, /\/browse\/categories\/mood\/playlists/);
       assert.match(err.message, /Spotify answered 403/);
       assert.match(err.message, /removed by Spotify’s February 2026 Web API changes/);
@@ -333,13 +343,16 @@ test('every family names the tools it ships, and a shipped tool names a real fam
     assert.ok(['replaced', 'explained'].includes(family.fallback), `family ${family.id} has an unknown fallback`);
     assert.ok(['removal', 'gated'].includes(family.reason), `family ${family.id} has an unknown reason`);
   }
-  // Two families are retained with no call site after their tools migrated onto
-  // replacements. They must stay in the list — a family with no caller today is
-  // still the classifier that covers a future one — but the README has to say so.
+  // Three families are retained with no call site after their tools migrated onto
+  // replacements or were deleted. They must stay in the list — a family with no
+  // caller today is still the classifier that covers a future one — but the
+  // README has to say so. #638 emptied a fourth into this set by migrating
+  // every `/me/{type}/contains` reader onto `/me/library/contains`, which is
+  // NOT gated (it answered 200 on the same probe that 403'd these).
   const callSiteFree = GATED_FAMILIES.filter((f) => f.tools.length === 0);
   assert.deepEqual(
     callSiteFree.map((f) => f.id).sort(),
-    ['browse-new-releases', 'playlist-followers-contains'],
+    ['browse-new-releases', 'me-type-contains', 'playlist-followers-contains'],
     'the set of families with no shipped call site changed; update the README notes that explain why they are kept',
   );
 });
@@ -631,8 +644,13 @@ test('the graceful-403 contract is installed regardless of the exhaust2enggating
     GATED_CALLS,
   );
   assert.ok(
-    trimmed.toolNames.size < baseline.toolNames.size && !trimmed.toolNames.has('get_categories'),
-    `the trimmed profile must genuinely exclude the catalog set, not merely look different: ${trimmed.toolNames.size} tools, get_categories present=${trimmed.toolNames.has('get_categories')}`,
+    // The canary must be a module this profile does NOT opt back in, or the
+    // assertion passes/fails for the wrong reason. It opts `exhaust2catalog`
+    // and `catalog` in explicitly, so `category_resolver` (an exhaust2catalog
+    // tool) is correctly present; `browse` is not opted in, so the browse
+    // canary is the honest witness that the profile really changed.
+    trimmed.toolNames.size < baseline.toolNames.size && !trimmed.toolNames.has('get_artist_genres'),
+    `the trimmed profile must genuinely exclude the catalog set, not merely look different: ${trimmed.toolNames.size} tools, get_artist_genres present=${trimmed.toolNames.has('get_artist_genres')}`,
   );
   assert.deepEqual(
     trimmed.results,
@@ -657,11 +675,13 @@ test('the graceful-403 contract is installed regardless of the exhaust2enggating
 test('SPOTIFY_MCP_DISABLE_TOOLS is honoured on the production path (#791 vacuity guard)', async () => {
   // The comparison above would also hold if the disable env were ignored
   // outright, so prove the same env family really does remove a registration:
-  // `browse` carries get_categories, and disabling it alongside the gating
-  // module changes the tool list.
+  // `browse` carries get_artist_genres, and disabling it alongside the gating
+  // module changes the tool list. (#638 retargeted this canary off
+  // `get_categories`, which no longer registers; the module key is unchanged,
+  // so the guard is the same one.)
   const control = await probeServer({ SPOTIFY_MCP_DISABLE_TOOLS: 'exhaust2enggating,browse' }, []);
   const ungated = await probeServer({ SPOTIFY_MCP_DISABLE_TOOLS: 'exhaust2enggating' }, []);
-  assert.ok(ungated.toolNames.has('get_categories'), 'get_categories must be registered when only the gating module is disabled');
-  assert.ok(!control.toolNames.has('get_categories'), 'disabling the browse key must remove get_categories from tools/list');
+  assert.ok(ungated.toolNames.has('get_artist_genres'), 'get_artist_genres must be registered when only the gating module is disabled');
+  assert.ok(!control.toolNames.has('get_artist_genres'), 'disabling the browse key must remove get_artist_genres from tools/list');
   assert.ok(control.toolNames.size < ungated.toolNames.size, 'the disabled-module profile must have a strictly smaller tool list');
 });

@@ -33,6 +33,58 @@ describe('playlist_health_check', () => {
 describe('get_playlist_followers', () => {
   it('returns follower count', async () => { const h = makeHarness((path) => { if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 42 }, owner: { id: 'owner1', display_name: 'Owner' } }; return null; }); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1' }); const sc = out.structuredContent as { followers_total: number }; assert.equal(sc.followers_total, 42); });
   it('includes owner profile when requested', async () => { const h = makeHarness((path) => { if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 5 }, owner: { id: 'owner1', display_name: 'Owner' } }; if (path === '/users/owner1') return { id: 'owner1', display_name: 'Owner' }; return null; }); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1', include_profiles: true }); const sc = out.structuredContent as { owner_profile: unknown }; assert.ok(sc.owner_profile); });
+
+  // #638: `GET /users/{id}` was removed in Feb 2026, so `include_profiles:
+  // true` fails on every current registration. The failure used to be
+  // swallowed whole -- `catch { ownerProfile = null }` plus a conditional
+  // spread -- which made a caller that ASKED for the profile unable to tell
+  // "unavailable" from "not requested". These three tests pin the disclosure.
+  it('discloses the failed owner-profile read instead of silently omitting it (#638)', async () => {
+    const h = makeHarness((path) => {
+      if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 42 }, owner: { id: 'owner1', display_name: 'Owner' } };
+      if (path === '/users/owner1') throw new SpotifyApiError(403, 'Forbidden');
+      return null;
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1', include_profiles: true });
+    const sc = out.structuredContent as { followers_total: number; owner_profile?: unknown; owner_profile_error?: string };
+    // The follower count is read from /playlists/{id} and is unaffected.
+    assert.equal(sc.followers_total, 42);
+    assert.equal(sc.owner_profile, undefined, 'a failed read must not be rendered as a profile');
+    // ...and the failure is stated, in the payload and in the prose.
+    assert.ok(sc.owner_profile_error, 'a requested-but-unreadable profile must be disclosed in structuredContent');
+    assert.match(sc.owner_profile_error!, /Forbidden/);
+    assert.match(sc.owner_profile_error!, /removed by Spotify's February 2026/);
+    assert.match(out.content[0].text, /Owner profile unavailable/);
+    assert.match(out.content[0].text, /February 2026/);
+  });
+
+  it('reports an empty owner-profile body as unreadable too, not as no profile (#638)', async () => {
+    const h = makeHarness((path) => {
+      if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 7 }, owner: { id: 'owner1', display_name: 'Owner' } };
+      return null; // /users/owner1 answers with an empty body
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1', include_profiles: true });
+    const sc = out.structuredContent as { owner_profile?: unknown; owner_profile_error?: string };
+    assert.equal(sc.owner_profile, undefined);
+    assert.match(sc.owner_profile_error ?? '', /empty response/);
+  });
+
+  it('says nothing about the profile when none was requested (#638)', async () => {
+    // The disclosure must not fire on the default path: a caller who did not
+    // ask for a profile has no unmet request to be told about.
+    const h = makeHarness((path) => {
+      if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 42 }, owner: { id: 'owner1', display_name: 'Owner' } };
+      throw new Error(`unexpected call to ${path}`);
+    });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as Record<string, unknown>;
+    assert.ok(!('owner_profile' in sc));
+    assert.ok(!('owner_profile_error' in sc));
+    assert.equal(sc.followers_total, 42);
+  });
 });
 describe('playlist_collaboration_report', () => {
   it('rolls up contributors with counts and timestamps', async () => { const items: PlaylistItemObject[] = [ { added_at: '2026-01-01T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't1', name: 'T1', uri: 'spotify:track:t1', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-02T00:00:00Z', added_by: { id: 'bob' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't2', name: 'T2', uri: 'spotify:track:t2', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, { added_at: '2026-01-03T00:00:00Z', added_by: { id: 'alice' } as unknown as PlaylistItemObject['added_by'], item: { type: 'track', id: 't3', name: 'T3', uri: 'spotify:track:t3', duration_ms: 1000, artists: [] } as unknown as PlaylistItemObject extends { item?: infer I } ? I : never } as unknown as PlaylistItemObject, ]; const h = makeHarness(() => items); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_collaboration_report', { playlist_id: 'pl1' }); const sc = out.structuredContent as { contributors: Array<{ user_id: string; count: number }>; most_active: string }; assert.equal(sc.contributors.length, 2); assert.equal(sc.contributors[0].user_id, 'alice'); assert.equal(sc.contributors[0].count, 2); assert.equal(sc.most_active, 'alice'); });

@@ -10,7 +10,7 @@ Spotify Web API MCP: playback, library, playlists, search, podcasts. Not affilia
 A broad Spotify Web API tool surface, plus extras most servers skip. Registration-gated wrappers are explained rather than hidden; see [Registration-gated endpoints](#registration-gated-endpoints) for the generated list.
 
 <!-- BEGIN:generated surface-census -->
-The finalized default MCP registry exposes **594 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
+The finalized default MCP registry exposes **587 tools**, **16 fixed resources**, **33 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
 ---
@@ -242,8 +242,8 @@ So a 403 here is a property of the registration, not of the tool. No tool is hid
 | `browse-new-releases` — `/browse/new-releases` | *(none — no shipped tool reads this path)* | Replaced; no call site |
 | `markets` — `/markets` | `get_available_markets`, `market_validate` | 403 explained |
 | `artist-top-tracks` — `/artists/{id}/top-tracks` | `get_artist_top_tracks`, `queue_playlist` | 403 explained |
-| `user-profile` — `/users/{id}` and `/users/{id}/playlists` | `get_user_profile`, `get_user_playlists`, `get_playlist_followers` | 403 explained |
-| `me-type-contains` — the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following) | `check_episode_saved`, `remove_saved_episode`, `check_following_artists`, `restore_library_snapshot` | 403 explained |
+| `user-profile` — `/users/{id}` and `/users/{id}/playlists` | `get_user_profile`, `get_user_playlists_by_id`, `get_playlist_followers` | 403 explained |
+| `me-type-contains` — the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following) | *(none — migrated to `GET /me/library/contains`)* | Replaced; no call site |
 | `playlist-followers-contains` — `/playlists/{id}/followers/contains` | *(none — migrated to `GET /me/library/contains`)* | Replaced; no call site |
 | `batch-several` — the multi-id `?ids=` batch endpoints (`/tracks`, `/albums`, `/artists`, `/episodes`, `/shows`, `/audiobooks`, `/chapters`) | `get_several_tracks`, `get_several_albums`, `get_several_artists` | Replaced with per-id reads |
 

@@ -1005,11 +1005,20 @@ function registerVerifyReceiptTool(server: McpServer): void {
 }
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
+  // #638, RE-MEASURED on the post-rebase tree. The pre-rebase branch figures
+  // for library and following were measured before main moved, and main had
+  // since reworded these descriptions — so carrying either side's number
+  // forward would put a lie in a hand-maintained baseline the startup gate
+  // treats as ground truth, and a slightly-stale value usually still sits
+  // under its own derived ceiling, so no gate would catch it. Every module this
+  // commit's diff touches under src/tools/ was re-measured the same way: zero
+  // the baseline so the derived ceiling is 0, let the startup gate fail loudly
+  // with the real figure, then write that figure back. No ceiling was raised.
   manifestEntry('search', 'search', lazyModule('./search.js', 'registerSearchTools'), [1, 1821], { readOnlySafe: true }),
   manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26883], { readOnlySafe: true }),
-  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [16, 14932]),
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12521]),
   manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12077]),
-  manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [5, 3948]),
+  manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [3, 2502]),
   manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),
   manifestEntry('audiobookcopilot', 'audiobooks', lazyModule('./audiobookcopilot.js', 'registerAudiobookCopilotTools'), [3, 1985]),
@@ -1105,7 +1114,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('freshness', 'following', lazyModule('./freshness.js', 'registerFreshnessTools'), [1, 2235], { readOnlySafe: true, scopeKey: 'following' }),
   manifestEntry('searchdive', 'search', lazyModule('./searchdive.js', 'registerSearchDeepTool'), [1, 1683], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
-  manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [1, 436], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
   manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
   manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8178], { scopeKey: 'playback' }),
@@ -1180,7 +1189,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // #1224 +33B, same 24 tools: six tool descriptions now quote one
   // GET /albums/{id} per release rather than a batched /albums lookup.
   manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19952], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21075], { scopeKey: 'catalog' }),
+  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21457], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
   manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),

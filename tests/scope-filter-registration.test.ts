@@ -35,8 +35,6 @@ const WRITE_TOOLS = [
   'remove_from_library',
   'create_playlist',
   'add_to_playlist',
-  'follow_artists',
-  'unfollow_artists',
   'play',
   'add_to_queue',
   'transfer_playback',
@@ -123,7 +121,7 @@ describe('scope-filtered module registration (#1020)', () => {
     assert.ok(moduleToolNames(server, 'library').length > 0, 'a scope_filtered module must own its surviving tools');
     assert.deepEqual(
       moduleToolNames(server, 'library').sort(),
-      ['check_in_library', 'check_saved_items', 'get_saved_albums', 'get_saved_counts', 'get_saved_episodes',
+      ['check_in_library', 'get_saved_albums', 'get_saved_counts', 'get_saved_episodes',
         'get_saved_shows', 'get_saved_tracks', 'search_saved_albums', 'search_saved_audiobooks', 'search_saved_episodes',
         'search_saved_shows', 'search_saved_tracks'],
       'the library module must register exactly its read-classified tools',

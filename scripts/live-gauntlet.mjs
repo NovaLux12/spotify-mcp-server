@@ -7,7 +7,7 @@
 //
 // Usage:
 //   node scripts/live-gauntlet.mjs [report.json]
-//   node scripts/live-gauntlet.mjs --include-mutating=create_playlist,save_items [report.json]
+//   node scripts/live-gauntlet.mjs --include-mutating=create_playlist,save_to_library [report.json]
 //   node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json
 //
 // Batch/resume mode (quota-paced sweeps of the full surface):
@@ -34,9 +34,7 @@ const ROOT = join(dirname(new URL(import.meta.url).pathname), '..');
 
 const MUTATING = new Set([
   // library.ts
-  'save_items', 'remove_saved_items', 'save_to_library', 'remove_from_library',
-  // following.ts
-  'follow_artists', 'unfollow_artists',
+  'save_to_library', 'remove_from_library',
   // playback.ts
   'play_from_search', 'play', 'pause', 'skip_next', 'skip_previous', 'seek',
   'set_volume', 'set_shuffle', 'set_repeat', 'add_to_queue', 'transfer_playback',
@@ -55,25 +53,34 @@ const MUTATING = new Set([
 // expected to fail on newer app registrations. A failure here is reported as
 // SKIP, not FAIL.
 //
-// `follow_artists` / `unfollow_artists` are the awkward case: Spotify removed
-// `PUT/DELETE /me/following` and gave no replacement, because `/me/library` has
-// no `spotify:artist:` URI type. They are registered and cannot work, so they
-// belong here until the tools themselves are removed. When the tools are
-// deleted, delete their MUTATING entries and args builders instead of moving
-// them here — this file reads a live `tools/list`.
+// #638: this set used to carry a second, awkward group — `follow_artists`,
+// `unfollow_artists`, `get_categories` and `get_category_playlists` were
+// REGISTERED, could never work, and were parked here until the tools
+// themselves were deleted. They are deleted now, so their MUTATING entries and
+// args builders went with them rather than moving here. This file reads a live
+// `tools/list`, so a name left in a set that no longer registers is dead
+// weight that reads as coverage.
+//
+// `get_artist_top_tracks` / `get_available_markets` / `get_user_profile` /
+// `get_user_playlists_by_id` stay: those endpoints are gone but the tools
+// degrade truthfully (a named 403 explaining the removal, or a replacement
+// read), so a live FAIL here is a real regression. A tool that cannot answer
+// at all does not belong in this file.
 const REMOVED = new Set([
   'get_artist_top_tracks', 'get_available_markets', 'get_user_profile', 'get_user_playlists_by_id',
-  'follow_artists', 'unfollow_artists',
-  // browse/categories: also removed Feb 2026, with no replacement endpoint. See #1013.
-  'get_categories', 'get_category_playlists',
 ]);
 
 // Endpoints that 403 Forbidden on current app registrations (2026-08-27 edge
 // probe): documented /me/*/contains family, browse categories, and friends.
 // Legacy registrations may still serve them; failure here is SKIP, not FAIL.
+// #638: `get_categories`, `get_category_playlists` and `check_saved_items` were
+// deleted with the endpoints they wrapped, so they are no longer registered and
+// are not classified here. `check_in_library` and `check_following_artists` stay
+// — they read `/me/library/contains`, which is NOT gated, and a FAIL against
+// them is a genuine regression.
 const GATED = new Set([
-  'get_categories', 'get_category_playlists', 'get_new_releases',
-  'check_in_library', 'check_saved_items', 'check_following_artists',
+  'get_new_releases',
+  'check_in_library', 'check_following_artists',
   'check_following_playlist', 'check_following_artists_and_users',
 ]);
 
@@ -242,7 +249,6 @@ const SAFE_ARGS = {
   get_saved_shows: () => ({ limit: 5 }),
   get_saved_episodes: () => ({ limit: 5 }),
   get_saved_audiobooks: () => ({ limit: 5 }),
-  check_saved_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   check_in_library: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   // personalization.ts
   get_top_tracks: () => ({ limit: 5 }),
@@ -317,12 +323,8 @@ const MUTATING_ARGS = {
   whats_new: () => ({ kinds: ['albums'], since: '2026-01-01', max_results: 5, max_artists: 1 }),
   merge_playlists: () => seed.playlistId ? { sources: seed.playlistIds ?? [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME' } : 'no playlist in seeds',
   create_playlist: () => ({ name: 'live-gauntlet dry-run probe', public: false }),
-  save_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
-  remove_saved_items: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   save_to_library: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
   remove_from_library: () => seed.trackId ? { uris: [`spotify:track:${seed.trackId}`] } : 'no track in seeds',
-  follow_artists: () => seed.artistId ? { ids: [seed.artistId] } : 'no artist in seeds',
-  unfollow_artists: () => seed.artistId ? { ids: [seed.artistId] } : 'no artist in seeds',
   add_to_playlist: () => seed.playlistId && seed.trackId ? { playlist_id: seed.playlistId, uris: [`spotify:track:${seed.trackId}`] } : 'no playlist/track in seeds',
   remove_from_playlist: () => seed.playlistId && seed.trackId ? { playlist_id: seed.playlistId, uris: [`spotify:track:${seed.trackId}`] } : 'no playlist/track in seeds',
   update_playlist: () => seed.playlistId ? { id: seed.playlistId, description: 'live-gauntlet dry-run probe' } : 'no playlist in seeds',

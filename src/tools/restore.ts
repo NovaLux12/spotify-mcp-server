@@ -314,6 +314,18 @@ interface CategoryPlan {
   plannedUris: string[];
   /** Unfollowed artist IDs to follow (followed_artists only). */
   plannedArtistIds: string[];
+  /**
+   * #638: artist rows the restore can read but cannot write back.
+   *
+   * Spotify's February 2026 changes removed `PUT`/`DELETE /me/following`, and
+   * `PUT`/`DELETE /me/library` — the replacement named for every other removed
+   * write here — accepts track, album, episode, show, audiobook, user and
+   * playlist URIs but NOT `spotify:artist:`. So an artist the user has since
+   * unfollowed is not restorable by any endpoint, and a plan that counted it
+   * as a pending write would report a restore that cannot happen. These rows
+   * are counted here and named in `notes` instead.
+   */
+  unrestorable: number;
   /** Rows dropped (malformed URI/name, duplicates, name collisions). */
   skipped: number;
   /**
@@ -415,11 +427,25 @@ async function followsArtistIds(
 ): Promise<boolean[]> {
   const flags: boolean[] = [];
   for (const part of chunk(ids, FOLLOW_CHUNK)) {
-    const res = await client.get<boolean[]>('/me/following/contains', {
-      type: 'artist',
-      ids: part.join(','),
+    // #638: `GET /me/following/contains` was removed by Spotify's February
+    // 2026 changes; `GET /me/library/contains` is the documented read
+    // replacement and it is the half of following that DID migrate — it
+    // accepts `spotify:artist:` URIs even though PUT/DELETE /me/library
+    // cannot save them (that is the whole reason the follow WRITE is
+    // unrecoverable; see the `unrestorable` accounting in the planner).
+    const res = await client.get<boolean[]>('/me/library/contains', {
+      uris: part.map((id) => `spotify:artist:${id}`).join(','),
     });
-    if (!res) throw new Error('Could not check current follows (/me/following/contains)');
+    // A response that is not one boolean per requested id is an unread, not a
+    // row of "not followed": counting an unrecognised body positionally would
+    // plan a follow write for every artist in the chunk, and the plan's
+    // `alreadyPresent` figure is what keeps a restore from re-doing work.
+    if (!Array.isArray(res) || res.length !== part.length || res.some((v) => typeof v !== 'boolean')) {
+      throw new Error(
+        `Could not check current follows: GET /me/library/contains returned a body that is not `
+        + `${part.length} booleans for the ${part.length} artist URI(s) requested. Treated as unread.`,
+      );
+    }
     flags.push(...res);
   }
   return flags;
@@ -433,6 +459,7 @@ function freshCategoryPlan(category: RestoreCategory): CategoryPlan {
     planned: 0,
     plannedUris: [],
     plannedArtistIds: [],
+    unrestorable: 0,
     skipped: 0,
     notes: [],
     invalidUris: [],
@@ -502,14 +529,19 @@ async function computeRestorePlan(
       }
       if (ids.length > 0) {
         const follows = await followsArtistIds(client, ids);
+        // #638: the read half migrated (GET /me/library/contains) but the
+        // WRITE half did not — see `unrestorable`. An artist the user is not
+        // currently following is therefore counted as unrestorable rather
+        // than planned, so a plan can no longer promise a follow write that no
+        // endpoint will accept.
         ids.forEach((id, i) => {
           if (follows[i]) plan.alreadyPresent += 1;
-          else plan.plannedArtistIds.push(id);
+          else {
+            plan.unrestorable += 1;
+            plan.notes.push(`cannot re-follow spotify:artist:${id} — Spotify removed the follow write (#638)`);
+          }
         });
         plan.planned = plan.plannedArtistIds.length;
-        plan.notes.push(
-          ...plan.plannedArtistIds.map((id) => `would follow spotify:artist:${id}`),
-        );
       }
     } else if (category === 'playlists') {
       const snapshotPlaylists = snapshot.playlists ?? [];
@@ -623,8 +655,14 @@ interface CreatedPlaylist {
  */
 interface RestoreFailure {
   category: RestoreCategory;
- /** Where in the category's write sequence the failure occurred. */
-  stage: 'library_write' | 'follow_write' | 'playlist_create' | 'playlist_items';
+ /**
+  * Where in the category's write sequence the failure occurred.
+  *
+  * `follow_write` was removed with the follow write itself (#638): no
+  * endpoint accepts a `spotify:artist:` follow, so a followed-artist restore
+  * can no longer fail mid-sequence — it is planned as unrestorable up front.
+  */
+  stage: 'library_write' | 'playlist_create' | 'playlist_items';
   /** Chunks (or playlists) that completed before the failure. */
   requests_completed: number;
   requests_attempted: number;
@@ -726,25 +764,15 @@ async function executeRestore(
         });
       }
     } else if (category === 'followed_artists') {
-      const parts = chunk(catPlan.plannedArtistIds, FOLLOW_CHUNK);
-      const r = await writeChunked(parts, async (ids) => {
-        await client.put(
-          `/me/following?${new URLSearchParams({ type: 'artist', ids: ids.join(',') }).toString()}`,
-        );
-      });
-      executed[category] = r.itemsWritten;
-      if (r.failed) {
-        failures.push({
-          category,
-          stage: 'follow_write',
-          requests_completed: r.completed,
-          requests_attempted: r.attempted,
-          items_written: r.itemsWritten,
-          items_planned: catPlan.plannedArtistIds.length,
-          items_pending: catPlan.plannedArtistIds.length - r.itemsWritten,
-          last_committed_chunk: r.lastCommitted,
-        });
-      }
+      // #638: there is no follow write to perform. `PUT /me/following` was
+      // removed by Spotify's February 2026 changes and `PUT /me/library` does
+      // not accept `spotify:artist:` URIs, so nothing here can restore a
+      // follow. The planner already moved every un-followed row into
+      // `unrestorable` and named it in the notes, so the plan is empty by
+      // construction; recording the zero here keeps `executed` complete
+      // rather than leaving the category silently absent, which would read
+      // as "not attempted" instead of "not possible".
+      executed[category] = 0;
     } else if (category === 'playlists') {
       let addedTotal = 0;
       // Each creation is attempted independently, so one failure is attributed
@@ -848,6 +876,11 @@ function categoryPayload(plan: CategoryPlan, outcome: RestoreOutcome | null) {
     executed: outcome?.executed[plan.category] ?? 0,
     skipped: plan.skipped,
     skipped_invalid: plan.invalidUris.length,
+    // #638: rows this restore can read but has no endpoint to write back.
+    // Published as its own field rather than folded into `skipped` so a
+    // caller can tell "the snapshot row was malformed" from "the platform
+    // removed the write" — the first is a data problem, the second is not.
+    unrestorable: plan.unrestorable,
     notes: plan.notes,
   };
 }
@@ -952,6 +985,11 @@ function buildProse(
     const bits = [`${c.total} in snapshot`, `${c.alreadyPresent} already present`];
     bits.push(done ? `${outcome?.executed[c.category] ?? 0} written` : `${c.planned} would be written`);
     if (c.skipped > 0) bits.push(`${c.skipped} skipped`);
+    if (c.unrestorable > 0) {
+      bits.push(
+        `${c.unrestorable} NOT RESTORABLE — Spotify removed the endpoint that would write them (#638)`,
+      );
+    }
     lines.push(`- ${c.category}: ${bits.join(' · ')}`);
   }
   for (const failure of outcome?.failures ?? []) {
@@ -1092,11 +1130,21 @@ export function registerRestoreTools(server: McpServer, client: SpotifyClient): 
         .filter((c) => c.planned > 0)
         .map((c) => {
           if (c.category === 'playlists') return `- playlists: create ${c.planned} playlist(s)`;
-          if (c.category === 'followed_artists') {
-            return `- followed_artists: follow ${c.planned} artist(s)`;
-          }
           return `- ${c.category}: save ${c.planned} item(s)`;
         });
+      // #638: the person authorising this restore is told, at the point of
+      // authorisation, that a slice of the snapshot cannot be applied. Silence
+      // here would be the #1100 failure in a new costume: the prompt lists
+      // what WILL change, and a category that quietly drops its rows looks
+      // identical to a category with nothing to do.
+      for (const c of plan.perCategory) {
+        if (c.unrestorable > 0) {
+          changeLines.push(
+            `- ${c.category}: ${c.unrestorable} item(s) CANNOT be restored — Spotify removed the `
+            + 'endpoint that would write them (#638). They are excluded, not attempted.',
+          );
+        }
+      }
       changeLines.push(
         ...plan.playlistCreations.map(
           (c) => `- playlists: create "${c.restoredName}" (${c.itemUris.length} item(s))`,

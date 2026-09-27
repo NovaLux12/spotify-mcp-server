@@ -120,6 +120,20 @@ function batchUris(body: unknown, key = 'uris'): string[] {
   return value.filter((u): u is string => typeof u === 'string');
 }
 
+/**
+ * The `uris` query parameter of a recorded `/me/library` request, decoded.
+ *
+ * `PUT`/`DELETE /me/library` carry their URIs in the query string, not a body
+ * (#638), so a batch-size assertion that reads the body would silently see
+ * nothing at all and pass on an empty list.
+ */
+function libraryQueryUris(path: string): string[] {
+  assert.match(path, /^\/me\/library\?/, `not a /me/library request: ${path}`);
+  const raw = new URLSearchParams(path.split('?')[1] ?? '').get('uris');
+  assert.ok(raw !== null, `/me/library request must carry a uris query param: ${path}`);
+  return raw.split(',').filter(Boolean);
+}
+
 describe('#583 — CHUNK_CAPS is the single batch-size policy', () => {
   it('matches the per-request limits SPEC.md documents for the get_several_* family', () => {
     const rows = [...SPEC.matchAll(/\|\s*`get_several_(\w+)`\s*\|\s*`GET \/\w+\?ids=…`\s*\|\s*(\d+)\s*\|/g)];
@@ -262,7 +276,11 @@ describe('#583 — CHUNK_CAPS is the single batch-size policy', () => {
 });
 
 describe('#583 — request counts per operation are unchanged', () => {
-  it('a 120-track playlist_to_library still issues 3 PUT /me/tracks of 50/50/20', async () => {
+  // #638 removed `PUT /me/tracks`; the request count survives, the endpoint and
+  // the batch size do not. The old assertion (`3 PUT /me/tracks of 50/50/20`)
+  // pinned both of the removed facts, so it is replaced rather than repointed:
+  // 50 was the per-type cap and `/me/library` takes 40.
+  it('a 120-track playlist_to_library issues 3 PUT /me/library of 40/40/40', async () => {
     const { client, calls } = recordingClient({
       getAllPages: async () => Array.from({ length: 120 }, (_, i) => ({ item: { uri: `spotify:track:t${i}`, name: `T${i}` } })),
       get: async () => new Array(120).fill(false),
@@ -270,11 +288,18 @@ describe('#583 — request counts per operation are unchanged', () => {
     const handler = handlerFor(registerExhaustMiscTools as never, client, 'playlist_to_library');
     await handler({ playlist_id: 'pl1', response_format: 'concise', dry_run: false });
 
-    const saves = calls.filter((c) => c.method === 'put' && c.path === '/me/tracks');
+    const saves = calls.filter((c) => c.method === 'put' && c.path.startsWith('/me/library?'));
     assert.equal(saves.length, 3, 'a 120-track save is 3 batched writes, not 120');
-    assert.deepEqual(saves.map((c) => batchUris(c.body, 'ids').length), [50, 50, 20]);
-    const written = saves.flatMap((c) => batchUris(c.body, 'ids'));
+    assert.deepEqual(saves.map((c) => libraryQueryUris(c.path).length), [40, 40, 40]);
+    const written = saves.flatMap((c) => libraryQueryUris(c.path));
     assert.equal(new Set(written).size, 120, 'every track lands exactly once across the batches');
+    // The removed per-type write is the failure this guards: it 400s in the
+    // field, so a reappearance has to be a test failure and not a silent 400.
+    assert.deepEqual(
+      calls.filter((c) => c.path.startsWith('/me/tracks')),
+      [],
+      'PUT /me/tracks was removed by the Feb 2026 changelog; /me/library is the replacement',
+    );
   });
 
   it('a 120-uri library save still issues 3 PUT /me/library of 40/40/40', async () => {
@@ -321,6 +346,41 @@ describe('#583 — request counts per operation are unchanged', () => {
       [50, 50, 20],
     );
     assert.equal(res.structuredContent?.items?.length, 120, 'every id survives the merge in order');
+  });
+
+  // The boundary sweep: a request larger than one batch must be ceil(n/cap)
+  // requests, and the union of those requests must be the input — every URI
+  // once, in order. A dropped URI is a track the user asked to save and did
+  // not get; a duplicated one is a wasted write and a mis-reported count; a
+  // wrong count is a batch that Spotify rejects outright.
+  it('splits a /me/library write larger than one batch into ceil(n/cap) requests covering every uri once, in order', async () => {
+    const cap = CHUNK_CAPS.library_writes;
+    for (const n of [1, cap - 1, cap, cap + 1, 2 * cap, 2 * cap + 1, 100, 121]) {
+      const { client, calls } = recordingClient();
+      const uris = Array.from({ length: n }, (_, i) => `spotify:track:b${i}`);
+
+      const saved = await modifyLibrary(client, uris, 'save');
+      const puts = calls.filter((c) => c.method === 'put');
+      assert.equal(puts.length, Math.ceil(n / cap), `${n} uris must be ceil(${n}/${cap}) requests`);
+      assert.equal(saved, n, `${n}: the reported count is what was sent`);
+      for (const put of puts) {
+        const batch = libraryQueryUris(put.path);
+        assert.ok(batch.length <= cap, `${n}: a batch of ${batch.length} exceeds the ${cap}-uri write cap`);
+        assert.ok(batch.length > 0, `${n}: an empty batch is a wasted request`);
+      }
+      const written = puts.flatMap((p) => libraryQueryUris(p.path));
+      assert.deepEqual(written, uris, `${n}: every uri exactly once, in request order`);
+
+      calls.length = 0;
+      await modifyLibrary(client, uris, 'remove');
+      const deletes = calls.filter((c) => c.method === 'delete');
+      assert.equal(deletes.length, Math.ceil(n / cap), `${n} uris must be ceil(${n}/${cap}) removals`);
+      assert.deepEqual(
+        deletes.flatMap((d) => libraryQueryUris(d.path)),
+        uris,
+        `${n}: every uri exactly once removed, in request order`,
+      );
+    }
   });
 });
 

@@ -130,10 +130,11 @@ export interface GatedFamily {
  * this array.
  *
  * A family in this list is a runtime CLASSIFIER, not a claim that a shipped
- * tool calls it. Two families (`browse-new-releases`,
- * `playlist-followers-contains`) have no live call site left -- the tools that
- * used them were migrated onto replacements -- and the pattern is retained so
- * a future caller is still covered rather than losing the 403 contract.
+ * tool calls it. Three families (`browse-new-releases`,
+ * `playlist-followers-contains`, `me-type-contains`) have no live call site
+ * left -- the tools that used them were migrated onto replacements or deleted
+ * -- and the pattern is retained so a future caller is still covered rather
+ * than losing the 403 contract.
  *
  * Exported so the #330 gauntlet SKIP set, the README, and the surface census
  * all classify against this one array.
@@ -182,7 +183,13 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     label: '`/users/{id}` and `/users/{id}/playlists`',
     pattern: /^\/users\/[^/]+(?:\/.+)?$/,
     example: '/users/user-id',
-    tools: ['get_user_profile', 'get_user_playlists', 'get_playlist_followers'],
+    // #638: `get_user_playlists` was dropped from this list. Despite the name
+    // it reads `GET /me/playlists` — the authenticated user's own playlists —
+    // which Spotify never removed, so listing it here claimed a call site that
+    // does not exist and would have sent a future reader looking for a
+    // migration that was never needed. The census cross-checks this column
+    // per FILE, so it could not catch the substitution on its own.
+    tools: ['get_user_profile', 'get_user_playlists_by_id', 'get_playlist_followers'],
     fallback: 'explained',
     reason: 'removal',
   },
@@ -191,8 +198,17 @@ export const GATED_FAMILIES: readonly GatedFamily[] = [
     label: 'the documented `/me/{type}/contains` checks (tracks, albums, shows, episodes, audiobooks, following)',
     pattern: /^\/me\/(?:albums|tracks|episodes|shows|audiobooks|following)\/contains$/,
     example: '/me/episodes/contains',
-    tools: ['check_episode_saved', 'remove_saved_episode', 'check_following_artists', 'restore_library_snapshot'],
-    fallback: 'explained',
+    // #638: no live call site. `GET /me/library/contains` is NOT in the gated
+    // class -- it answered 200 on the same 2026-08-26 probe that 403'd these --
+    // so every reader was moved onto it: `check_episode_saved` /
+    // `remove_saved_episode` / `remove_saved_shows` (swarm3_shows.ts),
+    // `check_following_artists` (following.ts) and `restore_library_snapshot`
+    // (restore.ts). `check_saved_items` was the last reader of this family and
+    // was deleted outright rather than pointed at the replacement: it was a
+    // strict subset of `check_in_library` and carried the same dead rationale.
+    // Pattern retained for coverage.
+    tools: [],
+    fallback: 'replaced',
     reason: 'removal',
   },
   {
