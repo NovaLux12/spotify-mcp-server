@@ -71,6 +71,9 @@ const EXPECTED_FILES = [
   'ARCHITECTURE.md',
   'README.md',
   'SPEC.md',
+  // Added by #926, which gave the env reference's two hand-typed name lists
+  // generated blocks — which is what made it a mixed document.
+  'docs/configuration.md',
   'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
