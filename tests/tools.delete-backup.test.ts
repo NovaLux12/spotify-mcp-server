@@ -4,6 +4,8 @@
  * delete by default, delete outside the store, delete without a human.
  * Real tmpdir store; no Spotify calls are made or expected.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

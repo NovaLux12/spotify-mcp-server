@@ -5,6 +5,8 @@
  * this file ensures their dry_run paths make zero mutating calls and that
  * batch writers fan out in groups of 100.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

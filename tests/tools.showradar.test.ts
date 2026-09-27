@@ -4,6 +4,8 @@
  * sorting, and empty-library handling.
  */
 
+import './helpers/hermetic.js';
+
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

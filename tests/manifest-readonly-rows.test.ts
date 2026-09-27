@@ -21,6 +21,8 @@
  *   - #1009 a read-only grant exposed taste_to_playlist;
  *   - #1017 a read-only session saw neither list_backups nor delete_backup.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

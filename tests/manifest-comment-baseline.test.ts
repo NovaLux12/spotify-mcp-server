@@ -16,6 +16,8 @@
  * so the cheapest honest check is to read the file. It also covers every
  * comment added later, which a behavioural test could not.
  */
+import './helpers/hermetic.js';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

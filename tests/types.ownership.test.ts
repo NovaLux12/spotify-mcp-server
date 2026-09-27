@@ -28,6 +28,8 @@
  * cannot be caught by rule 2. That residue is what the manual sweep in #589
  * found; the rules above close the re-introduction path, not the whole class.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';

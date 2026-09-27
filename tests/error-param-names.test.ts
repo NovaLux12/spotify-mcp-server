@@ -29,6 +29,8 @@
  * where the answer is known, and its reach over the real call sites is pinned
  * by name and count.
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';

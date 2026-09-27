@@ -12,6 +12,8 @@
  * mechanism guaranteed to be available.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs, mkdirSync } from 'node:fs';

@@ -29,6 +29,8 @@
  * written under os.tmpdir().
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after, beforeEach, afterEach, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, mkdir } from 'node:fs/promises';

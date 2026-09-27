@@ -4,6 +4,8 @@
  * playlist, global elicitation gate, and empty-account handling.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import { z } from 'zod';
 import assert from 'node:assert/strict';

@@ -15,6 +15,8 @@
  *   - a 403-on-removed-endpoint hint is forgotten and the prompt re-prescribes
  *     the same dead call
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 

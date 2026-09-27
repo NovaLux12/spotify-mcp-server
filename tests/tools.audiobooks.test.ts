@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerAudiobookTools, resetProfileCountryCache } from '../src/tools/audiobooks.js';

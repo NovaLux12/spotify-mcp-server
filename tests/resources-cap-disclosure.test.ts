@@ -18,6 +18,8 @@
  * Run with: node --import tsx --test tests/resources-cap-disclosure.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

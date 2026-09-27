@@ -6,6 +6,8 @@
  * swappable responder keyed by path.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 

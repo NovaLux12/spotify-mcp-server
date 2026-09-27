@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';

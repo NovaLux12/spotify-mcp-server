@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import { describe, it, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

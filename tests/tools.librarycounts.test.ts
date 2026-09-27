@@ -20,6 +20,8 @@
  * Run: node --import tsx --test tests/tools.librarycounts.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

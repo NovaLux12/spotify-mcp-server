@@ -25,6 +25,8 @@
  * vars MUST be set before the dynamic imports below.
  */
 
+import './helpers/hermetic.js';
+
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

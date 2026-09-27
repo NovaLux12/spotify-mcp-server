@@ -9,6 +9,8 @@
  * shifted "Track N of M" or giving up. The walk is also bounded by
  * fetchAllCap, and that bound is now disclosed rather than implied.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

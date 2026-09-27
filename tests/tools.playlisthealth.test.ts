@@ -1,3 +1,5 @@
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

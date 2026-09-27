@@ -7,6 +7,8 @@
  * filter, and — the rule this repo lives by — that a store which could not be
  * read reports an unknown total rather than a zero.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

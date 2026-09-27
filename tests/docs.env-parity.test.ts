@@ -30,6 +30,8 @@
  * `docs/configuration.md`, and every registry entry must appear in it too.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

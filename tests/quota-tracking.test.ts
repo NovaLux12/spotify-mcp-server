@@ -9,6 +9,8 @@
  * same getRateLimitStatus() shape the real client exposes.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

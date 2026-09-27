@@ -27,6 +27,8 @@
  * behind in documentation is not one.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

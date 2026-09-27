@@ -6,6 +6,8 @@
  * semantics live in the stub's getAllPages so paged fixtures are exercised
  * for real.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

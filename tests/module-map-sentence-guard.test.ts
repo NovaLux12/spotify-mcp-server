@@ -20,6 +20,8 @@
  * `firstDescription` through the script's own `--description-fixture` hook
  * instead, so they observe the behaviour rather than restate the output.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';

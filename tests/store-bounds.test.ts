@@ -12,6 +12,8 @@
  * would then delete real records. `assertStoreIsolated` below is the tripwire
  * for that mistake.
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';

@@ -12,6 +12,8 @@
  * Run with: node --import tsx --test tests/infra.test.ts
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';

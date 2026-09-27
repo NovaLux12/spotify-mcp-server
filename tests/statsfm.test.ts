@@ -3,6 +3,8 @@
  * StatsfmClient (zero network). Route shapes mirror the live API
  * (verified 2026-09-05): `{ item }` singles, `{ items }` collections.
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {

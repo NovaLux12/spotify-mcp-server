@@ -8,6 +8,8 @@
  * probed the McpServer wrapper for `elicitInput`, which only exists on the
  * inner `server.server`, so a stub "passed" by never being asked.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

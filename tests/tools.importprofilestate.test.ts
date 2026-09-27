@@ -6,6 +6,8 @@
  * Every test here points the sidecar paths at its own scratch directory, so
  * a regression that writes to the wrong place is visible rather than silent.
  */
+import './helpers/hermetic.js';
+
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';

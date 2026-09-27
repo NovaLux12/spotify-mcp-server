@@ -8,6 +8,8 @@
  * deliberately-small case below is paired with an identity assertion so it
  * proves the cap does not fire, rather than proving the cap works.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';

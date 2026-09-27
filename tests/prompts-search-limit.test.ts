@@ -10,6 +10,8 @@
  * cross-reference each numeric search `limit` against the live bound, and pin
  * SPEC.md's search rows to the same number so the documents cannot drift.
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';

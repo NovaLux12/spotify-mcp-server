@@ -12,6 +12,8 @@
  * Run with: npm test   (uses node:test + tsx)
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { getCallbackPort, isHeadlessMode, parseCallbackUrl, validateRedirectUri } from '../src/auth.ts';

@@ -7,6 +7,8 @@
  *  - malformed expires_in guarded (NaN => immediately expired)
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmod, lstat, mkdtemp, writeFile, readFile, rm, stat, symlink } from 'node:fs/promises';

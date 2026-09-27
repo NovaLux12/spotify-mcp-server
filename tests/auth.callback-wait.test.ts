@@ -39,6 +39,8 @@
  * is also exactly what it did to the CLI before the bound existed.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';

@@ -21,6 +21,8 @@
  * checking passes whatever the enum becomes, which is how "week"/"month"
  * survived in the first place. These are the literals upstream answers 200 to.
  */
+import './helpers/hermetic.js';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

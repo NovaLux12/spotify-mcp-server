@@ -24,6 +24,9 @@
  *     order catches it. The `reverse_playlist` pair below is what pins that
  *     last one.
  */
+
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';

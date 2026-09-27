@@ -49,6 +49,8 @@
  *   3. Each `rejects` test is paired with an `accepts` twin, so a rule that
  *      degraded into "reject everything" would fail the suite.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';

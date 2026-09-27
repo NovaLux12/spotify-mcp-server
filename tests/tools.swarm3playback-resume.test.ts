@@ -6,6 +6,8 @@
  * await PUT /me/player/play before reporting success; the dry run must
  * surface that same call in its plan.
  */
+import './helpers/hermetic.js';
+
 import assert from 'node:assert/strict';
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';

@@ -34,6 +34,8 @@
  * and fails if any module other than config.ts can reach the variable.
  */
 
+import './helpers/hermetic.js';
+
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';

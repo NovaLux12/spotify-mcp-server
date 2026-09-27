@@ -31,6 +31,8 @@
  * any absence assertion is made, and the final block drives the registry to
  * empty on purpose and asserts that the pinned count is what fails.
  */
+import './helpers/hermetic.js';
+
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
