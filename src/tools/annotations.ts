@@ -1346,7 +1346,29 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // (+292 B) and 23283 B -> 23781 B for #1297 (+498 B), and the two overlap
   // on the same three tools rather than adding, so the merged figure is not
   // their sum. MEASURED with `npm run count:tools` on 2026-09-27.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 28623], { readOnlySafe: true }),
+  // #730: `statsfm_recent_streams` gained a `range` parameter — the named
+  // stream-window buckets (`today`/`week`/`month`/`year`/`lifetime`). No tool
+  // was added, so the count is unchanged at 30; the delta is one parameter's
+  // schema and the tool description.
+  //
+  // The 29181 B is MEASURED on this tree with `node scripts/surface-census.mjs`
+  // (`perModuleSchemaBytes.statsfm`), not taken from a branch side and not
+  // computed by hand. Note the census's `schemaBudgets` block echoes the
+  // manifest baseline rather than the measurement, so it is not the field to
+  // read here.
+  //
+  // It was 24631 B when #730 was written. The rebase onto #1449 (the
+  // statsfm identity unification) and #1456 lifted it by ~4.5 KB, because that
+  // module now carries the windowing fields, the `range_resolved` block and the
+  // longer bounded-read disclosure. The 10% derived ceiling is therefore
+  // 32100 B, and the aggregate `tools/list` payload is unchanged by this —
+  // a per-module baseline is a measurement of what is there, not a licence.
+  //
+  // The `range` parameter is deliberately NOT shared with the ranking tools'
+  // `statsfmRangeSchema`: this one is resolved locally, while that one is
+  // forwarded verbatim to a stats.fm query parameter that answers
+  // `400 invalid range` for `year` and every other bucket value.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 29181], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.
