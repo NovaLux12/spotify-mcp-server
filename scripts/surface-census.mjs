@@ -222,6 +222,26 @@ if (descriptionFixtureIndex >= 0) {
   console.log(JSON.stringify({ description }));
   process.exit(0);
 }
+/**
+ * Drives `readCookbookRecipes` against a supplied cookbook source (#1288), so
+ * the recipe-count measurement can be shown to reject a gapped or repeated set
+ * of recipe headings.
+ *
+ * The counting logic being correct in isolation proves nothing if nothing ever
+ * asks it to fail. This is the same fixture-route shape as
+ * `--description-fixture` above, and it exists for the same reason: the real
+ * `--check` reads the repository's own `docs/cookbook.md`, which is correct, so
+ * the only way to observe the negative case is to hand the function a document
+ * that is wrong.
+ */
+const cookbookFixtureIndex = args.indexOf('--cookbook-fixture');
+if (cookbookFixtureIndex >= 0) {
+  if (!args[cookbookFixtureIndex + 1]) throw new Error('--cookbook-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(args[cookbookFixtureIndex + 1]), 'utf8'));
+  const measured = readCookbookRecipes(fixture.source);
+  console.log(JSON.stringify({ count: measured.count, ordinals: measured.ordinals, errors: measured.errors }));
+  process.exit(measured.errors.length > 0 ? 1 : 0);
+}
 const markerTreeFixtureIndex = args.indexOf('--marker-tree-fixture');
 if (markerTreeFixtureIndex >= 0) {
   const fixturePath = args[markerTreeFixtureIndex + 1];
@@ -303,6 +323,39 @@ const schemaBudgets = REGISTRAR_MANIFEST.map((module) => ({
   maxSchemaBytes: module.ceiling.schemaBytes,
 }));
 /**
+ * The cookbook's recipe count (#1288).
+ *
+ * `README.md` and `docs/cookbook.md` both used to say "eleven" in prose. That
+ * is the #1241/#1247 class: a figure nothing holds in place. Adding recipe 12 —
+ * an ordinary thing to do — left both files saying eleven and nothing failed.
+ *
+ * Counted off the recipes themselves rather than typed anywhere: the numbered
+ * `## N. ` headings in `docs/cookbook.md` ARE the recipes, so the number of
+ * headings is the number of recipes. The ordinals are checked as well as
+ * counted, because a file whose headings read 1..11,13,14 still has thirteen
+ * headings while its prose is describing a different set — a gap is the shape
+ * this check has to see, and a count alone cannot.
+ */
+const cookbook = readCookbookRecipes();
+
+function readCookbookRecipes(fixtureSource) {
+  const source = fixtureSource ?? readFileSync(join(ROOT, 'docs', 'cookbook.md'), 'utf8');
+  const ordinals = [...source.matchAll(/^## (\d+)\. /gm)].map((match) => Number(match[1]));
+  const expected = Array.from({ length: ordinals.length }, (_, index) => index + 1);
+  return {
+    count: ordinals.length,
+    ordinals,
+    // A gap, a repeat, or a zero. Reported by name so a failure says which way
+    // the headings are wrong rather than just that they are.
+    errors: ordinals.length === 0
+      ? ['docs/cookbook.md: no numbered `## N. ` recipe headings were found, so the recipe count would be 0']
+      : JSON.stringify(ordinals) === JSON.stringify(expected)
+        ? []
+        : [`docs/cookbook.md: recipe headings are numbered ${ordinals.join(', ')}; expected 1-${ordinals.length} with no gaps or repeats`],
+  };
+}
+
+/**
  * The aggregate surface figures (#1241).
  *
  * `maxCeilingBytes` and `maxEnforcedBytes` are read straight off the two
@@ -368,6 +421,10 @@ const result = {
   schemaBudgets,
   toolsetNames: toolsetNamesFromSource(),
   aggregateSurface: aggregateSurfaceFacts,
+  // The cookbook's recipe count (#1288), read off its own `## N. ` headings.
+  // Carried in the JSON so the guard can compare the rendered block against a
+  // measurement rather than against a number typed into the test.
+  cookbookRecipes: { count: cookbook.count, ordinals: cookbook.ordinals },
   registrySource: 'src/index.ts via stdio tools/list after production finalizers',
 };
 
@@ -390,6 +447,26 @@ const shortSurface = `The finalized default MCP registry exposes **${result.tool
  * block a few hundred lines up. Retyping 591 -> 592 would have been the same
  * bug with a smaller number; generating it there would have broken the README.
  */
+
+/**
+ * The cookbook's recipe count, rendered for `docs/cookbook.md` (#1288).
+ *
+ * The block lives in the cookbook rather than the README because of the
+ * list-marker constraint recorded above: README's "eleven copy-paste agent
+ * recipes" sits in a bullet-list item, and a generated block's end marker
+ * renders at column 0 and terminates that list. So the README carries no count
+ * at all — a figure-free list item cannot drift — and the count that used to be
+ * hand-typed in both files now has exactly one home, next to the recipes it
+ * counts.
+ *
+ * The whole introductory sentence is generated, not just the figure, because a
+ * generated block replaces its body wholesale: leaving the rest of the
+ * paragraph in hand-written prose would have `--write` delete it. "Recipe 1" is
+ * safe to state here — the ordinal check above refuses a cookbook whose
+ * headings are not 1..N, so recipe 1 always exists and is always the first.
+ */
+const cookbookIntro = `**${cookbook.count}** recipes you can paste to an agent (or run turn by turn) against SpotifyMCP. Each states the tools it uses and what you get. Recipe 1 is the flagship: stats.fm taste in, Spotify playlist out.`;
+
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
   ['README.md', 'gated-endpoints', gatedEndpointTable()],
@@ -404,6 +481,7 @@ const blocks = [
   ['docs/schema-budgets.md', 'response-cap', responseCapBlock(result)],
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
+  ['docs/cookbook.md', 'recipe-index', cookbookIntro],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
   ['skills/spotify-mcp-competitor-comparison/SKILL.md', 'surface-census', skillSurface(result)],
   ['src/toolsets.ts', 'surface-census', [
@@ -1585,6 +1663,7 @@ function checkDocumentation(blocks) {
   }
   errors.push(...checkSchemaBudgetTruth(result));
   errors.push(...checkAggregateSurfaceTruth(result));
+  errors.push(...cookbook.errors);
   errors.push(...checkSpecStructure());
   errors.push(...checkDocReachability());
   errors.push(...checkGatedEndpointTruth());

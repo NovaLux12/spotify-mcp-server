@@ -42,6 +42,8 @@ const EXPECTED_FILES = [
   'ARCHITECTURE.md',
   'README.md',
   'SPEC.md',
+  // Added by #1288, which gave the cookbook's recipe count a generated block.
+  'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
   'docs/wave2-composites.md',
