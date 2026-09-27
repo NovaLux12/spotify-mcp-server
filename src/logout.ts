@@ -56,9 +56,9 @@ import { promisify } from 'node:util';
 
 import { cachePendingPath, cachePendingPaths, cachePersistPath, cachePersistPaths } from './cachepersist.js';
 import { resolveTokenFile } from './config.js';
-import { historyFilePath } from './history.js';
+import { historyFilePath, historyFilePaths } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
-import { receiptsFilePath } from './receipts.js';
+import { receiptsFilePath, receiptsFilePaths } from './receipts.js';
 import { artistWatchlistPath } from './tools/artistwatch.js';
 import { backupDir } from './tools/backup.js';
 import { requiredConfirmationRefusal } from './tools/confirm.js';
@@ -140,7 +140,11 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     kind: 'file',
     envVar: 'SPOTIFY_MCP_HISTORY_DIR',
     erasure: 'move',
+    // `resolve` is the single-file answer, correct on a machine with one
+    // account; `expand` is what actually runs, because a machine with profiles
+    // has one ledger per profile and leaving those behind would orphan them.
     resolve: (env) => historyFilePath(env),
+    expand: (env) => historyFilePaths(env),
   },
   {
     id: 'receipts',
@@ -148,7 +152,9 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     kind: 'file',
     envVar: 'SPOTIFY_MCP_RECEIPTS_DIR',
     erasure: 'move',
+    // One trail per account, for the same reason as the mutation ledger above.
     resolve: (env) => receiptsFilePath(env),
+    expand: (env) => receiptsFilePaths(env),
   },
   {
     id: 'scenes',

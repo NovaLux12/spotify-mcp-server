@@ -1028,7 +1028,7 @@ export const manifestEntry = (
  * printed the export a reader can grep for. Naming it costs one declaration and
  * lets `localModule` keep the manifest on a single shape (#906).
  */
-function registerVerifyReceiptTool(server: McpServer): void {
+function registerVerifyReceiptTool(server: McpServer, client?: SpotifyClient): void {
   server.tool(
     'verify_receipt',
     // Session scope is the single most common way this tool misleads: the
@@ -1047,14 +1047,19 @@ function registerVerifyReceiptTool(server: McpServer): void {
         .describe(`Receipt ID copied verbatim from a receipt-bearing mutation result (${RECEIPT_ID_SHAPE})`),
     },
     async (args) => {
-      const receipt = verifyReceipt(args.receipt_id);
+      // Looked up as the ACTING account, so a receipt id from another account
+      // on this machine is a miss rather than an attestation about this one
+      // (#1364). The client is the only carrier of that identity here; the
+      // registrar used to discard it, which is how the store ended up global.
+      const tokenFile = client?.tokenFile ?? '';
+      const receipt = verifyReceipt(args.receipt_id, tokenFile);
       if (!receipt) {
         // A miss is a failed lookup, not a successful one. Without isError
         // an agent that branches on `result.isError` (and a host that
         // renders green on success) reads this as "the receipt was checked
         // and the write is fine" (#688).
         return {
-          content: [{ type: 'text', text: receiptMissMessage(args.receipt_id) }],
+          content: [{ type: 'text', text: receiptMissMessage(args.receipt_id, process.env, tokenFile) }],
           isError: true,
           structuredContent: {
             found: false,

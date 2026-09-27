@@ -65,12 +65,25 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { truthyEnv } from './config.js';
+import { accountFileName, accountFileNames, accountStoreKey } from './accountkey.js';
+import { getTokenFilePath } from './auth.js';
 import { ownStoreRoots, resolveInputPathSync } from './paths.js';
 import type { PlaylistItemsResponse } from './types/spotify.js';
 
 /** Minimal client surface needed here — satisfied by SpotifyClient and test stubs. */
 export interface ReceiptClient {
   get<T>(path: string, params?: Record<string, string>): Promise<T | null>;
+  /**
+   * The acting account's token file, which is what the store is keyed by.
+   *
+   * Optional so the test doubles that predate account switching keep
+   * compiling; when it is absent the receipt is filed under the DEFAULT
+   * account, which is the same store an unidentified client would have used
+   * before. The real `SpotifyClient` always sets it — a `string` field
+   * assigned in its constructor and re-pointed by `switchAccount` — so this
+   * fallback is reachable only by a stub that never said which account it is.
+   */
+  tokenFile?: string;
 }
 
 type ReceiptKind = 'playlist_items' | 'library' | 'playlist_meta';
@@ -253,32 +266,89 @@ const MAX_RECEIPT_LINES = MAX_RECEIPTS * 4;
 /** Hard ceiling on what a load will read from disk, whatever the file's size. */
 const MAX_RECEIPT_FILE_BYTES = 4 * 1024 * 1024;
 
-const store = new Map<string, Receipt>();
+/**
+ * One account's live receipt state: the undo window, the load flag, and the
+ * append counter compaction needs. Keyed by {@link accountStoreKey} because
+ * the receipts themselves are an undo CAPABILITY, not a log — a receipt minted
+ * under one account must not be redeemable against another's library, so the
+ * live store is partitioned exactly as the on-disk trail is (#1364).
+ *
+ * The file path is not a sufficient partition on its own: persistence is
+ * opt-in, so in the default configuration this `Map` is the only store there
+ * is, and an unpartitioned one hands any account on the process every
+ * receipt every other account issued.
+ */
+interface AccountReceipts {
+  store: Map<string, Receipt>;
+  loaded: boolean;
+  onDiskLines: number;
+}
+
+const accounts = new Map<string, AccountReceipts>();
+
+/** The live state for one account, created on first touch. */
+function stateFor(key: string): AccountReceipts {
+  let state = accounts.get(key);
+  if (state === undefined) {
+    state = { store: new Map(), loaded: false, onDiskLines: 0 };
+    accounts.set(key, state);
+  }
+  return state;
+}
+
 /**
  * Ids must be unique across PROCESSES, not just within one: a host that
  * respawns the server hands the agent ids from the previous session, and a
  * bare `rcpt_1` counter would resolve those to a DIFFERENT, later mutation
  * (#587). The boot id (process start time + random suffix) makes that
- * collision impossible in both directions.
+ * collision impossible in both directions. Ids stay unique across accounts
+ * too, since the counter is process-wide — uniqueness is not the property at
+ * issue in #1364, which is that an id was resolving at all under the wrong
+ * account.
  */
 const bootId = `${Date.now().toString(36)}${randomBytes(3).toString('hex')}`;
 let nextSeq = 1;
-let loaded = false;
-/** Lines this process has appended, so compaction stays amortized O(1). */
-let onDiskLines = 0;
 
 /** True when receipts are persisted to disk (SPOTIFY_MCP_RECEIPTS). */
 export function isReceiptsPersistent(env: NodeJS.ProcessEnv = process.env): boolean {
   return truthyEnv(env.SPOTIFY_MCP_RECEIPTS);
 }
 
-/** Receipt JSONL path; SPOTIFY_MCP_RECEIPTS_DIR / SPOTIFY_MCP_HISTORY_DIR override the dir. */
-export function receiptsFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir =
+/**
+ * Receipt JSONL path for one account.
+ *
+ * The default account keeps the bare `receipts.jsonl`, so an install that has
+ * been running this server reads and writes the file it already has (#1364).
+ * A named profile gets `receipts.<profile>.jsonl` and starts empty — see
+ * `src/accountkey.ts` for why the key is the token file and not `account_id`.
+ */
+export function receiptsFilePath(
+  env: NodeJS.ProcessEnv = process.env,
+  tokenFile = '',
+): string {
+  return join(receiptsDir(env), accountFileName(RECEIPT_FILE, tokenFile));
+}
+
+function receiptsDir(env: NodeJS.ProcessEnv): string {
+  return (
     env.SPOTIFY_MCP_RECEIPTS_DIR ??
     env.SPOTIFY_MCP_HISTORY_DIR ??
-    join(homedir(), '.spotify-mcp');
-  return join(dir, RECEIPT_FILE);
+    join(homedir(), '.spotify-mcp')
+  );
+}
+
+/**
+ * Every account's receipt trail in this store directory.
+ *
+ * `receiptsFilePath` is the single-file answer, correct on a machine with one
+ * account and a partial answer on a machine with profiles: the other trails
+ * exist and would be orphaned. `spotify_logout_stores` erases from this list
+ * for that reason, the same way it does for the persisted read cache.
+ */
+export function receiptsFilePaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  return accountFileNames(dirname(getTokenFilePath(env)), RECEIPT_FILE).map((name) =>
+    join(receiptsDir(env), name),
+  );
 }
 
 /** Receipt lifetime in ms; Infinity when SPOTIFY_MCP_RECEIPTS_TTL_HOURS is 0. */
@@ -308,9 +378,10 @@ export function receiptRetentionLabel(env: NodeJS.ProcessEnv = process.env): str
 export function receiptMissMessage(
   receiptId: string,
   env: NodeJS.ProcessEnv = process.env,
+  tokenFile = '',
 ): string {
   const scope = isReceiptsPersistent(env)
-    ? `persisted in ${receiptsFilePath(env)}`
+    ? `persisted in ${receiptsFilePath(env, tokenFile)}`
     : 'session-scoped — receipts are not persisted to disk, so an id from an earlier session is gone';
   return `Unknown or expired receipt "${receiptId}" — receipts are ${scope}; only the ${MAX_RECEIPTS} most recent mutations are kept, ${receiptRetentionLabel(env)}.`;
 }
@@ -372,53 +443,56 @@ function parseReceiptLine(line: string): Receipt | null {
  * an unknown age is not a verdict, so a legacy or hand-written line stays
  * resolvable rather than being silently discarded.
  */
-function pruneExpired(now: number, ttl: number): void {
+function pruneExpired(state: AccountReceipts, now: number, ttl: number): void {
   if (!Number.isFinite(ttl)) return;
-  for (const [id, r] of store) {
-    if (typeof r.issued_at === 'number' && now - r.issued_at > ttl) store.delete(id);
+  for (const [id, r] of state.store) {
+    if (typeof r.issued_at === 'number' && now - r.issued_at > ttl) state.store.delete(id);
   }
 }
 
-/** Rehydrate the store from the trail: newest MAX_RECEIPTS, in issue order. */
-function loadFromDisk(env: NodeJS.ProcessEnv): void {
-  const text = readTailText(receiptsFilePath(env), MAX_RECEIPT_FILE_BYTES);
+/** Rehydrate one account's store: newest MAX_RECEIPTS, in issue order. */
+function loadFromDisk(state: AccountReceipts, env: NodeJS.ProcessEnv, tokenFile: string): void {
+  const text = readTailText(receiptsFilePath(env, tokenFile), MAX_RECEIPT_FILE_BYTES);
   if (text === null) return;
   const parsed = text
     .split('\n')
     .map(parseReceiptLine)
     .filter((r): r is Receipt => r !== null);
-  for (const r of parsed.slice(-MAX_RECEIPTS)) store.set(r.receipt_id, r);
-  onDiskLines = parsed.length;
-  pruneExpired(Date.now(), receiptTtlMs(env));
+  for (const r of parsed.slice(-MAX_RECEIPTS)) state.store.set(r.receipt_id, r);
+  state.onDiskLines = parsed.length;
+  pruneExpired(state, Date.now(), receiptTtlMs(env));
 }
 
-/** First use in a process hydrates the store; every later call is a no-op. */
-function ensureLoaded(env: NodeJS.ProcessEnv = process.env): void {
-  if (loaded) return;
-  loaded = true;
-  if (!isReceiptsPersistent(env)) return;
+/** First use of an account in a process hydrates it; every later call is a no-op. */
+function ensureLoaded(env: NodeJS.ProcessEnv, tokenFile: string): AccountReceipts {
+  const state = stateFor(accountStoreKey(tokenFile));
+  if (state.loaded) return state;
+  state.loaded = true;
+  if (!isReceiptsPersistent(env)) return state;
   try {
-    loadFromDisk(env);
+    loadFromDisk(state, env, tokenFile);
   } catch {
     // An unreadable or corrupt trail must not break verify/undo: the store
     // starts empty and the next append rebuilds it.
   }
+  return state;
 }
 
-/** Rewrite the trail with only the live receipts, in FIFO eviction order. */
-function compactTrail(file: string): void {
-  const retained = [...store.values()].slice(-MAX_RECEIPTS);
+/** Rewrite one account's trail with only its live receipts, in FIFO eviction order. */
+function compactTrail(state: AccountReceipts, file: string): void {
+  const retained = [...state.store.values()].slice(-MAX_RECEIPTS);
   const body = retained.map((r) => JSON.stringify(r)).join('\n');
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, body.length > 0 ? body + '\n' : '', { encoding: 'utf8', mode: RECEIPT_FILE_MODE });
   renameSync(tmp, file);
-  onDiskLines = retained.length;
+  state.onDiskLines = retained.length;
 }
 
 /** Append one receipt. Never throws: a full or read-only disk must not fail a mutation. */
-function persist(receipt: Receipt, env: NodeJS.ProcessEnv): void {
+function persist(receipt: Receipt, env: NodeJS.ProcessEnv, tokenFile: string): void {
   if (!isReceiptsPersistent(env)) return;
-  const file = receiptsFilePath(env);
+  const file = receiptsFilePath(env, tokenFile);
+  const state = stateFor(accountStoreKey(tokenFile));
   try {
     const dir = dirname(file);
     mkdirSync(dir, { recursive: true, mode: RECEIPT_DIR_MODE });
@@ -428,8 +502,8 @@ function persist(receipt: Receipt, env: NodeJS.ProcessEnv): void {
     // readable by others; re-assert owner-only on every write, as the
     // history ledger does.
     chmodSync(file, RECEIPT_FILE_MODE);
-    onDiskLines += 1;
-    if (onDiskLines > MAX_RECEIPT_LINES) compactTrail(file);
+    state.onDiskLines += 1;
+    if (state.onDiskLines > MAX_RECEIPT_LINES) compactTrail(state, file);
   } catch {
     /* best-effort: the in-memory receipt still answers this session's lookups */
   }
@@ -440,10 +514,8 @@ function persist(receipt: Receipt, env: NodeJS.ProcessEnv): void {
  * re-reads the trail — the state a freshly spawned process is in.
  */
 export function __resetReceiptStoreForTests(): void {
-  store.clear();
+  accounts.clear();
   nextSeq = 1;
-  loaded = false;
-  onDiskLines = 0;
 }
 
 /**
@@ -467,17 +539,24 @@ export function isPlausibleReceiptId(id: string): boolean {
   return RECEIPT_ID_PATTERN.test(id);
 }
 
-/** Stored receipt lookup for the orchestrator-wired `verify_receipt` tool. */
-export function verifyReceipt(receiptId: string): Receipt | undefined {
-  ensureLoaded();
-  pruneExpired(Date.now(), receiptTtlMs());
-  return store.get(receiptId);
+/**
+ * Stored receipt lookup for the acting account.
+ *
+ * `tokenFile` is required for the store to be the right one: it is the account
+ * the lookup is being made *as*. A receipt id is an undo capability, and an
+ * unbound one is an authority transfer, so an id minted under another account
+ * resolves to `undefined` rather than to that account's contents (#1364).
+ */
+export function verifyReceipt(receiptId: string, tokenFile = ''): Receipt | undefined {
+  const state = ensureLoaded(process.env, tokenFile);
+  pruneExpired(state, Date.now(), receiptTtlMs());
+  return state.store.get(receiptId);
 }
-/** All receipts in insertion order (for undo). */
-export function getAllReceipts(): Receipt[] {
-  ensureLoaded();
-  pruneExpired(Date.now(), receiptTtlMs());
-  return [...store.values()];
+/** The acting account's receipts in insertion order (for undo). */
+export function getAllReceipts(tokenFile = ''): Receipt[] {
+  const state = ensureLoaded(process.env, tokenFile);
+  pruneExpired(state, Date.now(), receiptTtlMs());
+  return [...state.store.values()];
 }
 
 const PLAYLIST_ITEM_PAGES_CAP = 5;
@@ -863,14 +942,15 @@ export async function issueReceipt(
     ...(_windowExceeded ? { windowExceeded: true as const, reason: _reason } : {}),
     issued_at: Date.now(),
   };
-  ensureLoaded();
-  store.set(receipt.receipt_id, receipt);
-  if (store.size > MAX_RECEIPTS) {
+  const tokenFile = client.tokenFile ?? '';
+  const state = ensureLoaded(process.env, tokenFile);
+  state.store.set(receipt.receipt_id, receipt);
+  if (state.store.size > MAX_RECEIPTS) {
     // Map preserves insertion order: first key is the oldest receipt.
-    const oldest = store.keys().next().value;
-    if (oldest !== undefined) store.delete(oldest);
+    const oldest = state.store.keys().next().value;
+    if (oldest !== undefined) state.store.delete(oldest);
   }
-  persist(receipt, process.env);
+  persist(receipt, process.env, tokenFile);
   return receipt;
 }
 

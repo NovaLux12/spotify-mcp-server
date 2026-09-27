@@ -1696,7 +1696,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         tryRead('exhaust2_misc', miscFilePath()),
       ]);
       // Bounded tail read (#628): a large ledger must not be slurped whole.
-      const history: unknown[] = await readHistory();
+      const history: unknown[] = await readHistory({ tokenFile: client.tokenFile });
       const bundle = {
         exported_at: new Date().toISOString(),
         bundle_version: 1,
@@ -1704,7 +1704,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         playback_ext: playbackExt,
         exhaust2_misc: misc,
         ...(Object.keys(unreadable).length > 0 ? { unreadable_stores: unreadable } : {}),
-        mutation_history: { enabled: isHistoryEnabled(), path: historyFilePath(), records: history },
+        mutation_history: { enabled: isHistoryEnabled(), path: historyFilePath(process.env, client.tokenFile), records: history },
         restore_checklist: [
           '1. Write scenes.json / playback-ext.json / exhaust2-misc.json back under ~/.spotify-mcp (owner-only modes).'
             + (Object.keys(unreadable).length > 0
@@ -1786,7 +1786,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const rf = args.response_format as ResponseFormatValue;
       type LogRow = HistoryRecord;
       // Bounded tail read (#628): never load an unbounded ledger into memory.
-      let rows: LogRow[] = await readHistory();
+      let rows: LogRow[] = await readHistory({ tokenFile: client.tokenFile });
       if (rows.length === 0) {
         return emit(rf, 'No mutation history found (history is opt-in: set SPOTIFY_MCP_HISTORY=1).', { ok: false, error: 'no_history' });
       }
@@ -1823,9 +1823,9 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      const receipt = verifyReceipt(args.mutation_id);
+      const receipt = verifyReceipt(args.mutation_id, client.tokenFile);
       if (!receipt) {
-        return emit(rf, receiptMissMessage(args.mutation_id), { ok: false, error: 'unknown_receipt' });
+        return emit(rf, receiptMissMessage(args.mutation_id, process.env, client.tokenFile), { ok: false, error: 'unknown_receipt' });
       }
       const invert = receipt.kind === 'playlist_items'
         ? `DELETE /playlists/${receipt.id ?? '?'}/items with ${receipt.uris.length} uri(s)`
@@ -1868,7 +1868,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
     },
     async (args) => {
       const rf = args.response_format as ResponseFormatValue;
-      let rows = getAllReceipts();
+      let rows = getAllReceipts(client.tokenFile);
       if (args.id) rows = rows.filter((r) => r.receipt_id === args.id);
       if (args.uri) rows = rows.filter((r) => r.uris.includes(args.uri!));
       const sinceTs = args.since ? ts(args.since) : NaN;
@@ -1883,7 +1883,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         ok: true, matches: rows.length,
         receipts: rows.map((r) => ({ receipt_id: r.receipt_id, kind: r.kind, id: r.id, verified: r.verified, uris: r.uris, missing: r.missing, windowExceeded: r.windowExceeded ?? false, issued_at: r.issued_at ?? null })),
         note: isReceiptsPersistent()
-          ? `receipts persist to ${receiptsFilePath()} — ${MAX_RECEIPTS} most recent, ${receiptRetentionLabel()}`
+          ? `receipts persist to ${receiptsFilePath(process.env, client.tokenFile)} — ${MAX_RECEIPTS} most recent, ${receiptRetentionLabel()}`
           : `receipts are session-scoped (in-memory, FIFO ${MAX_RECEIPTS}) — not persisted to disk`,
         ...(Number.isFinite(sinceTs) && rows.some((r) => r.issued_at === undefined)
           ? { untimed_receipts_included: rows.filter((r) => r.issued_at === undefined).length }

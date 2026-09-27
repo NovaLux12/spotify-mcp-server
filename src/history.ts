@@ -41,6 +41,8 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { truthyEnv } from './config.js';
+import { accountFileName, accountFileNames, accountStoreKey } from './accountkey.js';
+import { getTokenFilePath } from './auth.js';
 
 // ---------------------------------------------------------------------------
 // Actor labelling (#591)
@@ -110,10 +112,13 @@ export interface HistoryWriteStatus {
 }
 
 /** What spotify_doctor reports: where the ledger lives and how lossy it got. */
-export function historyWriteStatus(env: NodeJS.ProcessEnv = process.env): HistoryWriteStatus {
+export function historyWriteStatus(
+  env: NodeJS.ProcessEnv = process.env,
+  tokenFile = '',
+): HistoryWriteStatus {
   return {
     enabled: isHistoryEnabled(env),
-    path: historyFilePath(env),
+    path: historyFilePath(env, tokenFile),
     failures: writeFailures,
     ...(lastWriteFailure !== undefined ? { last_failure: lastWriteFailure } : {}),
   };
@@ -174,10 +179,21 @@ interface HistoryReadOptions {
   file?: string;
   /** Env used to resolve the file path. Default process.env. */
   env?: NodeJS.ProcessEnv;
+  /**
+   * The acting account's token file, which selects the ledger to read.
+   * Omitted means the default account's ledger.
+   */
+  tokenFile?: string;
 }
 
 /** Live file rotates past this many bytes; SPOTIFY_MCP_HISTORY_MAX_BYTES overrides. */
 export const DEFAULT_HISTORY_MAX_BYTES = 1_048_576;
+
+/**
+ * The ledger's un-keyed filename, and the stem every per-account ledger is
+ * derived from: `mutations.work.jsonl` for the `work` profile.
+ */
+const HISTORY_FILE = 'mutations.jsonl';
 
 /** Records kept in memory by readHistory() — the reader's memory ceiling. */
 export const DEFAULT_HISTORY_READ_LIMIT = 500;
@@ -202,10 +218,39 @@ export function isHistoryEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
   return truthyEnv(env.SPOTIFY_MCP_HISTORY);
 }
 
-/** Target JSONL path; SPOTIFY_MCP_HISTORY_DIR overrides the directory. */
-export function historyFilePath(env: NodeJS.ProcessEnv = process.env): string {
-  const dir = env.SPOTIFY_MCP_HISTORY_DIR ?? join(homedir(), '.spotify-mcp', 'history');
-  return join(dir, 'mutations.jsonl');
+function historyDir(env: NodeJS.ProcessEnv): string {
+  return env.SPOTIFY_MCP_HISTORY_DIR ?? join(homedir(), '.spotify-mcp', 'history');
+}
+
+/**
+ * Target JSONL path for one account; SPOTIFY_MCP_HISTORY_DIR overrides the directory.
+ *
+ * The default account keeps the bare `mutations.jsonl`, so an install that has
+ * been running this server reads and writes the ledger it already has — no
+ * migration, and no "history disappeared after the upgrade" regression. A
+ * named profile gets `mutations.<profile>.jsonl` and starts empty. Each
+ * account's ledger now holds only that account's writes, which is what makes
+ * `mutation_log_export` and `undo_mutation` mean the same thing under every
+ * account on the machine (#1364). See `src/accountkey.ts` for why the key is
+ * the token file rather than Spotify's `account_id`.
+ */
+export function historyFilePath(env: NodeJS.ProcessEnv = process.env, tokenFile = ''): string {
+  const dir = historyDir(env);
+  return join(dir, accountFileName(HISTORY_FILE, tokenFile));
+}
+
+/**
+ * Every account's ledger in this store directory.
+ *
+ * `historyFilePath` is the single-file answer, correct on a machine with one
+ * account and a partial answer on a machine with profiles: the other ledgers
+ * exist and would be orphaned. `spotify_logout_stores` erases from this list
+ * for that reason, the same way it does for the persisted read cache.
+ */
+export function historyFilePaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  return accountFileNames(dirname(getTokenFilePath(env)), HISTORY_FILE).map((name) =>
+    join(historyDir(env), name),
+  );
 }
 
 
@@ -245,8 +290,9 @@ export interface HistoryLedgerStats {
  */
 export async function historyLedgerStats(
   env: NodeJS.ProcessEnv = process.env,
+  tokenFile = '',
 ): Promise<HistoryLedgerStats> {
-  const file = historyFilePath(env);
+  const file = historyFilePath(env, tokenFile);
   const archive = `${file}${HISTORY_ARCHIVE_SUFFIX}`;
   const sizeOf = async (path: string): Promise<number> => {
     try {
@@ -308,9 +354,16 @@ async function rotate(file: string): Promise<void> {
 }
 
 /** Serialize + persist one record. Throws; the wrapper below owns the policy. */
-async function writeHistoryRecord(file: string, record: MutationRecord): Promise<void> {
+async function writeHistoryRecord(
+  file: string,
+  record: MutationRecord,
+  tokenFile: string,
+): Promise<void> {
   // Whitelist serialization: only these fields ever reach disk, so a
   // stray token/body reference in the record object cannot be persisted.
+  // `account` is the profile segment from `accountStoreKey`, empty for the
+  // default account: it is what makes a merged two-account file separable
+  // after the fact, and what a reader uses to tell whose write a line was.
   const line =
     JSON.stringify({
       ts: new Date().toISOString(),
@@ -319,6 +372,7 @@ async function writeHistoryRecord(file: string, record: MutationRecord): Promise
       path: redactPath(record.path),
       target: targetFingerprint(record.path),
       ...(record.snapshot_id !== undefined ? { snapshot_id: record.snapshot_id } : {}),
+      ...(accountStoreKey(tokenFile) !== '' ? { account: accountStoreKey(tokenFile) } : {}),
     }) + '\n';
   const dir = dirname(file);
   await mkdir(dir, { recursive: true, mode: HISTORY_DIR_MODE });
@@ -341,11 +395,14 @@ async function writeHistoryRecord(file: string, record: MutationRecord): Promise
  * It is also never silent — a lost append is counted, warns once per process,
  * and turns the spotify_doctor `history` row red (#591).
  */
-export async function appendHistory(record: MutationRecord): Promise<void> {
+export async function appendHistory(
+  record: MutationRecord,
+  tokenFile = '',
+): Promise<void> {
   if (!isHistoryEnabled()) return;
-  const file = historyFilePath();
+  const file = historyFilePath(process.env, tokenFile);
   try {
-    await writeHistoryRecord(file, record);
+    await writeHistoryRecord(file, record, tokenFile);
   } catch (err) {
     noteWriteFailure(err, file);
   }
@@ -417,7 +474,7 @@ function parseRecord(line: string): HistoryRecord | null {
 export async function readHistory(options: HistoryReadOptions = {}): Promise<HistoryRecord[]> {
   const limit = Math.max(0, Math.trunc(options.limit ?? DEFAULT_HISTORY_READ_LIMIT));
   if (limit === 0) return [];
-  const file = options.file ?? historyFilePath(options.env);
+  const file = options.file ?? historyFilePath(options.env, options.tokenFile);
   const [older, newer] = await Promise.all([
     readTailRecords(`${file}${HISTORY_ARCHIVE_SUFFIX}`, limit),
     readTailRecords(file, limit),

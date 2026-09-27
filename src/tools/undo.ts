@@ -431,8 +431,10 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
       dry_run: UndoDryRun,
     },
     async (args) => {
-      const receipt = verifyReceipt(args.receipt_id);
-      if (!receipt) return textResult(receiptMissMessage(args.receipt_id), { ok: false, reason: 'unknown_receipt' });
+      // As the acting account: an id minted under another profile on this
+      // machine is a miss, not an undo to perform here (#1364).
+      const receipt = verifyReceipt(args.receipt_id, client.tokenFile);
+      if (!receipt) return textResult(receiptMissMessage(args.receipt_id, process.env, client.tokenFile), { ok: false, reason: 'unknown_receipt' });
       if (!reversibleKind(receipt.kind)) return textResult(`Receipt ${receipt.receipt_id} (kind ${receipt.kind}) is not reversible.`, { ok: false, reason: 'not_reversible', kind: receipt.kind });
       return invertReceipt(server, client, receipt, args.dry_run as boolean | undefined);
     },
@@ -444,7 +446,7 @@ export function registerUndoTools(server: McpServer, client: SpotifyClient): voi
     { dry_run: UndoDryRun,
       response_format: ResponseFormat, },
     async (args) => {
-      const all = getAllReceipts();
+      const all = getAllReceipts(client.tokenFile);
       let target: Receipt | undefined;
       for (let i = all.length - 1; i >= 0; i--) {
         const r = all[i]!;
