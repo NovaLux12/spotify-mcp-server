@@ -47,6 +47,7 @@ import { isTaskCapable, startTask, type PersistentTaskStore } from '../tasks.js'
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
+import { trustedCustomMessage } from '../custom-issues.js';
 import { encodingPlanFor, type EncodingPlan } from './encoding.js';
 
 /**
@@ -3327,18 +3328,35 @@ function validationEnvelope(
 ) {
   const nouned = param ? `${noun} ${safeIdentifier(param)}` : 'arguments';
   const expectation = expectationPhrase(firstIssue(error));
+  // A `stated` custom message is already a complete sentence written for the
+  // caller, so it is relayed whole: no `expected …` in front of it (which
+  // reads "expected not a recognisable Spotify ID"), and no field description
+  // behind it (which restates the rule the message just gave). A `phrase` is a
+  // fragment, so it keeps both.
+  //
   // An enum already enumerates every legal value, so the field description
   // would only restate it (`one of "short_term"… (short_term (4 weeks)…)`).
   // Everything else — a type, a bound — is incomplete on its own and the
   // description is what turns it into something a caller can act on.
-  const hint = expectation?.exhaustive ? undefined : fieldHint(shape, param);
-  const detail = expectation ? `expected ${expectation.phrase}${hint ? ` (${hint})` : ''}` : undefined;
+  const stated = expectation?.form === 'stated' ? expectation.text : undefined;
+  const hint = expectation?.form === 'phrase' && !expectation.exhaustive ? fieldHint(shape, param) : undefined;
+  const detail = expectation
+    ? expectation.form === 'stated'
+      ? expectation.text
+      : `expected ${expectation.text}${hint ? ` (${hint})` : ''}`
+    : undefined;
   return {
     kind: 'validation' as const,
     reason: defaultReason('validation'),
-    fix: detail
-      ? `Pass ${detail}.`
-      : param ? `Pass a valid value for ${safeIdentifier(param)}.` : `Pass values that match the ${kind} schema.`,
+    // A stated message is the emitter's own instruction ("Set public to false
+    // when collaborative is true"), so it is the fix as written. Prefixing
+    // `Pass ` would turn it into "Pass A playlist cannot be both…" and, for the
+    // reference messages, "Pass not a recognisable Spotify ID".
+    fix: stated
+      ? stated
+      : detail
+        ? `Pass ${detail}.`
+        : param ? `Pass a valid value for ${safeIdentifier(param)}.` : `Pass values that match the ${kind} schema.`,
     text: detail
       ? `${subject} rejected ${nouned}: ${detail}`
       : `${subject} rejected ${nouned}; pass a valid value according to the ${kind} schema.`,
@@ -3358,16 +3376,36 @@ function firstIssue(error: unknown): unknown {
  * What the schema actually demands, phrased for a caller: `a string`, `one of
  * "decade" or "genre"`, `a value at most 5`. Returns `undefined` for any issue
  * whose shape this does not read, and the caller then says nothing (#689
- * rule 2). `exhaustive` marks the phrases that already list every legal value,
- * so the caller knows not to pad them with the field description.
+ * rule 2).
+ *
+ * The two forms are not interchangeable, and the difference is the whole of
+ * #1518:
+ *
+ *  - A **`phrase`** is a fragment the envelope completes — `expected a string
+ *    (Playlist ID, …)`. `exhaustive` marks the ones that already list every
+ *    legal value, so the caller knows not to pad them with the field
+ *    description.
+ *  - A **`stated`** message is a whole sentence its own author wrote for a
+ *    caller. Completing it with `expected …` produces a grammar error
+ *    ("expected not a recognisable Spotify ID") and padding it with the field
+ *    description restates the rule it already states, so it is relayed whole
+ *    and bare.
+ *
+ * A `custom` issue only reaches the `stated` form when it carries this repo's
+ * trust marker; see `src/custom-issues.ts` for why that is gated rather than
+ * assumed, and for what an unmarked issue falls back to.
  */
-function expectationPhrase(issue: unknown): { phrase: string; exhaustive: boolean } | undefined {
+type Expectation =
+  | { readonly form: 'phrase'; readonly text: string; readonly exhaustive: boolean }
+  | { readonly form: 'stated'; readonly text: string };
+
+function expectationPhrase(issue: unknown): Expectation | undefined {
   if (issue === null || typeof issue !== 'object') return undefined;
   const record = issue as Record<string, unknown>;
   switch (record.code) {
     case 'invalid_type':
       return typeof record.expected === 'string'
-        ? { phrase: `${/^[aeiou]/i.test(record.expected) ? 'an' : 'a'} ${record.expected}`, exhaustive: false }
+        ? { form: 'phrase', text: `${/^[aeiou]/i.test(record.expected) ? 'an' : 'a'} ${record.expected}`, exhaustive: false }
         : undefined;
     case 'invalid_value': {
       if (!Array.isArray(record.values)) return undefined;
@@ -3375,20 +3413,29 @@ function expectationPhrase(issue: unknown): { phrase: string; exhaustive: boolea
       const options = record.values
         .filter((value): value is string | number | boolean => typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
         .map((value) => String(value));
-      return options.length > 0 ? { phrase: `one of ${humanList(options)}`, exhaustive: true } : undefined;
+      return options.length > 0 ? { form: 'phrase', text: `one of ${humanList(options)}`, exhaustive: true } : undefined;
     }
     case 'too_big':
       return typeof record.maximum === 'number'
-        ? { phrase: `a value ${record.inclusive === false ? 'below' : 'at most'} ${record.maximum}`, exhaustive: false }
+        ? { form: 'phrase', text: `a value ${record.inclusive === false ? 'below' : 'at most'} ${record.maximum}`, exhaustive: false }
         : undefined;
     case 'too_small':
       return typeof record.minimum === 'number'
-        ? { phrase: `a value ${record.inclusive === false ? 'above' : 'at least'} ${record.minimum}`, exhaustive: false }
+        ? { form: 'phrase', text: `a value ${record.inclusive === false ? 'above' : 'at least'} ${record.minimum}`, exhaustive: false }
         : undefined;
     case 'not_multiple_of':
-      return typeof record.divisor === 'number' ? { phrase: `a multiple of ${record.divisor}`, exhaustive: true } : undefined;
+      return typeof record.divisor === 'number' ? { form: 'phrase', text: `a multiple of ${record.divisor}`, exhaustive: true } : undefined;
     case 'invalid_format':
-      return typeof record.format === 'string' ? { phrase: `a value formatted as ${record.format}`, exhaustive: true } : undefined;
+      return typeof record.format === 'string' ? { form: 'phrase', text: `a value formatted as ${record.format}`, exhaustive: true } : undefined;
+    // #1518. The arm the `default` used to swallow, for the one issue code this
+    // repo authors by hand. `trustedCustomMessage` is the trust boundary: it
+    // returns the message only for an issue stamped by `trustedCustomIssue`,
+    // and `undefined` for a `custom` issue from anywhere else, which then takes
+    // the generic phrase below exactly as it did before this arm existed.
+    case 'custom': {
+      const stated = trustedCustomMessage(record);
+      return stated ? { form: 'stated', text: stated } : undefined;
+    }
     default:
       return undefined;
   }

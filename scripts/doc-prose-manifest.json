@@ -1965,6 +1965,14 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
+        "hash": "f62a0a360840f732",
+        "label": "A custom issue's own message (#1518) — the rule above ha…"
+      },
+      {
+        "hash": "393072a7a82eb32e",
+        "label": "The trust boundary, because the message is not the serve…"
+      },
+      {
         "hash": "c516e0c8e531cb4c",
         "label": "Argument encodings (#694) — strictness above is about ar…"
       },
@@ -6986,9 +6994,9 @@
     }
   ],
   "provenance": {
-    "head": "09cd67d36f0fd809631e0c3b651b7ab62ec6dbab",
-    "base": "5ff44a9159f51f2ae4c7437e6fe97d1ef61bcfeb",
-    "upstream": "5ff44a9159f51f2ae4c7437e6fe97d1ef61bcfeb",
+    "head": "f4873448646b79d130f97a1f6f13f0c524379033",
+    "base": "218e0bd0f5c27599d068c1bdb2dfc1f279284405",
+    "upstream": "218e0bd0f5c27599d068c1bdb2dfc1f279284405",
     "behind": false
   },
   "reanchored": [

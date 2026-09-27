@@ -29,6 +29,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import { getConfig } from '../config.js';
+import { trustedCustomIssue } from '../custom-issues.js';
 import {
   READ_ROOTS_ENV_HINT,
   maxDocumentBytes,
@@ -288,13 +289,13 @@ export function registerImportTools(server: McpServer, client: SpotifyClient): v
           const limit = maxDocumentBytes();
           const bytes = Buffer.byteLength(value, 'utf8');
           if (bytes > limit) {
-            ctx.addIssue({
-              code: 'custom',
-              message:
-                `content is ${bytes} bytes, over the ${limit}-byte document limit `
-                + `(${Math.round(limit / (1024 * 1024))} MB). Split the document and import it in `
-                + 'pieces, or raise SPOTIFY_MCP_MAX_DOCUMENT_MB.',
-            });
+            // #1518: stamped so the boundary relays this rather than dropping it.
+            ctx.addIssue(trustedCustomIssue(
+              'import.contentSize',
+              `content is ${bytes} bytes, over the ${limit}-byte document limit `
+              + `(${Math.round(limit / (1024 * 1024))} MB). Split the document and import it in `
+              + 'pieces, or raise SPOTIFY_MCP_MAX_DOCUMENT_MB.',
+            ));
           }
         })
         .describe('The M3U or CSV document body, passed inline'),

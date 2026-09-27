@@ -133,6 +133,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | — |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | — |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | — |
+| `src/custom-issues.ts` | #1518 — the trust boundary for zod `custom` issue messages. (0 registered tools) | — |
 | `src/derivedanalytics.ts` | The derived-listening-analytics opt-in (#695). (0 registered tools) | — |
 | `src/devices.ts` | The one device line, shared by the `get_devices` tool and the `spotify://player/devices` resource (#603). (0 registered tools) | — |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family, classified from Spotify's February 2026 changelog and its endpoint reference pages. (0 registered tools) | — |
