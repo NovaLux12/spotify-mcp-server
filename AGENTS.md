@@ -286,7 +286,7 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 | `npm run count:tools` | `scripts/surface-census.mjs`. Prints JSON: tool names, prompt names, resource URIs, parameter names, per-module measurements. |
 | `npm run count:tools -- --write` | Refreshes the generated documentation blocks listed below. Nothing else. |
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
-| `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
+| `npm run check:doc-tool-names` | Fails if any doc names a tool or argument the finalized registry does not have, or states a constraint or a live constant the registry contradicts (#929, #1476). CI runs this. |
 | `npm run check:tests-typecheck` | Typechecks `tests/` and fails only on an INCREASE over `tsconfig.tests-baseline.json`, in total or in any single file (#1408). CI runs this. `--write` refreshes the baseline. |
 | `node scripts/check-doc-tool-counts.mjs` | Fails if a registry-scale tool count (100+, measured) appears in a hand-written `src/` comment or in document prose. Has no npm script — `tests/doc-figures.test.ts` drives it, so CI runs it. `--census-file <path>` reuses a census; `--root <dir>` points it at a copy of the tree. |
 | `node scripts/check-release-history.mjs` | Fails if a release tag has no `CHANGELOG.md` section, a section has no tag, or `package.json` is ahead of the changelog. CI runs this, and CI first runs `git fetch --tags` — `actions/checkout` fetches no tags at the default depth, and the gate exits non-zero rather than comparing an empty list. |
@@ -602,6 +602,23 @@ shows a module map (`playlists.ts  # get_playlist, …`) listing a tool that no
 longer exists. It checks `README.md`, `SPEC.md`, `ARCHITECTURE.md`,
 everything under `docs/` and `skills/`. Add a snake_case identifier to
 `parameterAllowlist` only if it is genuinely not a tool parameter.
+
+**The last two claims are about values, not names, and both were added
+because nothing compared them.** A tool can be named correctly, its argument
+named correctly, and the constraint the doc states about that argument still be
+false — a range the schema clamps, a default it contradicts (#929). And a
+**shared-contract bullet** (`` - **`field`** (`'a' | 'b'`, default `'a'`) ``)
+belongs to no single tool, so nothing attributed it to a schema at all:
+`response_format` was documented with a first member no input schema declares,
+and the aggregate ceiling was stated as 620,000B against a live
+`TOOL_SURFACE_BUDGET.defaultMaxBytes` of 611,000 — 9,000B of headroom a reader
+would have believed in, which is the wrong direction to be wrong (#1476). The
+figures are compared against the census, not against a second reading of the
+constant, and the comparison is deliberately narrow: a field no schema types as
+an enum is skipped rather than guessed at, a field with several live enum
+variants passes if the document matches any one of them, and a number is only
+read as a constant's value if it sits before the sentence ends. A gate that
+guesses is a gate that gets switched off.
 
 ### Releases
 

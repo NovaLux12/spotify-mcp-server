@@ -510,6 +510,147 @@ const DOCUMENTED_RANGE = /\b(\d+)\s*[–—-]\s*(\d+)\b/g;
 const DOCUMENTED_CEILING = /\b(?:max|maximum|cap|capped at|capped|at most|up to|no more than)\s+(\d+)\b/gi;
 
 /**
+ * #1476 — the two claims a document makes about a contract the code owns, and
+ * the two this gate now compares rather than trusting.
+ *
+ * Both defects in #1476 were the same shape as a #929 field: a document that
+ * named everything correctly and then stated a value the code contradicts. The
+ * difference is only WHERE the value lives, and that is what made them survive
+ * — neither is a tool name, an argument name, or a row in an Inputs table, so
+ * nothing in this script was reading them.
+ *
+ *  - A shared-contract bullet (`` - **`field`** (`'a' | 'b'`, default `'a'`)
+ *    — ... ``) states an enum the whole surface accepts. It is not attributed
+ *    to one tool, so `checkDocumentedFieldConstraints` — which needs a tool
+ *    heading to have a schema to compare against — cannot see it. SPEC.md
+ *    spelled `response_format`'s first member `reconcile` against a schema
+ *    whose members are `concise` / `detailed` / `json`, and every tool
+ *    carrying that field was green.
+ *  - A document that backticks a LIVE constant and then states its value is
+ *    asserting a number about code. SPEC.md stated the aggregate ceiling as
+ *    620,000B against `TOOL_SURFACE_BUDGET.defaultMaxBytes` of 611,000 —
+ *    9,000B of headroom that does not exist, in the direction that matters,
+ *    because the reader trusts the larger number. The census already measures
+ *    both constants and renders them into a generated table nobody edits by
+ *    hand, so the honest check is to compare the prose against that
+ *    measurement rather than to let the prose stand.
+ *
+ * Each is narrow about what it can PROVE, for the reason the header on
+ * `checkDocumentedFieldConstraints` gives: a gate that guesses is a gate that
+ * gets switched off.
+ *
+ *  - The enum arm fires only where at least one live input schema declares the
+ *    named field AS AN ENUM, and only when no live variant declares exactly
+ *    the documented members. A field the schemas do not type as an enum is not
+ *    checked at all — there is nothing to compare against, and inferring one
+ *    would make the gate a liar. Where a field has SEVERAL live variants
+ *    (`kind` has five, `mode` six), matching ANY one of them passes: the
+ *    document describes the contract, not every tool that happens to reuse
+ *    the name, and demanding the intersection would fail on a correct line.
+ *  - The constant arm fires only when the figure sits immediately after the
+ *    backticked constant name and before the sentence ends. Anything further
+ *    away is a comparison ("about a tenth of the ceiling"), not a restatement,
+ *    and reading it as one produces false positives rather than catching
+ *    drift. The unit must be written out — `611,000B` — so an unrelated
+ *    number in the same clause cannot be captured.
+ */
+const SHARED_CONTRACT_ENUM = /\*\*`([a-z][a-z0-9_]*)`\*\*\s*\(\s*`((?:'[^']+'\s*\|\s*)*'[^']+')`\s*(?:,\s*default\s*`('[^']+')`)?\s*\)/g;
+const DOCUMENTED_CONSTANT_FIGURE_SUFFIX = 'B';
+
+/** Every distinct enum shape the live schemas declare for `field`. */
+function liveEnumVariants(registry, field) {
+  const variants = [];
+  for (const schema of Object.values(registry.toolInputSchemas ?? {})) {
+    const property = schema?.properties?.[field];
+    if (!property || !Array.isArray(property.enum)) continue;
+    const key = JSON.stringify([property.enum, property.default]);
+    if (!variants.some((variant) => variant.key === key)) {
+      variants.push({ key, values: property.enum, default: property.default });
+    }
+  }
+  return variants;
+}
+
+function checkSharedContractEnums(file, source, registry = census) {
+  for (const match of source.matchAll(SHARED_CONTRACT_ENUM)) {
+    const at = `${relative(ROOT, file)}:${lineAt(source, match.index)}`;
+    const field = match[1];
+    const documented = match[2].split('|').map((member) => member.trim().replace(/'/g, ''));
+    const documentedDefault = match[3]?.replace(/'/g, '');
+    const variants = liveEnumVariants(registry, field);
+    // No live schema types this field as an enum, so there is nothing this
+    // gate can prove the documented list wrong against. Skipped rather than
+    // guessed: the sentence may be describing a response value, a report row
+    // key, or something the schemas do not type at all.
+    if (variants.length === 0) continue;
+    const sameMembers = variants.filter((variant) => variant.values.length === documented.length
+      && variant.values.every((value, index) => value === documented[index]));
+    if (sameMembers.length === 0) {
+      const live = variants.map((variant) => `\`${variant.values.join(' | ')}\``).join(' / ');
+      errors.push(`${at}: shared contract documents \`${field}\` as \`${documented.join(' | ')}\`, but no live input schema declares those members — they are ${live}. A caller copying the documented list is rejected at validation.`);
+      continue;
+    }
+    // The members are right, so the default is the only claim left that can
+    // be wrong. Checked only where a live variant STATES a default, for the
+    // reason `checkDocumentedDefault` gives: a field defaulted in the handler
+    // body has no schema default, and inferring one would be a guess.
+    if (documentedDefault === undefined) continue;
+    if (sameMembers.some((variant) => variant.default === documentedDefault)) continue;
+    const liveDefaults = [...new Set(sameMembers.map((variant) => variant.default).filter((value) => value !== undefined))];
+    if (liveDefaults.length === 0) continue;
+    errors.push(`${at}: shared contract documents \`${field}\` as defaulting to \`${documentedDefault}\`, but the live schema${liveDefaults.length === 1 ? '' : 's'} default${liveDefaults.length === 1 ? 's' : ''} to ${liveDefaults.map((value) => `\`${value}\``).join(' / ')} — a caller who omits the field gets the other one.`);
+  }
+}
+
+/**
+ * Live constants a document may name alongside a figure.
+ *
+ * The value is read from the census, not from `src/tools/annotations.ts`, so
+ * the comparison is against the same measurement the generated budget tables
+ * render — a hand-copied second read of the constant would be exactly the
+ * thing this check exists to prevent.
+ */
+function documentedConstants(registry = census) {
+  const aggregate = registry.aggregateSurface;
+  if (!aggregate) return [];
+  return [
+    {
+      label: 'TOOL_SURFACE_BUDGET.defaultMaxBytes',
+      names: ['TOOL_SURFACE_BUDGET.defaultMaxBytes'],
+      live: aggregate.maxCeilingBytes,
+    },
+    {
+      label: 'AGGREGATE_SURFACE_LIMITS.maxBytes',
+      names: ['AGGREGATE_SURFACE_LIMITS.maxBytes'],
+      live: aggregate.maxEnforcedBytes,
+    },
+    {
+      label: 'MAX_RESPONSE_BYTES',
+      names: ['MAX_RESPONSE_BYTES'],
+      live: aggregate.responseCapBytes,
+    },
+  ].filter((entry) => typeof entry.live === 'number');
+}
+
+function checkDocumentedConstantFigures(file, source, registry = census) {
+  for (const constant of documentedConstants(registry)) {
+    // The figure must belong to THIS constant: the gap between the name and
+    // the number may not cross a sentence end, so a number attributed to the
+    // next clause cannot be read as this one's value.
+    const pattern = new RegExp(
+      `\`${constant.names.map((name) => name.replace(/\./g, '\\.')).join('|\`|\`')}\`[^.\\n]{0,40}?([0-9][0-9,]*)\\s*${DOCUMENTED_CONSTANT_FIGURE_SUFFIX}\\b`,
+      'g',
+    );
+    for (const match of source.matchAll(pattern)) {
+      const at = `${relative(ROOT, file)}:${lineAt(source, match.index)}`;
+      const documented = Number(match[1].replace(/,/g, ''));
+      if (documented === constant.live) continue;
+      errors.push(`${at}: documents \`${constant.label}\` as ${documented.toLocaleString('en-US')}B, but the live constant is ${constant.live.toLocaleString('en-US')}B — a reader sizing against the document is wrong by ${Math.abs(documented - constant.live).toLocaleString('en-US')}B.`);
+    }
+  }
+}
+
+/**
  * The verbs that introduce a recipe step. `call` and `preview` are the two
  * the docs actually use — the write half of every recipe is `preview <tool>
  * with ...` — and a matcher that only saw the literal word "Call" left every
@@ -572,6 +713,8 @@ function collectDocumentToolContractErrors(source, file, registry) {
     checkModuleMapEntries(file, source, registry);
     checkRangeEnumLiterals(file, source, registry);
     checkDocumentedFieldConstraints(file, source, registry);
+    checkSharedContractEnums(file, source, registry);
+    checkDocumentedConstantFigures(file, source, registry);
   } finally {
     errors.push = originalPush;
   }

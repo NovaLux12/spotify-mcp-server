@@ -119,8 +119,8 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //         the tree carrying #1004 and this wave is 607,715B over the same 592
   //         tools — the smaller number is missing the ~27KB of names, titles,
   //         annotations and execution metadata the aggregate gate actually
-  //         budgets. Both still clear 608,000B, so nothing here changes the
-  //         ceiling; the figure is corrected only so the next author is not
+  //         budgets. Both cleared 608,000B, the ceiling of that day, so neither
+  //         moved it; the figure is corrected only so the next author is not
   //         quoted 27KB of headroom that does not exist.)
   //   #1004 +136B — the three tools that read artists had to re-quote their
   //         request quota now that `GET /artists?ids=` is gone, so each
@@ -166,9 +166,17 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // HEADROOM: the enforced limit is `defaultMaxBytes + 1_000` (that 1KB covers
   // final MCP annotation metadata added after registration), so the real
-  // ceiling is 608,000B. The wave this raise was sized for has landed and then
+  // ceiling is that constant plus the allowance named on the line above. Both
+  // halves are live, and neither is restated here: read the constant for the
+  // ceiling and the generated `aggregate-budget` block in
+  // `docs/schema-budgets.md` for the measured payload and the headroom, because
+  // the census re-measures that block on every `--check` and nothing re-measures
+  // a number typed here. This paragraph outlived the ceiling it used to name,
+  // which is the whole argument for that arrangement. What it does preserve is
+  // the history — the wave this raise was sized for had landed and then
   // some: measured on the tree carrying #1004 and the whole wave (592 tools),
-  // 607,715B — 285B of headroom, which is not headroom.
+  // 607,715B — 285B of headroom against the ceiling of that day, which is not
+  // headroom.
   //
   // Read that as the successor to the 94B trap that forced the 607,000 raise in
   // the first place: that figure was 94B, and the honest conclusion then was
@@ -193,8 +201,8 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   // #1004's own branch proposed 604_000, sized against a 603,999B base that
   // predated this whole wave. The 607_000 raise supersedes it — the merged
-  // aggregate fits under 608,000B without it — so its cost is recorded above as
-  // a warrant line, not as a second raise.
+  // aggregate fitted under the 608,000B of that day without it — so its cost
+  // is recorded above as a warrant line, not as a second raise.
   //
   // WHY A WARRANT WAS NEEDED AT ALL (#1004). The record written with the
   // 603,000 raise said "measured 603,100B"; by the time #1004 was cut, later
@@ -290,10 +298,11 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   //
   //   607,715B against the 608,000B enforced ceiling = 285B of headroom.
   //
-  // 285B is not headroom. The smallest in-flight warrants are #898 at +344B and
-  // #900 at +452B, so the next two changes to land would have breached a startup
-  // tripwire for reasons unrelated to themselves. The ceiling had stopped being
-  // a constraint and become a coin flip that happened to land green.
+  // 285B is not headroom. The smallest warrants open at the time were #898 at
+  // +344B and #900 at +452B — both since closed — so the next two changes to
+  // land would have breached a startup tripwire for reasons unrelated to
+  // themselves. The ceiling had stopped being a constraint and become a coin
+  // flip that happened to land green.
   //
   // A NOTE ON MEASURING THIS, because it has already gone wrong twice: a figure
   // derived by re-serialising the census's `toolDefinitions` came out at
