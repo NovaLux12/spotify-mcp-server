@@ -49,6 +49,15 @@ jobs:
         # capture-and-restore idiom are deliberately allowed.
         run: node scripts/check-no-test-debug-output.mjs
 
+      - name: Documentation link guard
+        # #931. A relative link that does not resolve, and a 403 message that
+        # sends a reader to a README section which is not there. Measured: with
+        # the message pointed at a nonexistent heading, the census, the
+        # doc-tool-name gate and the `as any` gate all exited 0 -- this one does
+        # not. Remote URLs are out of scope by design; a flaky network check is
+        # worse than no check.
+        run: node --import tsx/esm scripts/check-doc-links.mjs
+
       - name: Generate finalized surface census
         run: node scripts/surface-census.mjs > .surface-census.json
 

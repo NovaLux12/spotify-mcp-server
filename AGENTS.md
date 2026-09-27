@@ -221,6 +221,7 @@ operational", then by listing it as uniformly broken. Both were true of neither.
 | `npm run count:tools -- --check` | Fails if any generated block is stale. CI runs this. |
 | `npm run check:doc-tool-names` | Fails if any doc names a tool or argument that the finalized registry does not have. CI runs this. |
 | `node scripts/check-no-explicit-any.mjs` | Fails if any `as any` appears under `src/tools`. CI runs this. Comments and string literals are blanked first, so prose about the cast does not trip it; `Record<string, any>` is a type argument, not a cast. |
+| `node --import tsx/esm scripts/check-doc-links.mjs` | Fails if a relative Markdown link names a missing file or a missing heading, or if the graceful-403 message points at a README section that does not exist (#931). CI runs this. Remote URLs are out of scope by design — a flaky network check is worse than none. `--check-fixture <dir>` runs the same collector over a scratch tree, which is how `tests/doc-links.test.ts` proves the gate rejects rather than assumes. |
 | `npm run dev` | Runs the server from source against `.env` if present. |
 | `npm run auth` | The PKCE walkthrough; stores tokens at `~/.spotify-mcp/tokens.json`. |
 
@@ -499,6 +500,26 @@ rather than the interface. Same class: a time frame described as "one" while
 hour buckets came from local time and day metrics from the UTC date prefix, so
 one payload mixed two frames (fe45fe2). Naming is not documentation; the wire
 format is.
+
+**Two documents that must agree are not gated by checking each one.** The
+graceful-403 message in `src/gating.ts` names a README section as both prose and
+an anchor, and the census only required README to *have* a "Registration-gated
+endpoints" heading — never that the message pointed at it. Measured on #931:
+with the message aimed at a nonexistent heading, `count:tools -- --check`,
+`check:doc-tool-names` and `check-no-explicit-any` all exited 0. Each gate was
+green about its own subject while the pair had drifted, and the drift is
+invisible until someone has already hit a 403 and is hunting a section that is
+not there. `scripts/check-doc-links.mjs` reads the section out of the *rendered*
+message and resolves it against README; a message that is renamed is now a red
+build. The general form: if A asserts something about B, the gate has to compare
+them, not validate each alone.
+
+**A guard that only ever sees the correct input has never been shown it works.**
+The first version of that script imported `graceful403Message()` itself, so its
+tests could only exercise the shipped message — replacing the check body with
+`return []` left all fourteen tests green. Taking the rendered message as an
+*argument* is what let a test aim it at a section that does not exist. If you
+cannot write the failing case, the check is not wired to anything.
 
 ---
 
