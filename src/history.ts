@@ -215,6 +215,58 @@ export function historyMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_HISTORY_MAX_BYTES;
 }
 
+export interface HistoryLedgerStats {
+  /** Live ledger path. */
+  path: string;
+  /** Bytes in the live ledger; 0 when it does not exist yet. */
+  bytes: number;
+  /** Bytes in the rotated generation; 0 when there is none. */
+  archive_bytes: number;
+  /** Cap both files are held under (2 x maxBytes: live + one generation). */
+  cap_bytes: number;
+  /**
+   * Records counted from a bounded tail read, so the number is a floor rather
+   * than a total whenever the ledger holds more than the read limit.
+   */
+  records: number;
+  /** True when `records` hit the read ceiling and more may exist. */
+  records_capped: boolean;
+}
+
+/**
+ * Where the ledger is and how much of it there is (#905). Growth was
+ * unobservable: the doctor row reported a path and a write-failure count, so a
+ * ledger at 99% of its cap looked exactly like one at 1%.
+ *
+ * The record count comes from the same bounded tail read every other reader
+ * uses, so this stays O(limit) regardless of file size. When that read hits the
+ * ceiling the count is reported as `records_capped`, because a number that
+ * stopped counting is not the same as a total.
+ */
+export async function historyLedgerStats(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<HistoryLedgerStats> {
+  const file = historyFilePath(env);
+  const archive = `${file}${HISTORY_ARCHIVE_SUFFIX}`;
+  const sizeOf = async (path: string): Promise<number> => {
+    try {
+      return (await stat(path)).size;
+    } catch {
+      return 0; // no ledger yet
+    }
+  };
+  const [bytes, archiveBytes] = await Promise.all([sizeOf(file), sizeOf(archive)]);
+  const records = await readHistory({ file, env, limit: DEFAULT_HISTORY_READ_LIMIT });
+  return {
+    path: file,
+    bytes,
+    archive_bytes: archiveBytes,
+    cap_bytes: historyMaxBytes(env) * 2,
+    records: records.length,
+    records_capped: records.length >= DEFAULT_HISTORY_READ_LIMIT,
+  };
+}
+
 /**
  * Normalize a request path to a route template: drop the query string (it
  * carries `uris=`/`ids=` item payloads) and replace every non-route segment

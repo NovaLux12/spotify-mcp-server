@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   registerStatsfmTasteTools,
   __setStatsfmFetchImpl,
@@ -145,14 +149,29 @@ function text(result: ToolContent): string {
   return result.content.map((c) => c.text).join('\n');
 }
 
-test.beforeEach(() => {
+// The feedback store is a real file on disk since #905. Every test in this
+// file that records a verdict must write into a temp directory — pointing it at
+// the default ~/.spotify-mcp/taste-feedback.json would drop test data into the
+// user's real store, and the cleanup below would then delete real records.
+const feedbackDir = await mkdtemp(join(tmpdir(), 'spotify-mcp-taste-feedback-'));
+const feedbackFile = join(feedbackDir, 'taste-feedback.json');
+
+test.beforeEach(async () => {
   installFixtures();
+  process.env.SPOTIFY_MCP_TASTE_FEEDBACK_FILE = feedbackFile;
+  await rm(feedbackFile, { force: true });
   __clearFeedbackEntries();
 });
 
-test.afterEach(() => {
+test.afterEach(async () => {
   __resetStatsfmFetchImpl();
   __clearFeedbackEntries();
+  await rm(feedbackFile, { force: true });
+});
+
+test.after(() => {
+  delete process.env.SPOTIFY_MCP_TASTE_FEEDBACK_FILE;
+  rmSync(feedbackDir, { recursive: true, force: true });
 });
 
 // ------------------------------------------------------------------ registry
