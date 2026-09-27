@@ -201,9 +201,10 @@ call sites, and they disclose rather than degrade. `get_category` and
 Feb 2026 removal on a 403/404/410, and `category_resolver`
 (`src/tools/exhaust2_catalog.ts`) returns `{ gated: true }` naming the gate on a
 403 — so no failure is ever smoothed into an empty category list. All three are
-declared by the `browse-categories` family in `GATED_FAMILIES`, and a
-grandfathered registration still answers 200, so deleting them would remove a
-path that works rather than fix one that does not.
+declared by the `browse-categories` family in `GATED_FAMILIES`, which is the
+whole of the reason they are not deleted — a reason to keep an honest
+disclosure, not a claim that the path works for anyone (see the unverified note
+above).
 
 Do not read that as "the endpoint is live". The changelog marks
 `GET /browse/categories` and `GET /browse/categories/{id}` `[REMOVED]`, and it
