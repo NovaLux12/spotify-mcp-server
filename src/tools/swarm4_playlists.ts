@@ -52,6 +52,7 @@ import type { LibraryBackup } from './backup.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { positionDesc, positionSchema } from '../positionbase.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -702,13 +703,13 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'it. Written as one atomic replace. Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
-      start: z.number().int().min(1).describe('1-based position of the first item to move'),
+      // #883: the 1-based half of the playlist surface. These three are human
+      // slot numbers, not wire values — the handler subtracts 1 before it
+      // touches the API — so the base is the one thing standing between a
+      // natural-language "move track 4" and an off-by-one that succeeds.
+      start: positionSchema('one', 'Position of the first item to move'),
       count: z.number().int().min(1).optional().default(1).describe('How many contiguous items to move. Default 1'),
-      to_position: z
-        .number()
-        .int()
-        .min(1)
-        .describe('1-based position (ORIGINAL numbering) where the block should land'),
+      to_position: positionSchema('one', 'Position, in the ORIGINAL numbering, where the block should land'),
       dry_run: DryRunDefault,
       include_full_order: IncludeFullOrder,
       ...sharedListFields,
@@ -801,8 +802,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
       + 'Quota: 2 GETs + 1 PUT.',
     {
       playlist_id: z.string().describe('Playlist to edit, as ID or spotify:playlist: URI'),
-      position_a: z.number().int().min(1).describe('First position (1-based)'),
-      position_b: z.number().int().min(1).describe('Second position (1-based)'),
+      position_a: positionSchema('one', 'First position'),
+      position_b: positionSchema('one', 'Second position'),
       dry_run: DryRunDefault,
       include_full_order: IncludeFullOrder,
       ...sharedListFields,
@@ -1166,13 +1167,13 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         .optional()
         .default(100)
         .describe('Items per chunk to simulate. Default 100 (the atomic-replace limit)'),
-      offset: z
-        .number()
-        .int()
-        .min(1)
-        .optional()
-        .default(1)
-        .describe('1-based item position to start the first chunk at. Default 1'),
+      // #883: the only 1-based parameter named `offset` in the surface. It kept
+      // that name from #110, which standardised parameter NAMES; the base was
+      // out of scope there, so every other offset in this server is 0-based and
+      // this one silently is not. Naming it `offset` and numbering it from 1 is
+      // the exact trap #883 describes, so the base sentence is now mandatory on
+      // it like on every other position.
+      offset: positionSchema('one', 'Item position to start the first chunk at', { defaultValue: 1 }),
       chunks_to_show: z
         .number()
         .int()

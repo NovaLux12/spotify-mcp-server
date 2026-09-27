@@ -55,6 +55,7 @@ import type {
   SpotifyEpisode,
 } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
+import { positionBaseClause, positionSchema } from '../positionbase.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -791,12 +792,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe('Skip URIs that are already in the playlist instead of appending them (default: false)'),
-      position: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe('Insert at index; appends if omitted'),
+      // #883: forwarded to the API as `position`, which the OpenAPI schema
+      // documents as a zero-based index, so the base is stated rather than
+      // inferred from `.min(0)`.
+      position: positionSchema('zero', 'Insert at this index; appends if omitted', { optional: true }),
       dry_run: DryRun,
     },
     async (args) => {
@@ -949,7 +948,15 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             z.string(),
             z.object({
               uri: z.string(),
-              positions: z.array(z.number().int().min(0)).min(1),
+              // #883: `positions` is an index into the playlist's rows, zero-based
+              // to match the API. It is a bare array member inside a union arm, so
+              // the shared `positionSchema` helper cannot build it without
+              // restructuring the union — the clause is attached by hand and the
+              // test gate holds it to the same sentence as every other position.
+              positions: z
+                .array(z.number().int().min(0))
+                .min(1)
+                .describe(positionBaseClause('zero')),
             }),
           ]),
         )
@@ -1192,14 +1199,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     'Move a range of items within a playlist. Spotify semantics: when insert_before > range_start, the effective destination shifts down by range_length because the moved range is lifted out first (e.g. moving [2] to insert_before=4 lands it AT index 3).',
     {
       playlist_id: z.string().describe('Playlist ID'),
-      range_start: z.number().int().min(0).describe('Index of the first item to move'),
+      // #883: both of these go onto Spotify's wire unconverted, so the base is
+      // the API's, not this server's. The schema documents them zero-based and
+      // the handler forwards the values untouched — which is exactly why the
+      // base has to be stated here: nothing downstream corrects a wrong guess.
+      range_start: positionSchema('zero', 'Index of the first item to move'),
       range_length: z
         .number()
         .int()
         .min(1)
         .optional()
         .describe('Number of items to move. Default: 1'),
-      insert_before: z.number().int().min(0).describe('Index to insert the range before'),
+      insert_before: positionSchema('zero', 'Index to insert the range before'),
       dry_run: DryRun,
     },
     async (args) => {
@@ -2139,7 +2150,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // clone_playlist_cover (#285)
-  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: GET images + PUT images (plus image fetch).', { source_playlist_id: PlaylistId.describe('Source playlist ID, URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, URI, or URL'), image_index: z.number().int().min(0).optional().describe('Which cover image to copy (0-based). Default 0'), dry_run: DryRun }, async (args) => {
+  server.tool('clone_playlist_cover', 'Copy cover image from source playlist to target. Quota: GET images + PUT images (plus image fetch).', { source_playlist_id: PlaylistId.describe('Source playlist ID, URI, or URL'), target_playlist_id: PlaylistId.describe('Target playlist ID, URI, or URL'), image_index: positionSchema('zero', 'Which cover image to copy', { optional: true, handlerDefault: 0 }), dry_run: DryRun }, async (args) => {
     const images = await client.get<SpotifyImage[]>(`/playlists/${encodeURIComponent(args.source_playlist_id)}/images`);
     if (!images || images.length === 0) throw new Error('Source playlist has no custom cover image');
     const idx = args.image_index ?? 0;

@@ -28,6 +28,7 @@ import type { SpotifyClient } from '../client.js';
 import { DryRun, ResponseFormat, describeDryRun, parseSpotifyUri } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
+import { positionSchema } from '../positionbase.js';
 
 // ---------------------------------------------------------------------------
 // local shaping helpers (slice-convention: self-contained)
@@ -647,7 +648,7 @@ export function registerExhaust2ExtraTools(server: McpServer, client: SpotifyCli
     {
       playlist_id: z.string().describe('Playlist to re-cover (ID or spotify:playlist: URI)'),
       track_uri: z.string().optional().describe('Any track (spotify:track: URI or bare ID) whose album art to use. Overrides position'),
-      position: z.number().int().min(0).optional().describe('0-based playlist position of the track to source art from'),
+      position: positionSchema('zero', 'Playlist position of the track to source art from', { optional: true }),
       response_format: ResponseFormat,
       dry_run: DryRun,
     },
