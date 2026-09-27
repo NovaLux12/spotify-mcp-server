@@ -3649,8 +3649,8 @@
         "label": "A fixed resource that reads a paged endpoint accepts its…"
       },
       {
-        "hash": "ee57237e3d75af26",
-        "label": "Each parameterised resource registers three entries, not…"
+        "hash": "88447ec01ecbe698",
+        "label": "Each parameterised resource registers two entries, not o…"
       },
       {
         "hash": "0c44ce16df872864",
@@ -3669,12 +3669,12 @@
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "32f6226ccd12e7a5",
+        "hash": "571f5e33b7546f6a",
         "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "fd63592042568bb1",
-        "label": "The {+qs} twin is the catch-all for query strings this s…"
+        "hash": "ec9547275c52004a",
+        "label": "A catch-all twin was the wrong way to absorb a query str…"
       },
       {
         "hash": "dba777829aa263b2",
@@ -3701,7 +3701,7 @@
         "label": "limit is bounded to 1–50 and offset to ≥0 before forward…"
       },
       {
-        "hash": "f4ada5ba1d8690a5",
+        "hash": "8338d74b1e7ef4f2",
         "label": "Normalising silently is a reason to publish the bound, s…"
       },
       {
@@ -3717,8 +3717,8 @@
         "label": "| Template | Endpoint | Parameters | |---|---|---| | spo…"
       },
       {
-        "hash": "7a1d95f8d80f8908",
-        "label": "The chapters pair registers before the bare audiobook pa…"
+        "hash": "e95b22038ccb22af",
+        "label": "These two shapes no longer compete, so their order carri…"
       },
       {
         "hash": "d7ba81d3e4062a7f",
@@ -3745,7 +3745,7 @@
         "label": "It renders id, name, type, isactive and volumepercent th…"
       },
       {
-        "hash": "f0bf0983efcc2748",
+        "hash": "87e02589ab499f7e",
         "label": "The endpoint takes no query parameters (the OpenAPI sche…"
       },
       {
@@ -5407,6 +5407,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "32f6226ccd12e7a5",
+      "label": "Before #1401 the server routed around this by depending …",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "455ba684a6f018a0",
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
@@ -5432,6 +5439,13 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "7a1d95f8d80f8908",
+      "label": "The chapters pair registers before the bare audiobook pa…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5526,10 +5540,38 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "ee57237e3d75af26",
+      "label": "Each parameterised resource registers three entries, not…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f0bf0983efcc2748",
+      "label": "The endpoint takes no query parameters (the OpenAPI sche…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "f4ada5ba1d8690a5",
+      "label": "Normalising silently is a reason to publish the bound, s…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "f6c48865c9488f32",
       "label": "The {?…} template is still registered and still earns it…",
       "date": "2026-09-27",
       "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "fd63592042568bb1",
+      "label": "The {+qs} twin is the catch-all for query strings this s…",
+      "date": "2026-09-27",
+      "reason": "Reworded by #685: a parameterised resource now registers two entries, not three, because the {+qs} catch-all twin this paragraph counted was removed."
     },
     {
       "file": "SPEC.md",
@@ -5540,8 +5582,8 @@
     }
   ],
   "provenance": {
-    "head": "2bae9375a058da20fa561fb7fe1658bb6152328d",
-    "upstream": "2bae9375a058da20fa561fb7fe1658bb6152328d",
+    "head": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
+    "upstream": "1db5e4c85c1b70d12c3fcd918cf8522cb3cf38b9",
     "behind": false
   }
 }
