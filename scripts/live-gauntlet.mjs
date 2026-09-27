@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Live gauntlet: exercises every registered MCP tool against the real Spotify
-// API and proves nothing was mutated.
+// API and computes — from observed state, not from a constant — whether
+// anything was mutated.
 //
 // Prereqs: npm run build && npm run auth && .env present (tokens in
 // ~/.spotify-mcp/tokens.json).
@@ -11,44 +12,64 @@
 //   node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json
 //
 // Batch/resume mode (quota-paced sweeps of the full surface):
-//   --batch=N      stop after N tool calls this run (seeds excluded)
+//   --batch=N      stop after N sweep tool calls this run. Seed reads and the
+//                  account-state check are counted separately and are not
+//                  capped: they are not coverage, they are the run's inputs.
 //   --resume=FILE  skip tools already recorded in FILE (FAILs are retried)
 //   --report=FILE  cumulative report location (used by --resume)
 // A run with nothing left to do prints SWEEP_COMPLETE and exits 0.
 //
-// Safety model:
-//   - Tools are classified SAFE (reads) vs MUTATING via the table below;
-//     anything unclassified is treated as MUTATING (skipped by default).
+// Safety model (#643 — the previous version's comment described the opposite of
+// what its code did, and its "proof" was a constant):
+//   - SAFE (reads) vs MUTATING is DERIVED from the registry: a tool is MUTATING
+//     unless `tools/list` advertises `readOnlyHint: true` for it AND its schema
+//     declares no `dry_run`. A tool name this file has never seen is MUTATING.
+//     The only exception is REVIEWED_READS in live-gauntlet-core.mjs, which is
+//     per-entry audited and re-checked against the registry on every run.
+//   - Every run prints a classification audit, and the run FAILS before it calls
+//     anything if the audit is inconsistent (a write classified SAFE, a
+//     dry_run-declaring tool classified SAFE without a REVIEWED_READS entry, or a
+//     REVIEWED_READS entry the registry does not call read-only).
+//     Arg recipes naming unregistered tools are reported loudly but do not
+//     gate: nothing is called because of an orphan recipe.
 //   - MUTATING tools are skipped unless named in --include-mutating=a,b AND
-//     their inputSchema declares `dry_run`. The call always passes
-//     dry_run:true and PASSES only when the response confirms the dry-run
-//     preview — so even the opt-in path cannot mutate.
+//     their inputSchema declares `dry_run`. The call always passes dry_run:true
+//     and PASSES only when the response confirms it STRUCTURALLY
+//     (`structuredContent.dry_run === true`). A prose "[dry run]" is recorded
+//     as UNVERIFIED, never as a pass: the tool's own sentence is not evidence.
+//   - `mutations detected` is the size of a diff between an account-state
+//     fingerprint taken before and after the run, over the user's saved-track
+//     count, saved-album count, playlist count, and the hash of the playlist id
+//     set. It covers library membership and the playlist set; it does NOT cover
+//     reordering or per-item edits inside a playlist, and the report says so
+//     rather than implying a whole-account guarantee.
+//   - The proof is PASS / INCOMPLETE / UNVERIFIED / MUTATIONS_DETECTED, and only
+//     PASS is a claim. UNVERIFIED and MUTATIONS_DETECTED exit non-zero. A
+//     batched sweep is INCOMPLETE by construction and makes no claim until the
+//     run that records the last pending tool.
+//
+// Decision logic lives in ./live-gauntlet-core.mjs so it can be exercised
+// against fixtures; this file owns the RPC and nothing else.
 import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import {
+  ACCOUNT_PROBES,
+  MUTATING,
+  SAFE,
+  auditClassification,
+  auditRecipeTables,
+  computeMutationProof,
+  proofBlocksExit,
+  renderAuditLines,
+  renderProofLines,
+  schemaDeclaresDryRun,
+  snapshotFromProbeResponses,
+} from './live-gauntlet-core.mjs';
 
 const ROOT = join(dirname(new URL(import.meta.url).pathname), '..');
 
-// ---------------------------------------------------------------- classification
-
-const MUTATING = new Set([
-  // library.ts
-  'save_to_library', 'remove_from_library',
-  // playback.ts
-  'play_from_search', 'play', 'pause', 'skip_next', 'skip_previous', 'seek',
-  'set_volume', 'set_shuffle', 'set_repeat', 'add_to_queue', 'transfer_playback',
-  // playlists.ts
-  'upload_playlist_cover', 'create_playlist', 'add_to_playlist',
-  'remove_from_playlist', 'update_playlist', 'reorder_playlist_items',
-  'replace_playlist_items',
-  'merge_playlists',
-  'whats_new',
-]);
-
-// Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
-// expected to fail on newer app registrations. A failure here is reported as
-// SKIP, not FAIL.
 // Endpoints Spotify removed in its Feb 2026 Web API changes: registered but
 // expected to fail on newer app registrations. A failure here is reported as
 // SKIP, not FAIL.
@@ -56,10 +77,10 @@ const MUTATING = new Set([
 // #638: this set used to carry a second, awkward group — `follow_artists`,
 // `unfollow_artists`, `get_categories` and `get_category_playlists` were
 // REGISTERED, could never work, and were parked here until the tools
-// themselves were deleted. They are deleted now, so their MUTATING entries and
-// args builders went with them rather than moving here. This file reads a live
+// themselves were deleted. They are deleted now. This file reads a live
 // `tools/list`, so a name left in a set that no longer registers is dead
-// weight that reads as coverage.
+// weight that reads as coverage — which is why every hand-kept set in this
+// file is now audited against the registry on each run instead of trusted.
 //
 // `get_artist_top_tracks` / `get_available_markets` / `get_user_profile` /
 // `get_user_playlists_by_id` stay: those endpoints are gone but the tools
@@ -74,10 +95,9 @@ const REMOVED = new Set([
 // probe): documented /me/*/contains family, browse categories, and friends.
 // Legacy registrations may still serve them; failure here is SKIP, not FAIL.
 // #638: `get_categories`, `get_category_playlists` and `check_saved_items` were
-// deleted with the endpoints they wrapped, so they are no longer registered and
-// are not classified here. `check_in_library` and `check_following_artists` stay
-// — they read `/me/library/contains`, which is NOT gated, and a FAIL against
-// them is a genuine regression.
+// deleted with the endpoints they wrapped. `check_in_library` and
+// `check_following_artists` stay — they read `/me/library/contains`, which is
+// NOT gated, and a FAIL against them is a genuine regression.
 const GATED = new Set([
   'get_new_releases',
   'check_in_library', 'check_following_artists',
@@ -154,8 +174,10 @@ if (resumePath) {
     console.error(`resume: cannot read ${resumePath} (${e.message}) — starting fresh`);
   }
 }
-let calls = 0;   // API calls performed this run (seeds excluded)
-let resumed = 0; // tools skipped due to prior records
+let calls = 0;           // sweep tool calls performed this run (seeds and state check excluded)
+let seedCalls = 0;       // seed reads performed this run
+let stateProbeCalls = 0; // account-state fingerprint reads performed this run
+let resumed = 0;         // tools skipped due to prior records
 let consecutiveFails = 0; // quota-wall abort counter
 const RETRY_MAX = parseInt(process.env.SWEEP_RETRY_MAX ?? '2', 10); // FAIL attempts before giving up
 
@@ -172,15 +194,16 @@ console.log(`tools/list: ${tools.length} tools discovered`);
 // waits out cascading Retry-After windows and hits the per-call timeout.
 // This is quota reality, not a client defect (#133's priority lanes keep
 // interactive reads responsive; they cannot conjure quota). Space full
-// sweeps hours apart, or verify subsets per run — cumulative coverage
-// across the day's four runs reached all 94 tools with zero functional
-// failures and zero mutations.
+// sweeps hours apart, or verify subsets per run — coverage across the day's
+// runs is what the cumulative report records, and `mutation_proof.status`
+// says INCOMPLETE until the last pending tool lands.
 
 // ---------------------------------------------------------------------- seeds
 
 // Minimal reads whose results feed every other SAFE call's arguments.
 const seed = {}; // { userId, trackId, albumId, artistId, showId, episodeId, audiobookId, playlistId }
 const results = [];
+const invocations = []; // every mutating call actually issued, for the proof
 
 function record(name, cls, status, ms, extra = {}) {
   results.push({ tool: name, class: cls, status, latency_ms: ms, ...extra });
@@ -188,41 +211,21 @@ function record(name, cls, status, ms, extra = {}) {
   console.log(`[${flag}] ${status.padEnd(5)} ${(cls + ' ' + name).padEnd(40)} ${ms}ms ${extra.reason ?? ''}`);
 }
 
-// Seeds themselves go through the same recorder.
-{
-  let r = await callTool('get_me', { response_format: 'json' });
-  if (r.ok) {
-    const me = r.structured ?? {};
-    seed.userId = me.id;
-    seed.country = me.country;
-    record('get_me', 'SAFE', 'PASS', r.ms);
-  } else record('get_me', 'SAFE', 'FAIL', r.ms, { reason: r.error });
-
-  r = await callTool('search', { query: 'daft punk', types: ['track', 'show', 'episode'], limit: 3, response_format: 'json' });
-  if (r.ok) {
-    const t = r.structured?.tracks?.items?.[0];
-    if (t) { seed.trackId = t.id; seed.albumId = t.album?.id; seed.artistId = t.artists?.[0]?.id; }
-    seed.showId = r.structured?.shows?.items?.[0]?.id;
-    seed.episodeId = r.structured?.episodes?.items?.[0]?.id;
-    record('search', 'SAFE', 'PASS', r.ms);
-  } else record('search', 'SAFE', 'FAIL', r.ms, { reason: r.error });
-
-  // Audiobooks are market-gated; failure here just skips the audiobook tools.
-  r = await callTool('search', { query: 'project hail mary', types: ['audiobook'], limit: 3, response_format: 'json' });
-  if (r.ok) seed.audiobookId = r.structured?.audiobooks?.items?.[0]?.id;
-
-  r = await callTool('get_user_playlists', { max_results: 10, response_format: 'json' });
-  if (r.ok) {
-    const rows = Array.isArray(r.structured) ? r.structured : r.structured?.items ?? [];
-    seed.playlistIds = rows.map((p) => p?.id).filter(Boolean).slice(0, 3);
-    seed.playlistId = seed.playlistIds[0];
-    record('get_user_playlists', 'SAFE', 'PASS', r.ms);
-  } else record('get_user_playlists', 'SAFE', 'FAIL', r.ms, { reason: r.error });
-}
-
 // ------------------------------------------------------- SAFE arg derivation
 
 // Each builder returns minimal args from the seed reads, or a skip reason.
+//
+// A key here names a SAFE tool, and that is now enforced rather than assumed:
+// `auditRecipeTables` fails the run if this table names a tool that no longer
+// registers, and reports (without failing) if it names a tool the registry
+// calls a write — because such a recipe can never run, and leaving it in place
+// is how the read path came to cover mutating tools. `library_genre_report`,
+// `filter_by_genre` and `library_hygiene` are genuine read-only reports whose
+// names carry no read verb, so the registry advertises them as writes; under
+// the fail-closed classification they moved to MUTATING_ARGS, where the
+// allowlist and the dry-run gate govern them. Fixing that is an OVERRIDES
+// question in src/tools/annotations.ts, not a judgement call for this harness —
+// and MUTATING_ARGS records what it costs until it is fixed.
 const SAFE_ARGS = {
   get_me: () => ({}),
   search: () => ({ query: 'radiohead', types: ['artist'], limit: 3 }),
@@ -274,33 +277,18 @@ const SAFE_ARGS = {
   search_deep: () => ({ query: 'radiohead', types: ['track'], pages: 1 }),
   // analytics.ts (#97)
   listening_report: () => ({ time_range: 'short_term', max_results: 3 }),
-  // libraryinsights.ts (#112 idea 1)
-  library_genre_report: () => ({ max_results: 5 }),
-  filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
-  tag_management: () => ({ action: 'list' }),
-  // freshness.ts (#112 idea 2)
-  // libraryhygiene.ts (#112 idea 5)
-  library_hygiene: () => ({ max_results: 3 }),
   // playlistdna.ts (#112 idea 6)
-  grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
   // Canonical playlist power tools. These keys must name registered tools:
-  // a recipe under a name no tool answers to is silently recorded as a skip.
+  // a recipe under a name no tool answers to is silently recorded as a skip,
+  // and the recipe audit now fails the run on one.
   diff_playlists: () => seed.playlistId ? { playlist_a: seed.playlistId, playlist_b: seed.playlistId } : 'no playlist in seeds',
-  overlap_playlists: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlists: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
   // podcastsession.ts (#112 idea 3)
   plan_podcast_session: () => ({ minutes: 30, max_results: 3 }),
-  start_podcast_session: () => ({ minutes: 30, dry_run: true }),
   // audiobookcopilot.ts (#112 idea 4)
   list_all_chapters: () => seed.audiobookId ? { audiobook_id: seed.audiobookId } : 'no audiobook in seeds (market-gated)',
   where_was_i: () => seed.audiobookId ? { audiobook_id: seed.audiobookId } : 'no audiobook in seeds (market-gated)',
-  jump_to_chapter: () => 'mutating adjacent — requires device; covered by list_all_chapters instead',
   // scenes.ts (#112 ideas 7+12)
   list_scenes: () => ({}),
-  apply_scene: () => 'needs a saved scene; covered by list_scenes/save_scene instead',
-  save_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
-  delete_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
-  schedule_wind_down: () => 'MUTATING-ADJACENT (arms timers + volume changes)',
-  cancel_wind_down: () => 'no active wind-down during gauntlet',
   // doctortool.ts (#111)
   spotify_doctor: () => ({}),
   // receipts (#112 idea 11)
@@ -318,7 +306,25 @@ function audiobookBuilders() {
 audiobookBuilders();
 
 // Minimal valid args for allowlisted MUTATING tools — always sent together
-// with dry_run:true.
+// with dry_run:true, which the driver adds and no recipe sets.
+//
+// Entries that read like reads moved here from the read path in #643: the
+// registry classifies them as writes, so the only way this harness may call
+// them is under the same dry-run gate as every other write. A recipe that
+// returns a string is a recorded skip carrying that reason.
+//
+// COVERAGE NOTE, and the honest cost of failing closed: five of the moved
+// recipes — `library_genre_report`, `filter_by_genre`, `save_scene`,
+// `delete_scene`, `cancel_wind_down` — declare no `dry_run`, so the gate will
+// skip them permanently and the sweep loses the coverage it had on the read
+// path. Every one of them is a read or a LOCAL sidecar write
+// (libraryinsights.ts reports; scenes.ts writes a JSON file next to the sweep
+// report; `cancel_wind_down` disarms a timer this harness never arms), so the
+// coverage is recoverable — but only by fixing the registry, which is not this
+// file's to change. They need OVERRIDES rows in src/tools/annotations.ts, the
+// same table that already carries `playlist_staleness_report` and
+// `backup_library`. Until then the skip is reported on every run rather than
+// hidden, which is the whole point of #643.
 const MUTATING_ARGS = {
   whats_new: () => ({ kinds: ['albums'], since: '2026-01-01', max_results: 5, max_artists: 1 }),
   merge_playlists: () => seed.playlistId ? { sources: seed.playlistIds ?? [seed.playlistId], new_name: 'gauntlet-merge-DELETE-ME' } : 'no playlist in seeds',
@@ -342,24 +348,137 @@ const MUTATING_ARGS = {
   set_repeat: () => ({ state: 'off' }),
   add_to_queue: () => seed.trackId ? { uri: `spotify:track:${seed.trackId}` } : 'no track in seeds',
   transfer_playback: () => 'needs a device_id; skipped even in dry-run mode',
+  // Reachable on the old read path with no dry-run guard (#643).
+  tag_management: () => ({ action: 'list' }),
+  grow_playlist: () => seed.playlistId ? { playlist_id: seed.playlistId, size: 5, exclude_saved: false } : 'no playlist in seeds',
+  overlap_playlists: () => (seed.playlistIds?.length ?? 0) >= 2 ? { playlists: seed.playlistIds.slice(0, 2) } : 'fewer than 2 playlists in seeds',
+  start_podcast_session: () => ({ minutes: 30 }),
+  library_genre_report: () => ({ max_results: 5 }),
+  filter_by_genre: () => ({ genre: 'rock', kind: 'tracks', max_results: 5 }),
+  library_hygiene: () => ({ max_results: 3 }),
+  jump_to_chapter: () => 'mutating adjacent — requires device; covered by list_all_chapters instead',
+  apply_scene: () => 'needs a saved scene; covered by list_scenes/save_scene instead',
+  save_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
+  delete_scene: () => 'MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep',
+  schedule_wind_down: () => 'MUTATING-ADJACENT (arms timers + volume changes)',
+  cancel_wind_down: () => 'no active wind-down during gauntlet',
 };
 
+// ----------------------------------------------------------------- audit + gate
+
+// The audit runs before ANY tool call. A run whose classification is internally
+// inconsistent cannot make a safety claim, so it stops here rather than after
+// spending the quota to produce a report nobody should read.
+const audit = auditClassification(tools);
+const classification = audit.verdicts;
+const classFor = (name) => classification.get(name)?.class ?? MUTATING;
+const recipeAudit = auditRecipeTables(tools, classification, { SAFE_ARGS, MUTATING_ARGS });
+
+for (const line of renderAuditLines(audit)) console.log(line);
+for (const warning of audit.warnings) console.log(`  WARNING: ${warning}`);
+for (const orphan of recipeAudit.orphans) console.log(`  WARNING: arg recipe names an unregistered tool: ${orphan}`);
+for (const entry of recipeAudit.unreachable) console.log(`  read-path arg recipe can never run: ${entry}`);
+if (audit.unannotatedCount > 0) {
+  console.log(`  WARNING: ${audit.unannotatedCount} registered tool(s) carry no annotations block; they are classified MUTATING`);
+}
+for (const name of includeMutating) {
+  if (!classification.has(name)) console.log(`  --include-mutating names ${name}, which no registered tool answers to`);
+  else if (classFor(name) !== MUTATING) console.log(`  --include-mutating names ${name}, which is classified ${classFor(name)}; it stays on the read path`);
+}
+
+// Only the classification invariants gate the run. An orphan recipe is a
+// coverage-hygiene problem, not a safety one — nothing is called because of it —
+// and gating on it would make a sweep against a trimmed surface (toolsets, an
+// --include-mutating subset) impossible to run at all. It is reported loudly
+// instead.
+if (audit.errors.length > 0) {
+  console.error('\nCLASSIFICATION_AUDIT_FAILED — refusing to run the sweep:');
+  for (const error of audit.errors) console.error(`  - ${error}`);
+  child.kill();
+  process.exit(1);
+}
+
+// ---------------------------------------------------------------------- seeds
+{
+  // Every seed read is counted. The audiobook `search` was never recorded, so
+  // the banner and `summary.total_calls` each understated the run by one call
+  // and did not agree with each other (#643).
+  seedCalls++;
+  let r = await callTool('get_me', { response_format: 'json' });
+  if (r.ok) {
+    const me = r.structured ?? {};
+    seed.userId = me.id;
+    seed.country = me.country;
+    record('get_me', SAFE, 'PASS', r.ms);
+  } else record('get_me', SAFE, 'FAIL', r.ms, { reason: r.error });
+
+  seedCalls++;
+  r = await callTool('search', { query: 'daft punk', types: ['track', 'show', 'episode'], limit: 3, response_format: 'json' });
+  if (r.ok) {
+    const t = r.structured?.tracks?.items?.[0];
+    if (t) { seed.trackId = t.id; seed.albumId = t.album?.id; seed.artistId = t.artists?.[0]?.id; }
+    seed.showId = r.structured?.shows?.items?.[0]?.id;
+    seed.episodeId = r.structured?.episodes?.items?.[0]?.id;
+    record('search', SAFE, 'PASS', r.ms);
+  } else record('search', SAFE, 'FAIL', r.ms, { reason: r.error });
+
+  // Audiobooks are market-gated; failure here just skips the audiobook tools.
+  seedCalls++;
+  r = await callTool('search', { query: 'project hail mary', types: ['audiobook'], limit: 3, response_format: 'json' });
+  if (r.ok) seed.audiobookId = r.structured?.audiobooks?.items?.[0]?.id;
+
+  seedCalls++;
+  r = await callTool('get_user_playlists', { max_results: 10, response_format: 'json' });
+  if (r.ok) {
+    const rows = Array.isArray(r.structured) ? r.structured : r.structured?.items ?? [];
+    seed.playlistIds = rows.map((p) => p?.id).filter(Boolean).slice(0, 3);
+    seed.playlistId = seed.playlistIds[0];
+    record('get_user_playlists', SAFE, 'PASS', r.ms);
+  } else record('get_user_playlists', SAFE, 'FAIL', r.ms, { reason: r.error });
+}
+
 // ------------------------------------------------------------------- gauntlet
-const classFor = (tool) => MUTATING.has(tool) ? 'MUTATING' : 'SAFE';
 
 // SWEEP_COMPLETE fast path: everything recorded (or only FAILs remain) — nothing to do.
 const remaining = tools.filter((t) => t.name !== 'get_me' && t.name !== 'get_user_playlists'
   && (!done.has(t.name) || done.get(t.name).class !== classFor(t.name) || done.get(t.name).status === 'FAIL'));
 if (remaining.length === 0) {
   console.log('SWEEP_COMPLETE: every registered tool is recorded in the report (no FAILs to retry)');
+  // Still state the proof, from the cumulative records. This path issues no
+  // calls, so there is no state check and the run says exactly that rather
+  // than printing a mutation count it did not measure.
+  const completeProof = computeMutationProof({
+    classification,
+    records: [...done.values()],
+    invocations: [],
+    callsMade: 0,
+  });
+  for (const line of renderProofLines(completeProof)) console.log(line);
   child.kill();
-  process.exit(0);
+  process.exit(proofBlocksExit(completeProof) ? 1 : 0);
 }
 if (batchLimit < Infinity) console.log(`batch mode: up to ${batchLimit} calls this run; ${remaining.length} tools pending (${done.size} recorded)`);
 
+/**
+ * Read the account state. Counted separately from sweep calls: this is the
+ * run's evidence, not its coverage, and folding it into `total_calls` is how
+ * the old report's number stopped describing anything.
+ */
+async function takeFingerprint() {
+  const responses = [];
+  for (const probe of ACCOUNT_PROBES) {
+    stateProbeCalls++;
+    const r = await callTool(probe.tool, { ...probe.args });
+    responses.push({ probe, ok: r.ok, structured: r.structured, error: r.error });
+  }
+  return snapshotFromProbeResponses(responses);
+}
+
+const fingerprintBefore = await takeFingerprint();
+
 for (const tool of tools.map((t) => t.name)) {
   if (tool === 'get_me' || tool === 'get_user_playlists') continue; // already run as seeds
-  const cls = classFor(tool); // unclassified ⇒ treated as mutating
+  const cls = classFor(tool);
 
   let prevRec = done.get(tool);
   if (prevRec && prevRec.class !== cls) {
@@ -370,13 +489,12 @@ for (const tool of tools.map((t) => t.name)) {
     resumed++;
     continue;
   }
-  if (cls === 'MUTATING') {
+  if (cls === MUTATING) {
     if (!includeMutating.has(tool)) {
       record(tool, cls, 'SKIP', 0, { reason: 'mutating; not in --include-mutating allowlist' });
       continue;
     }
-    const schema = schemaOf.get(tool);
-    if (!schema?.properties?.dry_run) {
+    if (!schemaDeclaresDryRun(schemaOf.get(tool))) {
       record(tool, cls, 'SKIP', 0, { reason: 'allowlisted but tool has no dry_run support; refusing to call' });
       continue;
     }
@@ -385,11 +503,14 @@ for (const tool of tools.map((t) => t.name)) {
       record(tool, cls, 'SKIP', 0, { reason: built ?? 'no arg recipe' });
       continue;
     }
+    if (calls >= batchLimit) break;
     calls++;
-    if (calls > batchLimit) break;
     const r = await callTool(tool, { ...built, dry_run: true });
-    // Verify no mutation occurred: the tool must confirm the dry-run preview.
-    const confirmed = r.ok && (r.structured?.dry_run === true || /\[dry run\]/.test(r.text));
+    invocations.push({ tool, dry_run: true, ok: r.ok, structured: r.structured, text: r.text, error: r.error });
+    // Verify no mutation occurred STRUCTURALLY. A prose "[dry run]" is what the
+    // previous version accepted, and a tool that merely says it previewed
+    // something is not evidence that it did (#643).
+    const confirmed = r.ok && r.structured?.dry_run === true;
     record(tool, cls, confirmed ? 'PASS' : 'FAIL', r.ms,
       confirmed ? { verified_no_mutation: true } : { reason: r.ok ? 'dry_run confirmation MISSING in response — treat as possible mutation' : r.error });
     continue;
@@ -401,8 +522,8 @@ for (const tool of tools.map((t) => t.name)) {
     record(tool, cls, 'SKIP', 0, { reason: built ?? 'missing prereq from seed reads' });
     continue;
   }
+  if (calls >= batchLimit) break;
   calls++;
-  if (calls > batchLimit) break;
   const r = await callTool(tool, typeof built === 'object' ? built : {});
   if (r.ok) {
     consecutiveFails = 0;
@@ -433,6 +554,8 @@ for (const tool of tools.map((t) => t.name)) {
   }
 }
 
+const fingerprintAfter = await takeFingerprint();
+
 if (batchLimit < Infinity) console.log(`batch run finished after ${calls} calls (${resumed} resumed, ${results.length} recorded this run)`);
 
 // -------------------------------------------------------------------- report
@@ -446,29 +569,66 @@ for (const r of results) merged.set(r.tool, r);
 const allResults = [...merged.values()];
 const counts = { PASS: 0, FAIL: 0, SKIP: 0 };
 for (const r of allResults) counts[r.status]++;
-const mutatingSkipped = allResults.filter((r) => r.class === 'MUTATING' && r.status === 'SKIP').map((r) => r.tool);
+const mutatingSkipped = allResults.filter((r) => r.class === MUTATING && r.status === 'SKIP').map((r) => r.tool);
 const dryRunVerified = allResults.filter((r) => r.verified_no_mutation).map((r) => r.tool);
+
+// The proof is the only thing in this file allowed to say nothing was mutated.
+// It is computed from the observed state diff, the per-call structured
+// confirmations, and whether every MUTATING tool is accounted for.
+const proof = computeMutationProof({
+  classification,
+  records: allResults,
+  invocations,
+  callsMade: calls,
+  before: fingerprintBefore,
+  after: fingerprintAfter,
+});
 
 console.log('\n=== LIVE GAUNTLET SUMMARY ===');
 console.log(`${'STATUS'.padEnd(6)} ${'CLASS'.padEnd(9)} TOOL`);
 for (const r of results) console.log(`${r.status.padEnd(6)} ${r.class.padEnd(9)} ${r.tool}${r.reason ? `  — ${r.reason.slice(0, 90)}` : ''}`);
-console.log(`\n${counts.PASS} passed / ${counts.FAIL} failed / ${counts.SKIP} skipped  (${results.length + 3} calls incl. seeds)`);
-console.log(`mutations performed: NONE`);
+console.log(`\n${counts.PASS} passed / ${counts.FAIL} failed / ${counts.SKIP} skipped`);
+console.log(`calls this run: ${calls} sweep + ${seedCalls} seed + ${stateProbeCalls} state-check = ${calls + seedCalls + stateProbeCalls} (${resumed} tools resumed from ${resumePath ?? 'no report'})`);
+for (const line of renderProofLines(proof)) console.log(line);
 if (dryRunVerified.length) console.log(`dry-run verified (no mutation): ${dryRunVerified.join(', ')}`);
 
 const report = {
   generated_at: new Date().toISOString(),
   tools_discovered: tools.length,
   mode: { batch_limit: batchLimit === Infinity ? null : batchLimit, resumed_from: resumePath ?? null },
-  summary: { pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP,
+  summary: {
+    pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP,
     gated: allResults.filter((r) => r.gated).length,
-    total_calls: allResults.length + 3 + resumed,
+    // Every call this run actually issued, split by what it was for. The old
+    // report added a literal 3 to the record count: wrong against the four
+    // seed reads, and a different number from the banner's (#643).
+    total_calls: calls + seedCalls + stateProbeCalls,
+    calls_this_run: { sweep: calls, seeds: seedCalls, state_check: stateProbeCalls },
+    tools_recorded: allResults.length,
+    resumed,
     pending: remaining.filter((t) => !allResults.some((r) => r.tool === t.name)).length,
   },
+  classification: {
+    audit: `${audit.mutating} MUTATING / ${audit.safe} SAFE / ${audit.reviewedReadCount} REVIEWED_READS of ${audit.total} registered`,
+    source: 'tools/list annotations (readOnlyHint) plus inputSchema dry_run; see scripts/live-gauntlet-core.mjs',
+    mutating: audit.mutating,
+    safe: audit.safe,
+    dry_run_declared: audit.dryRunDeclared,
+    reviewed_reads: audit.reviewedReads,
+  },
   mutation_proof: {
-    mutations_performed: [],
+    status: proof.status,
+    state_check: proof.state_check,
+    state_check_scope: 'saved-track count, saved-album count, playlist count, playlist id-set hash. Does NOT cover reordering or per-item edits inside a playlist, and does not cover state outside the account\'s own library and playlists.',
+    mutations_detected: proof.mutations_detected,
+    mutations_known: proof.mutations_known,
+    mutations_performed: proof.mutations_performed,
     mutating_tools_skipped_by_default: mutatingSkipped,
     mutating_tools_dry_run_verified: dryRunVerified,
+    unverified_invocations: proof.unverified,
+    unaccounted_mutating_tools: proof.unaccounted,
+    pending_mutating_tools: proof.pending,
+    fingerprint: proof.fingerprint,
   },
   results: allResults,
 };
@@ -476,4 +636,4 @@ if (reportPath) {
   writeFileSync(reportPath, JSON.stringify(report, null, 2) + '\n');
   console.log(`JSON report written to ${reportPath}`);
 }
-process.exit(counts.FAIL ? 1 : 0);
+process.exit((counts.FAIL || proofBlocksExit(proof)) ? 1 : 0);
