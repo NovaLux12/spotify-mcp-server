@@ -1,9 +1,27 @@
 /**
- * Coverage for batch (100-chunk) and dry_run preview semantics across swarm slices.
+ * dry_run preview semantics and 100-chunk batch fan-out across the swarm slices.
  *
- * swarm3_library / swarm3_playback / swarm3_snapshots had no dedicated tests;
- * this file ensures their dry_run paths make zero mutating calls and that
- * batch writers fan out in groups of 100.
+ * The header used to say this file covered `swarm3_library` / `swarm3_playback` /
+ * `swarm3_snapshots` "which had no dedicated tests". That stopped being true, and
+ * the stale claim is what let the gap in #668 stay invisible: readers assumed the
+ * swarm modules were covered here, and the batch case at the bottom is about
+ * `playlistbatch.ts`, not about the module the file name suggests. #668 measured
+ * it — only 4 of `swarm3_playback`'s 24 handlers were ever invoked by any test.
+ *
+ * What this file actually covers, by describe block:
+ *   - `canonical list_show_episodes` — exhaustive-catalog paging.
+ *   - `swarm3_library dry_run previews` — previews make zero API calls.
+ *   - `swarm3_playback dry_run previews` — previews make zero mutating calls.
+ *   - `batch chunking at 100` — `playlistbatch.ts`, NOT the swarm modules.
+ *   - the swarm3/swarm3b/discovery blocks below them.
+ *
+ * Where the executing paths live:
+ *   - `swarm3_library`  → `tests/tools.swarm3library.test.ts`
+ *   - `swarm3_playback` → `tests/tools.swarm3playback-executing.test.ts` (the 20
+ *     handlers this file's previews are all that covered), plus the
+ *     `-context` / `-volume` / `-resume` units for the other four.
+ *   - `swarm3_refs`     → `tests/refs.test.ts` and
+ *     `tests/tools.swarm3refs-executing.test.ts`.
  */
 import './helpers/hermetic.js';
 
