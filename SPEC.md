@@ -1085,6 +1085,14 @@ All playlist set-operation, diff, overlap, intersection, union, subtraction, mer
 | Base-minus-set operation | `playlist_subtract`, `playlist_difference_plan` | `base_playlist_id` plus `playlists` for the sources to subtract | `subtract_playlist_ids`, and the positional form `playlists: [base, ...sources]` |
 | A/B comparison | `diff_playlists`, `playlist_diff`, `playlist_pair_check`, `compare_playlist_covers`, `playlist_symmetric_difference` | `playlist_a`, then `playlist_b` | one per tool, not a bundle: `diff_playlists` takes `a`/`b`, `compare_playlist_covers` and `playlist_symmetric_difference` take `playlist_id_a`/`playlist_id_b`, `playlist_diff` and `playlist_pair_check` take `playlist_a_id`/`playlist_b_id` |
 | Following fan-out | `check_playlist_following` | `playlists` | `playlist_ids` (retains its historical 1–50 bound) |
+| Single playlist identifier (not a set — see the note below) | `get_playlist`, `get_playlist_items`, `get_playlist_cover`, `update_playlist`, `search_within_playlist` | `playlist_id` | `id` — **not** on the v2.1 removal schedule below; still supported, no removal announced |
+
+**The single-identifier family is a different shape from the rows above.** Every row in this table so far describes a *collection* input (a plural list, or an A/B pair) built from the shared `src/shaping.ts` fragments, and its legacy names are plural collection names retired on a stated schedule. The `playlist_id`/`id` pair is neither: it is a single playlist reference, and its alias has no announced removal because `playlist_id` is the canonical name the rest of the tool surface moved to and `id` is the spelling these five tools shipped with. They are listed here rather than folded into a row above because a row claiming `playlist_id` was the legacy alias of a plural list would be false.
+
+Both spellings resolve through the one exported helper `resolvePlaylistId` (`src/tools/playlists.ts`), so the two rules below are uniform across all five tools and are enforced before any Spotify request:
+
+- **Supplying both is allowed only when they agree.** Conflicting values are refused with both names quoted, before the tool dispatches anything.
+- **Supplying neither is a handler-level error, not a schema error.** Neither spelling is marked required in the JSON Schema, so a call that omits both passes validation and then raises `Provide the playlist as playlist_id (or pass it as id)` once the handler runs. This is why the per-tool tables below record the identifier as `yes (runtime)` rather than a plain `yes`: the field is genuinely required for the call to succeed, but schema validation will not catch its absence.
 
 **Returned versus total counts.** Where a set operation returns arrays, `removed`/`kept` (and `uris`/`removed_uris` beside them) count only the rows actually returned, bounded by `max_results`; `removed_total`/`kept_total` carry the true impact the confirmation prompt quoted. A capped response therefore never reports a count its own arrays contradict.
 
@@ -1131,12 +1139,13 @@ Get a playlist's metadata and its items. Makes two calls: `GET /playlists/{id}` 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `playlist_id` | string | yes | Playlist ID (`id` is a back-compat alias, per the alias table above) |
+| `playlist_id` | string | yes (runtime) | Playlist ID. `id` is a back-compat alias (see the single-identifier row in the alias table above) |
+| `id` | string | no | Alias for `playlist_id`, matching the rest of the playlist family. Passing both is allowed only when they agree, and conflicting values fail before any Spotify request |
 | `limit` | number | no | Items per page, 1–100. Default: 50 |
 | `offset` | number | no | Pagination offset for items |
 | `market` | string | no | ISO 3166-1 alpha-2 country code — relinks tracks to that market and flags unavailable ones. Forwarded to **both** the metadata read and the item pages |
 | `fields` | string | no | Comma-separated response fields to keep, e.g. `total,items(track(name,uri))`. Forwarded to **both** calls |
-| `additional_types` | string[] | no | Item types beyond the default `track`; the schema accepts `track` and `episode`, sent comma-separated. Forwarded to **both** calls |
+| `additional_types` | string[] | no | Item types to include beyond the default `track`, e.g. `["track","episode"]`. The schema is a closed two-value enum — `track` and `episode` only, and an array, so the bare string `"track,episode"` is rejected. The server joins the array with commas for the wire. Forwarded to **both** calls |
 | `fetch_all` | boolean | no | Fetch every page of items via `client.getAllPages` (capped by `SPOTIFY_MCP_FETCH_ALL_CAP`, default 500) instead of a single page |
 
 **Returns:** name, description, owner, is_public, is_collaborative, total item count, URI; plus paginated items (track/episode name, artists/show, duration_ms, added_at, URI).
@@ -1155,12 +1164,13 @@ List a playlist's items on a single page — use this instead of `get_playlist` 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `playlist_id` | string | yes | |
+| `playlist_id` | string | yes (runtime) | Playlist ID. `id` is a back-compat alias (see the single-identifier row in the alias table above) |
+| `id` | string | no | Alias for `playlist_id`, matching `get_playlist`. Passing both is allowed only when they agree, and conflicting values fail before any Spotify request |
 | `limit` | number | no | Items per page, 1–100. Default: 100 |
 | `offset` | number | no | Pagination offset. Default: 0 |
 | `market` | string | no | ISO 3166-1 alpha-2 country code — relinks tracks to that market and flags unavailable ones |
 | `fields` | string | no | Comma-separated response fields to keep, e.g. `total,items(track(name,uri))` |
-| `additional_types` | string | no | Comma-separated item types beyond the default `track`, e.g. `track,episode` |
+| `additional_types` | string[] | no | Item types to include beyond the default `track`, e.g. `["track","episode"]`. The schema is a closed two-value enum — `track` and `episode` only, and an array, so the bare string `"track,episode"` is rejected. The server joins the array with commas for the wire |
 
 **Returns:** items (track/episode name, artists/show, duration_ms, added_at, URI) with total count, a truncation footer when sliced, and structuredContent carrying pagination info.
 
@@ -1202,18 +1212,20 @@ Remove tracks or episodes from a playlist. Uses `DELETE /playlists/{id}/items`.
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
+| `playlist_id` | string | yes | Playlist ID |
 | `uris` | string[] \| { uri, positions }[] | yes | URIs to remove; use `{ uri, positions }` to target specific occurrences of a repeated URI (the only way to de-duplicate repeats). Max 100 entries. |
 | `snapshot_id` | string | no | Apply the removal against this playlist version instead of the latest |
 
 ---
 
 #### `update_playlist`
-Update a playlist's name or description.
+Update a playlist's name, description, or visibility.
 
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `id` | string | yes | |
+| `playlist_id` | string | yes (runtime) | Playlist ID. `id` is a back-compat alias (see the single-identifier row in the alias table above) |
+| `id` | string | no | Alias for `playlist_id`. Passing both is allowed only when they agree, and conflicting values fail before any Spotify request |
 | `name` | string | no | |
 | `description` | string | no | |
 | `public` | boolean | no | |
@@ -1264,7 +1276,7 @@ The walk uses `get_playlist_items`' cap and its truncation verdict: `SPOTIFY_MCP
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `playlist_id` | string | no | Playlist ID (or pass it as `id`) |
+| `playlist_id` | string | yes (runtime) | Playlist ID. `id` is a back-compat alias (see the single-identifier row in the alias table above) |
 | `id` | string | no | Alias for `playlist_id`, matching `get_playlist_items`; passing both is allowed only when they agree, and conflicting values fail before any API call |
 | `query` | string | yes | Substring to match against track/episode name, artist, album, show name |
 | `kind` | string | no | `track`, `episode`, or `any`. Default: `any` — which is the pre-2.0 behaviour, since the text match already reached episodes, so widening is not a silent behaviour change for existing callers |
@@ -1279,7 +1291,7 @@ The walk uses `get_playlist_items`' cap and its truncation verdict: `SPOTIFY_MCP
 #### `get_playlist_cover`
 Get a playlist's cover image URLs.
 
-**Inputs:** `playlist_id` (string, required)
+**Inputs:** `playlist_id` (string, required at runtime) — the canonical name; `id` is a back-compat alias (see the single-identifier row in the alias table above). Passing both is allowed only when they agree.
 
 **Returns:** array of image objects (url, width, height).
 
