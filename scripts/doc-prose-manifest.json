@@ -797,8 +797,12 @@
         "label": "Module map"
       },
       {
-        "hash": "2e6987c183a71f1c",
+        "hash": "c31a5d418b1bf6a2",
         "label": "The table is generated from every TypeScript file recurs…"
+      },
+      {
+        "hash": "542aeb88e54977ae",
+        "label": "That column replaced a per-file line count (#1398), and …"
       },
       {
         "hash": "360697d299fea756",
@@ -5193,6 +5197,13 @@
       "reason": "#1435: the §3 conflicted-document recovery ended in a command that cannot succeed. 'Take the merge base, then run --write' exits 1 on a prose-damaged mixed file, because --write only rewrites marker-bounded generated blocks and the prose pin is checked after the write. Replaced with a diagnose-then-repair sequence: --prose-report (read-only) first, prose restored by hand from the dropped ref, and only then --write. Verified: --write exits 1 with a paragraph removed, and exits 0 once that paragraph is restored."
     },
     {
+      "file": "ARCHITECTURE.md",
+      "hash": "2e6987c183a71f1c",
+      "label": "The table is generated from every TypeScript file recurs…",
+      "date": "2026-09-27",
+      "reason": "reworded the module-map introduction for #1398: it described the removed LOC column, and the replacement explains what Schema bytes measures and why a line count was the wrong signal"
+    },
+    {
       "file": "docs/cookbook.md",
       "hash": "06d58c6b9c65cbe8",
       "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
@@ -5362,8 +5373,8 @@
     }
   ],
   "provenance": {
-    "head": "35634d8282cbe69c4c68037e34157910aca45c42",
-    "upstream": "35634d8282cbe69c4c68037e34157910aca45c42",
+    "head": "fe9b9d9d48673cdc66c216e20be009cd938f1363",
+    "upstream": "4b2779a288038fcc1e28af69d0f0325f36d96bf9",
     "behind": false
   }
 }
