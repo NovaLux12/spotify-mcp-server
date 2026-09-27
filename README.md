@@ -210,6 +210,7 @@ gates that hid modules, and the granted scopes in one call.
 - [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — copy-paste agent recipes
+- [docs/non-goals.md](docs/non-goals.md) — what v2 will not do, why, and what it offers instead
 - [docs/taste.md](docs/taste.md) — anonymized taste showcase driving a playlist
 - [docs/wave2-composites.md](docs/wave2-composites.md) — read-only taste composites
 - [docs/distribution.md](docs/distribution.md) — distribution and release notes
@@ -276,6 +277,25 @@ Notes:
 - **Still stuck?** `npx -y @novalux12/spotify-mcp@latest doctor` or ask your agent to run the [spotify-mcp-doctor skill](skills/spotify-mcp-doctor/SKILL.md).
 
 </details>
+
+### What this server is not
+
+v2 has a written non-goals list, so a request for something outside it gets an
+answer rather than a maybe. Each entry below carries its reasoning in
+[SPEC §1](SPEC.md#1-goals--non-goals), and
+[docs/non-goals.md](docs/non-goals.md) is the record behind both: what each one
+rules out, the source it rests on, and what the server offers instead.
+
+- Audio streaming, audio analysis, and offline playback
+- A web UI, a dashboard, or an MCP UI surface
+- Multi-tenant or hosted operation
+- Sharing one user's credentials across users
+- Lyrics
+- The Spotify Connect SDK and native client integration
+- Voice control
+- Training a model on Spotify data, or exporting derived profiles
+- A second third-party upstream, ad-tech, or monetization egress
+- Working around Spotify's own controls
 
 ## Development
 

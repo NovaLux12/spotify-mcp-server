@@ -54,6 +54,12 @@ So "removed" and "gated" are different answers with different code shapes. Check
 
 When adding a tool, verify the endpoint against the official [Spotify Web API reference](https://developer.spotify.com/documentation/web-api/reference) rather than guessing paths or field names — a wrong query parameter name is a 400, not a doc nit. Prefer the current unified endpoints (e.g. `/playlists/{id}/items`, `/me/library`) over their deprecated predecessors. Note that `GET /search` accepts a `limit` of at most 10, defaulting to 5.
 
+## Where a scope question is answered
+
+Above is the endpoint rule. The wider question — *should this server do this at all?* — is answered in [docs/non-goals.md](docs/non-goals.md), whose one-line list is mirrored in [SPEC.md §1](SPEC.md#1-goals--non-goals). Open the non-goals list before proposing a feature: several plausible ideas (a hosted multi-tenant deployment, a second third-party upstream, voice control, lyrics) are decisions rather than gaps, each with the reason and the alternative that was chosen instead.
+
+A question that is genuinely open gets an issue, because an issue records that it was asked. The *answer* goes in the non-goals list, and `tests/non-goals.test.ts` then holds SPEC §1 and the README to it. Do not resolve a scope question in a pull-request thread: the next reader of the list cannot see that it was ever discussed.
+
 ## Brand marks, wordmarks, and attribution
 
 This is an unofficial third-party client. Two rules pull in opposite
