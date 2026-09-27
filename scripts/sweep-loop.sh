@@ -36,12 +36,16 @@
 #      incomplete but resumable — re-run the same command later and it
 #      continues from the report
 #   4  another sweep loop already holds the lock for this report
-#   5  the gauntlet failed to deliver a report: three batches running died
-#      mid-write or exited non-zero without reaching any of the gauntlet's own
-#      end-of-batch, quota-wall or completion paths — or the run hit
-#      MAX_BATCHES with at least one such batch, which is a failure rather than
-#      a pause, so automation is never told to re-run a sweep that keeps
-#      crashing
+#   5  the run did not produce a trustworthy sweep. One of two causes, and the
+#      message names which: a batch died mid-write or exited non-zero without
+#      reaching any of the gauntlet's own end-of-batch, quota-wall or
+#      completion paths (three of those, or MAX_BATCHES with at least one, is a
+#      failure rather than a pause); or the gauntlet recorded a mutation proof
+#      that blocks — MUTATIONS_DETECTED or UNVERIFIED — which fails the batch it
+#      happened in immediately, because a detected mutation is a fact about the
+#      account, not a transient to retry
+#
+#      Either way the report is left at its last complete batch.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -68,7 +72,8 @@ usage: BATCH=40 INTERVAL=1800 MAX_BATCHES=30 REPORT=path scripts/sweep-loop.sh
   REPORT       non-empty path   cumulative report (default memory/live-sweep-report.json)
 
 exit codes: 0 sweep complete, 2 bad input, 3 max batches reached with nothing
-lost (resumable), 4 lock held by another loop, 5 a batch failed to record a report
+lost (resumable), 4 lock held by another loop, 5 a batch lost its report, or the
+gauntlet recorded a mutation proof that blocks
 USAGE
 }
 
@@ -246,6 +251,13 @@ trap 'on_signal terminated 143' TERM
 
 # ---- batches -----------------------------------------------------------
 hard_failures=0
+# Why this run's last failing batch failed. "no report" is the crash case; a
+# blocking proof names itself. Both exit-5 summaries below used to say "without
+# recording a batch", which stopped being true the moment a batch could fail
+# *with* a report published — a blocking mutation proof fails a batch that wrote
+# and published its report perfectly well. A summary that cannot describe the
+# failure it is summarising is the same defect as the guard that produced it.
+last_failure='no report'
 
 for i in $(seq 1 "$MAX_BATCHES"); do
   batch_failed=0
@@ -262,7 +274,25 @@ for i in $(seq 1 "$MAX_BATCHES"); do
   code=${PIPESTATUS[0]}
   set -e
 
+  # The gauntlet's last word on a batch. On the completion path it prints
+  # SWEEP_COMPLETE and exits `proofBlocksExit(completeProof) ? 1 : 0`
+  # (live-gauntlet.mjs), so SWEEP_COMPLETE with a non-zero exit is a sweep that
+  # recorded every tool and still cannot claim the account was left alone.
+  # #1346 was only the batch-side of this: the completion path read the marker
+  # and reported "SWEEP DONE" without ever looking at the exit status, so a
+  # cumulative MUTATIONS_DETECTED on the final batch of a sweep was announced as
+  # a clean finish.
+  proof_status=$(sed -n 's/^mutation proof: //p' "$batch_log" | tail -n 1)
+  banner_state=absent
+  if grep -q 'batch run finished' "$batch_log"; then banner_state=present; fi
+
   if grep -q 'SWEEP_COMPLETE' "$batch_log"; then
+    if (( code != 0 )); then
+      printf 'sweep-loop: the gauntlet reported SWEEP_COMPLETE but exited %d — every tool is recorded and its mutation proof (%s) does not allow a claim, so this is not a clean sweep; the report is left at its last complete batch\n' \
+        "$code" "${proof_status:-none}" >&2
+      tail -25 "$batch_log" >&2
+      exit 5
+    fi
     echo "SWEEP DONE after $i batches"
     exit 0
   fi
@@ -295,20 +325,67 @@ for i in $(seq 1 "$MAX_BATCHES"); do
   # very artifact the script exists to protect. "Left at its last complete
   # batch" is the invariant the staging-and-rename above actually holds, and it
   # stays true whether or not a batch published during the run.
+  #
+  # #1346: the guard used to be `code != 0 && ! grep -q 'batch run finished'`,
+  # which asked the banner to stand in for the exit status. The banner is
+  # printed *before* the report is written, so it is present on every batch
+  # that got that far — the condition evaluated false for every completed batch
+  # whatever it exited with, and a completed batch that caught a tool mutating
+  # state during what it believed was a dry run was recorded as a success. The
+  # exit status is the signal; the banner is diagnostic context and is named in
+  # the message instead of deciding anything.
+  #
+  # A non-zero exit is not unconditionally a failed batch, and treating it as
+  # one would be a second wrong verdict in the other direction. The gauntlet
+  # exits 1 for `counts.FAIL || proofBlocksExit(proof)`, so exit 1 covers a
+  # tool FAIL — a quota wall, a gated endpoint — which published its report and
+  # is retried by --resume on a later batch. That is the ordinary product of a
+  # sweep and is what exit 3 ("resumable") means; counting it would let one
+  # bad batch trip the three-batch threshold and stop a healthy run. What is
+  # not ordinary is a mutation proof that blocks, so the proof line is read
+  # directly: MUTATIONS_DETECTED and UNVERIFIED are the two statuses the
+  # gauntlet itself refuses to exit 0 on, and either one fails the batch
+  # immediately rather than accumulating toward a threshold — a detected
+  # mutation is a fact about the account, not a transient to retry.
+  case ${proof_status:-} in
+    MUTATIONS_DETECTED|UNVERIFIED)
+      printf 'batch %d: the gauntlet exited %d and recorded mutation proof %s — it completed the batch (%s) and still could not show the account was left alone, so the batch is a failure, not a resumable pause\n' \
+        "$i" "$code" "$proof_status" "$banner_state" >&2
+      batch_failed=1
+      last_failure="mutation proof $proof_status"
+      ;;
+  esac
+
   # Reaching the end of a batch, a quota wall or completion is the gauntlet's
   # own contract; a non-zero exit with none of those means the process died,
   # and three of those is a failure rather than a slow sweep. A batch that
   # already failed above is not counted again: "failed N batches running" has
   # to mean N batches, or the threshold trips half as early as the header says.
-  if (( batch_failed == 0 )) && (( code != 0 )) && ! grep -q 'batch run finished' "$batch_log"; then
-    batch_failed=1
+  #
+  # Two ways to have exited non-zero without a verdict to read, and neither may
+  # be reported as a resumable pause just because the banner was printed. The
+  # banner means "reached the end of a batch", which is progress, not a verdict
+  # — the proof line is the verdict, and it is rendered *after* the banner. A
+  # non-zero exit with no proof line is a process killed between the two.
+  if (( batch_failed == 0 )) && (( code != 0 )); then
+    if [[ $banner_state == absent ]]; then
+      printf 'batch %d: the gauntlet exited %d without reaching the end of a batch (no "batch run finished" line) — the process died before it recorded a verdict\n' \
+        "$i" "$code" >&2
+      batch_failed=1
+      last_failure='no report'
+    elif [[ -z ${proof_status:-} ]]; then
+      printf 'batch %d: the gauntlet exited %d and printed its end-of-batch banner (%s) but no "mutation proof:" line — it died between the two, so it recorded no verdict on whether the account was left alone\n' \
+        "$i" "$code" "$banner_state" >&2
+      batch_failed=1
+      last_failure='no mutation proof'
+    fi
   fi
   if (( batch_failed == 1 )); then
     hard_failures=$(( hard_failures + 1 ))
   fi
   if (( hard_failures >= 3 )); then
-    printf 'sweep-loop: the gauntlet failed %d batches running without recording a batch (last exit=%d); the report is left at its last complete batch\n' \
-      "$hard_failures" "$code" >&2
+    printf 'sweep-loop: the gauntlet failed %d batches running (last exit=%d, last failure: %s); the report is left at its last complete batch\n' \
+      "$hard_failures" "$code" "$last_failure" >&2
     tail -25 "$batch_log" >&2
     exit 5
   fi
@@ -316,10 +393,12 @@ for i in $(seq 1 "$MAX_BATCHES"); do
   # A run that ends at MAX_BATCHES having lost a batch is not a resumable
   # pause: re-running would re-drive a gauntlet that is already failing, and
   # 3 would tell automation to do exactly that. No completion marker was seen
-  # above, so 5 is the honest code whatever MAX_BATCHES was.
+  # above, so 5 is the honest code whatever MAX_BATCHES was. "failed to record
+  # one" would also be the wrong summary once a batch can fail with a report
+  # published, so the cause is named.
   if (( i == MAX_BATCHES )) && (( hard_failures > 0 )); then
-    printf 'sweep-loop: MAX_BATCHES (%d) reached with %d batch(es) running that failed to record one — exiting 5, not 3, so a crash is not read as a resumable stop; the report is left at its last complete batch\n' \
-      "$MAX_BATCHES" "$hard_failures" >&2
+    printf 'sweep-loop: MAX_BATCHES (%d) reached with %d batch(es) running that failed (last failure: %s) — exiting 5, not 3, so a crash is not read as a resumable stop; the report is left at its last complete batch\n' \
+      "$MAX_BATCHES" "$hard_failures" "$last_failure" >&2
     tail -25 "$batch_log" >&2
     exit 5
   fi

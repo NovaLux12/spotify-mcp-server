@@ -300,9 +300,13 @@ process are all standing state, not standing approval.
       `2` a knob was not an integer or was out of range (node never started),
       `3` `MAX_BATCHES` reached with every batch accounted for — resumable, so
       re-run the same command later — `4` another loop holds this report's lock
-      and this one refused to start, `5` a batch died without recording a
-      report. Only `3` means "run it again"; `5` means the gauntlet is failing
-      and re-running it would drive the same failure.
+      and this one refused to start, `5` the run did not produce a trustworthy
+      sweep: a batch died without recording a report, or the gauntlet recorded
+      a mutation proof that blocks (`MUTATIONS_DETECTED` / `UNVERIFIED`). Only
+      `3` means "run it again"; `5` means the gauntlet is failing and re-running
+      it would drive the same failure. A blocking mutation proof fails its
+      batch at once — it is a fact about the account, not a transient — so a
+      `5` naming a proof is a stop-and-investigate, not a retry.
     - One loop at a time per report directory. A second `sweep:loop` exits `4`
       rather than interleaving with the first against one Spotify app quota and
       one report. `INT`/`TERM` stop the loop at once — including mid-pause — and
