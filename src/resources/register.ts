@@ -36,6 +36,7 @@
  */
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { createResourceReadRegistry, type ResourceReadRegistry } from './subscriptions.js';
 import { registerResources } from './index.js';
 import { registerTemplateResources } from './templates.js';
 
@@ -48,7 +49,19 @@ import { registerTemplateResources } from './templates.js';
  * registrars directly from a test that is asserting about routing across them —
  * that is how the pre-#685 wiring hid the shadowing twins.
  */
-export function registerReadSurfaces(server: McpServer, client: SpotifyClient): void {
+/**
+ * @param reads
+ *   Passed straight through to `registerResources` (#597). `src/index.ts`
+ *   creates one and hands the same object to `installResourceSubscriptions`, so
+ *   the poll reads through the renderers this call registered rather than
+ *   through a second copy. Optional, and defaulted, because a test that only
+ *   wants the read surface has no subscriptions to wire.
+ */
+export function registerReadSurfaces(
+  server: McpServer,
+  client: SpotifyClient,
+  reads: ResourceReadRegistry = createResourceReadRegistry(),
+): void {
   registerTemplateResources(server, client);
-  registerResources(server, client);
+  registerResources(server, client, reads);
 }

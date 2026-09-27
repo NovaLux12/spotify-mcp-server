@@ -1119,6 +1119,49 @@ export function parseExperimentalAnalytics(raw: string | undefined): boolean {
 }
 
 /**
+ * Whether `SPOTIFY_MCP_SUBSCRIPTIONS` reads as on (#597).
+ *
+ * Default OFF, and the reason is a cost the operator has to be able to see: a
+ * subscription poll is a repeating API read against a shared rate-limit budget,
+ * started by the host rather than by a user request. Advertising it by default
+ * would spend a user's quota on their behalf without them asking.
+ *
+ * Fails in the safe direction — an unreadable value leaves subscriptions OFF,
+ * which is the default — and the installer prints the capability it advertised
+ * so the ON case is visible in a log too.
+ */
+export function subscriptionsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_SUBSCRIPTIONS);
+}
+
+/** The poll interval bounds. The floor is a request rate, the ceiling a lifetime. */
+const SUBSCRIPTION_POLL_MIN_MS = 1_000;
+const SUBSCRIPTION_POLL_MAX_MS = 300_000;
+const SUBSCRIPTION_POLL_DEFAULT_MS = 15_000;
+
+/**
+ * `SPOTIFY_MCP_SUBSCRIPTION_POLL_MS`, clamped.
+ *
+ * Clamped rather than refused, and it says so when it clamps: an operator who
+ * asks for a 50 ms poll has asked for 50 reads a second against a shared quota,
+ * and a server that silently served it would be spending the user's rate limit
+ * on a value they mistyped. The accepted range is printed on the stderr line the
+ * installer already emits, so the clamp is visible without a second mechanism.
+ */
+export function subscriptionPollEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const parsed = Number.parseInt(env.SPOTIFY_MCP_SUBSCRIPTION_POLL_MS ?? '', 10);
+  if (!Number.isFinite(parsed)) return SUBSCRIPTION_POLL_DEFAULT_MS;
+  return Math.min(SUBSCRIPTION_POLL_MAX_MS, Math.max(SUBSCRIPTION_POLL_MIN_MS, parsed));
+}
+
+/** The three numbers a stderr line has to state for the clamp to be legible. */
+export const SUBSCRIPTION_POLL_RANGE = {
+  minMs: SUBSCRIPTION_POLL_MIN_MS,
+  maxMs: SUBSCRIPTION_POLL_MAX_MS,
+  defaultMs: SUBSCRIPTION_POLL_DEFAULT_MS,
+} as const;
+
+/**
  * Validate SPOTIFY_MCP_MARKET: ISO 3166-1 alpha-2, case-insensitive.
  * Returns uppercase code or null if unset. Warns and returns null if invalid.
  */
@@ -1494,6 +1537,24 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
     name: 'SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK',
     summary: `Second, separate opt-in required before SPOTIFY_MCP_HTTP_BIND may name a non-loopback address (${TRUTHY_ENV_VALUES.join('/')}).`,
     default: null,
+    inHelp: true,
+  },
+  // #597: resource subscriptions. Both are in `--help` because a host cannot
+  // discover either from a capability it was never shown — the whole feature is
+  // invisible until the operator sets the first one.
+  {
+    name: 'SPOTIFY_MCP_SUBSCRIPTIONS',
+    summary:
+      'Advertise resources.subscribe and watch a small fixed set of live playback and rate-limit resources '
+      + '(1/true/yes/on). Off by default: a poll is a repeating read against your Spotify rate limit, started by the '
+      + 'host rather than by a request. The watchable set is printed at startup and listed in docs/configuration.md.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_SUBSCRIPTION_POLL_MS',
+    summary: `How often a subscribed resource is re-read, in milliseconds. ${SUBSCRIPTION_POLL_RANGE.minMs}-${SUBSCRIPTION_POLL_RANGE.maxMs}; values outside that range are clamped. Only read when subscriptions are on.`,
+    default: String(SUBSCRIPTION_POLL_RANGE.defaultMs),
     inHelp: true,
   },
   // `default: null` on the four `inHelp: false` rows is not a missing default.

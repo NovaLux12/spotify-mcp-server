@@ -190,7 +190,15 @@ async function buildMcpServer(
     isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes);
   if (resourcesActive) {
     const { registerReadSurfaces } = await import('./resources/register.js');
-    registerReadSurfaces(server, client);
+    // #597: one registry, two consumers. `registerReadSurfaces` records each
+    // watchable resource's renderer in it; `installResourceSubscriptions` polls
+    // through those same renderers, so a subscription compares the body a
+    // `resources/read` would return rather than a private re-implementation of
+    // it. Both are dynamic for the reason the import above gives.
+    const { createResourceReadRegistry, installResourceSubscriptions } = await import('./resources/subscriptions.js');
+    const reads = createResourceReadRegistry();
+    registerReadSurfaces(server, client, reads);
+    installResourceSubscriptions(server, reads);
   }
   if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) {
     const { registerPrompts } = await import('./prompts/index.js');

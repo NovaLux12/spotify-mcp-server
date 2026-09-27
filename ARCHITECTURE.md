@@ -154,6 +154,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | — |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | — |
 | `src/resources/register.ts` | The one registration order for the read surface (#685). (0 registered tools) | — |
+| `src/resources/subscriptions.ts` | Resource subscriptions (#597): `resources/subscribe`, and the `notifications/resources/updated` it promises. (0 registered tools) | — |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | — |
 | `src/resources/uritemplate.ts` | RFC 6570-conformant matching for the URI templates this server advertises (#1401). (0 registered tools) | — |
 | `src/result.ts` | The one place a tool result is built (#582). (0 registered tools) | — |

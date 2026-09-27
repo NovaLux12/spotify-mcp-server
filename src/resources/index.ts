@@ -29,6 +29,7 @@ import { walkFollowedArtists } from '../tools/following.js';
 // and the tool cannot drift on the #855 volume guard.
 import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
 import { formatDuration } from '../result.js';
+import { createResourceReadRegistry, watchableFor, type ResourceReadRegistry } from './subscriptions.js';
 
 type RenderableItem = {
   type?: string;
@@ -280,7 +281,20 @@ function shownCount(disclosure: WalkDisclosure): string {
     : `${disclosure.total} total`;
 }
 
-export function registerResources(server: McpServer, client: SpotifyClient): void {
+/**
+ * @param reads
+ *   Where the renderers of every *watchable* resource are recorded (#597), so
+ *   a subscription poll re-reads through the same function `resources/read`
+ *   uses. It defaults to a private registry, so a caller that wants no
+ *   subscriptions — every existing test, and every toolset trimming that keeps
+ *   resources — pays nothing and registers nothing extra. The three parameters
+ *   of `buildMcpServer` are the only production path that passes one.
+ */
+export function registerResources(
+  server: McpServer,
+  client: SpotifyClient,
+  reads: ResourceReadRegistry = createResourceReadRegistry(),
+): void {
   // #59 freshness note: every resource below goes through the shared client,
   // so catalog-backed reads are served from the short-TTL cache (~5 min)
   // while /me/player* paths bypass it and stay live (#32/#54).
@@ -343,11 +357,22 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     // reading the template entry sees only that one — a parameter set
     // documented solely on the bare entry does not reach the reader who is
     // about to build a URI with it.
+    //
+    // #597: a watchable resource says so HERE, on both of its entries, because
+    // this description is the only place a host learns it may subscribe. The
+    // note is appended to both entries for the same reason the parameter set
+    // is: a note documented on one entry does not reach a host reading the
+    // other. It states the *promise* and, more importantly, what is not a
+    // change — a host that subscribes on the strength of a sentence that did not
+    // say the playback position advances is subscribed to a stream of noise.
+    const watch = watchableFor(uri);
+    if (watch) reads.register(uri, render);
+    const watchNote = watch ? ` ${watch.note}` : '';
     const suffix =
       params && params.length > 0 ? ` Parameters: ${params.map(([p, doc]) => `?${p} (${doc})`).join(', ')}.` : '';
     const jsonNote = ' (?format=json returns raw JSON)';
     const query = ['format', ...(params ?? []).map(([p]) => p)];
-    server.resource(name, uri, { description: `${description}${suffix}`, mimeType: 'text/plain' }, renderWithApiErrors);
+    server.resource(name, uri, { description: `${description}${suffix}${watchNote}`, mimeType: 'text/plain' }, renderWithApiErrors);
     // #1401: the `{?…}` entry is a real router, not one plus a decoy. It used
     // to be the SDK's stricter `^…\?a=([^&]+)&b=([^&]+)&c=([^&]+)$`, which
     // needed every parameter present and adjacent, so
@@ -365,7 +390,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       `${name}-query`,
       new ResourceTemplate(new Rfc6570UriTemplate(`${uri}{?${query.join(',')}}`), { list: undefined }),
       {
-        description: `Query-string variant of '${uri}'${jsonNote}${suffix}`,
+        description: `Query-string variant of '${uri}'${jsonNote}${suffix}${watchNote}`,
         mimeType: 'text/plain',
       },
       renderWithApiErrors,
@@ -437,10 +462,19 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       const state = await client.get<Omit<PlaybackState, 'item'> & { item: RenderableItem | null }>('/me/player', {
         additional_types: 'track,episode,audiobook',
       });
+      // #597: the JSON spelling is answered BEFORE the idle check. `/me/player`
+      // answers 204 with no body when there is no active session, and the
+      // client surfaces that as `null`; the prose branch below turns it into a
+      // `text/plain` sentence, so a consumer that asked for JSON — including
+      // this server's own change poll — got something it could not parse, and
+      // the one state a subscriber most needs to notice (playback ended) was
+      // the one state that could not be read. `null` is the honest JSON for
+      // "the endpoint returned no state", and it is distinct from an object
+      // with a null item, which the API does send.
+      if (wantsJson(url)) return json('spotify://player/state', state ?? null);
       if (!state || !state.item) {
         return text('spotify://player/state', 'Nothing is currently playing.');
       }
-      if (wantsJson(url)) return json('spotify://player/state', state);
       const { item, is_playing, shuffle_state, repeat_state, device, progress_ms } = state;
       const lines: string[] = [
         `${is_playing ? 'Playing' : 'Paused'}: ${formatItem(item)}`,
@@ -465,10 +499,13 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     "Current playback queue ('?format=json' returns the raw API object)",
     async (url) => {
       const queue = await client.get<SpotifyQueue>('/me/player/queue');
+      // Same #597 reorder as `spotify://player/state`: the JSON spelling is
+      // answered before the empty-session branch, so "no active session" is
+      // readable as JSON rather than arriving as a sentence.
+      if (wantsJson(url)) return json('spotify://player/queue', queue ?? null);
       if (!queue) {
         return text('spotify://player/queue', 'No active playback session.');
       }
-      if (wantsJson(url)) return json('spotify://player/queue', queue);
       const lines: string[] = [];
       if (queue.currently_playing) {
         lines.push(`Currently playing: ${formatItem(queue.currently_playing)}`);

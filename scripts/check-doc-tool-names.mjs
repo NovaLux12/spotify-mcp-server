@@ -132,6 +132,16 @@ const parameterAllowlist = new Set([
   // case: a caller reading an old payload must be able to look the name up.
   'already_present', 'captured_at', 'is_playing', 'origin_id',
   'playback_state', 'repeat_state', 'saved_at', 'shuffle_state',
+  // #597: the `/me/player` playback position, and the rate-limit request
+  // counter. SPEC §6.5 has to name both, and for the same reason it names
+  // `is_playing` above: the contract is about what is DELIBERATELY NOT a
+  // change, and a doc cannot promise that a field is excluded from a
+  // comparison without writing the field's name. Same category — response
+  // fields of a resource, not tool parameters. `progress_ms` is the
+  // continuously-advancing one the `player/state` vector excludes, and
+  // `requests_total` is the `me/rate-limit` JSON key whose counter the
+  // `me/rate-limit` vector excludes.
+  'progress_ms', 'requests_total',
   // #847: the `get_queue` structuredContent keys SPEC §5.1 and §5.15 name.
   // The queue-read collapse put six tools' answers under `runtime`,
   // `duplicates` and `profile`, and a migration note has to name the fields
