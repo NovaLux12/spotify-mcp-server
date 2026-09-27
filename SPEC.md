@@ -1786,6 +1786,47 @@ The finalized default registry exposes **14 prompts**: `artist_deep_dive`, `crat
 | 502 / 503 / 504 Gateway, Service Unavailable, Gateway Timeout | Spotify or its edge is temporarily down | Retry within a shared attempt budget of 3 dispatches, waiting `Retry-After` when present and otherwise 250 ms·2ⁿ + 0–250 ms jitter; a wait above the 10 s in-queue cap fails fast with the wait named in the error |
 | 503 (transport) | DNS failure, connection reset, socket hang-up | Retried only for an idempotent verb (`GET`/`HEAD`/`PUT`/`DELETE`/`OPTIONS`) — never for a `POST`, which may already have been applied. Exhausted, it is a `SpotifyApiError` naming the method, URL and cause, not a raw `TypeError` |
 | 408 (client timeout) | Outbound call exceeded `SPOTIFY_REQUEST_TIMEOUT_MS` (default 30 s) | `SpotifyApiError` naming the timed-out method and URL |
+| 499 (caller cancellation) | The request's own `AbortSignal` fired — an MCP `notifications/cancelled`, or a host disconnect | `SpotifyApiError` with `reason: "CANCELLED"`, mapped to `kind: "cancelled"`. **Never retried**, and never served from the read cache. Not a timeout: the two abort causes are combined with `AbortSignal.any` and told apart by *which* signal aborted, so a cancellation is never reported as "timed out, retry shortly" |
+
+### Cancellation
+
+Every `tools/call` carries a cancellation signal, and it reaches the network
+layer without any tool handler having to mention it.
+
+- **The seam.** The MCP SDK hands each handler an `extra` whose `signal` is the
+  request's `AbortController` — the one `notifications/cancelled` aborts.
+  `installCancellationContextBoundary` (`src/cancellation.ts`) reads it at the
+  single tool-invocation boundary and runs the handler under an
+  `AsyncLocalStorage`, exactly as the progress token and the mutation actor
+  already are. This is why no `src/tools` handler signature changed.
+- **The client.** `get()` and `getAllPages()` take an optional `signal` and fall
+  back to the ambient one; `mutate`/`post`/`put`/`delete`/`putRaw` use the
+  ambient one. The signal is resolved in the CALLER's async context and carried
+  explicitly — a queued task runs under the scheduler's context, so reading the
+  store down there would sample the wrong request.
+- **The walk.** A cancelled `getAllPages` stops **at a page boundary**: the
+  refusal happens in `get()` before the URL is built and before the request is
+  enqueued, so the page that landed is fully committed and no half-written page
+  is left in the accumulator. A walk never returns a partial result that could
+  be read as complete — it throws, including `getAllPagesWithTruncation`, whose
+  `items` + `truncated` shape would otherwise read as "N pages, and that is all
+  of them".
+- **The queue.** A task whose signal fired is dropped at dequeue time, *before*
+  the start gate and *before* `recordRequest()` — a permit spent on an abandoned
+  call delays the next live caller, and a request counted for one that was never
+  sent inflates the quota figures a caller budgets against.
+- **No backoff hold.** A cancelled request never enters the retry ladder, so it
+  never sleeps `250 ms·2ⁿ` inside the serialized queue.
+- **Not confusable with a timeout.** Every other error kind tells the host to do
+  something — retry, re-auth, request access, wait for a window. `cancelled` is
+  the one whose correct action is to do nothing.
+
+Two `AbortSignal.any` details are load-bearing: the caller's signal and the
+request timeout are *combined* (the pre-fix code assigned the timeout after a
+spread, silently discarding any caller signal), and `any` is used rather than a
+manual listener because the SDK's request signal outlives every request it
+aborts, so a listener left on it would accumulate one entry per Spotify call
+for the life of the session.
 
 ### No active device
 When playback commands fail because no device is active (204 with no `device_id` found): return a helpful message listing available devices and asking the user to open Spotify on a device first.

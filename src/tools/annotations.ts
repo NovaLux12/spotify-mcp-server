@@ -40,7 +40,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type ServerResult } from
 import { getObjectShape, normalizeObjectSchema, safeParseAsync } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
 import { finalInputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
-import { SpotifyApiError, isTokenFailureReason } from '../client.js';
+import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
  * v2 registry policy (#909/#918). Prefix allowances are a frozen baseline, not
@@ -1615,6 +1615,12 @@ type ErrorKind =
   | 'validation'
   | 'unknown_tool'
   | 'unknown_param'
+  // The caller withdrew the request (#676). Its own kind because every other
+  // class tells the host to DO something — retry, re-auth, request access,
+  // wait for a window — and the one correct action here is to do nothing. A
+  // cancellation reported as `unavailable` (408-shaped) would have the host
+  // re-issue the very request it just cancelled.
+  | 'cancelled'
   | 'internal';
 
 interface ErrorFields {
@@ -1786,6 +1792,7 @@ function defaultReason(kind: ErrorKind): string {
     case 'not_modified': return 'not_modified_without_validator';
     case 'unknown_tool': return 'tool_not_registered';
     case 'unknown_param': return 'parameter_not_accepted';
+    case 'cancelled': return 'cancelled_by_caller';
     case 'internal': return 'internal_error';
   }
 }
@@ -1942,6 +1949,15 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
       kind = 'not_modified';
       text = `${tool} was answered 304 Not Modified with no stored ETag to match it; the read cannot be served from cache.`;
       fix = 'Re-read without a validator (do not send If-None-Match).';
+    } else if (status === CANCELLED_STATUS) {
+      // #676: the caller's own `notifications/cancelled` reached us. The text
+      // must name cancellation, because this is the tool result a host reads
+      // to decide the request is finished — a host that read "failed
+      // unexpectedly" here would have no way to tell its own cancellation
+      // apart from a real fault.
+      kind = 'cancelled';
+      text = `${tool} was cancelled by the caller; no further Spotify requests were made for this call.`;
+      fix = 'Do not retry a cancelled call; re-issue only if the request is still wanted.';
     } else if (status === 400 || status === 422) {
       kind = 'validation';
       text = `${tool} received invalid arguments; pass values that match the tool schema.`;

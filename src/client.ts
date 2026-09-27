@@ -24,6 +24,7 @@ import {
 import { getConfig } from './config.js';
 import { ownStoreRoots, readLocalFile } from './paths.js';
 import { appendHistory, currentToolName } from './history.js';
+import { currentRequestSignal } from './cancellation.js';
 import type { MutationRecord } from './history.js';
 
 const BASE_URL = 'https://api.spotify.com/v1';
@@ -58,12 +59,37 @@ import type { TokenData, SpotifyPaged } from './types/spotify.js';
  * callers (cover image fetch from a CDN, etc.) can share the same timeout and
  * translate a stall into a typed SpotifyApiError (#880).
  */
-export async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+export async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<Response> {
   const requestTimeoutMs = getConfig().spotifyRequestTimeoutMs;
+  // A caller-supplied signal (#676) and our own deadline are INDEPENDENT
+  // aborts, so they are combined rather than one overwriting the other. The
+  // previous `{ ...init, signal: AbortSignal.timeout(...) }` could only ever
+  // honour the timeout: a `signal` passed in `init` was silently discarded, so
+  // a cancelled MCP request kept its socket open to the deadline.
+  //
+  // `AbortSignal.any` is used rather than a manual listener so the combined
+  // signal is not retained by either source: an SDK request signal outlives
+  // every request it aborts, and a listener left on it would accumulate one
+  // entry per Spotify call for the life of the session.
+  const timeoutSignal = AbortSignal.timeout(requestTimeoutMs);
+  const effective = signal === undefined ? timeoutSignal : AbortSignal.any([signal, timeoutSignal]);
   try {
-    return await fetch(url, { ...init, signal: AbortSignal.timeout(requestTimeoutMs) });
+    return await fetch(url, { ...init, signal: effective });
   } catch (err) {
-    // We own the signal, so an abort here can only be our own timeout.
+    // The two abort causes must stay distinguishable. A timeout means "Spotify
+    // is slow, retry shortly" (408). A cancellation means the CALLER gave up —
+    // telling it to retry would spend the quota it just decided to stop
+    // spending — so it gets its own 499. The check is on the caller's signal
+    // rather than on the error's name because `AbortSignal.any` propagates
+    // whichever source fired, and a caller aborting with a custom reason
+    // rejects with that reason rather than an `AbortError`.
+    if (signal?.aborted) {
+      throw new SpotifyApiError(CANCELLED_STATUS, cancellationMessage(init.method, url));
+    }
     if (err instanceof Error && (err.name === 'TimeoutError' || err.name === 'AbortError')) {
       throw new SpotifyApiError(
         408,
@@ -72,6 +98,45 @@ export async function fetchWithTimeout(url: string, init: RequestInit): Promise<
     }
     throw err;
   }
+}
+
+/**
+ * Status for a caller-cancelled request (#676).
+ *
+ * 499 is nginx's "client closed request", chosen because it is outside every
+ * band the Spotify error mapping already owns: it must not read as 401
+ * (re-auth), 403 (Premium/scope), 408 (retry shortly) or 429 (wait for the
+ * window). A host told "408, retry shortly" about a call it deliberately
+ * abandoned would re-issue exactly the quota spend the caller cancelled.
+ */
+export const CANCELLED_STATUS = 499;
+
+/** Reason tag so a caller can classify without parsing the message. */
+export const CANCELLED_REASON = 'CANCELLED';
+
+function cancellationMessage(method: string | undefined, target: string | undefined): string {
+  // The queue has no method or path to name: a task is dropped at the lane,
+  // where the only thing known about it is that its caller left. Saying so
+  // plainly beats printing "GET undefined".
+  if (target === undefined) {
+    return `${method ?? 'Request'} cancelled by the caller before it was sent`;
+  }
+  return `${method ?? 'GET'} ${target} cancelled by the caller`;
+}
+
+/**
+ * The error a cancelled call raises. Constructed at every place that refuses to
+ * keep working, so a cancellation reads identically whether it was caught
+ * between pages or thrown from an in-flight fetch — a caller (or a host
+ * reading the tool result) must not have to tell those apart.
+ */
+export function cancelledError(method: string | undefined, target: string | undefined): SpotifyApiError {
+  return new SpotifyApiError(
+    CANCELLED_STATUS,
+    cancellationMessage(method, target),
+    undefined,
+    CANCELLED_REASON,
+  );
 }
 
 export class SpotifyApiError extends Error {
@@ -372,6 +437,13 @@ export interface GetAllPagesOptions {
    * Best-effort: a throwing hook is swallowed and cannot break the walk.
    */
   onPage?: (info: PageProgress) => void;
+  /**
+   * Abort signal for this walk (#676). Checked BEFORE each page request, so a
+   * cancellation costs at most the one page already in flight. Omitting it
+   * falls back to the ambient `tools/call` request signal — see
+   * {@link GetOptions.signal}.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -399,6 +471,13 @@ interface LaneTask {
    * walk page ahead of the interactive reads that were queued before it.
    */
   priority: 'normal' | 'low';
+  /**
+   * The caller's cancellation signal, captured at enqueue time (#676). Not
+   * read from ambient context at drain time: the drain runs under the
+   * scheduler's context, so a task would be judged against whichever request
+   * happened to wake it rather than the one that asked for the work.
+   */
+  signal?: AbortSignal;
 }
 
 export function selectNextLaneTask(
@@ -480,6 +559,15 @@ interface RateLimitStatus {
 export interface GetOptions {
   priority?: 'normal' | 'low';
   onNotModified?: () => void;
+  /**
+   * Abort signal for this read (#676). When omitted, the ambient
+   * `tools/call` request signal is used, so a handler that never mentions
+   * cancellation still stops when its host cancels the request. Supply one
+   * explicitly to override that — the two never combine, because a direct
+   * caller has no request signal and a tool handler has no business inventing
+   * its own.
+   */
+  signal?: AbortSignal;
 }
 
 // ---------------------------------------------------------------------------
@@ -1632,8 +1720,17 @@ export class SpotifyClient {
   private enqueue<T>(
     fn: (attempts: number) => Promise<T>,
     priority: 'normal' | 'low' = 'normal',
+    signal: AbortSignal | undefined = currentRequestSignal(),
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
+      // A task whose caller has already cancelled is NOT dropped here. It is
+      // enqueued and then dropped by `_executeTask` before the start gate and
+      // before `recordRequest()` (#676). A pre-enqueue drop was tried and
+      // removed: it was externally indistinguishable from the dequeue-time one
+      // (same status, same zero requests, same zero counted requests), so it
+      // was a second place to keep in sync for no observable difference. The
+      // check that a cancellation can NOT be served from is `get`'s entry
+      // check, which runs before this is ever reached.
       this._lanes[priority].push({
         run: fn as (attempts: number) => Promise<unknown>,
         resolve: resolve as (v: unknown) => void,
@@ -1641,6 +1738,7 @@ export class SpotifyClient {
         enqueuedAt: Date.now(),
         attempts: 0,
         priority,
+        signal,
       });
       // Wake a drain parked mid-cohort: a task arriving while a permit is free
       // must start on the next tick, not when the request already running
@@ -1830,6 +1928,15 @@ export class SpotifyClient {
         task.reject(breaker);
         return;
       }
+      // A task cancelled while it sat in the lane is dropped HERE, before the
+      // start gate and before `recordRequest()`. Both are load-bearing: a
+      // permit spent on an abandoned call delays the next live caller, and a
+      // request counted for one that was never sent inflates the quota figures
+      // a caller is told to budget against (#676).
+      if (task.signal?.aborted) {
+        task.reject(cancelledError(undefined, undefined));
+        return;
+      }
       await this._awaitStartSlot();
       this.recordRequest();
       let result: unknown;
@@ -1850,6 +1957,7 @@ export class SpotifyClient {
             enqueuedAt: Date.now(),
             attempts: task.attempts + 1,
             priority: task.priority,
+            signal: task.signal,
           });
           this._notify();
           return;
@@ -1902,7 +2010,20 @@ export class SpotifyClient {
     retryCount = 0,
     contentType?: string,
     conditional?: { ifNoneMatch?: string },
+    signal?: AbortSignal,
   ): Promise<Response> {
+    // The signal is resolved by the PUBLIC method that owns the call and
+    // passed down explicitly, never read from ambient context in here. This
+    // body runs inside a queued task, and a task is dispatched by the
+    // scheduler under whichever async context happened to wake the drain —
+    // not the caller's. Reading `currentRequestSignal()` at this depth would
+    // sample the wrong request, or none, and would make a walk's pages judged
+    // against a stranger's cancellation.
+    //
+    // Refuse BEFORE the token refresh and before the fetch: a call whose
+    // caller has already gone must cost the account nothing at all (#676).
+    if (signal?.aborted) throw cancelledError(method, url);
+
     await this.ensureValidToken();
 
     const headers: Record<string, string> = {
@@ -1919,16 +2040,28 @@ export class SpotifyClient {
 
     let res: Response;
     try {
-      res = await fetchWithTimeout(url, {
-        method,
-        headers,
-        body: body === undefined
-          ? undefined
-          : contentType !== undefined
-            ? String(body)
-            : JSON.stringify(body),
-      });
+      res = await fetchWithTimeout(
+        url,
+        {
+          method,
+          headers,
+          body: body === undefined
+            ? undefined
+            : contentType !== undefined
+              ? String(body)
+              : JSON.stringify(body),
+        },
+        signal,
+      );
     } catch (err) {
+      // A cancellation is not a transport failure (#676). The caller withdrew
+      // the request, so retrying — for an idempotent verb or otherwise — would
+      // re-spend the quota they cancelled precisely to stop spending, and the
+      // backoff would hold the serialized queue through the wait. It is raised
+      // before the idempotency branch below because that branch exists to
+      // reason about an UNKNOWN outcome, and a cancelled call is not unknown:
+      // the caller knows it wants nothing more.
+      if (signal?.aborted) throw cancelledError(method, url);
       // A thrown transport error means no answer arrived, so we also never
       // learned whether the request was applied. Re-sending is safe only for
       // an idempotent verb: re-sending a POST that already mutated something
@@ -1938,9 +2071,12 @@ export class SpotifyClient {
         throw transportFailure(method, url, err);
       }
       await sleep(this.backoffDelayMs(retryCount));
-      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional, signal);
     }
 
+    // A 401-refresh retry, and every re-queue below, carry the signal on. A
+    // retry that dropped it would re-enter the ladder on a call the caller has
+    // already abandoned.
     // Token expired mid-flight — refresh and retry once
     if (res.status === 401 && retryCount === 0) {
       try {
@@ -1968,7 +2104,7 @@ export class SpotifyClient {
         const reason = err instanceof Error ? err.message : String(err);
         throw new SpotifyApiError(401, `Spotify rejected the access token and refreshing it failed: ${reason}`);
       }
-      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional, signal);
     }
 
     // Rate limited — differentiate a quota wall from a burst limit (#108).
@@ -2080,7 +2216,7 @@ export class SpotifyClient {
         );
       }
       await sleep(requestedMs);
-      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional);
+      return this.rawRequest(method, url, body, retryCount + 1, contentType, conditional, signal);
     }
 
     // 304 Not Modified is a successful conditional read, not a failure: the
@@ -2128,6 +2264,15 @@ export class SpotifyClient {
   }
 
   async get<T>(path: string, params?: Record<string, string>, opts?: GetOptions): Promise<T | null> {
+    // Resolved at the public entry point, in the caller's async context, and
+    // carried explicitly from here on. The enqueued task below runs under the
+    // scheduler's context, so an ambient read down there would be the wrong
+    // request's signal (#676).
+    const signal = opts?.signal ?? currentRequestSignal();
+    // A read whose caller has already gone must not reach the cache, the
+    // token refresh, or the queue: it would be a result nobody will read,
+    // served from a warm entry that the walk's cancellation cannot reclaim.
+    if (signal?.aborted) throw cancelledError('GET', path);
     const url = this.buildUrl(path, params);
     // TTL cache for immutable catalog reads (#54): keyed on the API-relative
     // URL, whose query params cacheKey sorts by name then value (#678), so an
@@ -2167,6 +2312,7 @@ export class SpotifyClient {
           attempts,
           undefined,
           validator ? { ifNoneMatch: validator.etag } : undefined,
+          signal,
         );
         if (res.status === 304) {
           // A 304 with no stored validator cannot be answered: the request
@@ -2223,6 +2369,13 @@ export class SpotifyClient {
         return parsed;
       },
       opts?.priority,
+      // The SAME signal resolved at the top of this method. `enqueue` defaults
+      // to the ambient request signal, which is right for a bare call but
+      // wrong here: a caller that passed an explicit `signal` (a direct
+      // client caller, or a walk page) would have its task judged against
+      // whatever ambient context happened to exist instead, and a task parked
+      // in the lane could not be dropped when that signal fired (#676).
+      signal,
     );
     if (servedFrom304) return result;
     // Do not write a body into shared state if anything that could have
@@ -2311,6 +2464,12 @@ export class SpotifyClient {
     opts?: GetAllPagesOptions,
   ): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null; pages: number }> {
     const maxItems = opts?.maxItems ?? this.fetchAllCap;
+    // Resolved ONCE, here at the walk's entry, for the reason given on
+    // `rawRequest`: this method runs in the CALLER's async context, and every
+    // page it issues must be judged against the same signal. Re-reading the
+    // ambient store per page would work, but pinning it also means a walk
+    // cannot silently switch cancellation sources halfway through (#676).
+    const signal = opts?.signal ?? currentRequestSignal();
     const all: T[] = [];
     let offset = opts?.initialOffset ?? 0;
     // #864: a bare array cannot distinguish "read everything" from "stopped at
@@ -2333,7 +2492,17 @@ export class SpotifyClient {
       const pageParams = { ...params, offset: String(offset) };
       // #133: walk pages enqueue at LOW priority so interactive reads
       // always drain first.
-      const page = await this.get<SpotifyPaged<T>>(path, pageParams, { priority: 'low' });
+      //
+      // The between-pages cancellation boundary (#676) is enforced at the top
+      // of `get`, which every page goes through, and which refuses BEFORE the
+      // URL is built and before the request is enqueued. That is the same
+      // boundary this loop would draw if it checked here itself: a signal
+      // arriving while page N is in flight stops the walk before page N+1 is
+      // requested, with page N fully committed to `all` and no half-written
+      // page left behind. A second check in the loop was tried and removed —
+      // it was unreachable as a distinct behaviour, so the walk now carries
+      // one enforcement point rather than two that could drift apart.
+      const page = await this.get<SpotifyPaged<T>>(path, pageParams, { priority: 'low', signal });
       requests++;
       if (!page || !Array.isArray(page.items)) break;
       if (typeof page.total === 'number') lastTotal = page.total;
@@ -2470,8 +2639,12 @@ export class SpotifyClient {
    * to invalidate and nothing to record.
    */
   private async mutate<T>(method: string, path: string, url: string, body?: unknown): Promise<T | null> {
+    // Writes are cancellable on the same terms as reads (#676). The signal is
+    // resolved here, in the caller's context, for the same reason: the task
+    // body below is dispatched by the scheduler, not by the caller.
+    const signal = currentRequestSignal();
     return this.enqueue(async (attempts) => {
-      const res = await this.rawRequest(method, url, body, attempts);
+      const res = await this.rawRequest(method, url, body, attempts, undefined, undefined, signal);
       let parsed: T | null = null;
       try {
         parsed = await this.jsonOrNull<T>(res);
@@ -2500,11 +2673,12 @@ export class SpotifyClient {
    */
   async putRaw(path: string, body: string, contentType = 'image/jpeg'): Promise<void> {
     const url = this.buildUrl(path);
+    const signal = currentRequestSignal();
     await this.enqueue((attempts) => {
       // No response body to read: the request carried image bytes and the
       // answer is a bodiless 202. Bookkeeping sits directly after the request
       // for the same reason it does in mutate() (#674).
-      return this.rawRequest('PUT', url, body, attempts, contentType);
+      return this.rawRequest('PUT', url, body, attempts, contentType, undefined, signal);
     });
     this.afterMutation('PUT', path, null);
   }
