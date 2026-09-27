@@ -66,9 +66,10 @@ const SOURCES = walkSources(TOOLS_DIR);
 // The vocabulary spans every module under `src/`, not just the tool modules:
 // a parameter declared by a shared zod shape in `src/shaping.ts` and spread
 // into a tool is a declared parameter, and reading only the inline shapes
-// called it undeclared (#1500).
+// called it undeclared (#1500). The spread is followed, so `src/shaping.ts`
+// contributes only the field objects a registration actually spreads.
 const ALL_SOURCES = walkTree(SRC_DIR);
-const VOCAB = parameterVocabulary(ALL_SOURCES.map((s) => s.source));
+const VOCAB = parameterVocabulary(ALL_SOURCES);
 const TOOL_NAMES = toolNameVocabulary(ALL_SOURCES.map((s) => s.source));
 
 /** A minimal registration whose handler raises the given message. */
@@ -560,7 +561,7 @@ test('#1500 — a flag in a shared module is judged by structure, not by a filen
   // The exemption used to be implicit — those files were simply never scanned
   // — so widening the walk without widening the exemption would have turned
   // both into violations. It is now a property of the module: a function whose
-  // parameter list names `argv`.
+  // parameter list names `argv`, or a module that reads `process.argv`.
   assert.equal(
     isCommandLineModule(readFileSync(join(ROOT, 'src', 'auth.ts'), 'utf8')),
     true,
@@ -598,6 +599,230 @@ test('#1500 — a flag in a shared module is judged by structure, not by a filen
   ].join('\n');
   assert.equal(isCommandLineModule(cli), true);
   assert.deepEqual(collectModuleViolations(cli, 'src/parse.ts', VOCAB, TOOL_NAMES), []);
+});
+
+test('#1500 — the dispatch module is recognised as the CLI, because it reads process.argv', () => {
+  // `src/index.ts` IS the command line: it reads `process.argv[2]` at top
+  // level and branches to `--help`, `--version`, `auth`, `doctor` and `logout`.
+  // It declares no function with an `argv` parameter, so the argv-parameter
+  // half of the exemption called it a shared module — and the first honest
+  // `--flag` remediation written at the dispatch point would have been a false
+  // positive. The file already carries `--help` prose at `src/index.ts:431`,
+  // which is what made this worth fixing before it cost anyone a message.
+  const index = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8');
+  assert.match(index, /process\s*\.\s*argv\s*\[2\]/, 'test bug: src/index.ts no longer dispatches on process.argv[2]');
+  assert.equal(
+    registrations(index).length,
+    0,
+    'test bug: src/index.ts registers tools itself, so the argv-parameter half would cover it',
+  );
+  assert.equal(
+    isCommandLineModule(index),
+    true,
+    'src/index.ts reads process.argv, so it must be recognised as the CLI surface',
+  );
+
+  // The shape that was actually misjudged: a `--flag` remediation thrown at
+  // the dispatch point, in a module with no argv-taking function.
+  const dispatch = [
+    'const command = process.argv[2];',
+    "if (command === 'doctor') {",
+    "  throw new Error('Re-run with --verbose to see the token path.');",
+    '}',
+  ].join('\n');
+  assert.equal(isCommandLineModule(dispatch), true, 'a module reading process.argv is the CLI');
+  assert.deepEqual(
+    collectModuleViolations(dispatch, 'src/dispatch.ts', VOCAB, TOOL_NAMES),
+    [],
+    'a --flag in the module that reads the process command line is a real flag, not bad advice',
+  );
+
+  // …and the shared module that does NOT read argv is still convicted, which is
+  // what stops the exemption being a blanket.
+  const shared = [
+    'export function check(input: { profile: string }): void {',
+    "  if (!input.profile) throw new Error('Re-run with --verbose to see the token path.');",
+    '}',
+  ].join('\n');
+  assert.equal(isCommandLineModule(shared), false, 'a module that never reads process.argv is not the CLI');
+  const found = collectModuleViolations(shared, 'src/check.ts', VOCAB, TOOL_NAMES);
+  assert.equal(found.length, 1, `expected the shared module's flag to be caught, got: ${JSON.stringify(found)}`);
+  assert.match(found[0]!, /command-line flag syntax "--verbose"/);
+});
+
+test('#1500 — process.argv inside a comment or a string does not make a module the CLI', () => {
+  // The other direction, and the one that would have been missed: an exemption
+  // that fires on the word rather than on the code. `blankNonCode` blanks both,
+  // so a module that only TALKS about the command line is still judged.
+  const prose = [
+    '// argv is only available in the process, not over MCP',
+    "export const NOTE = 'callers cannot pass process.argv here';",
+    'export function check(input: { profile: string }): void {',
+    "  if (!input.profile) throw new Error('Re-run with --verbose to see the token path.');",
+    '}',
+  ].join('\n');
+  assert.equal(
+    isCommandLineModule(prose),
+    false,
+    'a module that only mentions process.argv in a comment or a string is not the CLI',
+  );
+  assert.equal(
+    collectModuleViolations(prose, 'src/prose.ts', VOCAB, TOOL_NAMES).length,
+    1,
+    'and its --flag must still be caught',
+  );
+});
+
+test('#1500 — the vocabulary is parameters, not every identifier a shape object happens to carry', () => {
+  // The module rule asks "is this name a real parameter anywhere", not "is this
+  // name well-formed". Unioning every `z.object({…})` and every const-object
+  // key across all of `src/` answered the looser question: `email` and `scopes`
+  // are fields of an account record and of an OAuth token, not keys any tool
+  // accepts, and a message misnaming a parameter for either cleared the rule
+  // with no finding.
+  for (const notAParameter of ['email', 'scopes', 'displayName', 'tokenFile', 'lastUsed']) {
+    assert.equal(
+      VOCAB.has(notAParameter),
+      false,
+      `${notAParameter} is not a parameter any tool accepts, so it must not be in the vocabulary`,
+    );
+  }
+
+  // …and a misnaming for one of them is now caught, where it was silent.
+  for (const wrong of ['email', 'scopes']) {
+    const source = [
+      'export function resolveAccount(inputs: { match_by?: string }): string {',
+      `  if (!inputs.match_by) throw new Error('Pass \`${wrong}\` to choose an account.');`,
+      '  return inputs.match_by;',
+      '}',
+    ].join('\n');
+    const found = collectModuleViolations(source, 'src/account.ts', VOCAB, TOOL_NAMES);
+    assert.equal(found.length, 1, `expected ${wrong} to be caught, got: ${JSON.stringify(found)}`);
+    assert.match(found[0]!, new RegExp(`names "${wrong}", which no registered tool declares`));
+  }
+
+  // `displayName` and `tokenFile` are a different, older limit and are pinned
+  // as such. A backticked claim is `` /`([a-z][a-z0-9_]*)`/ `` — lower case, so
+  // a camelCase identifier is not read as a NAME at all, before the vocabulary
+  // is consulted. Narrowing the vocabulary did not and cannot change that, and
+  // the review that asked for all four words to be caught was half right about
+  // them: `email` and `scopes` were silenced by the vocabulary, and these two
+  // were never claims. Widening the claim pattern is a separate decision (it
+  // would find 0 camelCase claims in the whole tree today) and is recorded
+  // rather than taken here.
+  for (const camel of ['displayName', 'tokenFile']) {
+    const source = [
+      'export function resolveAccount(inputs: { match_by?: string }): string {',
+      `  if (!inputs.match_by) throw new Error('Pass \`${camel}\` to choose an account.');`,
+      '  return inputs.match_by;',
+      '}',
+    ].join('\n');
+    assert.deepEqual(
+      collectModuleViolations(source, 'src/account.ts', VOCAB, TOOL_NAMES),
+      [],
+      `${camel} is camelCase and is not a claim under either pattern; this test pins that limit, it does not bless it`,
+    );
+  }
+
+  // The narrowing must not cost a real parameter. `match_by` is declared by a
+  // tool and stays declared; `match_bys` is not declared by anything and is
+  // the wrong-name defect both rules exist for.
+  assert.ok(VOCAB.has('match_by'), 'match_by is a declared parameter, so narrowing must not have dropped it');
+  assert.equal(VOCAB.has('match_bys'), false, 'match_bys is a typo, not a parameter');
+  const ok = [
+    'export function resolveMatch(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `match_by` to choose a rule.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(collectModuleViolations(ok, 'src/match.ts', VOCAB, TOOL_NAMES), []);
+  const typo = [
+    'export function resolveMatch(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `match_bys` to choose a rule.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  const caught = collectModuleViolations(typo, 'src/match.ts', VOCAB, TOOL_NAMES);
+  assert.equal(caught.length, 1, `expected match_bys to be caught, got: ${JSON.stringify(caught)}`);
+  assert.match(caught[0]!, /names "match_bys", which no registered tool declares/);
+});
+
+test('#1500 — a spread field object keeps its keys in the vocabulary, and only a spread one does', () => {
+  // `playlist_a` and `playlist_b` are declared in `PlaylistPairFields` and reach
+  // four tools by spread, so `registrations()` cannot see them inline. Narrowing
+  // the vocabulary to inline keys alone would have called two real parameters
+  // undeclared, and the fix is to follow the spread — not to widen the set back
+  // to every identifier in `src/`.
+  for (const key of ['playlist_a', 'playlist_b']) {
+    assert.ok(
+      VOCAB.has(key),
+      `${key} is declared by PlaylistPairFields and spread into a registration, so it is a parameter`,
+    );
+  }
+  const source = [
+    'export function resolvePair(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `playlist_a` and `playlist_b` together.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  assert.deepEqual(collectModuleViolations(source, 'src/pair.ts', VOCAB, TOOL_NAMES), []);
+
+  // …and the spread has to be a real one. A field object nobody spreads
+  // contributes nothing, which is the bound that keeps the vocabulary narrow.
+  const unspread = walkTree(join(ROOT, 'src')).find((f) => f.file === 'src/shaping.ts')!;
+  const fields = /export const (\w*Fields)\s*=\s*\{/.exec(unspread.source);
+  assert.ok(fields, 'test bug: no shared field object was found in src/shaping.ts to spread');
+  const spreadDemo = [
+    'export const UnusedFields = { playlist_a: z.string() };',
+    'export function resolvePair(inputs: { match_by?: string }): string {',
+    "  if (!inputs.match_by) throw new Error('Provide `limit_offset` to choose.');",
+    '  return inputs.match_by;',
+    '}',
+  ].join('\n');
+  assert.equal(
+    collectModuleViolations(spreadDemo, 'src/unused.ts', VOCAB, TOOL_NAMES).length,
+    1,
+    'a field object no registration spreads must not enter the vocabulary',
+  );
+  assert.ok(VOCAB.has('limit_offset') === false, 'test bug: limit_offset should not be a parameter');
+});
+
+test('#1500 — one violation in a tool handler is one finding, not two', () => {
+  // Both rules ran over `src/tools` at once, so a single `--prefix` in a
+  // handler was reported twice under two different messages, and the module
+  // rule's version claimed the message reached "every caller" when it reached
+  // one tool. The per-tool rule names the tool; the module rule cannot, so
+  // `src/tools` belongs to the per-tool rule alone.
+  const source = toolWith(
+    'probe_tool',
+    "\n      prefix: z.string().optional(),\n    ",
+    "    throw new Error('probe_tool op requires --prefix');",
+  );
+  const perTool = collectErrorParamViolations(source, 'src/tools/probe_tool.ts', VOCAB, TOOL_NAMES);
+  const perModule = collectModuleViolations(source, 'src/tools/probe_tool.ts', VOCAB, TOOL_NAMES);
+
+  assert.deepEqual(
+    perModule,
+    [],
+    'the module rule must not judge a registered tool handler at all',
+  );
+  assert.equal(
+    perTool.length + perModule.length,
+    1,
+    `one defect must produce one finding, got: ${JSON.stringify([...perTool, ...perModule])}`,
+  );
+  assert.match(perTool[0]!, /probe_tool: command-line flag syntax "--prefix"/, 'and it must be the one that names the tool');
+
+  // The partition is by directory, not by file: a shared module beside it is
+  // still the module rule's, and a real one still fires.
+  const shared = [
+    "import { z } from 'zod';",
+    'export function resolveThing(input: { profile: string }): void {',
+    "  if (!input.profile) throw new Error('Pass --profile to choose.');",
+    '}',
+  ].join('\n');
+  assert.equal(collectModuleViolations(shared, 'src/resolve.ts', VOCAB, TOOL_NAMES).length, 1);
+  assert.equal(collectModuleViolations(shared, 'src/tools/resolve.ts', VOCAB, TOOL_NAMES).length, 0);
 });
 
 test('#1500 — the real CLI flag in src/auth.ts is still not a violation', () => {

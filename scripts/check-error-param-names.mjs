@@ -41,7 +41,7 @@
  *
  * Both rules above are keyed on a registration, so both were asserted over
  * `src/tools` and nowhere else. That left the shared modules — `shaping.ts`,
- * `result.ts`, `accounts.ts`, `paths.ts` and 42 others — unscanned, and they
+ * `result.ts`, `accounts.ts`, `paths.ts` and the rest — unscanned, and they
  * are exactly where user-facing remediation text is written, because a helper
  * under `src/` is what a tool surfaces verbatim. `registerAccount` telling a
  * caller to re-run `spotify-mcp auth --profile` is the concrete miss: that
@@ -49,20 +49,35 @@
  * exits 0 and reaches no different state.
  *
  * `collectModuleViolations` closes that, and widening the scan turned the gate
- * RED on the existing tree rather than green — ten findings, each reviewed:
+ * RED on the tree it was written against rather than green. Measured on that
+ * tree — `origin/main`'s `src/`, this collector, the module rule over all of
+ * `src/` — the findings ran 15 → 11 → 4 → 0, one decision at a time:
  *
- *   - Six were the guard's own vocabulary being incomplete, not bad messages.
- *     `playlist_a` and `playlist_b` are declared in `src/shaping.ts:459` and
- *     reach tools by spread, so the registration-only vocabulary called them
- *     undeclared; `subject_type` is a real parameter of a tool registered
- *     through `registerCanonicalTool`, a form the registration scan does not
- *     parse. Fixed by widening the vocabulary, not by silencing the messages.
- *   - Three are not parameter claims: `top_result_ids` names a field of a
- *     persisted sidecar record, `record_feedback` is a legacy tool alias
- *     passed as an argument, and `play_failed` is a bare error code.
- *   - One was a real message defect: `swarm3_playlistops.ts` told a caller to
- *     use "`keep_only` style tools", which is not a tool name and not a
- *     parameter. The message was fixed to name `playlist_keep_only`.
+ *   - 15 → 11 was the CLI exemption, and all four it removed were the shipped
+ *     CLI's own flags: `auth --profile` twice, `logout --profile` twice.
+ *   - 11 → 4 was the vocabulary. Seven were the guard's own vocabulary being
+ *     incomplete, not bad messages: `playlist_a` and `playlist_b` (declared in
+ *     `src/shaping.ts:548` and spread into `diff_playlists`, `playlist_diff`,
+ *     `playlist_pair_check`, `compare_playlist_covers` and
+ *     `playlist_symmetric_difference`, so a registration-only vocabulary could
+ *     not see them), `account_id` and `schema_version` (keys of a shared shape
+ *     object rather than of a registration), and `subject_type` (a real
+ *     parameter of a tool registered through `registerCanonicalTool`, a form the
+ *     registration scan does not parse). Fixed by making the vocabulary follow
+ *     a spread, and by a recorded exclusion — not by silencing the messages.
+ *   - 4 → 0 was the messages. One was a real defect: `swarm3_playlistops.ts`
+ *     told a caller to use "`keep_only` style tools", which is not a tool name
+ *     and not a parameter, and now names `playlist_keep_only`. Three were not
+ *     parameter claims and are excluded by name with the reason beside them:
+ *     `top_result_ids` is a field of the persisted sidecar record,
+ *     `record_feedback` is a legacy tool alias passed as an argument, and
+ *     `play_failed` is a bare error code.
+ *
+ * The two rules are a partition, not a pair of nets. `src/tools` belongs to
+ * `collectErrorParamViolations` and to nothing else; every other module under
+ * `src/` belongs to `collectModuleViolations`. Running both over `src/tools`
+ * reported every violation there twice, under two different messages, and the
+ * second claimed a message reached "every caller" when it reached one tool.
  *
  * The mask was broken underneath all of this. A regex literal containing a
  * quote — `/"/g`, in four files — read as an *opening* string delimiter, and
@@ -88,16 +103,13 @@ const THROW_SITE = /throw\s+new\s+[A-Za-z_$][\w$]*\s*\(\s*([`'"])/g;
 /** A named `function` declaration and the `(` that opens its parameter list. */
 const FUNCTION_WITH_PARAMS = /(?:^|[^\w$.])(?:async\s+)?function\s*\*?\s*[A-Za-z_$][\w$]*\s*\(/g;
 
-/** `z.object({` — the opening of a parameter shape, wherever it is written. */
-const ZOD_OBJECT = /\bz\s*\.\s*object\s*\(\s*\{/g;
-
 /**
  * A `ZodRawShape` object literal: `{ key: SomeZodThing, … }`, the argument
  * both registration forms take and the shape shared field objects are written
  * in. This is the form that actually carries the tree's parameters —
  * `PlaylistPairFields` in `src/shaping.ts` and the `registerCanonicalTool`
  * params in `src/tools/statsfm_taste.ts` are both bare objects, and neither
- * is reachable through `z.object({`. A key counts when it opens a value and
+ * is reachable through a registration. A key counts when it opens a value and
  * sits directly after the `{` or a `,`, which is what keeps a zod builder
  * method in value position from being read as a key.
  */
@@ -106,10 +118,22 @@ const RAW_SHAPE_KEY = /(?:^|[{,])\s*([a-z_$][\w$]*)\s*:(?!:)/g;
 /**
  * The declaration of a named field object: `export const PlaylistPairFields = {`.
  * A shared field object is exactly this — a const whose value is an object of
- * schema fields, spread into a tool's shape — and it is not reachable from any
- * registration, so nothing else in the scan sees its keys.
+ * schema fields, spread into a tool's shape. It is not reachable from the
+ * registration on its own, so a registration that spreads one is what makes its
+ * keys parameters; see `parameterVocabulary`.
  */
-const NAMED_FIELD_OBJECT = /(?:^|[\n;}])[ \t]*(?:export[ \t]+)?const[ \t]+[A-Za-z_$][\w$]*[ \t]*(?::[^=]*)?=[ \t]*\{/g;
+const NAMED_FIELD_OBJECT = /(?:^|[\n;}])[ \t]*(?:export[ \t]+)?const[ \t]+([A-Za-z_$][\w$]*)[ \t]*(?::[^=]*)?=[ \t]*\{/g;
+
+/** `...Name` in a schema object — a spread of a named field object. */
+const SPREAD_NAME = /\.\.\.\s*([A-Za-z_$][\w$]*)/g;
+
+/**
+ * A read of the process command line, `process.argv`. The second half of
+ * `isCommandLineModule`: `src/index.ts` reads it at top level to decide what the
+ * process does and declares no argv-taking function at all, so the argv
+ * parameter list alone missed the one module that is the CLI.
+ */
+const PROCESS_ARGV_READ = /\bprocess\s*\.\s*argv\b/;
 
 /**
  * A shape object wider than this is a payload or a config, not a parameter
@@ -147,7 +171,7 @@ export function declaredToolNames(source) {
  * anyway on the tools that declare them.
  */
 const NON_PARAMETER_TOKENS = new Set([
-  'api_v2', 'dry_run', 'get_all_pages', 'id', 'ids', 'iso_3166_1', 'json',
+  'api_v2', 'account_id', 'dry_run', 'get_all_pages', 'id', 'ids', 'iso_3166_1', 'json',
   'n_1', 'no_id', 'pkce', 'spotify_uri', 'tool_id', 'uri', 'uris', 'url', 'urls',
   // The last three were added when the module scan was widened (#1500). Each
   // was reviewed, not silenced: all three are real, and none is a parameter.
@@ -159,6 +183,13 @@ const NON_PARAMETER_TOKENS = new Set([
   // first. `play_failed` is a bare error code with no parameter around it.
   'play_failed', 'record_feedback', 'top_result_ids',
 ]);
+// `account_id` joined them when the vocabulary was narrowed (see
+// `parameterVocabulary`), and it is the same kind of name: `registerAccount`
+// in `src/accounts.ts:420` reports "`/me` returned neither `account_id` nor
+// `id`", and `account_id` is a field of Spotify's `/me` payload rather than a
+// key any tool accepts. The unioned vocabulary had contained it by accident,
+// so before the narrowing the message was exempted by a coincidence nobody had
+// checked — which is the state this whole set exists to avoid.
 
 /**
  * A parameter-name claim comes in two shapes, because the two are worth very
@@ -428,10 +459,15 @@ export function registrations(source) {
     }
     const schemaEnd = matchBracket(mask, schemaStart);
 
-    const parsed = schemaKeys(mask.slice(schemaStart, schemaEnd));
+    const schemaText = mask.slice(schemaStart, schemaEnd);
+    const parsed = schemaKeys(schemaText);
     out.push({
       name,
       keys: parsed.keys,
+      // The named field objects this schema spreads. The keys are not here —
+      // they live in the declaration the spread names — but the NAMES are what
+      // `parameterVocabulary` needs to resolve them, and they are in this file.
+      spreads: [...schemaText.matchAll(SPREAD_NAME)].map((m) => m[1]),
       // A spread, or a nesting this scan did not follow, means the visible key
       // set is a lower bound. Claiming a name is undeclared on that basis
       // would be guessing. Rule 1 needs no schema and still runs.
@@ -517,53 +553,81 @@ export function collectThrownMessages(source) {
 }
 
 /**
- * Every parameter name declared anywhere in `source`, by any of the shapes a
- * tool's input is written in: a `z.object({…})`, a bare `ZodRawShape` literal,
- * or a shared field object spread into either.
+ * The keys of every named field object `sources` declares, keyed by the
+ * object's own name — `PlaylistPairFields` → `{playlist_a, playlist_b}`.
  *
- * `registrations()` reads only the shape passed inline to a `server.tool()`
- * call, so the vocabulary it builds is a LOWER BOUND: a tool that spreads a
- * shared field object declares its parameters somewhere the registration scan
- * never looks. `playlist_a` and `playlist_b` are declared in
- * `src/shaping.ts:459` and reach tools by spread, so both were absent from the
- * vocabulary while being real, declared parameters — and the module rule below
- * called them undeclared.
- *
- * Over-approximating is the right direction for a NEGATIVE check. The rule
- * asks "is this name a parameter at all?", so reading more shapes can only ever
- * silence a true positive, never invent a false one.
+ * These are the shapes a registration reaches its parameters through when it
+ * does not write them inline: `server.tool('compare_playlist_covers', …, {
+ * ...PlaylistPairFields, … })` declares `playlist_a` and `playlist_b` without
+ * either name appearing in the registration. Resolving the spread is what puts
+ * them back, and it is bounded on purpose — the object has to be *spread into a
+ * registration* to contribute, which is the difference between this and the
+ * union-everything version below.
  */
-export function zodShapeKeys(source) {
-  const mask = blankNonCode(source);
-  const keys = new Set();
-  for (const m of mask.matchAll(ZOD_OBJECT)) {
-    const open = m.index + m[0].length - 1;
-    const close = matchBracket(mask, open);
-    for (const key of mask.slice(open + 1, close - 1).matchAll(RAW_SHAPE_KEY)) keys.add(key[1]);
+function namedFieldObjectKeys(sources) {
+  const byName = new Map();
+  for (const { source } of sources) {
+    const mask = blankNonCode(source);
+    for (const m of mask.matchAll(NAMED_FIELD_OBJECT)) {
+      const open = m.index + m[0].length - 1;
+      const close = matchBracket(mask, open);
+      if (close - open > MAX_SHAPE_SPAN) continue;
+      const keys = new Set();
+      for (const key of mask.slice(open + 1, close - 1).matchAll(RAW_SHAPE_KEY)) keys.add(key[1]);
+      // Last writer wins. Two modules declaring one name would have to agree
+      // for the name to be usable as a spread target anyway.
+      byName.set(m[1], keys);
+    }
   }
-  // A shared field object is a const whose value is a `ZodRawShape` literal.
-  // It is spread into tool schemas, so it declares real parameters while being
-  // reachable from no registration at all.
-  for (const m of mask.matchAll(NAMED_FIELD_OBJECT)) {
-    const open = m.index + m[0].length - 1;
-    const close = matchBracket(mask, open);
-    if (close - open > MAX_SHAPE_SPAN) continue;
-    for (const key of mask.slice(open + 1, close - 1).matchAll(RAW_SHAPE_KEY)) keys.add(key[1]);
-  }
-  return keys;
+  return byName;
 }
 
 /**
- * Every parameter name any registered tool accepts, plus every name any zod
- * shape in the scanned sources declares. The second half is what makes the
- * module rule sound: without it, a parameter declared by a shared field object
- * and spread into a tool reads as a name nothing declares.
+ * Every parameter name any registered tool accepts: the keys written inline in
+ * a registration, plus the keys of any named field object that registration
+ * spreads.
+ *
+ * ## Why this is not the union of every shape in `src/`
+ *
+ * The first version of this (#1500) unioned in every `z.object({…})` key and
+ * every named-const-object key across all of `src/`, on the reasoning that
+ * "over-approximating is the right direction for a NEGATIVE check". That is
+ * right for a *type* check, where a wider union is still sound. It is wrong
+ * here, because `collectModuleViolations` is not asking whether a name is
+ * well-formed — it is asking whether the name is a real parameter anywhere, and
+ * the union answered the looser question instead. Measured, that widened the
+ * vocabulary to 1,319 names of which **982 are not parameters at all**:
+ * `tokenFile`, `displayName`, `scopes`, `lastUsed`, `email`, `version`. A
+ * message misnaming a parameter for one of those cleared the rule with no
+ * finding, which is the exact defect the rule exists to catch. A guard that
+ * cannot convict is not a guard, and 982 names it can never convict on is the
+ * price of the widening.
+ *
+ * Following a spread is what pays for the narrowing rather than the union: it
+ * recovers the real parameters the registration scan cannot see — `playlist_a`
+ * and `playlist_b`, declared in `src/shaping.ts:548` and spread into five
+ * tools — and it costs nothing, because a field object only contributes when a
+ * registration actually spreads it. Measured, the vocabulary went from 1,319
+ * names to 341, and the four the spread step added are all parameters.
+ *
+ * The one real parameter this still cannot see is `subject_type`, declared by a
+ * tool registered through `registerCanonicalTool` in
+ * `src/tools/statsfm_taste.ts`, which reaches `server.tool` through a local
+ * alias the registration scan does not match. That tool lives in `src/tools`,
+ * which the module rule does not read, so no shared message turns on it —
+ * recorded here rather than left as a surprise for the next reader of the
+ * vocabulary.
  */
 export function parameterVocabulary(sources) {
+  const fieldObjects = namedFieldObjectKeys(sources);
   const vocab = new Set();
-  for (const source of sources) {
-    for (const reg of registrations(source)) for (const key of reg.keys) vocab.add(key);
-    for (const key of zodShapeKeys(source)) vocab.add(key);
+  for (const { source } of sources) {
+    for (const reg of registrations(source)) {
+      for (const key of reg.keys) vocab.add(key);
+      for (const name of reg.spreads) {
+        for (const key of fieldObjects.get(name) ?? []) vocab.add(key);
+      }
+    }
   }
   return vocab;
 }
@@ -590,12 +654,26 @@ export function toolNameVocabulary(sources) {
  * A module that owns a command-line surface, where `--name` is a real flag a
  * human can type rather than advice an MCP caller can act on.
  *
- * The property is structural, not a filename list: the module declares a
- * function whose parameter list names `argv`. `src/auth.ts` has always been
- * exempt for exactly this reason and the exemption was implicit — it was never
- * scanned, because the scan stopped at `src/tools`. Widening the scan without
- * widening the exemption is what would have turned `auth --profile` into a
- * violation, so the two halves have to move together.
+ * The property is structural, not a filename list, and it has two halves. The
+ * module declares a function whose parameter list names `argv`, OR it reads
+ * `process.argv`. `src/auth.ts` and `src/logout.ts` satisfy the first.
+ * `src/index.ts` satisfies only the second, and it is the module that matters
+ * most — it *is* the dispatch, reading `process.argv[2]` at top level and
+ * branching to `--help`, `--version`, `auth`, `doctor` and `logout`. The first
+ * half alone called it a non-CLI module, so the first honest `--flag`
+ * remediation written at the dispatch point becomes a false positive, and that
+ * file already carries `--help` prose at `src/index.ts:431`.
+ *
+ * Reading `process.argv` IS the exemption's stated property rather than a
+ * widening of it: a `--name` in a module that reads the process command line
+ * names a flag the process will actually parse. The other half covers the
+ * modules that are handed an argv and never touch the global.
+ *
+ * `src/auth.ts` was exempt before this scan existed, and only implicitly: the
+ * walk stopped at `src/tools`, so its flags were never *read* rather than being
+ * ruled out. Widening the walk without widening the exemption is what would
+ * have turned `auth --profile` into a violation, so the two halves have to
+ * move together.
  *
  * A filename list would have been the wrong shape twice over: it needs a
  * human to remember to add the next CLI subcommand, and it cannot be checked.
@@ -603,6 +681,7 @@ export function toolNameVocabulary(sources) {
  */
 export function isCommandLineModule(source) {
   const mask = blankNonCode(source);
+  if (PROCESS_ARGV_READ.test(mask)) return true;
   for (const m of mask.matchAll(FUNCTION_WITH_PARAMS)) {
     const open = m.index + m[0].length - 1;
     const close = matchBracket(mask, open);
@@ -610,6 +689,12 @@ export function isCommandLineModule(source) {
   }
   return false;
 }
+
+/**
+ * `src/tools/<file>.ts`, in either path convention. The per-tool rule's
+ * directory, and the one this rule does not read.
+ */
+const TOOL_MODULE_PATH = /(?:^|[\\/])tools[\\/]/;
 
 /**
  * The two ways a message composed outside a tool module can still misname a
@@ -640,8 +725,24 @@ export function isCommandLineModule(source) {
  * Deliberately NOT checked: whether the name is declared *by the tool that
  * surfaces it*. That is the dataflow question the module boundary hides, and
  * guessing at it is how this guard would start crying wolf.
+ *
+ * ## Why `src/tools` is skipped rather than judged twice
+ *
+ * The first version ran this rule over `walkTree(SRC_DIR)`, which contains
+ * `src/tools`, so every violation in a tool handler was reported twice: once by
+ * the per-tool rule, which names the tool and the flag, and once by this one,
+ * which cannot name either. One `--prefix` in one handler was two report lines
+ * and two tests red for one defect, and the second message is the worse of the
+ * two — it says "shared with every caller" about a message that reaches exactly
+ * one tool.
+ *
+ * The module rule has no standing in a registered tool's handler. The per-tool
+ * rule is the one that judges it, and it judges it better. So the split is by
+ * directory and it is a partition: `src/tools` is the per-tool rule's subject
+ * and this rule's is everything else.
  */
 export function collectModuleViolations(source, file, vocabulary, toolNames = new Set()) {
+  if (TOOL_MODULE_PATH.test(file)) return [];
   if (isCommandLineModule(source)) return [];
   const violations = [];
   for (const t of collectThrownMessages(source)) {
