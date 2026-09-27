@@ -1486,7 +1486,7 @@ The tool description changed with it, and that is the part a host reads before t
 
 **A playlist at or below the cap is unchanged**: `truncated: false`, `items_read === items_total`, no `fetch_all_cap` or `truncated_by_cap` in the payload, and no shortfall sentence in the prose. A caller must be able to tell the two apart from the response alone, in either direction.
 
-**Not a migration:** no call that succeeded before fails now, and no call that produced a complete answer produces anything different. What changes is that a partial answer says so. The `[18, 21432]` manifest baseline moved to `[18, 21624]` (+192B, description text only, tool count unchanged).
+**Not a migration:** no call that succeeded before fails now, and no call that produced a complete answer produces anything different. What changes is that a partial answer says so. The `[18, 21559]` manifest baseline moved to `[18, 21751]` (+192B, description text only, tool count unchanged). Both figures are measurements, and the endpoint is the one measured on the *merged* tree: `playlist_balance` shares this module with `playlist_clone_snapshot`, so a branch that measures before that sibling lands reports a smaller module than the one that actually ships.
 
 #### `merge_playlists`
 Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.
