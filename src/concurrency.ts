@@ -27,21 +27,22 @@
  *
  * ## Relationship to the request funnel (#892)
  *
- * #892 (PR #1206, **open, not merged**) replaces the client's single serial
- * drain with a bounded-concurrency funnel under `SPOTIFY_MCP_MAX_CONCURRENCY`
- * (its default 3, its own hard ceiling 32) plus a shared rate-limit gate and a
- * consecutive-throttle breaker. It is not present on `main` at the time of
- * writing, and the two states differ in a way that matters:
+ * #892 (PR #1206) LANDED. The client's single serial drain is now a
+ * bounded-concurrency funnel under `SPOTIFY_MCP_MAX_CONCURRENCY` (its default 3,
+ * its own hard ceiling 32) plus a shared rate-limit gate and a
+ * consecutive-throttle breaker. The two states this section used to hold open
+ * have collapsed into the second, and the disclosure has to be restated for it:
  *
- *  - **Before #892 lands**, `SpotifyClient` drains one request at a time with a
- *    minimum inter-request gap, so this helper overlaps the *handler's* awaits
- *    without overlapping any wire traffic. The wall-clock win is bounded by
- *    what the funnel permits, and the honest claim for a 25-item scan is that
- *    the handler stops idling between round trips — not that the wire is
- *    faster.
- *  - **After #892 lands**, the funnel is itself bounded and concurrent, so
- *    "this overlaps handler awaits" stops being true and the disclosure must
- *    be restated against the funnel's width instead.
+ *  - **While the drain was serial**, `SpotifyClient` released one request at a
+ *    time with a minimum inter-request gap, so this helper overlapped the
+ *    *handler's* awaits without overlapping any wire traffic. The wall-clock
+ *    win was bounded by what the drain permitted, and the honest claim for a
+ *    25-item scan was that the handler stops idling between round trips — not
+ *    that the wire is faster.
+ *  - **Now that the funnel is concurrent**, "this overlaps handler awaits" is no
+ *    longer true at all: both limiters bound the same quantity, so a scan's
+ *    width is resolved *against* the funnel's rather than beside it, and the
+ *    number that actually bound it is the one `mapLimit` was handed.
  *
  * Two independent limiters do not add, they multiply: the narrower one wins,
  * silently, and the effective width becomes a function of two tunables no
