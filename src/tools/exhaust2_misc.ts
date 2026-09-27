@@ -849,6 +849,21 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       + playlists * Math.max(1, Math.ceil(PER_PLAYLIST_ITEM_CAP / ITEM_PAGE)); // each playlist, paged
   };
 
+  /** The two row arrays `dead_library_finder` publishes; both are the dead set. */
+  const DEAD_LIBRARY_ROW_ARRAYS = ['candidates', 'details'] as const;
+
+  /**
+   * The audit section, withheld from the human-facing modes (#1517).
+   *
+   * The same argument `library_hygiene` withholds `groups` for — the array is
+   * the record of what happened rather than a rendered view of it — with a
+   * sharper edge here, because what it records is a `DELETE /me/library` that
+   * cannot be undone. Capping the only per-row record of an irreversible
+   * mutation leaves a caller able to say how many tracks were unsaved and
+   * unable to say which. `candidates` is not on this list; see the call site.
+   */
+  const DEAD_LIBRARY_WITHHELD_ROWS = ['details'] as const;
+
   server.tool(
     'dead_library_finder',
     'Find saved tracks that never appear in your recent history AND sit in none of your '
@@ -971,7 +986,56 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       // in every mode — a scan of a large library returned the full dead-track
       // set to a caller that had asked for `max_results`. Both are capped, and
       // `count` keeps the exact pre-cap total so "how many were there" survives.
+      //
+      // #1517: the cap was the right control for `candidates` and the wrong one
+      // for `details`, and it was applied to both. `details` is not a rendering
+      // of the scan, it IS the record of it — the only statement of WHICH tracks
+      // the `DELETE /me/library` below removed, which has no receipt and no
+      // undo. Capped in every mode, a caller could still recover `count`/
+      // `removed` (how many) and not the rows (which): a scan of 500 eligible
+      // tracks reported 10 and deleted 500. #895 introduced this by wrapping
+      // both arrays in `capRowSections` and leaving the write reading the
+      // uncapped local; the aggregate was always honest, so nothing but a
+      // per-row assertion could have caught it.
+      //
+      // `details` therefore follows the convention `library_hygiene` and
+      // `find_duplicate_saved_tracks` already use for their own raw-scan array
+      // (`groups`, SPEC.md §5): WITHHELD from the human-facing modes with the
+      // shared helper's own `available_via` pointer, and returned WHOLE under
+      // `response_format: 'json'`, which is the documented bulk export. The
+      // pointer is the helper's fourth argument rather than a hand-rolled
+      // `if (rf === 'json')` around the payload, so the disclosure is the one
+      // SPEC.md §5 describes and `summarizeExhaust2` reads the same envelope
+      // either way.
+      //
+      // `candidates` stays CAPPED rather than withheld, and that is a decision,
+      // not an oversight. It is byte-redundant with `details` —
+      // `candidates[i] === details[i].uri`, same rows, same order, same slice —
+      // so it carries no fact `details` does not. Withholding it too would
+      // delete a second copy of an answer the caller has just been told where
+      // to re-fetch, and would cost the human-facing modes their row sample for
+      // no gain in disclosure: `sections.candidates` already publishes
+      // `returned`/`total`/`truncated` and the top level repeats it.
       const capForScan = resolveMaxResults(args.max_results, getConfig().maxItems);
+      // json is the bulk export here for the same reason it is for
+      // `library_hygiene`: the audit array is the raw scan, so `max_results` —
+      // a cap on what is RETURNED (src/shaping.ts `MaxResults`) — does not
+      // apply to it. The ceiling is the exact pre-cap LENGTH rather than a
+      // skipped `capRowSections`, so `sections` is still published in every
+      // mode, the #895 envelope test above keeps holding, and a json caller
+      // reads `truncated: false` beside rows that are all present — a complete
+      // result that says it is complete.
+      const bulk = rf === 'json';
+      // Nothing to withhold is nothing to withhold. `capRowSections` deletes a
+      // withheld key and reports `{ truncated: true, withheld: true, total }`
+      // unconditionally, so withholding an EMPTY `details` would tell a caller
+      // that rows were withheld from a scan that found none — the #803 failure
+      // one field over, and a new one, because until #1517 this call site never
+      // passed a `withhold` list. The empty case falls through to the ordinary
+      // cap, where an empty array is honestly `returned: 0, total: 0,
+      // truncated: false`. (The helper itself still has this edge for any other
+      // caller; #1517 does not widen the shared contract to fix it.)
+      const withholdForScan = bulk || candidates.length === 0 ? [] : DEAD_LIBRARY_WITHHELD_ROWS;
       const payload = capRowSections({
         ok: true, scanned: { saved_tracks: saved.length, playlists: playlistsScanned, recent_plays: recent.length },
         candidates: candidates.map((c) => c.uri),
@@ -980,11 +1044,25 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
         estimated_requests_max: estimatedRequestsMax,
         ...quotaDelta(client, snapshot),
         ...shrinkWarrant,
-      }, ['candidates', 'details'], capForScan);
+      }, DEAD_LIBRARY_ROW_ARRAYS, bulk ? candidates.length : capForScan, withholdForScan);
       if (candidates.length === 0) return emit(rf, 'No dead tracks found — nothing to remove.', payload, SUMMARISE_JSON);
+      // The WRITE reads the uncapped `candidates` local, not the payload, and
+      // that independence is the point: #1517 widened the audit trail WITHOUT
+      // narrowing the mutation. Capping the delete to the cap would have been
+      // the other way to fix it, and it is the wrong one — `max_results` is
+      // documented as a cap on what is RETURNED, and this module's own
+      // `MaxResults` comment forbids it bounding work or durable output. A
+      // caller who lowered it to shrink a reply would have silently unsaved
+      // fewer tracks than the scan found. The regression test asserts the
+      // DELETE set is identical in every response format, so this cannot be
+      // traded back for the disclosure.
       await modifyLibrary(client, candidates.map((c) => c.uri).filter((u): u is string => typeof u === 'string'), 'remove');
-      // The SAME cap the payload rows already went through, so the prose list
-      // and `sections.details` cannot disagree about how many rows exist.
+      // The prose list is bounded by the SAME `capForScan` the `candidates`
+      // section went through, so the names a reader sees and
+      // `sections.candidates` cannot disagree about how many rows exist. It is
+      // deliberately NOT tied to `sections.details` any more: in the
+      // human-facing modes that section is withheld (`returned: 0`), and a
+      // rendered list that claimed to match it would be a second #803.
       const t = truncateItems(candidates, capForScan);
       const lines = [`Removed ${candidates.length} dead track(s):`];
       t.items.forEach((c) => lines.push(`  • ${c.name} (saved ${c.added_at || 'unknown'})`));
