@@ -34,7 +34,7 @@ import './helpers/hermetic.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,20 +131,33 @@ describe('#657 index.ts: --help', () => {
   it('advertises every subcommand the dispatcher actually routes', async () => {
     // The dispatcher in src/index.ts routes auth / doctor / logout / help /
     // version. A usage line that lost one sends the user nowhere.
+    //
+    // The subcommand names are matched with a trailing word boundary, not
+    // `stdout.includes()`. A bare substring check is satisfied by
+    // `spotify-mcp doctorX` — a name the dispatcher does not route — so it
+    // would pass on exactly the regression it exists to catch. The flag loop
+    // is anchored the same way for the same reason.
     const { stdout, code } = await cli(['--help']);
     assert.equal(code, 0, `stderr: ${code}`);
-    for (const subcommand of ['spotify-mcp auth', 'spotify-mcp doctor', 'spotify-mcp logout']) {
-      assert.ok(stdout.includes(subcommand), `help must document \`${subcommand}\``);
+    for (const subcommand of ['auth', 'doctor', 'logout']) {
+      assert.match(
+        stdout,
+        new RegExp(`^ {2}spotify-mcp ${subcommand}\\b`, 'm'),
+        `help must document \`spotify-mcp ${subcommand}\` on its own usage line`,
+      );
     }
     for (const flag of ['--help', '--version']) {
-      assert.ok(stdout.includes(flag), `help must document \`${flag}\``);
+      assert.match(stdout, new RegExp(`^ {2}spotify-mcp ${flag}\\b`, 'm'), `help must document \`${flag}\``);
     }
   });
 
   it('documents the logout flags the dispatcher passes through to the logout module', async () => {
+    // Word-boundary anchored for the same reason as the subcommand loop: a bare
+    // `includes('--keep-backups')` also matches `--keep-backups-and-more`, and
+    // a renamed flag would sail through an unanchored check.
     const { stdout } = await cli(['--help']);
     for (const flag of ['--dry-run', '--keep-backups', '--profile', '--scopes']) {
-      assert.ok(stdout.includes(flag), `help must document \`${flag}\``);
+      assert.match(stdout, new RegExp(`${flag}\\b`), `help must document \`${flag}\``);
     }
   });
 
@@ -198,7 +211,16 @@ describe('#657 index.ts: --version', () => {
     const out = await cli(['--version']);
     assert.equal(out.code, 0, `stderr: ${out.stderr}`);
     assert.equal(out.stdout.trim(), `spotify-mcp ${version}`);
-    assert.equal(out.stdout.trim(), `spotify-mcp ${version}`, 'the version is read, not typed into the string');
+    // The line above compares against the version READ FROM package.json, so it
+    // already proves the output is not a typed-in literal. What it cannot prove
+    // is that the literal is absent from the source — a branch could build a
+    // correct string by hand and still drift on the next release. Read the
+    // entry point and check the digits are not in it.
+    const entry = await readFile(new URL('../src/index.ts', import.meta.url), 'utf8');
+    assert.ok(
+      !entry.includes(version),
+      `src/index.ts must not hardcode the version (${version}) — release-please owns it`,
+    );
   });
 
   it('is the same output for -v', async () => {

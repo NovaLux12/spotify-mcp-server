@@ -70,12 +70,18 @@ describe('#657 paths: exportRootDir and the retention default', () => {
   });
 
   it('defaults to <home>/.spotify-mcp/exports without touching the filesystem', () => {
-    // `homedir()` reads the OS account, not a synthetic HOME, so this asserts
-    // the SHAPE relative to it. exportRootDir only builds a path string — it
-    // creates nothing — and nothing in this suite writes under ~/.spotify-mcp.
+    // `homedir()` is the HOME this process sees, which the hermetic helper
+    // (#1274) has already pointed at a temp root — so this asserts the SHAPE
+    // relative to whatever home is in effect, and the default resolution is
+    // still what is under test. The companion case below pins the literal
+    // `.spotify-mcp` segment that the shape alone would not catch.
+    // exportRootDir only builds a path string — it creates nothing.
     const resolved = exportRootDir({} as NodeJS.ProcessEnv);
     assert.equal(resolved, path.join(homedir(), '.spotify-mcp', 'exports'));
     assert.equal(path.basename(resolved), 'exports');
+    // Not a plain ~/exports, and not a per-platform path: the store directory
+    // name is a Spotify-MCP convention, not an OS one.
+    assert.equal(path.dirname(resolved), path.join(homedir(), '.spotify-mcp'));
   });
 
   it('defaults the backup retention to 30 whole days', () => {
@@ -154,6 +160,26 @@ describe('#657 paths: realpathAllowingMissing', () => {
   it('collapses a `..` segment in a missing tail', async () => {
     const resolved = await realpathAllowingMissing(path.join(root, 'nope', '..', 'y.txt'));
     assert.equal(resolved, path.join(await realpathAllowingMissing(root), 'y.txt'));
+  });
+
+  it('rethrows an errno that is not ENOENT/ENOTDIR instead of walking up', async () => {
+    // The walk-up is only correct for "this does not exist yet". A symlink loop
+    // is a different failure: the path is not missing, it is unresolvable, and
+    // silently climbing to the parent would hand back a path that resolves to
+    // something OTHER than what the caller asked for — a confinement decision
+    // made about the wrong file. ELOOP is the portable way to provoke it.
+    const dir = path.join(root, 'loop');
+    await mkdir(dir, { recursive: true });
+    await symlink(path.join(dir, 'b'), path.join(dir, 'a'));
+    await symlink(path.join(dir, 'a'), path.join(dir, 'b'));
+
+    await assert.rejects(
+      () => realpathAllowingMissing(path.join(dir, 'a')),
+      (error: NodeJS.ErrnoException) => {
+        assert.equal(error.code, 'ELOOP', `expected the original ELOOP to propagate, got ${error.code}`);
+        return true;
+      },
+    );
   });
 });
 
