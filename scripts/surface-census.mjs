@@ -426,6 +426,32 @@ if (cookbookFixtureIndex >= 0) {
   console.log(JSON.stringify({ count: measured.count, ordinals: measured.ordinals, errors: measured.errors }));
   process.exit(measured.errors.length > 0 ? 1 : 0);
 }
+/**
+ * Drives `parseToolsetsModule` against a supplied `src/toolsets.ts` source
+ * (#1513), so the zero-match guard can be shown to reject rather than assumed.
+ *
+ * The real `--check` reads the repository's own `src/toolsets.ts`, which is
+ * well-formed, so the only way to observe the negative case is to hand the
+ * parser a module the repository does not contain. This is the same fixture
+ * shape as `--cookbook-fixture` above and it exists for the same reason: a
+ * guard that has only ever seen the correct input has not been shown to work,
+ * and mutating the real `src/toolsets.ts` to make a gate misbehave would be a
+ * worse test than the defect.
+ *
+ * The throw is deliberately not caught here. Letting it propagate is what makes
+ * the exit status honest — a caller driving this fixture gets a non-zero exit
+ * and the guard's own message, which is exactly what `--write` now does on a
+ * zero-match rather than emitting an empty block.
+ */
+const toolsetsFixtureIndex = args.indexOf('--toolsets-fixture');
+if (toolsetsFixtureIndex >= 0) {
+  const fixturePath = args[toolsetsFixtureIndex + 1];
+  if (!fixturePath) throw new Error('--toolsets-fixture requires a JSON file');
+  const fixture = JSON.parse(readFileSync(resolve(fixturePath), 'utf8'));
+  const { TOOLSETS, allRegistrationKeys } = parseToolsetsModule(fixture.source);
+  console.log(JSON.stringify({ toolsets: Object.keys(TOOLSETS), registrationKeys: allRegistrationKeys }));
+  process.exit(0);
+}
 const markerTreeFixtureIndex = args.indexOf('--marker-tree-fixture');
 if (markerTreeFixtureIndex >= 0) {
   const fixturePath = args[markerTreeFixtureIndex + 1];
@@ -1847,11 +1873,55 @@ function toolsetNamesFromSource() {
   return Object.keys(TOOLSETS).length;
 }
 
-function parseToolsetsModule() {
-  const source = readFileSync(join(ROOT, 'src/toolsets.ts'), 'utf8');
+/**
+ * The `TOOLSETS` literal out of `src/toolsets.ts`, or a throw.
+ *
+ * `source` is a seam for the guard test (#1513), which drives this with a
+ * module the repository does not contain. The census itself always passes
+ * nothing and reads the real file.
+ *
+ * Two guards, and the second one is the one that was missing. The first asks
+ * whether the literal was found at all. The second asks whether the entry
+ * pattern matched anything *inside* it, because the two can disagree: the
+ * enclosing pattern is `[\s\S]*?` and the terminator is a fixed `} as const;`,
+ * so a pure re-indent of the object literal from two spaces to four — a
+ * `tsc`-clean change with no semantic difference at all — leaves the enclosing
+ * match perfectly satisfied while every entry stops matching the
+ * `^\s{2}([a-z][a-z0-9]*):\s*\[` pattern, which is indentation-sensitive.
+ *
+ * A zero-match parse is not a measurement, and the shape of the damage is why
+ * it has to fail closed. `TOOLSETS` becomes `{}`, so `toolsetNames` reports 0
+ * and `allRegistrationKeys` reports nothing, and both feed the SPEC tool-surface
+ * block: `--write` then replaces a correct sentence with one claiming "0 named
+ * toolsets", exits 0, and `--check` reports that empty result fresh on the next
+ * run. A whitespace-only reformat becomes a silent documentation deletion
+ * behind a green gate. This is AGENTS.md §6's "a test that cannot fail" one
+ * layer up — the gate returning "fine" when it could not measure.
+ *
+ * The message therefore names this as a census bug and not as stale
+ * documentation. Those are different problems with different fixes: a stale
+ * block is repaired with `--write`, and running it here would be the second
+ * half of the deletion, so the message has to send the reader to
+ * `parseToolsetsModule` and away from the docs. `check-tests-typecheck.mjs`'s
+ * `GLOBAL_ERROR` handling is the same shape — an unmeasurable run is
+ * collected separately and fails the gate outright rather than reading as a
+ * comfortable pass.
+ */
+function parseToolsetsModule(source = readFileSync(join(ROOT, 'src/toolsets.ts'), 'utf8')) {
   const block = /export const TOOLSETS:[\s\S]*?= \{([\s\S]*?)\} as const;/.exec(source)?.[1];
   if (!block) throw new Error('src/toolsets.ts: cannot derive TOOLSETS');
   const names = [...block.matchAll(/^\s{2}([a-z][a-z0-9]*):\s*\[([^\]]*)\]/gm)].map((match) => [match[1], [...match[2].matchAll(/'([^']+)'/g)].map((key) => key[1])]);
+  if (names.length === 0) {
+    throw new Error(
+      'src/toolsets.ts: found the TOOLSETS literal but matched 0 toolset entries. '
+      + 'The entry pattern in parseToolsetsModule() is indentation-sensitive, so a reformat of the object literal '
+      + '(a re-indent is `tsc`-clean and changes no behaviour) leaves the literal matched and every entry unmatched. '
+      + 'This is a bug in scripts/surface-census.mjs, NOT a stale documentation block — do not run '
+      + '`npm run count:tools -- --write`, which would replace the SPEC.md tool-surface block with a claim of '
+      + '0 named toolsets and then report success. Widen the entry pattern above to match the file, or restore '
+      + 'the formatting it expects.',
+    );
+  }
   return {
     TOOLSETS: Object.fromEntries(names),
     allRegistrationKeys: names.flatMap(([, keys]) => keys),
