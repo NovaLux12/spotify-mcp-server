@@ -2029,6 +2029,25 @@ The `account` row names the acting account's `account_id`, its `id`, its `displa
 Requirements are **either-of** where the scope gate is either-of: a caller holding only `playlist-modify-public` can create a playlist, so the doctor does not also ask for `playlist-modify-private`. `upload_playlist_cover` is its own group requiring `ugc-image-upload` **in addition to** a playlist-modify scope, and is not reported at all when neither modify scope is granted — the precondition gap is the actionable one. Under `SPOTIFY_MCP_READONLY` the row is a single `info` explaining that write tools are unregistered, because "the grant is sufficient" would be a verdict on a comparison that did not happen. Skipped requirements are named in the row's detail (`not checked — …`) so an absent gap is legible rather than silent.
 
 
+### 5.14 Spotify reference inspection (#915)
+
+Six local, zero-network tools that parse and canonicalise references using the **same** policy an entity-id parameter is built from. They make no Spotify API call; their purpose is inspection and canonicalisation.
+
+| Tool | Purpose |
+|---|---|
+| `parse_spotify_uri` | one reference → `{ form, kind, id, valid, canonical_uri, error }` |
+| `parse_spotify_uris` | up to 500 references through the same policy |
+| `format_spotify_uri` | build a `spotify:<kind>:<id>` URI from a reference |
+| `canonicalize_spotify_uri` | every accepted form → the one canonical URI |
+| `dedupe_spotify_uris` | order-preserving unique URIs |
+| `spotify_uri_stats` | count references, `group_by` `form` or `kind` |
+
+`parse_spotify_uri` is the tool an agent reaches for to ask "is this a valid reference?", so it must not disagree with the resolver that actually gates the request. `tests/refs.parity.test.ts` is that guarantee: a table of 28 references — every documented form, a lookalike host, an unrelated host, kind mismatches, malformed lengths, an unknown kind, and four `Object.prototype` keys used as entity kinds — is fed to `parse_spotify_uri` **and** to `spotifyId()`, the schema every resolver-backed parameter is built from, and both must return the same verdict and the same bare id.
+
+**The policy, stated once.** A reference is a bare catalog id of exactly 22 URL-safe characters (`user` ids are one or more URL-safe characters), a `spotify:<kind>:<id>` URI, a `spotify://<kind>/<id>` link, or an `open.spotify.com` share URL — including its localised `/intl-<locale>/` form and any query string. The host check is exact-string: `open.spotify.com.evil.test` is rejected. Kinds come from a `Map`, not an object literal, so `spotify:constructor:<id>` cannot resolve a kind. A kind mismatch (`spotify:playlist:…` where a track was expected) is rejected, not reinterpreted.
+
+The other `spotify:`-shaped patterns in `src/` are not a second parser: `src/resources/index.ts` matches a *resource address* (`spotify://playlist/<id>/tracks`) to route a host read, which is a different namespace from an entity reference, and prompt text quotes reference syntax in prose.
+
 ## 6. Resources
 
 MCP Resources expose read-only data as URIs Claude can reference. Fixed resources and template inventories are generated from the live registry:
