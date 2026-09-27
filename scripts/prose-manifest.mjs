@@ -52,6 +52,7 @@
  * rather than a hash that quietly changes.
  */
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 /**
  * A `BEGIN:generated` / `END:generated` marker line, in either spelling the
@@ -338,4 +339,232 @@ export function syncProseManifest(manifest, documents, { retire, date, reason })
   }
 
   return { manifest: next, dropped, retired, refused: false };
+}
+
+/**
+ * Stamp the tree this manifest was generated from into the manifest itself.
+ *
+ * A retirement record is a permanent claim about *why* prose left a file, and a
+ * `--reason` string is a claim about a tree. Nothing in the claim said which
+ * tree, so once it was written the claim could not be checked against anything
+ * — which is what let #1439 ship. This is the smallest thing that makes the
+ * claim falsifiable after the fact: `git log -1 --format=%H scripts/doc-prose-manifest.json`
+ * already knows the commit, but only for the *current* content, and a reader
+ * looking at a bad reason needs the answer without a bisect.
+ *
+ * `upstream` and `behind` are recorded too because they are the difference
+ * between "this tree was current" and "this tree predates a docs PR", and that
+ * difference is exactly what a later reader cannot reconstruct from a SHA.
+ */
+export function stampProvenance(manifest, { head, upstream, behind }) {
+  return { ...manifest, provenance: { head, upstream: upstream ?? null, behind: Boolean(behind) } };
+}
+
+/**
+ * What `surface-census.mjs` passes in, decided by `gitProvenanceIn` below.
+ *
+ * @typedef {object} GitProvenance
+ * @property {boolean} usable       A commit was identified and git answered.
+ * @property {string|null} head     `HEAD`'s commit, or null.
+ * @property {string|null} upstream `origin/main`'s commit, or null when unresolvable.
+ * @property {boolean} behind       `origin/main` is not an ancestor of `HEAD`.
+ * @property {boolean} detached     `HEAD` is not on a branch.
+ * @property {string[]} dirty       Repo-relative paths of pinned documents (or the
+ *                                  manifest itself) with uncommitted changes.
+ * @property {string} note          Why provenance is unusable, when it is.
+ */
+
+/**
+ * Read the provenance of the working tree in `dir` (#1440).
+ *
+ * Every failure here degrades to `usable: false` with a `note` rather than
+ * throwing: this runs on a source tarball, in a shallow CI checkout, and on a
+ * machine without git, and the caller's job is to *refuse* on a tree it cannot
+ * vouch for — not to crash before it gets the chance to explain itself.
+ *
+ * `dirty` is filtered to the paths the pin actually depends on. A dirty
+ * `src/tools/foo.ts` cannot make a prose retirement false, and refusing on it
+ * would train people to pass `--allow-stale` out of habit until the flag stops
+ * meaning anything.
+ */
+export function gitProvenanceIn(dir, { docFiles = [], manifestPath = '' } = {}) {
+  const git = (...argv) => {
+    const result = spawnSync('git', ['-C', dir, ...argv], { encoding: 'utf8' });
+    if (result.error || result.status !== 0) return null;
+    return result.stdout.replace(/\n$/, '');
+  };
+
+  const head = git('rev-parse', 'HEAD');
+  if (!head) {
+    return {
+      usable: false, head: null, upstream: null, behind: false, detached: false, dirty: [],
+      note: `${dir} is not a git working tree (or has no commits), so there is no tree to record provenance against.`,
+    };
+  }
+
+  const upstream = git('rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main');
+  // `--is-ancestor` exits 0 for yes, 1 for no, 128 for "no such object", and
+  // `git()` collapses every non-zero to null — so 1 and 128 read the same here.
+  // That is deliberate and the opposite of `headContains` in the census, which
+  // has to tell them apart. Two different questions are being asked: on the
+  // write path "can this tree vouch for itself?" collapses to no if anything is
+  // unclear, and a tree that cannot prove it contains upstream is exactly the
+  // tree whose absences are suspect. The read path asks "is the recorded commit
+  // still in my history?", where 128 means the checkout is shallow and failing
+  // it would redden every CI run.
+  const behind = upstream ? git('merge-base', '--is-ancestor', upstream, head) === null : false;
+  const branch = git('symbolic-ref', '--quiet', '--short', 'HEAD');
+
+  const watched = new Set([...docFiles, ...(manifestPath ? [manifestPath] : [])]);
+  const dirty = [];
+  for (const line of (git('status', '--porcelain') ?? '').split('\n')) {
+    if (line === '') continue;
+    // Porcelain v1: two status columns, a space, then the path. Renames read
+    // `old -> new`; the new path is the one on disk, so split on the arrow. A
+    // path containing a space is quoted by git, and the quotes have to come off
+    // or it would never match a watched path — which would fail to *refuse*, the
+    // direction a parse slip must not err in.
+    const path = line.slice(3).trim().split(' -> ').pop().replace(/^"(.*)"$/, '$1');
+    if (watched.has(path)) dirty.push(path);
+  }
+  dirty.sort();
+
+  return {
+    usable: true,
+    head,
+    upstream,
+    behind,
+    detached: branch === null,
+    dirty,
+    note: upstream
+      ? ''
+      : 'refs/remotes/origin/main does not resolve, so this tree cannot be compared against the branch it will merge into.',
+  };
+}
+
+/**
+ * The staleness cases `--prose-sync` has to refuse (#1440).
+ *
+ * Enumerated rather than guessed at, because "stale" is not one condition and a
+ * guard written for the case that was observed stops working on the next one:
+ *
+ *  1. **Uncommitted changes to a pinned document or the manifest.** The sync
+ *     reads bytes that are in no commit. Commit the work, or finish the sync
+ *     against a commit that exists.
+ *  2. **The tree is behind `origin/main`.** The branch predates a docs PR, so
+ *     prose that PR reworded is simply *absent here* — the sync retires it and
+ *     records a reason about a reword that this tree never saw. This is the
+ *     #1439 shape exactly, and it is the case a "did you mean to delete this?"
+ *     prompt cannot catch, because from inside the stale tree the deletion
+ *     looks real.
+ *  3. **No `origin/main` to compare against.** A shallow CI checkout, a
+ *     detached local clone with no remote, a source tarball. Case 2 cannot be
+ *     excluded, so it is treated as case 2.
+ *  4. **No usable tree at all.** No git, no commits, not a repository.
+ *
+ * Cases 1 and 4 have no legitimate override — the sync has no tree to record
+ * provenance against, and stamping a guess would be the false record the pin
+ * exists to prevent. Cases 2 and 3 are *situations*, not defects: a feature
+ * branch genuinely may not have merged a docs PR yet, and the honest answer is
+ * to let the author proceed while making the cost of proceeding permanent and
+ * visible. That is what `--allow-stale "<why>"` does — it does not silence the
+ * warning, it moves it into `provenance` where a reviewer reads it next to the
+ * reason it qualifies.
+ *
+ * The two classes come back separately so the caller can render them
+ * differently: a hard refusal has no escape, a soft one names the override.
+ * Collapsing them into one list is how a gate ends up with a documented bypass
+ * that applies to the case it was written for.
+ */
+export function proseSyncRefusals(prov, { allowStale = null } = {}) {
+  if (!prov.usable) {
+    return { hard: [`Cannot record which tree this manifest came from: ${prov.note}`], soft: [] };
+  }
+  const hard = [];
+  const soft = [];
+
+  if (prov.dirty.length > 0) {
+    hard.push(
+      `Uncommitted changes in ${prov.dirty.length} file(s) the pin depends on:\n`
+      + prov.dirty.map((path) => `- ${path}`).join('\n')
+      + '\nA retirement decided against bytes that are in no commit describes a tree that never existed. '
+      + 'Commit the work (or `git checkout --` it) and re-run. There is no override for this: '
+      + 'the manifest is stamped with a commit, and there is no commit here to name.',
+    );
+  }
+  if (prov.detached) {
+    soft.push(
+      'HEAD is detached, so the commit stamped into the manifest names no branch and a bad retirement '
+      + 'recorded from here cannot be traced back to a merge that was supposed to cause it.',
+    );
+  }
+  if (prov.behind || prov.upstream === null) {
+    soft.push(
+      `This tree is behind the branch it will merge into: `
+      + (prov.behind
+        ? `this branch does not contain origin/main (${short(prov.upstream)}).`
+        : prov.note)
+      + '\nProse that a docs PR reworded is simply absent here, and a sync against this tree records that '
+      + 'as a deletion whose reason describes a change this tree never saw. #1439 shipped two of those.\n'
+      + 'Rebase or merge origin/main and re-run. If this tree is genuinely the right one — you are syncing '
+      + 'deliberately before a docs PR lands, or upstream has moved on and your branch is correct — re-run '
+      + 'with --allow-stale "<why>" and the reason is recorded in the manifest\'s provenance block for a '
+      + 'reviewer to read next to the retirement it qualifies.',
+    );
+  }
+
+  return allowStale ? { hard, soft: [] } : { hard, soft };
+}
+
+/** The short form of a SHA used in messages, or a placeholder for a missing one. */
+export const short = (sha) => (sha ? String(sha).slice(0, 7) : '(unknown)');
+
+/**
+ * Check a manifest's recorded provenance against the tree it now sits in.
+ *
+ * This is the read side of #1440 and it is deliberately asymmetric with the
+ * write side. The write refuses; this *reports*, because at check time the
+ * honest verdicts are three and not two:
+ *
+ *  - **verified** — the recorded commit is an ancestor of `HEAD`. The manifest
+ *    was written from a tree this branch still contains.
+ *  - **rewritten** — the commit is not an ancestor. A rebase, an amend, or a
+ *    history rewrite happened after the sync, so the manifest describes prose
+ *    this branch does not have. This is an error: re-run `--prose-sync`.
+ *  - **unverifiable** — the commit object is not present, which is the normal
+ *    state of a `fetch-depth: 1` CI checkout and of any `--check` on a fresh
+ *    clone. Not an error, because a gate that goes red because a CI checkout
+ *    is shallow is a gate people learn to ignore.
+ *
+ * `ancestor` is injected rather than shelled out to so the caller decides what
+ * "ancestor" costs to determine and this stays testable without a repository.
+ */
+export function proseProvenanceVerdict(manifest, { ancestor }) {
+  const recorded = manifest.provenance?.head ?? null;
+  if (!recorded) {
+    return {
+      status: 'unrecorded',
+      error: null,
+      detail: 'this manifest predates provenance recording, so the tree it was generated from is unknown. '
+        + 'Run `npm run count:tools -- --prose-sync` to stamp it.',
+    };
+  }
+  const verdict = ancestor(recorded);
+  if (verdict === true) {
+    return { status: 'verified', error: null, detail: `generated from ${short(recorded)}, still in this branch's history.` };
+  }
+  if (verdict === false) {
+    return {
+      status: 'rewritten',
+      error: `this manifest was generated from ${short(recorded)}, which is not an ancestor of HEAD — the branch was rebased, amended, or rewritten after the sync, so the pin describes prose this tree does not have. `
+        + 'Re-run `npm run count:tools -- --prose-sync` against the current tree.',
+      detail: '',
+    };
+  }
+  return {
+    status: 'unverifiable',
+    error: null,
+    detail: `generated from ${short(recorded)}, whose object is not in this checkout, so ancestry cannot be checked. `
+      + 'This is expected on a shallow CI clone; it is not evidence either way.',
+  };
 }

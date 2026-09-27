@@ -18,7 +18,14 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { proseDrift, syncProseManifest } from './prose-manifest.mjs';
+import {
+  gitProvenanceIn,
+  proseDrift,
+  proseProvenanceVerdict,
+  proseSyncRefusals,
+  stampProvenance,
+  syncProseManifest,
+} from './prose-manifest.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const requireFromRoot = createRequire(join(ROOT, 'package.json'));
@@ -66,17 +73,26 @@ const MARKER_SCAN_EXTENSIONS = new Set([
  * Directories skipped wholesale, in addition to every dot-entry (#1238).
  *
  * Dot-entries are skipped because they are VCS and tool metadata (`.git`,
- * `.github`, `.gitignore`) that is not authored prose, and because the #1383
- * census fixture used to be created *inside* the repository as
- * `.census-fixture-…`, where a scan running beside a parallel test could read a
- * half-written file and report a phantom orphan. That fixture is now rooted at
- * `os.tmpdir()` (#1417), so the parallel-read argument no longer has a call site
- * — it is kept because the skip is a *name* rule and the class of leak it was
- * added for is the class most likely to come back, not because any current test
- * does it. A future non-dot fixture directory in the repository is NOT covered
- * by this rule and will be walked; see the residual-risk note in
- * `check-no-repo-root-fixtures.mjs`. Same TDZ reason as above for being
- * module-scope.
+ * `.github`, `.gitignore`) that is not authored prose, and because the hazard
+ * they carry is concurrent-write safety, not any particular fixture (#1238).
+ * This scan is a gate that other processes write to underneath it: any
+ * directory the repository does not version — a fixture root, a scratch tree,
+ * an editor's swap directory — can be created and populated by a sibling
+ * process while the scan is walking, so reading one can observe a half-written
+ * file and report a marker pair that does not exist, or miss one that does. Test
+ * files here run in parallel against a shared working tree, which is one
+ * instance of that; it is not the only one, and a justification that named a
+ * single call site would go stale the moment that call site moved.
+ *
+ * The invariant, then, is: *skip everything the repository does not version.*
+ * A dot-entry is untracked by construction, so it is skipped for that reason
+ * and not because a particular test once wrote into one. The named directories
+ * below are the tracked-but-generated ones — a dependency tree, a build
+ * output, a coverage report — which are unversioned in the same way even
+ * though their names do not begin with a dot. That is also why a *future*
+ * non-dot fixture directory in the repository is NOT covered by this rule and
+ * will be walked; see the residual-risk note in `check-no-repo-root-fixtures.mjs`.
+ * Same TDZ reason as above for being module-scope.
  */
 const MARKER_SCAN_SKIP = new Set(['node_modules', 'dist', 'coverage', 'outbox', 'logs', 'backups']);
 
@@ -303,6 +319,71 @@ function proseRetireReason() {
   return reason;
 }
 
+/**
+ * The `--allow-stale "<why>"` argument, or undefined when the flag is absent (#1440).
+ *
+ * Same validation as `--retire` for the same reason: a flag that is easy to pass
+ * with an empty value is a flag that gets passed with one. The difference is
+ * what it is allowed to unlock — `proseSyncRefusals` splits its refusals into
+ * hard and soft, and this only reaches the soft ones.
+ */
+function proseAllowStale() {
+  const index = args.indexOf('--allow-stale');
+  if (index < 0) return undefined;
+  const why = args[index + 1];
+  if (!why || why.startsWith('-')) {
+    throw new Error(
+      '--allow-stale requires a reason, e.g. --allow-stale "docs PR #1402 landed after this branch started; '
+      + 'these paragraphs are gone from the merged result too".\n'
+      + 'The reason is written into the manifest\'s provenance block. An acknowledgement with no reason is '
+      + 'indistinguishable from having not looked.',
+    );
+  }
+  return why;
+}
+
+/**
+ * Provenance of the tree the pin is being written from, or read against (#1440).
+ *
+ * `--prose-provenance <file>` substitutes a captured reading, for the same
+ * reason `--census-file` exists: `gitProvenanceIn` shells out, and a test that
+ * wants to observe the *refusal* — the branch of the code that only runs when
+ * the tree is behind or dirty — cannot arrange a real repository to be behind
+ * without moving the real `origin/main`. The substitute has to reach the real
+ * decision code, not a test-only copy of it, or the test proves the wrong
+ * function refuses.
+ */
+function provenanceUnderTest(docFiles) {
+  const index = args.indexOf('--prose-provenance');
+  if (index >= 0) {
+    if (!args[index + 1]) throw new Error('--prose-provenance requires a JSON file');
+    return JSON.parse(readFileSync(resolve(args[index + 1]), 'utf8'));
+  }
+  return gitProvenanceIn(ROOT, {
+    docFiles,
+    manifestPath: relative(ROOT, PROSE_MANIFEST),
+  });
+}
+
+/**
+ * Is `sha` an ancestor of `HEAD`? `null` when git cannot tell.
+ *
+ * The null is load-bearing. `git merge-base --is-ancestor` exits 1 for "no" and
+ * 128 for "no such object", and this repository's CI checks out with
+ * `fetch-depth: 1` — so a manifest stamped before the checkout will name a
+ * commit that is not in the clone at all. Collapsing 128 into "no" would turn
+ * every shallow CI run red, and a gate that is always red is a gate nobody
+ * reads.
+ */
+function headContains(sha) {
+  const result = spawnSync('git', ['-C', ROOT, 'merge-base', '--is-ancestor', sha, 'HEAD'], {
+    encoding: 'utf8',
+  });
+  if (result.error) return null;
+  if (result.status === 0) return true;
+  return result.status === 1 ? false : null;
+}
+
 function readProseManifest({ required = true } = {}) {
   try {
     return JSON.parse(readFileSync(PROSE_MANIFEST, 'utf8'));
@@ -447,13 +528,22 @@ if (proseReportIndex >= 0) {
   const documents = proseDocumentsUnderTest();
   const manifest = readProseManifest();
   const report = proseDrift(manifest, documents);
+  const provenance = proseProvenanceVerdict(manifest, { ancestor: headContains });
   console.log(JSON.stringify({
     errors: report.errors,
     currentCount: report.currentCount,
     pinnedCount: report.pinnedCount,
     files: report.files,
+    // Which tree the pin was generated from, and whether this checkout can
+    // still confirm it. A reader who is told "verified" can trust the pin; one
+    // told "unverifiable" knows the answer was not produced rather than found.
+    provenance: {
+      ...(manifest.provenance ?? {}),
+      status: provenance.status,
+      detail: provenance.detail,
+    },
   }, null, 2));
-  process.exit(report.errors.length > 0 ? 1 : 0);
+  process.exit(report.errors.length > 0 || provenance.error ? 1 : 0);
 }
 
 /**
@@ -472,11 +562,41 @@ if (args.includes('--prose-sync')) {
   // manifest. Passing only the flag produced retirement records with no reason
   // on them, which is the one field the record exists to carry.
   const reason = proseRetireReason();
-  const result = syncProseManifest(readProseManifest({ required: false }), documents, {
+  const allowStale = proseAllowStale();
+  const previous = readProseManifest({ required: false });
+
+  // Computed before the provenance decision, not after it, and the ordering is
+  // load-bearing. `syncProseManifest` is pure — it returns the manifest it would
+  // have written and writes nothing — so running it first costs nothing, and it
+  // is the only way the refusal below can name the paragraphs the author was
+  // about to retire. A refusal that says "this tree cannot be attested" and
+  // stops there tells the reader nothing about what was at stake, and the path
+  // of least resistance from there is `--allow-stale` without reading anything.
+  const result = syncProseManifest(previous, documents, {
     retire: reason,
     reason,
     date: new Date().toISOString().slice(0, 10),
   });
+
+  // #1440: refuse before the pin is rewritten, not after. A manifest that has
+  // already been written with a false reason is worse than one that was not
+  // written at all, because the false reason is then indistinguishable from a
+  // true one to everyone downstream.
+  const provenance = provenanceUnderTest(Object.keys(documents));
+  const refusals = proseSyncRefusals(provenance, { allowStale });
+  if (refusals.hard.length > 0 || refusals.soft.length > 0) {
+    console.error(
+      `Refusing to rewrite the prose manifest: this tree cannot be attested (#1440).\n\n`
+      + [...refusals.hard, ...refusals.soft].map((line) => `${line}\n`).join('\n')
+      + (result.dropped.length > 0
+        ? `\nThis run would have retired ${result.dropped.length} pinned prose block(s):\n`
+          + result.dropped.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
+          + '\nThey are still pinned, and still in the gate. Resolve the tree question first, then re-run.\n'
+        : ''),
+    );
+    process.exit(1);
+  }
+
   if (result.refused) {
     console.error(
       `Refusing to rewrite the prose manifest: ${result.dropped.length} pinned prose block(s) are no longer in their file.\n`
@@ -491,11 +611,23 @@ if (args.includes('--prose-sync')) {
     );
     process.exit(1);
   }
-  writeFileSync(PROSE_MANIFEST, `${JSON.stringify(result.manifest, null, 2)}\n`);
+  // Stamped last, from the same reading that was just accepted, so the recorded
+  // tree and the recorded pins cannot disagree. `allowStale` is carried in the
+  // block rather than in the retirement reason, because it qualifies the tree
+  // and not the prose: a reviewer asking "why might this reason be wrong" looks
+  // at the retirement, and this is what answers it.
+  const stamped = stampProvenance(result.manifest, {
+    head: provenance.head,
+    upstream: provenance.upstream,
+    behind: Boolean(provenance.behind),
+  });
+  if (allowStale) stamped.provenance.allowStale = allowStale;
+  writeFileSync(PROSE_MANIFEST, `${JSON.stringify(stamped, null, 2)}\n`);
   console.error(
-    `Wrote ${PROSE_MANIFEST}: ${Object.keys(result.manifest.files).length} file(s), `
-    + `${reportUnitCount(result.manifest)} pinned unit(s)`
-    + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : ''),
+    `Wrote ${PROSE_MANIFEST}: ${Object.keys(stamped.files).length} file(s), `
+    + `${reportUnitCount(stamped)} pinned unit(s)`
+    + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : '')
+    + (allowStale ? `, synced from a tree behind origin/main (acknowledged: ${allowStale})` : ''),
   );
   process.exit(0);
 }
@@ -2054,8 +2186,22 @@ function checkDocumentation(blocks) {
   // Skipped by `--no-prose` (#1436), which is the whole reason that flag
   // exists: `scripts/doc-prose-manifest.json` is a documentation artifact, and
   // a caller asserting the *architecture* must not go red because somebody
-  // reworded ARCHITECTURE.md. See `checkProse` at the flag's declaration.
-  if (checkProse) errors.push(...proseDrift(readProseManifest(), proseDocumentsUnderTest()).errors);
+  // reworded ARCHITECTURE.md. See `checkProse` at the flag's declaration. The
+  // provenance verdict below is scoped with it, because it is a question about
+  // the same file: answering it under `--no-prose` would reintroduce exactly
+  // the coupling #1436 removed.
+  if (checkProse) {
+    const proseManifest = readProseManifest();
+    errors.push(...proseDrift(proseManifest, proseDocumentsUnderTest()).errors);
+    // #1440: the pin says which tree it was generated from, so a rebase or amend
+    // after the sync is a check-time error rather than a fact the next reader has
+    // to reconstruct. Only the `rewritten` verdict fires the gate; `unverifiable`
+    // is the normal state of a `fetch-depth: 1` checkout and is reported by
+    // `--prose-report` instead, because a gate that is red whenever the clone is
+    // shallow is a gate that gets ignored.
+    const provenance = proseProvenanceVerdict(proseManifest, { ancestor: headContains });
+    if (provenance.error) errors.push(provenance.error);
+  }
   for (const [file, name, body] of blocks) {
     if (tree.phantoms.has(`${file}:${name}`)) continue;
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
