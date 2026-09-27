@@ -119,7 +119,7 @@ function asItems(payload: unknown): RawItem[] {
   return [];
 }
 
-/** Best-effort Spotify id extraction (externalIds.spotify[] are often dead). */
+/** Best-effort Spotify id extraction (some externalIds.spotify[] do not resolve). */
 function spotifyIdOf(raw: RawItem): string | null {
   const ext = raw.externalIds as Record<string, unknown> | undefined;
   const fromExt = ext?.spotify;
@@ -190,8 +190,27 @@ export function picksFromStreams(streams: TasteStream[], evidence: string): Trac
   return out;
 }
 
+/**
+ * Caller-facing guidance for a stats.fm id that will not resolve (#1259).
+ *
+ * The instruction is conditional and actionable; it deliberately states NO
+ * failure rate. This string used to read "are often dead (~12%)", and nothing
+ * in the repository measures that figure: `git log -S` dates its arrival to
+ * the release commit `73e40ae` rather than to a change carrying provenance,
+ * no probe, fixture or sweep report produces it, and the only rate-bearing
+ * artefact in the tree (`memory/live-sweep-report.md`) covers Spotify
+ * endpoints, not stats.fm id resolution. A number nobody can re-derive is a
+ * rumour with a decimal point -- it reached every agent in every session,
+ * from tool output, as though it were a property of stats.fm.
+ *
+ * The fix is subtraction, not hedging. "Roughly one in eight" is the same
+ * unsourced claim in different words, and a *measured* rate would be computed
+ * at runtime from live data rather than written down here.
+ * `tests/approximate-rate-guard.test.ts` keeps a literal estimated rate from
+ * creeping back into any caller-facing string.
+ */
 export const DEAD_STATSFM_IDS =
-  'stats.fm externalIds.spotify[] are often dead (~12%) — if a URI 404s, run search_tracks "Artist - Title" and take the top result.';
+  'Some stats.fm externalIds.spotify[] entries do not resolve on Spotify — if a URI 404s, run search_tracks "Artist - Title" and take the top result.';
 
 export const SPOTIFY_FALLBACK_GUIDANCE =
   `${DEAD_STATSFM_IDS} Rows under missing[] had no Spotify id at all: search them by name.`;

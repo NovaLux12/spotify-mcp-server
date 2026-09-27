@@ -1,8 +1,42 @@
 /**
  * The app-registration-gated error contract (#791, #428, #429; audit
  * A14-016/A8-036) -- the graceful 403 mapping for Spotify's
- * app-registration-gated endpoint family (probed 2026-08-26,
- * memory/edge-probe-2026-08-26.json).
+ * app-registration-gated endpoint family, classified from Spotify's
+ * February 2026 changelog and its endpoint reference pages.
+ *
+ * The classification below rests on two citable sources, not on a local run:
+ *
+ *   - Spotify's February 2026 changelog
+ *     (https://developer.spotify.com/documentation/web-api/references/changes/february-2026),
+ *     which marks every operation in `GATED_FAMILIES` `[REMOVED]` and names
+ *     the replacements (`/me/library`, `/me/library/contains`, `/items`).
+ *     This is the basis for every `reason: 'removal'` row below.
+ *   - The endpoint reference pages, spot-checked 2026-09-27. They do NOT
+ *     agree with the changelog, and the disagreement is the point rather than
+ *     a problem with this table: `/browse/categories` and `/markets` are still
+ *     published and marked "Deprecated", as are the seven `Get Several`
+ *     batch paths, while `/artists/{id}/top-tracks` now 404s. So a row here
+ *     means "the changelog removed it", not "the docs deleted it" -- which is
+ *     why `reason` and `fallback` are separate fields, and why the runtime
+ *     truth is still what a given registration is allowed to read.
+ *
+ * An earlier version of this header cited a dated probe artefact under
+ * `memory/` as the evidence for this whole contract (#1260). That file is not
+ * in the repository and never was: `.gitignore` excludes `memory/*` apart from
+ * three whitelisted sweep reports, so the probe wrote its result to a path git
+ * silently dropped. `scripts/edge-probe.mjs` still defaults its output there,
+ * which is where the phantom citation came from. Nothing was re-derived when
+ * the citation was removed: every family below is marked `[REMOVED]` in the
+ * changelog, so the probe had nothing to add that a citable source does not
+ * already say. The raw run stays uncommitted by design; it hits a live
+ * Spotify API and is a deliberate, occasional act, not something to redo in
+ * a docs change, and committing a stale run would only freeze a snapshot that
+ * ages. A citation a reader cannot follow is worse than none, so the citation
+ * now names a URL that resolves.
+ *
+ * Re-verify both sources before trusting a row: Spotify removed a batch of
+ * endpoints within months of this repo last calling a family "verified
+ * operational" (AGENTS.md §2).
  *
  * This module exists so the contract has ONE named installation point that is
  * independent of the toolset system. It used to be installed by
@@ -80,7 +114,10 @@ export interface GatedFamily {
 }
 
 /**
- * The #329 app-registration-gated endpoint families (probe 2026-08-26).
+ * The #329 app-registration-gated endpoint families, classified from
+ * Spotify's February 2026 changelog (see the file header for the URLs and the
+ * re-verification date). Not from a local run: the earlier "probe 2026-08-26"
+ * citation pointed at a JSON artefact that is not in the repository (#1260).
  *
  * Three sources describe this class and only two of them are binaries:
  * Spotify's Feb 2026 changelog marks some operations `[REMOVED]`, while the

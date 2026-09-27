@@ -19,13 +19,15 @@ Every composite in `src/tools/taste_composites.ts` and `src/tools/taste_playlist
   performs one `POST /me/playlists` and chunked `PUT`/`POST
   /playlists/{id}/items` adds, and refuses outright under
   `SPOTIFY_MCP_READONLY` before any wire call. See #723.
-- `stats.fm` `externalIds.spotify[]` entries are frequently dead, so every
-  track-list output includes Spotify-search fallback guidance
-  (`search_tracks "Artist - Title"`) and a `missing[]` section for rows with no
-  usable Spotify id. The tools quote a `~12%` dead-id rate in their output; that
-  figure is an in-hand observation, not a measurement this repo took or can
-  reproduce, so treat the number as indicative and the fallback guidance as the
-  part that is load-bearing.
+- Some `stats.fm` `externalIds.spotify[]` entries do not resolve on Spotify,
+  so every track-list output includes Spotify-search fallback guidance
+  (`search_tracks "Artist - Title"`) and a `missing[]` section for rows with
+  no usable Spotify id. No failure rate is claimed: the "~12% in the wild"
+  figure this bullet used to carry was unsourced (#1259), so it was removed
+  rather than softened. `tests/approximate-rate-guard.test.ts` enforces the
+  absence of a literal estimated rate in caller-facing strings, and the
+  guard above is what keeps this file and `src/tools/taste_composites.ts`
+  from disagreeing about it again.
 - On a `dry_run: false` commit, tracks whose stats.fm id is unusable are
   looked up with one `/search` GET each. Only a 404 or an empty result set
   means "search matched nothing" (`unresolved[]`); a lookup that itself fails
@@ -57,9 +59,9 @@ Every composite in `src/tools/taste_composites.ts` and `src/tools/taste_playlist
 ## Spotify-search fallback guidance (emitted in playlist-shaped outputs)
 
 ```text
-stats.fm externalIds.spotify[] are often dead (~12%) — if a URI 404s,
-run search_tracks "Artist - Title" and take the top result. Rows under
-missing[] had no Spotify id at all: search them by name.
+Some stats.fm externalIds.spotify[] entries do not resolve on Spotify — if
+a URI 404s, run search_tracks "Artist - Title" and take the top result.
+Rows under missing[] had no Spotify id at all: search them by name.
 ```
 
 ## Registration

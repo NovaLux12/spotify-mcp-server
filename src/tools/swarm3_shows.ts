@@ -1,7 +1,7 @@
 /** swarm3 shows slice — 500-tool swarm v1.26.0 (issue #442). Owned by shows builder. */
 /**
  * swarm3 shows slice — 24 show/episode tools, all registered here and nowhere
- * else (index.ts/toolsets.ts integration is the coordinator's job).
+ * else (index.ts and toolsets.ts integration is the coordinator's job).
  *
  * House conventions honoured here:
  *   • shaping.ts helpers only (resolveMaxResults / truncateItems /

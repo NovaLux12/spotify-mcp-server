@@ -39,7 +39,7 @@
  *                     tools/browse.ts           (artist genres + browse categories)
  *                     tools/artistwatch.ts      (discography/watchlist)
  *                     tools/searchhistory.ts    (search history)
- *                     tools/exhaust2_catalog.ts, tools/exhaust2_enggating.ts, tools/swarm3_discovery.ts, tools/swarm3_b_discovery.ts, tools/swarm3_shows.ts, tools/swarm3_refs.ts, tools/swarm3_meta.ts (discovery/catalog deep-dives)
+ *                     tools/exhaust2_catalog.ts, tools/exhaust2_enggating.ts, tools/swarm3_discovery.ts, tools/swarm3b_discovery.ts, tools/swarm3_shows.ts, tools/swarm3_refs.ts, tools/swarm3_meta.ts (discovery/catalog deep-dives)
  *   playlists       → tools/playlists.ts        (playlist read/write)
  *                     tools/users.ts            (user profiles)
  *                     tools/playlisthealth.ts   (health/followers/collab/snapshots)
