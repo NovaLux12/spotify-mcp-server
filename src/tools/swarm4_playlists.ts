@@ -564,8 +564,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const max = resolveMaxResults(args.max_results, getConfig().maxItems);
       const collator = new Intl.Collator('en', { sensitivity: 'base', numeric: true });
@@ -666,8 +666,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const n = rows.length;
       if (n === 0) {
@@ -731,8 +731,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const rand = args.seed !== undefined ? mulberry32(args.seed) : Math.random;
       const shuffled = shuffleArr(rows, rand);
@@ -783,8 +783,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const reversed = [...rows].reverse();
       const uris = reversed.map((r) => r.uri);
@@ -840,8 +840,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const n = rows.length;
       const start = args.start;
@@ -935,8 +935,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const n = rows.length;
       if (args.position_a > n || args.position_b > n) {
@@ -1009,8 +1009,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const keyOf = (r: OpRow): string | null =>
         args.match_by === 'uri' ? (r.uri || null) : (r.name.trim().toLowerCase() || null);
@@ -1084,8 +1084,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const artistRef = normalizeArtistRef(args.artist);
       const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
@@ -1158,8 +1158,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const artistRef = normalizeArtistRef(args.artist);
       const looksLikeId = /^[0-9A-Za-z]{22}$/.test(artistRef);
@@ -1225,8 +1225,8 @@ export function registerSwarm4PlaylistsTools(server: McpServer, client: SpotifyC
         return shape(rf, `min_sec (${args.min_sec}) is greater than max_sec (${args.max_sec}).`, { ok: false });
       }
       const p = await loadPlaylistFull(client, args.playlist_id);
-      assertRewritable(p);
       assertPlaylistReadWhole(p);
+      assertRewritable(p);
       const rows = toRows(p.items);
       const inWindow = (r: OpRow): boolean =>
         r.durationMs !== null &&

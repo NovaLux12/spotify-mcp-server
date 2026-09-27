@@ -165,6 +165,23 @@ describe('#1362 the data loss, reproduced', () => {
     assert.match(truncated.message, /SPOTIFY_MCP_FETCH_ALL_CAP/, 'the truncation refusal names the knob to raise');
   });
 
+  it('a playlist that is BOTH truncated and unavailable is refused for truncation first', async () => {
+    // `contains 1 unavailable item(s)` is a count derived from an INCOMPLETE
+    // read: on a walk that stopped at the cap, the unavailable rows past it
+    // were never seen, so leading with that count repeats the fault this issue
+    // is filed on. The truncation refusal is the honest one, so it goes first —
+    // which is also the order `playlists.ts` uses, and the reason is stated
+    // there rather than invented here.
+    const cap = getConfig().fetchAllCap;
+    const h = harness();
+    // An unavailable row INSIDE the cap, so the playlist is genuinely both.
+    h.seed(A, ['spotify:track:a', null, ...trackUris(cap)]);
+    const err = await h.invoke('playlist_flip_order', { playlist_id: A, dry_run: false }).catch((e: Error) => e);
+    assert.ok(err instanceof Error);
+    assert.match(err.message, /fetch-all cap/, 'the truncation refusal leads');
+    assert.doesNotMatch(err.message, /unavailable item\(s\)/, 'a count off an incomplete read must not be the headline');
+  });
+
   it('names how much was never read, not a count of what survived', async () => {
     // "Reversed 500 item(s)" is the false claim #1362 is filed on. The refusal
     // has to distinguish the rows it read from the playlist it did not.
