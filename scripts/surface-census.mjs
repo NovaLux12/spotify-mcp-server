@@ -79,7 +79,12 @@ const {
   moduleToolNames,
   loadManifestRegistrars,
   registerManifestModule,
+  applyToolAnnotations,
+  assertToolNamingPolicy,
+  collectAggregateSurfaceMeasurement,
+  AGGREGATE_SURFACE_LIMITS,
   REGISTRAR_MANIFEST,
+  TOOL_SURFACE_BUDGET,
 } = await import('../src/tools/annotations.ts');
 // `module.name` is the registrar's export name, carried as data since the
 // loader is a thunk with no `.name` to read (#906). Two rows changed here:
@@ -108,7 +113,7 @@ const { GATED_FAMILIES, GATED_PATH_PATTERNS, isGatedPath } = await import('../sr
 const census = censusFileIndex >= 0
   ? JSON.parse(readFileSync(resolve(args[censusFileIndex + 1]), 'utf8'))
   : await readProductionRegistry();
-const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements } = await attributeToolsToModules(census.toolNames, census.toolDefinitions);
+const { namesByModule: moduleNames, manifestToolNames, schemaMeasurements, aggregateSurface } = await attributeToolsToModules(census.toolNames, census.toolDefinitions);
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 
 const perModule = countModuleTools(moduleNames);
@@ -129,6 +134,39 @@ const schemaBudgets = REGISTRAR_MANIFEST.map((module) => ({
   maxToolCount: module.ceiling.toolCount,
   maxSchemaBytes: module.ceiling.schemaBytes,
 }));
+/**
+ * The aggregate surface figures (#1241).
+ *
+ * `maxCeilingBytes` and `maxEnforcedBytes` are read straight off the two
+ * exported code constants, not retyped here: a second copy of 620_000 in this
+ * script would be the same drift the issue is about, one file over. The
+ * measurement is `collectAggregateSurfaceMeasurement` — the exact call
+ * `assertAggregateSurfaceBudget` gates on in `src/index.ts` — applied to this
+ * census's own fully-registered server after the same finalizers run.
+ *
+ * It is deliberately NOT `Buffer.byteLength(JSON.stringify(census.toolDefinitions))`.
+ * Re-serializing the census payload is a reconstruction: it has been measured
+ * ~1.9KB away from the gated number, and not consistently in one direction, so
+ * a doc figure derived that way would be a number nobody ever enforced.
+ */
+const perModuleSchemaBytesTotal = schemaMeasurements.reduce((total, row) => total + row.schemaBytes, 0);
+const aggregateSurfaceFacts = Object.freeze({
+  maxTools: AGGREGATE_SURFACE_LIMITS.maxTools,
+  maxCeilingBytes: TOOL_SURFACE_BUDGET.defaultMaxBytes,
+  maxEnforcedBytes: AGGREGATE_SURFACE_LIMITS.maxBytes,
+  annotationAllowanceBytes: AGGREGATE_SURFACE_LIMITS.maxBytes - TOOL_SURFACE_BUDGET.defaultMaxBytes,
+  measuredToolCount: aggregateSurface.toolCount,
+  measuredBytes: aggregateSurface.schemaBytes,
+  headroomBytes: AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes,
+  headroomPercent: ((AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes) / AGGREGATE_SURFACE_LIMITS.maxBytes) * 100,
+  verdict: aggregateSurfaceVerdict(AGGREGATE_SURFACE_LIMITS.maxBytes - aggregateSurface.schemaBytes, AGGREGATE_SURFACE_LIMITS.maxBytes),
+  // The share of the budgeted payload the per-module table cannot see: tool
+  // names, titles, annotations and boundary metadata. The page used to assert
+  // "roughly 11.5%" in prose; that is a live ratio, so it is measured here.
+  perModuleSchemaBytesTotal,
+  metadataOverheadBytes: aggregateSurface.schemaBytes - perModuleSchemaBytesTotal,
+  metadataOverheadPercent: ((aggregateSurface.schemaBytes - perModuleSchemaBytesTotal) / aggregateSurface.schemaBytes) * 100,
+});
 const result = {
   tools: census.toolNames.length,
   toolModuleFiles,
@@ -154,6 +192,7 @@ const result = {
   schemaMeasurements,
   schemaBudgets,
   toolsetNames: toolsetNamesFromSource(),
+  aggregateSurface: aggregateSurfaceFacts,
   registrySource: 'src/index.ts via stdio tools/list after production finalizers',
 };
 
@@ -166,6 +205,16 @@ const packageExcerpt = JSON.stringify({
   scripts: pkg.scripts,
 }, null, 2);
 const shortSurface = `The finalized default MCP registry exposes **${result.tools} tools**, **${result.resources} fixed resources**, **${result.resourceTemplates} resource templates**, and **${result.prompts} prompts**. Toolsets and production gates can trim a configured host; these totals describe the default production \`tools/list\` after finalizers.`;
+/**
+ * #1241 did NOT generate the README's 2.0-upgrade tool count, and the reason
+ * is worth keeping: the sentence lives inside a numbered list item, and a
+ * generated block's end marker always renders at column 0. That terminates the
+ * list item — verified with a CommonMark renderer, which emits `</ol>` before
+ * the closing comment and restarts the list. The count was therefore removed
+ * from the prose and replaced with a pointer at the generated `surface-census`
+ * block a few hundred lines up. Retyping 591 -> 592 would have been the same
+ * bug with a smaller number; generating it there would have broken the README.
+ */
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
   ['README.md', 'gated-endpoints', gatedEndpointTable()],
@@ -176,6 +225,7 @@ const blocks = [
   ['SPEC.md', 'resource-surface', resourceSurface(result)],
   ['SPEC.md', 'prompt-surface', promptSurface(result)],
   ['docs/schema-budgets.md', 'schema-budget-table', schemaBudgetTable(result)],
+  ['docs/schema-budgets.md', 'aggregate-budget', aggregateBudgetBlock(result)],
   ['docs/wave2-composites.md', 'surface-census', wave2Surface(result)],
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['skills/spotify-exhaustive-feature-sweep/SKILL.md', 'surface-census', skillSurface(result)],
@@ -325,7 +375,19 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
         withinBudget: names.length <= module.ceiling.toolCount && schemaBytes <= module.ceiling.schemaBytes,
       };
     });
-    return { namesByModule, manifestToolNames: [...attributed.keys()].sort(), schemaMeasurements };
+    // The aggregate figures (#1241) must come from the same measurement
+    // `assertAggregateSurfaceBudget` gates on, which is taken *after* the
+    // naming-policy check and the annotation pass — not from the wire payload
+    // the stdio read above returns. Run the same two steps `src/index.ts` runs
+    // in the same order, then measure.
+    const registeredNames = Object.keys(server._registeredTools ?? {});
+    assertToolNamingPolicy(registeredNames);
+    applyToolAnnotations(server);
+    const aggregateSurface = collectAggregateSurfaceMeasurement(server);
+    if (aggregateSurface.toolCount !== live.size) {
+      throw new Error(`census server measured ${aggregateSurface.toolCount} tools but the finalized stdio registry reported ${live.size}`);
+    }
+    return { namesByModule, manifestToolNames: [...attributed.keys()].sort(), schemaMeasurements, aggregateSurface };
   } finally {
     await server.close().catch(() => undefined);
   }
@@ -365,6 +427,54 @@ function formatInteger(value) {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
 }
 
+/**
+ * The budget's own verdict, derived from the measurement rather than asserted
+ * in prose (#1241). The doc used to say "the budget is effectively exhausted"
+ * from a hand-copied 285B figure that was stale by two orders of magnitude;
+ * the honest version is a function of the headroom actually left, so the next
+ * 10KB of surface moves the sentence by itself.
+ */
+function aggregateSurfaceVerdict(headroomBytes, maxBytes) {
+  if (headroomBytes < 0) return 'over budget';
+  const ratio = headroomBytes / maxBytes;
+  if (ratio < 0.01) return 'effectively exhausted';
+  if (ratio < 0.05) return 'tight';
+  return 'within budget';
+}
+
+/**
+ * The `docs/schema-budgets.md` aggregate block (#1241).
+ *
+ * Every figure here is read from code or measured — the ceiling and the
+ * enforced limit are the exported constants, the payload is
+ * `collectAggregateSurfaceMeasurement`, and the conclusion is a band over the
+ * headroom ratio. Nothing in the surrounding prose quotes a number, because
+ * prose is not gated and a quoted number is stale within one release.
+ */
+function aggregateBudgetBlock(census) {
+  const facts = census.aggregateSurface;
+  const rows = [
+    `| \`TOOL_SURFACE_BUDGET.defaultMaxTools\` | ${formatInteger(facts.maxTools)} tools | code constant, \`src/tools/annotations.ts\` |`,
+    `| \`TOOL_SURFACE_BUDGET.defaultMaxBytes\` | ${formatInteger(facts.maxCeilingBytes)}B | code constant, \`src/tools/annotations.ts\` |`,
+    `| \`AGGREGATE_SURFACE_LIMITS.maxBytes\` (enforced) | ${formatInteger(facts.maxEnforcedBytes)}B | the ceiling plus ${formatInteger(facts.annotationAllowanceBytes)}B of post-registration annotation metadata |`,
+    `| Measured \`tools/list\` payload | ${formatInteger(facts.measuredBytes)}B | \`collectAggregateSurfaceMeasurement\` over the finalized registry, after annotations |`,
+    `| Of which outside the per-module table | ${formatInteger(facts.metadataOverheadBytes)}B | ${facts.metadataOverheadPercent.toFixed(1)}% of the payload — tool names, titles, annotations and boundary metadata |`,
+    `| Headroom | ${formatInteger(facts.headroomBytes)}B | ${facts.headroomPercent.toFixed(1)}% of the enforced limit |`,
+  ];
+  return [
+    '| Figure | Value | Where it comes from |',
+    '|---|---:|---|',
+    ...rows,
+    '',
+    `Headroom is **${formatInteger(facts.headroomBytes)}B** of the ${formatInteger(facts.maxEnforcedBytes)}B enforced limit — ${facts.headroomPercent.toFixed(1)}% — so the aggregate budget is **${facts.verdict}**.`,
+    '',
+    'Regenerate with `npm run count:tools -- --write`. `--check` fails when any',
+    'figure above stops matching the constants or the live measurement, so a',
+    'ceiling raise lands in this file as a diff you can read, not as prose that',
+    'quietly keeps describing the old one.',
+  ].join('\n');
+}
+
 function checkSchemaBudgetTruth(census) {
   const errors = [];
   const measurements = new Map(census.schemaMeasurements.map((row) => [row.module, row]));
@@ -377,6 +487,37 @@ function checkSchemaBudgetTruth(census) {
     if (measured.toolCount !== budget.baselineToolCount || measured.schemaBytes !== budget.baselineSchemaBytes) {
       errors.push(`src/tools/annotations.ts: ${budget.module} baseline is ${budget.baselineToolCount} tools/${budget.baselineSchemaBytes}B, measured ${measured.toolCount} tools/${measured.schemaBytes}B`);
     }
+  }
+  return errors;
+}
+
+/**
+ * The aggregate figures in `docs/schema-budgets.md` (#1241) are generated, so
+ * `--check` already compares them against these values. What this adds is the
+ * *relationship* between them: the enforced limit must still be the ceiling
+ * plus a non-negative annotation allowance, the measurement must still be
+ * inside the enforced limit, and the headroom must be the arithmetic the
+ * verdict band was derived from. A code change that breaks any of those fails
+ * here rather than shipping a doc block that is internally consistent and
+ * wrong.
+ */
+function checkAggregateSurfaceTruth(census) {
+  const facts = census.aggregateSurface;
+  const errors = [];
+  if (facts.measuredToolCount !== census.tools) {
+    errors.push(`docs/schema-budgets.md: aggregate measurement covers ${facts.measuredToolCount} tools, finalized registry reports ${census.tools}`);
+  }
+  if (facts.annotationAllowanceBytes < 0) {
+    errors.push(`src/tools/annotations.ts: enforced limit ${formatInteger(facts.maxEnforcedBytes)}B is below the ceiling ${formatInteger(facts.maxCeilingBytes)}B`);
+  }
+  if (facts.measuredBytes > facts.maxEnforcedBytes) {
+    errors.push(`docs/schema-budgets.md: measured surface ${formatInteger(facts.measuredBytes)}B exceeds the enforced limit ${formatInteger(facts.maxEnforcedBytes)}B`);
+  }
+  if (facts.headroomBytes !== facts.maxEnforcedBytes - facts.measuredBytes) {
+    errors.push(`docs/schema-budgets.md: headroom ${formatInteger(facts.headroomBytes)}B is not enforced-minus-measured`);
+  }
+  if (facts.verdict !== aggregateSurfaceVerdict(facts.headroomBytes, facts.maxEnforcedBytes)) {
+    errors.push(`docs/schema-budgets.md: verdict "${facts.verdict}" does not match the measured headroom ratio`);
   }
   return errors;
 }
@@ -662,6 +803,7 @@ function checkDocumentation(blocks) {
     if (error) errors.push(error);
   }
   errors.push(...checkSchemaBudgetTruth(result));
+  errors.push(...checkAggregateSurfaceTruth(result));
   errors.push(...checkSpecStructure());
   errors.push(...checkDocReachability());
   errors.push(...checkGatedEndpointTruth());

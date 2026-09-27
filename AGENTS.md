@@ -219,7 +219,7 @@ feeds the same JSON to both. Do not run them independently in a loop.
 - `README.md`: `surface-census`, `gated-endpoints`
 - `ARCHITECTURE.md`: `surface-census`, `module-map`
 - `SPEC.md`: `package-contract`, `tool-surface`, `resource-surface`, `prompt-surface`
-- `docs/schema-budgets.md`: `schema-budget-table`
+- `docs/schema-budgets.md`: `schema-budget-table`, `aggregate-budget`
 - `docs/wave2-composites.md`: `surface-census`
 - `docs/distribution.md`: `surface-census`
 - `skills/spotify-exhaustive-feature-sweep/SKILL.md`: `surface-census`

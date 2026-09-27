@@ -62,9 +62,9 @@ library migration; live resources expose now-playing and library state for
 polling clients. Built for the post-deprecation API: honest about what Spotify
 removed, graceful where endpoints are restricted, dry-run previews everywhere
 state changes, human-in-the-loop confirmation on bulk deletions, post-write
-receipts you can verify in a later turn, and a hard read-only mode. 830+ tests,
-TypeScript strict, published to npm (with SLSA provenance) and the official MCP
-Registry.
+receipts you can verify in a later turn, and a hard read-only mode. The full
+suite runs on every change and the release tag is gated on it green; TypeScript
+strict, published to npm (with SLSA provenance) and the official MCP Registry.
 
 ## One-command install lines
 
