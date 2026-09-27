@@ -19,6 +19,7 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { spotifyRef } from '../refs.js';
 import {
   MARKET_CODE,
   getWithMarketFallback,
@@ -80,7 +81,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     'get_audiobook',
     `Get full details for an audiobook by ID.${MARKET_NOTE}`,
     {
-      id: z.string().describe('Spotify audiobook ID'),
+      id: spotifyRef(z.string().describe('Spotify audiobook ID'), 'audiobook'),
       market: MARKET_PARAM,
       response_format: ResponseFormat,
     },
@@ -105,7 +106,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
     'get_audiobook_chapters',
     `List the chapters of an audiobook with pagination.${MARKET_NOTE}`,
     {
-      id: z.string().describe('Spotify audiobook ID'),
+      id: spotifyRef(z.string().describe('Spotify audiobook ID'), 'audiobook'),
       limit: z
         .number()
         .int()

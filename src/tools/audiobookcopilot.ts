@@ -29,6 +29,7 @@ import {
 } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { formatDuration } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 const CHAPTERS_PAGE_LIMIT = 50; // endpoint cap, verified live
 
@@ -101,7 +102,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
     'list_all_chapters',
     'List every chapter of an audiobook in one table (index, name, duration, resume point). Walks all pages of the chapters endpoint, unlike the ~18-chapter app limit, but stops at the fetch-all cap: a capped result is a PREFIX of the book, flagged truncated_by_cap=true.',
     {
-      audiobook_id: z.string().describe('Spotify audiobook ID'),
+      audiobook_id: spotifyRef(z.string().describe('Spotify audiobook ID'), 'audiobook'),
       response_format: ResponseFormat,
     },
     async (args) => {
@@ -162,7 +163,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
     'jump_to_chapter',
     'Start playing a specific audiobook chapter (1-based number) by resuming the audiobook context at that chapter. Use dry_run to preview without touching playback.',
     {
-      audiobook_id: z.string().describe('Spotify audiobook ID'),
+      audiobook_id: spotifyRef(z.string().describe('Spotify audiobook ID'), 'audiobook'),
       chapter: z.number().int().min(1).describe('Chapter to play, 1-based (first chapter = 1)'),
       device_id: z.string().optional().describe('Device to play on. Default: active device'),
       dry_run: DryRun,
@@ -236,7 +237,7 @@ export function registerAudiobookCopilotTools(server: McpServer, client: Spotify
     'where_was_i',
     'Orient yourself in an audiobook: matches current playback against the fetched chapter list (fetch-all cap may bound it) and reports which chapter you are on, how far into it, and how much listening time is left in that fetched prefix.',
     {
-      audiobook_id: z.string().describe('Spotify audiobook ID'),
+      audiobook_id: spotifyRef(z.string().describe('Spotify audiobook ID'), 'audiobook'),
       response_format: ResponseFormat,
     },
     async (args) => {

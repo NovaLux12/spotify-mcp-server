@@ -23,7 +23,7 @@ import {
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
-import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
+import { SPOTIFY_SEARCHABLE_KINDS, spotifyRef } from '../refs.js';
 import { isGatedError } from '../gating.js';
 import type {
   SpotifyAlbumItem,
@@ -383,7 +383,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
     'Context card for one track: the track plus its full album metadata and the album\'s remaining track listing '
       + '(the "what am I listening to" card). Quota: 2 API calls (GET /tracks/{id} + GET /albums/{id}/tracks).',
     {
-      track_id: z.string().min(1).describe('Spotify track ID'),
+      track_id: spotifyRef(z.string().min(1).describe('Spotify track ID'), 'track'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -433,7 +433,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       + '/artists/{id}/albums walk. Sorted newest first; `since_year` trims older rows client-side. '
       + 'Quota: one paginated walk (typically several API calls on the rate-limited queue).',
     {
-      artist_id: z.string().min(1).describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().min(1).describe('Spotify artist ID'), 'artist'),
       include_groups: z
         .string()
         .optional()
@@ -540,7 +540,7 @@ export function registerExhaust2CatalogTools(server: McpServer, client: SpotifyC
       + 'Quota: 1 GET /tracks/{id} + 1 GET /albums/{id} + 1 GET /artists/{id} per distinct id on each leg '
       + '(Feb 2026 removed the ?ids= batch lookups; counts carry the real request totals).',
     {
-      track_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify track IDs'),
+      track_ids: z.array(spotifyRef(z.string().min(1), 'track')).min(1).max(50).describe('Up to 50 Spotify track IDs'),
       fields: z
         .array(z.enum(['release_date', 'label', 'genres', 'duration']))
         .optional()
@@ -656,7 +656,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'flagged as partial above that). Quota: one GET /albums/{id} per id (Feb 2026 removed the '
       + '`?ids=` batch lookup; the fan-out is width-bounded).',
     {
-      album_ids: z.array(z.string().min(1)).min(1).max(20).describe('Up to 20 Spotify album IDs'),
+      album_ids: z.array(spotifyRef(z.string().min(1), 'album')).min(1).max(20).describe('Up to 20 Spotify album IDs'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -739,7 +739,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     '[local-compute] Track-length statistics for one album: min/max/mean/median plus a longest-track callout, '
       + 'built from a paged /albums/{id}/tracks walk. Quota: one paginated walk (usually a single call).',
     {
-      album_id: z.string().min(1).describe('Spotify album ID'),
+      album_id: spotifyRef(z.string().min(1).describe('Spotify album ID'), 'album'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -812,7 +812,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'latest release, releases-per-year rate and the longest silence gap between releases. '
       + 'Quota: one paginated /artists/{id}/albums walk (typically several API calls).',
     {
-      artist_id: z.string().min(1).describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().min(1).describe('Spotify artist ID'), 'artist'),
       include_groups: z
         .string()
         .optional()
@@ -879,7 +879,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + '(days between episodes), built from a paged /shows/{id}/episodes walk. '
       + 'Quota: one paginated walk (typically several API calls).',
     {
-      show_id: z.string().min(1).describe('Spotify show ID'),
+      show_id: spotifyRef(z.string().min(1).describe('Spotify show ID'), 'show'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       max_episodes: z
         .number()
@@ -939,7 +939,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'release dates larger than the threshold is called out ("no episode in N days"). '
       + 'Quota: one paginated /shows/{id}/episodes walk (typically several API calls).',
     {
-      show_id: z.string().min(1).describe('Spotify show ID'),
+      show_id: spotifyRef(z.string().min(1).describe('Spotify show ID'), 'show'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       gap_threshold_days: z
         .number()
@@ -1238,7 +1238,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'MARKET GATE: audiobooks are US/UK/CA/IE/NZ/AU only. Quota: 2+ API calls '
       + '(GET /audiobooks/{id} + paged GET /audiobooks/{id}/chapters).',
     {
-      audiobook_id: z.string().min(1).describe('Spotify audiobook ID'),
+      audiobook_id: spotifyRef(z.string().min(1).describe('Spotify audiobook ID'), 'audiobook'),
       response_format: ResponseFormat,
       max_results: z.number().int().positive().max(2000).optional().describe('Max rows to return (default: SPOTIFY_MCP_FETCH_ALL_CAP or 500)'),
     },
@@ -1295,7 +1295,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
       + 'NOTE: /artists/{id}/top-tracks is on the #329 registration-gated surface; if it 403s the network is '
       + 'computed from recent albums only, with an explicit disclosure. Quota: 1 + paginated API calls.',
     {
-      artist_id: z.string().min(1).describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().min(1).describe('Spotify artist ID'), 'artist'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       max_albums: z
         .number()
@@ -1527,7 +1527,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'Episode + parent show + neighbouring episodes (prev/next by release date) in one card. '
       + 'Quota: 2 API calls (GET /episodes/{id} + GET /shows/{id}/episodes).',
     {
-      episode_id: z.string().min(1).describe('Spotify episode ID'),
+      episode_id: spotifyRef(z.string().min(1).describe('Spotify episode ID'), 'episode'),
       market: MARKET_CODE.optional().describe("ISO 3166-1 alpha-2 market code, e.g. 'US'"),
       response_format: ResponseFormat,
     },
@@ -1626,7 +1626,7 @@ max_results: z.number().int().positive().max(2000).optional().describe('Max item
     'Up to 50 artist IDs → name·genres two-column projection (compact roster view). '
       + 'Quota: 1 GET /artists/{id} per distinct id (Feb 2026 removed the batch GET /artists?ids=).',
     {
-      artist_ids: z.array(z.string().min(1)).min(1).max(50).describe('Up to 50 Spotify artist IDs'),
+      artist_ids: z.array(spotifyRef(z.string().min(1), 'artist')).min(1).max(50).describe('Up to 50 Spotify artist IDs'),
       response_format: ResponseFormat,
     },
     async (args) => {

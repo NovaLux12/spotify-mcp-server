@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type { SpotifyArtistFull } from '../types/spotify.js';
 import { ResponseFormat } from '../shaping.js';
+import { spotifyRef } from '../refs.js';
 
 /**
  * #638: this module used to ship three tools. `get_categories` and
@@ -36,7 +37,7 @@ export function registerBrowseTools(server: McpServer, client: SpotifyClient): v
     'get_artist_genres',
     'Get genres for an artist (focused view of GET /artists/{id})',
     {
-      artist_id: z.string().describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().describe('Spotify artist ID'), 'artist'),
       response_format: ResponseFormat,
     },
     async (args) => {

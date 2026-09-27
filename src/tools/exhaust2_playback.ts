@@ -57,6 +57,7 @@ import {
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';
 import { textResult, emit } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // shared helpers (house style)
@@ -755,7 +756,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
     'queue_next_episode',
     'Find the next unplayed episode of a show (not in recently-played and not fully played) within an episodes_back lookahead and queue it — podcast binge glue. Quota: 2-3 reads + 1 write (POST /me/player/queue).',
     {
-      show_id: z.string().min(1).describe('Show ID (or spotify:show: URI)'),
+      show_id: spotifyRef(z.string().min(1).describe('Show ID (or spotify:show: URI)'), 'show'),
       episodes_back: z.number().int().min(1).max(50).optional().default(10).describe('How many of the newest episodes to look back through (default 10)'),
       device_id: z.string().optional().describe('Target device id for the queue add'),
       response_format: ResponseFormat,

@@ -61,6 +61,7 @@ import type {
 } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
 import { emit, type EmitOptions } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 type TextContent = { type: 'text'; text: string };
 ;
@@ -564,7 +565,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       + 'and preview the exact resulting order — read-only, commits nothing (use '
       + 'sort_playlist_apply to commit). Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to plan a sort for (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to plan a sort for (ID or spotify:playlist: URI)'), 'playlist'),
       sort_by: z.enum(['name', 'artist', 'album', 'duration', 'added_at', 'release_date']).optional().describe('Sort key. Default name'),
       direction: z.enum(['asc', 'desc']).optional().describe('Sort direction. Default asc'),
       response_format: ResponseFormatArgName,
@@ -606,7 +607,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       + 'backs up the current items to a local file first, then rewrites via one atomic '
       + 'replace. dry_run=true (default) previews only. Quota: GET + 1 local write + 1 PUT.',
     {
-      playlist_id: z.string().describe('Playlist to sort (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to sort (ID or spotify:playlist: URI)'), 'playlist'),
       sort_by: z.enum(['name', 'artist', 'album', 'duration', 'added_at', 'release_date']).optional().describe('Sort key. Default name'),
       direction: z.enum(['asc', 'desc']).optional().describe('Sort direction. Default asc'),
       dry_run: DryRunDefault,
@@ -661,7 +662,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'dry_run defaults to TRUE so it returns the reversed PLAN read-only. '
       + 'Quota: GET + 1 PUT when committing.',
     {
-      playlist_id: z.string().describe('Playlist to reverse (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to reverse (ID or spotify:playlist: URI)'), 'playlist'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
@@ -711,7 +712,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       + 'first N items to the end, negative moves the last |N| to the front; dry_run defaults '
       + 'to TRUE so it returns the rotated PLAN read-only. Quota: GET + 1 PUT when committing.',
     {
-      playlist_id: z.string().describe('Playlist to rotate (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to rotate (ID or spotify:playlist: URI)'), 'playlist'),
       positions: z.number().int().optional().describe('Rotation amount; positive = first N to end, negative = last |N| to front. Default 1'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
@@ -1072,7 +1073,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'count from the end) into a NEW playlist, reporting the original→new position map — ' +
       'dry_run defaults to TRUE. Quota: GET + create + chunked adds when committing.',
     {
-      playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Source playlist (ID or spotify:playlist: URI)'), 'playlist'),
       start: z.number().int().optional().describe(
         positionDesc('Inclusive start; negative = from end. Default 0', 'zero'),
       ),
@@ -1130,7 +1131,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'count from the end): backs up the current items to a local file first, then removes by ' +
       'positions + uris. dry_run defaults to TRUE. Quota: GET + chunked deletes when committing.',
     {
-      playlist_id: z.string().describe('Playlist to trim (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to trim (ID or spotify:playlist: URI)'), 'playlist'),
       start: z.number().int().optional().describe(
         positionDesc('Inclusive start; negative = from end. Default 0', 'zero'),
       ),
@@ -1204,7 +1205,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'first/keep-last removal plan — read-only (commit with dedupe_playlist_apply). '
       + 'Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to scan (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to scan (ID or spotify:playlist: URI)'), 'playlist'),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
@@ -1253,7 +1254,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'the current items to a local file first, then rewrites via one atomic replace. ' +
       'dry_run defaults to TRUE. Quota: GET + 1 local write + 1 PUT when committing.',
     {
-      playlist_id: z.string().describe('Playlist to dedupe (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to dedupe (ID or spotify:playlist: URI)'), 'playlist'),
       keep: z.enum(['first', 'last']).optional().describe('Which occurrence to keep. Default first'),
       dry_run: DryRunDefault,
       response_format: ResponseFormatArgName,
@@ -1307,7 +1308,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       '"<prefix> 1..N" — dry_run defaults to TRUE so it returns the part plan read-only. '
       + 'Quota: GET + N creates + chunked adds when committing.',
     {
-      playlist_id: z.string().describe('Playlist to split (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to split (ID or spotify:playlist: URI)'), 'playlist'),
       parts: z.number().int().min(2).max(50).optional().describe('Number of parts (2–50). Default 2'),
       prefix: z.string().optional().describe('New playlist name prefix. Default: "<original name> — Part"'),
       public: PublicFlag,
@@ -1369,7 +1370,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'commute blocks), each written to a NEW playlist — dry_run defaults to TRUE. '
       + 'Quota: GET + N creates + chunked adds when committing.',
     {
-      playlist_id: z.string().describe('Playlist to split (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to split (ID or spotify:playlist: URI)'), 'playlist'),
       target_minutes: z.number().positive().describe('Target runtime per part, in minutes'),
       tolerance_sec: z.number().int().min(0).optional().describe('A part may run over by up to this many seconds. Default 30'),
       prefix: z.string().optional().describe('New playlist name prefix. Default: "<original name> — Part"'),
@@ -1437,7 +1438,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'matches read-only or — with a name and dry_run=false — write them to a NEW playlist. '
       + 'Quota: GET (+ create/adds when committing).',
     {
-      playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'), 'playlist'),
       decade: z.number().int().min(1900).max(2100).optional().describe('Decade start year (e.g. 1980 = 1980–1989)'),
       from_year: z.number().int().min(1900).max(2100).optional().describe('Inclusive from-year (overrides nothing; combined with decade is allowed)'),
       to_year: z.number().int().min(1900).max(2100).optional().describe('Inclusive to-year'),
@@ -1503,7 +1504,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'report the matches read-only or — with a name and dry_run=false — write them to a NEW ' +
       'playlist. Quota: GET (+ create/adds when committing).',
     {
-      playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'), 'playlist'),
       artists: z.array(z.string()).min(1).max(20).describe('Artists to match: IDs/URIs or exact names (1–20)'),
       name: z.string().optional().describe('New playlist name — omit to stay read-only'),
       public: PublicFlag,
@@ -1566,7 +1567,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'read-only or — with a name and dry_run=false — write them to a NEW playlist. '
       + 'Quota: GET (+ create/adds when committing).',
     {
-      playlist_id: z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to filter (ID or spotify:playlist: URI)'), 'playlist'),
       min_seconds: z.number().int().min(0).optional().describe('Inclusive minimum track length in seconds. Default 0'),
       max_seconds: z.number().int().min(1).optional().describe('Inclusive maximum track length in seconds. Default: no cap'),
       name: z.string().optional().describe('New playlist name — omit to stay read-only'),
@@ -1626,7 +1627,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
     'Draw a uniform random sample of N tracks from a playlist — deterministic when a seed is ' +
       'given (same seed + same playlist = same sample), read-only. Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to sample (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to sample (ID or spotify:playlist: URI)'), 'playlist'),
       count: z.number().int().min(1).max(200).optional().describe('Sample size (1–200). Default 10'),
       seed: z.number().int().min(0).optional().describe('Seed for reproducible sampling. Omit for a fresh random draw'),
       response_format: ResponseFormatArgName,
@@ -1665,7 +1666,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'position ranges grouped by the month each block was added — plus contributor counts. ' +
       'Read-only. Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to index (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to index (ID or spotify:playlist: URI)'), 'playlist'),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
@@ -1721,7 +1722,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'date with who added them, collab contributors, and drift verdict — read-only, no local ' +
       'snapshot needed. Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to journal (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to journal (ID or spotify:playlist: URI)'), 'playlist'),
       response_format: ResponseFormatArgName,
       max_results: MaxResultsArgName,
     },
@@ -1783,8 +1784,8 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'source, then appends them to the destination. dry_run defaults to TRUE. '
       + 'Quota: GETs + chunked deletes + chunked adds when committing.',
     {
-      source_playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
-      destination_playlist_id: z.string().describe('Destination playlist (ID or spotify:playlist: URI)'),
+      source_playlist_id: spotifyRef(z.string().describe('Source playlist (ID or spotify:playlist: URI)'), 'playlist'),
+      destination_playlist_id: spotifyRef(z.string().describe('Destination playlist (ID or spotify:playlist: URI)'), 'playlist'),
       match_uris: z.array(z.string()).optional().describe('Track uris to move'),
       query: z.string().optional().describe('Move items whose name contains this substring'),
       artist: z.string().optional().describe('Move every track by this artist (ID/URI or exact name)'),
@@ -2061,7 +2062,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       'publicity) — works on the live playlist, not a local snapshot; dry_run defaults to ' +
       'TRUE. Quota: GET + create + chunked adds when committing.',
     {
-      playlist_id: z.string().describe('Playlist to clone (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to clone (ID or spotify:playlist: URI)'), 'playlist'),
       name: z.string().optional().describe('New playlist name. Default "<original> (copy)"'),
       description: z.string().optional().describe('New playlist description. Default: cloned from source'),
       public: PublicFlag,

@@ -17,7 +17,7 @@ import {
 import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { classifySpotifyReference } from '../refs.js';
+import { classifySpotifyReference, spotifyRef } from '../refs.js';
 import { mapLimit } from '../concurrency.js';
 import type { SpotifyArtistAlbumRow, SpotifyPaged } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
@@ -348,7 +348,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'get_artist_discography',
     'Get filtered discography for an artist (GET /artists/{id}/albums with album-type filtering)',
     {
-      artist_id: z.string().describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().describe('Spotify artist ID'), 'artist'),
       album_types: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Filter to these album types. Default: all'),
       include_groups: z.array(z.enum(['album', 'single', 'appears_on', 'compilation'])).optional().describe('Alias for album_types (Spotify include_groups)'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Results per page, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
@@ -449,7 +449,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'save_artist_new_releases',
     'Find new releases for an artist and save unsaved albums to Your Library (diffs against /me/library/contains)',
     {
-      artist_id: z.string().describe('Spotify artist ID'),
+      artist_id: spotifyRef(z.string().describe('Spotify artist ID'), 'artist'),
       limit: z.number().int().min(1).max(ARTIST_ALBUM_PAGE_LIMIT).optional().describe(`Albums to fetch, 1–${ARTIST_ALBUM_PAGE_LIMIT}. Default: ${ARTIST_ALBUM_PAGE_LIMIT}`),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 country code, e.g. \'US\''),
       response_format: ResponseFormat,
@@ -508,7 +508,7 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
     'watch_artists',
     'Add artists to a watchlist sidecar for new-release polling. File ~/.spotify-mcp/artist-watchlist.json (SPOTIFY_MCP_DATA_DIR overrides); a failed write is reported, not swallowed.',
     {
-      artist_ids: z.array(z.string().min(1)).min(1).describe('Spotify artist IDs to watch'),
+      artist_ids: z.array(spotifyRef(z.string().min(1), 'artist')).min(1).describe('Spotify artist IDs to watch'),
       name: z.string().optional().describe('Watchlist name. Default: "default"'),
       response_format: ResponseFormat,
     },

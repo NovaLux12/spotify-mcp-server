@@ -65,6 +65,7 @@ import type {
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { positionSchema } from '../positionbase.js';
 import { textResult, emit, type ToolResult } from '../result.js';
+import { spotifyRef } from '../refs.js';
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers
@@ -678,7 +679,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'top result(s), and add the URI(s) to a playlist. Highest-traffic curation gesture. '
       + 'Quota: 1 search + 1 add call.',
     {
-      playlist_id: z.string().describe('Destination playlist, as ID or spotify:playlist: URI'),
+      playlist_id: spotifyRef(z.string().describe('Destination playlist, as ID or spotify:playlist: URI'), 'playlist'),
       query: z.string().describe('Search query, e.g. "Radiohead Paranoid Android"'),
       type: z.enum(['track', 'episode']).optional().default('track').describe('What to search for. Default track'),
       pick: z
@@ -739,7 +740,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'keep-first/last/random selection within ±tolerance seconds, written as one atomic '
       + 'replace. Complements item-count playlist_trim. Quota: GET + 1 PUT.',
     {
-      playlist_id: z.string().describe('Playlist to trim, as ID or spotify:playlist: URI'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to trim, as ID or spotify:playlist: URI'), 'playlist'),
       target_minutes: z.number().positive().describe('Target runtime in minutes'),
       tolerance_sec: z
         .number()
@@ -901,7 +902,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'range — into a NEW playlist. Era snapshots, side A/B, decadal splits. '
       + 'Quota: GET + create + chunked adds.',
     {
-      playlist_id: z.string().describe('Source playlist (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Source playlist (ID or spotify:playlist: URI)'), 'playlist'),
       mode: z.enum(['first', 'last', 'range', 'added_between']).describe('Slice mode'),
       // #883: a slice range, 0-based like every other index into the item
       // order. `start` is inclusive and `end` is exclusive, which the shared
@@ -1078,7 +1079,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'everything else — one atomic replace, no N+1 deletes. '
       + 'Quota: GET + 1 PUT.',
     {
-      playlist_id: z.string().describe('Playlist to prune (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to prune (ID or spotify:playlist: URI)'), 'playlist'),
       keep_by: z.enum(['uris', 'artist', 'type', 'query']).describe('Match mode for what to KEEP'),
       values: z.array(z.string()).optional().describe('uris mode: track uris to keep'),
       artist: z.string().optional().describe('artist mode: keep tracks by this artist (ID/URI or name)'),
@@ -1155,7 +1156,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'Purify a playlist after collab drift: strip every podcast EPISODE (or every TRACK) with one '
       + 'client-side filter + atomic replace. Quota: GET + 1 PUT.',
     {
-      playlist_id: z.string().describe('Playlist to purify (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to purify (ID or spotify:playlist: URI)'), 'playlist'),
       strip: z.enum(['episodes', 'tracks']).optional().describe('What to remove. Default episodes'),
       response_format: ResponseFormat,
       dry_run: DryRunDefault,
@@ -1196,7 +1197,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'replace. Deliberately avoids Spotify reorder N+1 for large moves. '
       + 'Quota: GET + 1 PUT.',
     {
-      playlist_id: z.string().describe('Playlist to reorder (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to reorder (ID or spotify:playlist: URI)'), 'playlist'),
       match_uris: z.array(z.string()).optional().describe('Track uris to move to the top'),
       artist: z.string().optional().describe('Move every track by this artist (ID/URI or name)'),
       include_featured: IncludeFeaturedParam,
@@ -1264,8 +1265,8 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'same `include_featured` as playlist_remove_artist, playlist_keep_artist and playlist_artist_heat. '
       + 'Quota: GET + chunked deletes. See the artist-matching vocabulary in SPEC section 4.',
     {
-      playlist_id: z.string().describe('Playlist to purge (ID or spotify:playlist: URI)'),
-      artist_ids: z.array(z.string()).min(1).max(20).describe('Artist IDs, spotify:artist: URIs, open.spotify.com URLs, or names to exclude (1–20)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to purge (ID or spotify:playlist: URI)'), 'playlist'),
+      artist_ids: z.array(spotifyRef(z.string(), 'artist')).min(1).max(20).describe('Artist IDs, spotify:artist: URIs, open.spotify.com URLs, or names to exclude (1–20)'),
       include_featured: IncludeFeaturedParam,
       dedupe_scope: z.enum(['playlist', 'library', 'none']).optional().describe(
         'playlist (default): only drop uris duplicated INSIDE this playlist; '
@@ -1381,7 +1382,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'fresh/aging/stale/fossil grade, and refresh suggestions. Read-only. '
       + 'Quota: 1–2 GETs.',
     {
-      playlist_id: z.string().describe('Playlist to score (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to score (ID or spotify:playlist: URI)'), 'playlist'),
       threshold_days: z.number().int().min(1).optional().describe('Days over which a playlist counts as stale. Default 90'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for availability, e.g. \'US\''),
       response_format: ResponseFormat,
@@ -1454,7 +1455,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       + 'lowers the top-artist share. Quota: 1 GET. '
       + 'See the artist-matching vocabulary in SPEC section 4.',
     {
-      playlist_id: z.string().describe('Playlist to analyse (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to analyse (ID or spotify:playlist: URI)'), 'playlist'),
       include_featured: IncludeFeaturedParam,
       top_n: z.number().int().min(1).optional().describe('Artists to list. Default 5'),
       response_format: ResponseFormat,
@@ -1523,7 +1524,7 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     'Local release-era profile: decade histogram, median track age, and a time-capsule verdict. '
       + 'Pairs with playlist_era slices. Quota: 1 GET (market refetch disclosed).',
     {
-      playlist_id: z.string().describe('Playlist to profile (ID or spotify:playlist: URI)'),
+      playlist_id: spotifyRef(z.string().describe('Playlist to profile (ID or spotify:playlist: URI)'), 'playlist'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market, e.g. \'US\' — when given, items are REFETCHED with this market and the profile is computed from THOSE rows, so album release dates resolve (disclosed second GET)'),
       response_format: ResponseFormat,
       max_results: MaxResults,

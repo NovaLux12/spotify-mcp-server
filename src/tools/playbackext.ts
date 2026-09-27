@@ -30,6 +30,7 @@ import { addToQueueBatch } from './queueops.js';
 import { collectShowRadarEpisodes } from './showradar.js';
 import { emit, type ToolResult } from '../result.js';
 import { migratePlaybackPositions, positionsFile } from './playbackpositions.js';
+import { spotifyRef } from '../refs.js';
 
 // The store moved to src/playbackstores.ts (#848). It used to live here, but
 // the collapsed `set_volume` needs it and `set_volume` is in playback.ts, which
@@ -501,7 +502,7 @@ export function registerPlaybackExtTools(server: McpServer, client: SpotifyClien
     'Rebuild a playlist from its persisted rule: resolve candidates, then replace the contents (PUT /playlists/{id}/items), creating the playlist on the first refresh. A non-dry-run refresh always writes. The playlist id is stored back on the rule so later refreshes replace it. Every source has a pool ceiling (top_tracks 100, recently_played 50, saved_tracks scan_cap), reported as pool_capped with pool_cap — a capped pool is a floor, not a complete scan.',
     {
       name: z.string().min(1).describe('Rule name saved via save_smart_playlist_rule'),
-      playlist_id: z.string().optional().describe('Playlist id to rebuild in place. Defaults to the id recorded by the previous refresh; otherwise the playlist is created.'),
+      playlist_id: spotifyRef(z.string().optional().describe('Playlist id to rebuild in place. Defaults to the id recorded by the previous refresh; otherwise the playlist is created.'), 'playlist'),
       dry_run: PlaybackDryRun,
       response_format: ResponseFormat,
     },
