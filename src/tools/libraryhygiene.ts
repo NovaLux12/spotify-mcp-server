@@ -649,10 +649,18 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunRe
   // #1224: one request per album again, since the `?ids=` batch route is gone.
   // The upper bound is the cap, not a per-chunk count. #897 keeps that as an
   // UPPER bound rather than the expectation: the `/me/tracks` rows carry
-  // `total_tracks` and `album_type` themselves, so the fan-in is a fallback
-  // for albums the walk could not answer, and on a current registration it
-  // issues nothing. Budgeting for the worst case is the honest direction to
-  // err in; claiming the common case would need the walk to have run.
+  // `total_tracks` and `album_type` themselves, so most albums need no read at
+  // all. Budgeting for the worst case is the honest direction to err in, and
+  // the common case cannot be claimed before the walk has run — how many albums
+  // fall back is not knowable from here.
+  //
+  // What the walk CANNOT answer is the orphan-singles check, which compares an
+  // album's real track listing against the liked set, and a
+  // `SimplifiedAlbumObject` carries no track list. So a single-candidate — a
+  // single, or three tracks or fewer — is still read even when its row answered
+  // everything. Singles are common in a liked library, so "the walk answers, so
+  // this costs nothing" would be false for a large share of real runs, and this
+  // preview is where a caller decides whether the run is affordable.
   const albumLookups = lookupCap;
   const estimatedRequests = walkPages + albumLookups;
   const prose =
@@ -660,10 +668,11 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunRe
     + `for ${fetchAllCap} liked tracks) and fan in up to ${lookupCap} album`
     + `${lookupCap === 1 ? '' : 's'} via per-id GET /albums/{id} request`
     + `${albumLookups === 1 ? '' : 's'} (fanned out ${PER_ID_FANOUT_WIDTH} at a time; Feb 2026 removed the ?ids= batch). `
-    + `Cost: at most ~${estimatedRequests} requests, 0 made. That is the worst case: each /me/tracks row `
-    + 'already carries its album\'s track total, so #897 reads an album only when the walk could not answer, '
-    + 'and a current registration is expected to issue none. How many fall back is not known before the walk runs, '
-    + 'so the album-lookup figure stays the budgeted upper bound.';
+    + `Cost: at most ~${estimatedRequests} requests, 0 made. That is the worst case. Each /me/tracks row `
+    + 'already carries its album\'s track total and type, so most albums are never re-read; an album is read '
+    + 'only when the walk could not answer it, or when it is a single or three tracks or shorter — the orphan '
+    + 'check needs a real track listing, which a simplified album does not carry. How many fall back is not '
+    + 'knowable before the walk runs, so the album-lookup figure stays the budgeted upper bound.';
   return {
     prose,
     payload: {

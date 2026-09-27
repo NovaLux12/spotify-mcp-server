@@ -489,8 +489,32 @@ describe('#897 the dry-run preview budgets the fallback, not the old fan-in', ()
     assert.match(text, /at most ~\d+ requests, 0 made/, 'the cost is stated as a worst case');
     assert.match(
       text,
-      /each \/me\/tracks row already carries its album's track total/,
+      /\/me\/tracks row already carries its album's track total/,
       'the preview says why the fan-in is a fallback rather than the expected cost',
+    );
+  });
+
+  // The first draft of that preview said the fan-in "reads an album only when
+  // the walk could not answer, and a current registration is expected to issue
+  // none". Both halves are false against the code it describes: `needsAlbumRead`
+  // also selects every single-candidate, because the orphan check reads
+  // `full.tracks.items` and a `SimplifiedAlbumObject` carries no track list.
+  // Singles are common in a liked library, so a caller budgeting from this
+  // preview would have been told the wrong cost. The assertion that let it
+  // through only covered the first, true sentence.
+  it('does not promise the fallback issues nothing, which singles would break', async () => {
+    const out = await harness(() => undefined).invoke('library_hygiene', { dry_run: true });
+    const text = out.content.map((c) => c.text).join('\n');
+
+    assert.doesNotMatch(
+      text,
+      /expected to issue none|only when the walk could not answer,/,
+      'the preview must not claim a run issues no album reads: single-candidates are always read',
+    );
+    assert.match(
+      text,
+      /single or three tracks or shorter/,
+      'the preview names the population that is read even when the walk answered',
     );
   });
 });
