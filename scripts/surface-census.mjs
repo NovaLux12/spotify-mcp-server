@@ -369,14 +369,27 @@ function provenanceUnderTest(docFiles) {
 }
 
 /**
- * Is `sha` an ancestor of `HEAD`? `null` when git cannot tell.
+ * Is `sha` provably an ancestor of `HEAD`? `null` when git cannot tell.
  *
- * The null is load-bearing. `git merge-base --is-ancestor` exits 1 for "no" and
- * 128 for "no such object", and this repository's CI checks out with
- * `fetch-depth: 1` — so a manifest stamped before the checkout will name a
- * commit that is not in the clone at all. Collapsing 128 into "no" would turn
- * every shallow CI run red, and a gate that is always red is a gate nobody
- * reads.
+ * The null is load-bearing, and it is wider than it first looks.
+ * `git merge-base --is-ancestor` exits 0 for "yes", 1 for "no", and 128 for "no
+ * such object" — and this repository's CI checks out with `fetch-depth: 1`, so
+ * the obvious reading ("only 128 is uncertain") is wrong in exactly the case
+ * that matters.
+ *
+ * **A shallow checkout whose `HEAD` is a graft point answers 1 for commits it
+ * cannot see.** The walk stops at the shallow boundary and reports "not an
+ * ancestor" rather than admitting it ran out of history, so exit 1 there means
+ * "not provable", not "no". Verified against this repository's own CI shape: a
+ * `fetch-depth: 1` checkout of `pull/<n>/merge` has the merge commit as a
+ * shallow root, so `git rev-list --count HEAD` is 1, and a pin stamped on the
+ * branch is a real ancestor of that merge commit in a full clone (exit 0) while
+ * the same query in the shallow clone exits 1.
+ *
+ * Collapsing either 128 or a grafted-1 into "no" turns every shallow CI run
+ * red, and a gate that is always red is a gate nobody reads. So: exit 0 is
+ * "yes"; anything else is a yes/no only when this checkout can actually walk
+ * the history, and `null` — unverifiable, not an error — when it cannot.
  */
 function headContains(sha) {
   const result = spawnSync('git', ['-C', ROOT, 'merge-base', '--is-ancestor', sha, 'HEAD'], {
@@ -384,7 +397,45 @@ function headContains(sha) {
   });
   if (result.error) return null;
   if (result.status === 0) return true;
-  return result.status === 1 ? false : null;
+  if (result.status !== 1) return null;
+  // Exit 1 is only a real "no" if the walk could have reached the answer. A
+  // shallow repository whose HEAD is a graft point cannot, so a "no" from one
+  // is the absence of evidence rather than evidence of absence.
+  if (shallowHeadCannotWalk()) return null;
+  return false;
+}
+
+/**
+ * Is this checkout a shallow clone whose `HEAD` is a graft point — the state in
+ * which an `--is-ancestor` walk is truncated at `HEAD` and cannot answer "no"?
+ *
+ * `git rev-parse --is-shallow-repository` alone is not enough: a shallow clone
+ * that *has* fetched past the commit in question answers correctly. What breaks
+ * the walk is `HEAD` itself sitting on the shallow boundary, so this asks
+ * whether `HEAD` is listed in the shallow-boundary file.
+ *
+ * That file is read from the **common** git dir, not the per-worktree one: a
+ * linked worktree's `--absolute-git-dir` is `.git/worktrees/<name>`, which has
+ * no `shallow` file of its own, so reading it there would report every
+ * worktree as a full clone and reintroduce the false "no" on exactly the
+ * checkouts this repository is developed in.
+ */
+let shallowHeadCached;
+function shallowHeadCannotWalk() {
+  if (shallowHeadCached !== undefined) return shallowHeadCached;
+  const commonDir = spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], { encoding: 'utf8' });
+  if (commonDir.error || commonDir.status !== 0) return (shallowHeadCached = false);
+  let boundary;
+  try {
+    boundary = readFileSync(join(commonDir.stdout.trim(), 'shallow'), 'utf8');
+  } catch {
+    // No shallow-boundary file at all: a full clone, so a "no" is a real "no".
+    return (shallowHeadCached = false);
+  }
+  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.error || head.status !== 0) return (shallowHeadCached = false);
+  const onBoundary = boundary.split('\n').some((line) => line.trim() === head.stdout.trim());
+  return (shallowHeadCached = onBoundary);
 }
 
 function readProseManifest({ required = true } = {}) {
