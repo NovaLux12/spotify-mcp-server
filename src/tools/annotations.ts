@@ -1118,7 +1118,13 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // total … plus a sample of the individual plays"). Tool count is unchanged
   // at 30; the 366 bytes are description text. MEASURED by
   // `npm run count:tools` on 2026-09-27, not estimated.
-  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 23283], { readOnlySafe: true }),
+  //
+  // #1297: the three scoped-top tools' `limit`/`offset` descriptions now say
+  // the bound is applied by this server rather than by stats.fm, because those
+  // three routes ignore both parameters upstream. Tool count is unchanged at 30
+  // and no parameter was added or removed; the 498 bytes are that disclosure
+  // text. MEASURED by `npm run count:tools` on 2026-09-27, not estimated.
+  manifestEntry('statsfm', 'statsfm', lazyModule('./statsfm.js', 'registerStatsfmTools', (register) => (server) => register(server)), [30, 23781], { readOnlySafe: true }),
   // #905: record_feedback gained a `limit` (the list page is bounded now, so
   // the response no longer scales with the store) and its description names
   // the store file and the cap. Tool count is unchanged at 16.

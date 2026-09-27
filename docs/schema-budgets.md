@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 598,200B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 598,698B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 68,407B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 22,800B | 3.7% of the enforced limit |
+| Headroom | 22,302B | 3.6% of the enforced limit |
 
-Headroom is **22,800B** of the 621,000B enforced limit — 3.7% — so the aggregate budget is **tight**.
+Headroom is **22,302B** of the 621,000B enforced limit — 3.6% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -156,7 +156,7 @@ than maintained.
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 4 | 2,817 | 4 | 2,817 | 5 | 3,099 |
-| statsfm | 30 | 23,283 | 30 | 23,283 | 31 | 25,612 |
+| statsfm | 30 | 23,781 | 30 | 23,781 | 31 | 26,160 |
 | taste | 16 | 14,735 | 16 | 14,735 | 17 | 16,209 |
 | tastecomposites | 10 | 8,040 | 10 | 8,040 | 11 | 8,844 |
 | tasteplaylist | 1 | 1,723 | 1 | 1,723 | 2 | 1,896 |

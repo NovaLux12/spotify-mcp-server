@@ -1004,3 +1004,165 @@ test('statsfm preserves a legitimate null now-playing item', async () => {
   assert.deepEqual(JSON.parse(out.content[0].text), null);
   assert.deepEqual(out.structuredContent, { item: null });
 });
+
+// ------------------------------------------------- #1297 scoped-top paging
+//
+// The three scoped top routes ignore `limit`/`offset` upstream: their swagger
+// entry declares `"parameters": []`, and live probes on 2026-09-27 returned
+// byte-identical bodies for limit=1, limit=5, limit=1000 and offset=40. The
+// tests below drive that upstream behaviour — a stub that ignores the
+// parameters exactly as stats.fm does — and assert what the CALLER gets back.
+
+/** An upstream that ignores limit/offset, as the three scoped routes do. */
+function ignoresBounds(count: number) {
+  return () => ({
+    items: Array.from({ length: count }, (_unused, i) => ({
+      position: i + 1,
+      streams: 1000 - i,
+      playedMs: 60000,
+      indicator: null,
+      track: { name: `Track ${i + 1}`, artists: [{ name: 'A' }], albums: [{ name: 'Alb' }] },
+    })),
+  });
+}
+
+test('scoped top honours limit the caller asked for (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 1 });
+  const page = (out.structuredContent?.items ?? []) as Array<{ track: { name: string } }>;
+  assert.equal(page.length, 1, 'a limit of 1 must return one row, not the whole ranking');
+  assert.equal(page[0].track.name, 'Track 1');
+  assert.doesNotMatch(h.text(out), /Track 2\b/, 'row 2 is outside the requested page');
+});
+
+test('scoped top reports the true total, not the page length (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 3 });
+  const page = (out.structuredContent?.items ?? []) as unknown[];
+  assert.equal(page.length, 3, 'three rows were asked for and returned');
+  const pagination = out.structuredContent?.pagination as { total: number | null; offset: number };
+  assert.equal(pagination.total, 91, 'the 91-row ranking is complete here, so 91 is the real total');
+  assert.match(h.text(out), /showing 3 of 91/, 'the prose must show the page against the whole set');
+});
+
+test('scoped top offset pages into the ranking (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 2, offset: 40 });
+  const page = (out.structuredContent?.items ?? []) as Array<{ track: { name: string } }>;
+  assert.deepEqual(page.map((r) => r.track.name), ['Track 41', 'Track 42'], 'offset=40 is the 41st row');
+  // Rows are numbered from the caller's offset, not restarted at 1.
+  assert.match(h.text(out), /^\s*41\. /m);
+  assert.match(h.text(out), /^\s*42\. /m);
+  assert.doesNotMatch(h.text(out), /^\s*1\. /m, 'the list must not restart its numbering at the page');
+});
+
+test('scoped top next_offset points at the following page (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 10 });
+  const pagination = out.structuredContent?.pagination as { next_offset: number | null };
+  assert.equal(pagination.next_offset, 10);
+});
+
+test('scoped top at the upstream ceiling refuses to invent a total (#1297)', async () => {
+  // 100 rows is the ceiling observed on the scoped routes. The ranking may be
+  // larger, so 100 must NOT be reported as the total.
+  const h = makeHarness(ignoresBounds(100));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 5 });
+  const page = (out.structuredContent?.items ?? []) as unknown[];
+  assert.equal(page.length, 5, 'the page is still bounded');
+  const pagination = out.structuredContent?.pagination as { total: number | null; next_offset: number | null };
+  assert.equal(pagination.total, null, 'a ceiling-sized response is not a readable total');
+  assert.equal(out.structuredContent?.total_unreadable, true);
+  assert.equal(out.structuredContent?.received, 100);
+  assert.match(h.text(out), /at least 100/);
+  assert.match(h.text(out), /limit\/offset/);
+});
+
+test('scoped top below the ceiling still reports its real total (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(99));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 5 });
+  const pagination = out.structuredContent?.pagination as { total: number | null };
+  assert.equal(pagination.total, 99, '99 is under the ceiling, so the set is complete and 99 is the total');
+  assert.equal(out.structuredContent?.total_unreadable, undefined);
+});
+
+test('all three scoped tops window the same way (#1297)', async () => {
+  const cases = [
+    ['statsfm_top_tracks_from_artist', { user_id: 'u', artist_id: 1 }],
+    ['statsfm_top_albums_from_artist', { user_id: 'u', artist_id: 1 }],
+    ['statsfm_top_tracks_from_album', { user_id: 'u', album_id: 9 }],
+  ] as const;
+  for (const [name, args] of cases) {
+    const h = makeHarness(() => ({
+      items: Array.from({ length: 91 }, (_unused, i) => ({
+        position: i + 1,
+        streams: 1000 - i,
+        playedMs: 60000,
+        album: { name: `Album ${i + 1}`, artists: [{ name: 'A' }] },
+        track: { name: `Track ${i + 1}`, artists: [{ name: 'A' }] },
+      })),
+    }));
+    const out = await h.find(name).handler({ ...args, limit: 1, offset: 4 });
+    const page = (out.structuredContent?.items ?? []) as unknown[];
+    assert.equal(page.length, 1, `${name} must return the one row asked for`);
+    const pagination = out.structuredContent?.pagination as { total: number | null; offset: number };
+    assert.equal(pagination.total, 91, `${name} must report the whole ranking`);
+    assert.equal(pagination.offset, 4);
+  }
+});
+
+test('a small ranking is not sliced twice (#1297)', async () => {
+  // 3 rows, limit 10: the whole set fits the page, so every row is returned.
+  const h = makeHarness(ignoresBounds(3));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 10 });
+  const page = (out.structuredContent?.items ?? []) as unknown[];
+  assert.equal(page.length, 3);
+});
+
+test('offset past the end yields no rows, not a wrapped page (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 5, offset: 500 });
+  const page = (out.structuredContent?.items ?? []) as unknown[];
+  assert.equal(page.length, 0, 'an out-of-range offset returns nothing rather than wrapping to the top');
+});
+
+test('scoped top json carries pagination and the page (#1297)', async () => {
+  const h = makeHarness(ignoresBounds(91));
+  const out = await h.find('statsfm_top_tracks_from_artist').handler({
+    user_id: 'u', artist_id: 1, limit: 2, response_format: 'json',
+  });
+  const parsed = JSON.parse(out.content[0].text) as {
+    items: unknown[];
+    pagination: { total: number | null; returned: number; next_offset: number | null };
+  };
+  assert.equal(parsed.items.length, 2, 'json must carry the page, not all 91 rows');
+  assert.equal(parsed.pagination.total, 91);
+  assert.equal(parsed.pagination.returned, 2);
+  assert.equal(parsed.pagination.next_offset, 2);
+});
+
+test('scoped top still sends limit/offset on the wire (#1297)', async () => {
+  // They are inert upstream today, but dropping them would mean a stats.fm that
+  // starts honouring them silently changes the page.
+  const h = makeHarness(ignoresBounds(91));
+  await h.find('statsfm_top_tracks_from_artist').handler({ user_id: 'u', artist_id: 1, limit: 3, offset: 6 });
+  const call = h.calls.at(-1);
+  assert.equal(call?.params?.limit, '3');
+  assert.equal(call?.params?.offset, '6');
+});
+
+test('the flat top routes are untouched by the scoped window (#1297)', async () => {
+  // statsfm_top_tracks does honour limit upstream, so its payload must reach the
+  // caller exactly as received — no client-side re-slicing, and no ceiling
+  // disclosure it has no reason to make.
+  const h = makeHarness(() => ({
+    items: Array.from({ length: 4 }, (_unused, i) => ({
+      position: i + 1, streams: 10 - i, playedMs: 1000,
+      track: { name: `T${i + 1}`, artists: [{ name: 'A' }] },
+    })),
+  }));
+  const out = await h.find('statsfm_top_tracks').handler({ user_id: 'u', limit: 2, offset: 1 });
+  const page = (out.structuredContent?.items ?? []) as Array<{ track: { name: string } }>;
+  assert.equal(page.length, 4, 'the flat route is passed through as upstream returned it');
+  assert.equal(out.structuredContent?.total_unreadable, undefined, 'no ceiling claim on a route that does not need one');
+});
