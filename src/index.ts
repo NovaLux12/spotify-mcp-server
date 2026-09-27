@@ -23,7 +23,7 @@ import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
 import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
 import { installActingAccountBoundary, resolveActingAccount } from './actingaccount.js';
-import { installAttributionBoundary } from './attribution.js';
+import { installAttributionBoundary, installResourceAttributionBoundary } from './attribution.js';
 import { installCancellationContextBoundary } from './cancellation.js';
 import { BRANDING_NOTICE, NON_AFFILIATION_NOTICE } from './branding.js';
 import { SERVER_INSTRUCTIONS } from './serverinstructions.js';
@@ -179,6 +179,23 @@ async function buildMcpServer(
   // because a later boundary must not be able to bypass a compliance line by
   // being added after it.
   installAttributionBoundary(server);
+
+  // The resource half of the same boundary (#1525). It installs at the same
+  // point, and for the same reason — outermost, so nothing added later can
+  // bypass a compliance line — but it wraps `server.resource` /
+  // `server.registerResource` rather than the tool methods, because a resource
+  // read is the other way a host reaches rendered Spotify metadata: the
+  // registry advertises 17 fixed resources and 28 resource templates, none of
+  // which is a tool.
+  //
+  // It has to be installed BEFORE the read surfaces register. `server.resource`
+  // stores the read callback at registration time and `resources/read`
+  // dispatches through that stored reference, so a boundary installed after
+  // `registerReadSurfaces()` below would wrap nothing at all. That ordering is
+  // load-bearing; the tool boundary has no equivalent constraint, because every
+  // tool module is registered further down and none of them are read through a
+  // pre-stored callback.
+  installResourceAttributionBoundary(server);
 
   // Tool modules load behind the toolset gate (#906). `registerManifestModules`
   // imports only the modules that are about to register — a module whose key is

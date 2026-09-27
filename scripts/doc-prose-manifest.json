@@ -1773,12 +1773,16 @@
         "label": "Cross-cutting boundaries — src/index.ts wraps every regi…"
       },
       {
-        "hash": "593aa1fc44e079fe",
+        "hash": "2c4989acbb530ba5",
         "label": "| Installed | Boundary | What it does to a result | |---…"
       },
       {
         "hash": "722c5faa55d3336a",
         "label": "The last two are disjoint — one writes structuredContent…"
+      },
+      {
+        "hash": "14699cca286f3b8d",
+        "label": "Boundary 6 is ordered against registration, not against …"
       },
       {
         "hash": "44a883d4c2483a17",
@@ -3949,8 +3953,20 @@
         "label": "This is a rendered-output contract, and it is the only o…"
       },
       {
-        "hash": "00d3ceea28dee604",
+        "hash": "e2529d94daaeabad",
         "label": "| Applies to | Result | |---|---| | The text block of ev…"
+      },
+      {
+        "hash": "ea16c798d30f6069",
+        "label": "Resources are covered, and the choice is recorded here r…"
+      },
+      {
+        "hash": "fd3f8bffd0a5e292",
+        "label": "The wrap is mechanically the same and was verified again…"
+      },
+      {
+        "hash": "9970c36e97d4213a",
+        "label": "Two resource exemptions, and neither is a fourth thing t…"
       },
       {
         "hash": "6c61c64eeda1149b",
@@ -6669,6 +6685,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "00d3ceea28dee604",
+      "label": "| Applies to | Result | |---|---| | The text block of ev…",
+      "date": "2026-09-27",
+      "reason": "rebased onto origin/main f465876a (#1530, #1537). Conflicted only on the mixed-file scripts/doc-prose-manifest.json, resolved --ours (main during a rebase), so what that resolution dropped is the MANIFEST, not the documents; the tool's own 'recover the prose from the side you dropped' remedy would have overwritten prose this branch deliberately wrote. Verified by counting rows on both trees, not by reading the diff: the 'Installed | Boundary | What it does to a result' table is 5 rows on origin/main and 6 here (boundary 6 = installResourceAttributionBoundary added); the 'Applies to | Result' table is 5 on origin/main and 8 here (three resource rows added); total markdown table lines in SPEC.md are 583 on main and 587 here. No row was removed. Four of main's five 'Applies to' rows survive byte-identical; the fifth is a deliberate reword, 'in the text block' -> 'in either text block', because resources now carry inline links too, and the reworded row is present at SPEC.md:2380. Both pins changed because the tables grew, not because prose was lost. A pin is keyed on content, so a widened table hashes identically to a deleted one; that gap is filed as #1527 and --reanchor (#1538) is the fix, not yet on main."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "03ca64d232110207",
       "label": "user-read-private user-read-email user-read-playback-sta…",
       "date": "2026-09-27",
@@ -6736,6 +6759,13 @@
       "label": "Response byte cap (#895) — responseformat: 'json' and st…",
       "date": "2026-09-27",
       "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "593aa1fc44e079fe",
+      "label": "| Installed | Boundary | What it does to a result | |---…",
+      "date": "2026-09-27",
+      "reason": "rebased onto origin/main f465876a (#1530, #1537). Conflicted only on the mixed-file scripts/doc-prose-manifest.json, resolved --ours (main during a rebase), so what that resolution dropped is the MANIFEST, not the documents; the tool's own 'recover the prose from the side you dropped' remedy would have overwritten prose this branch deliberately wrote. Verified by counting rows on both trees, not by reading the diff: the 'Installed | Boundary | What it does to a result' table is 5 rows on origin/main and 6 here (boundary 6 = installResourceAttributionBoundary added); the 'Applies to | Result' table is 5 on origin/main and 8 here (three resource rows added); total markdown table lines in SPEC.md are 583 on main and 587 here. No row was removed. Four of main's five 'Applies to' rows survive byte-identical; the fifth is a deliberate reword, 'in the text block' -> 'in either text block', because resources now carry inline links too, and the reworded row is present at SPEC.md:2380. Both pins changed because the tables grew, not because prose was lost. A pin is keyed on content, so a widened table hashes identically to a deleted one; that gap is filed as #1527 and --reanchor (#1538) is the fix, not yet on main."
     },
     {
       "file": "SPEC.md",
@@ -6956,9 +6986,9 @@
     }
   ],
   "provenance": {
-    "head": "89c93679405e8200a2e57c11b26d6ae66e507fb2",
-    "base": "8dca449a9d43265c3560ed9f23ec599ff211a8ea",
-    "upstream": "8dca449a9d43265c3560ed9f23ec599ff211a8ea",
+    "head": "316e4d562f2c14fe0835341eab9782664a2fd6dd",
+    "base": "f465876ab46dc73059e05256855b61f308d81932",
+    "upstream": "f465876ab46dc73059e05256855b61f308d81932",
     "behind": false
   }
 }

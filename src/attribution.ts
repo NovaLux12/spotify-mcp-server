@@ -27,6 +27,24 @@
  * implementation, and the sixty modules inherit it — which is the property that
  * keeps the next module from shipping uncredited rows.
  *
+ * ## Resources are the second surface, and they were missed first
+ *
+ * The boundary shipped covering tools, because a tool is what #696 was about.
+ * MCP Resources are the other way a host reaches rendered Spotify metadata —
+ * the registry advertises 17 fixed resources and 28 resource templates, and a
+ * host reading `spotify://me/top/tracks` names no tool at all — and their ~26
+ * render sites in `src/resources/` emit the same `| URI: <uri>` rows the tool
+ * path had been fixing. `installResourceAttributionBoundary` closes that, on
+ * the same terms, by wrapping `server.resource` / `server.registerResource`.
+ *
+ * The argument that made it a defect rather than a scope decision is the
+ * documentation: §5.17 and `docs/compliance.md` state the obligation as met,
+ * and a reader who had just been told how the link-back requirement is
+ * discharged had no way to learn that a third of the read surface discharged
+ * nothing. A gap that is merely unfixed is a bug; a gap the contract does not
+ * mention is documentation drifting from behaviour, which is the shape #696 was
+ * filed about one MCP surface over.
+ *
  * ## What is deliberately NOT done
  *
  * - **`structuredContent` is not touched.** The machine-readable payload keeps
@@ -288,4 +306,207 @@ export function attributeResult(result: unknown): unknown {
   const content = [...record.content];
   content[index] = { ...block, text };
   return { ...record, content };
+}
+
+/**
+ * The property that marks a resource read as reporting state rather than
+ * Spotify Content.
+ *
+ * MCP Resources were the one read surface this boundary did not reach when
+ * #696 landed, and the reason is structural rather than deliberate:
+ * `installAttributionBoundary` wraps `server.tool` and `server.registerTool`,
+ * and a resource registers through `server.resource` instead. Roughly 26 render
+ * sites in `src/resources/` emit `| URI: <uri>` rows — the same row shape the
+ * tool path had been fixing — on a surface a host reaches without naming a
+ * single tool. The policy obligation does not care which MCP method produced
+ * the bytes: Developer Policy Sec. II.4.a says *if you display any Spotify
+ * Content*, and a resource read displays Spotify Content.
+ *
+ * ## Why the wrap transfers unchanged
+ *
+ * Verified against the installed SDK (`@modelcontextprotocol/sdk` 1.30.0,
+ * `dist/esm/server/mcp.js`) rather than assumed, because "assume the tool
+ * pattern transfers" is precisely what would have produced a boundary that
+ * installed and did nothing:
+ *
+ * - `resource(name, uriOrTemplate, ...rest)` shifts off a leading metadata
+ *   object and then takes `rest[0]` as the read callback — so the callback is
+ *   the LAST argument, the same `args.length - 1` position `tool` uses.
+ * - `registerResource(name, uriOrTemplate, config, readCallback)` takes it last
+ *   too, so the deprecated `resource` and its replacement agree on the index.
+ * - The `resources/read` handler dispatches through the callback that was
+ *   stored at registration: `return resource.readCallback(uri, extra)` for a
+ *   fixed resource and `template.readCallback(uri, variables, extra)` for a
+ *   template. Replacing the callback in the argument list BEFORE handing the
+ *   arguments to the original therefore intercepts every read.
+ *
+ * ## Why the gate result is marked rather than sniffed
+ *
+ * `gatedResourceResult` in `src/resources/index.ts` answers a 403/404/429 with
+ * prose — a resource label and a status, e.g. "top-tracks is unavailable in
+ * this market or OAuth scope (404)". It displays no track name, no album, no
+ * artist and no `spotify:` URI. A footer on it says nothing true, and this
+ * module's own reasoning for withholding the footer from an `isError` tool
+ * result applies word for word: a footer that appears on everything is a footer
+ * a reader learns to skip.
+ *
+ * The exemption is therefore DECLARED at the point that knows the answer, and
+ * read back here as a flag, rather than recovered by matching the prose. A
+ * string comparison against the two known sentences would be the summary-as-
+ * contract failure this repository has shipped before: reword the message and
+ * the gate silently starts printing "Music data supplied by Spotify." under an
+ * HTTP status line.
+ *
+ * The flag is a SYMBOL, and that is load-bearing rather than stylistic. The
+ * obvious string key does not work: `ReadResourceResultSchema` is a loose
+ * object, so `attributionNonContent: true` survives validation and is serialized
+ * to the host as an undocumented response field — verified, not assumed. A
+ * symbol key is dropped twice over: the schema rebuilds the object from its
+ * known string keys, and `JSON.stringify` ignores symbol keys entirely. The
+ * signal is therefore internal by construction, and stays internal even if the
+ * boundary is disabled, because the marker is set by the renderer rather than
+ * removed by the wrapper.
+ */
+const NON_CONTENT = Symbol('spotifyMcp.attributionNonContent');
+
+/**
+ * Mark a finished resource result as reporting state rather than Spotify
+ * Content, so the boundary leaves it byte-identical.
+ *
+ * Returns `T`, not a widened type: the marker is not part of the response
+ * contract, so exposing it in the return type would invite a caller to branch
+ * on it. `markNonContent(text(uri, detail))` keeps `ReadResourceResult`, and
+ * nothing downstream has to re-assert what it already had.
+ */
+export function markNonContent<T extends object>(result: T): T {
+  return { ...result, [NON_CONTENT]: true };
+}
+
+/**
+ * Whether one entry of a resource `contents` array is rendered prose this
+ * boundary should decorate.
+ *
+ * The `application/json` test is STRUCTURAL, where the tool path had to fall
+ * back to a parse. A resource read declares its own format on every content
+ * entry (`json()` in `src/resources/index.ts` sets `mimeType:
+ * 'application/json'` for the `?format=json` variant), so the honest question
+ * is not "might this text happen to parse" but "did the renderer say this is
+ * the raw payload". The same promise §5.17 records for tools holds here: the
+ * Sec. II.4.b link-back is met by Spotify's own `external_urls` inside the
+ * payload, and a footer appended to a JSON document would break `JSON.parse`
+ * for every host that relies on it.
+ *
+ * A blob entry carries no `text` and is left alone for the same reason an
+ * `isError` tool result is: there is nothing rendered to attribute.
+ */
+function isAttributableContent(entry: unknown): entry is { text: string } {
+  if (entry == null || typeof entry !== 'object') return false;
+  const record = entry as { text?: unknown; mimeType?: unknown };
+  if (typeof record.text !== 'string') return false;
+  if (record.mimeType === 'application/json') return false;
+  return true;
+}
+
+/**
+ * The resource text transform — the same two steps as `attributeText`, without
+ * its JSON probe, because the resource envelope already answered the question.
+ *
+ * `attributeText` decides "is this a document a host will parse?" by parsing,
+ * because a tool result's only evidence of `response_format: 'json'` is the
+ * text itself. A resource read does not have that problem: every entry declares
+ * its own `mimeType`, and `json()` in `src/resources/index.ts` sets
+ * `application/json` on exactly the `?format=json` variant. So the decision is
+ * made once, on the declared type, in `isAttributableContent` — and reaching
+ * this function already means the renderer said "this is prose".
+ *
+ * The difference is observable, and it is the reason this is not a redundant
+ * copy of `attributeText`: prose that happens to BE valid JSON is still prose.
+ * A `text/plain` entry whose body is `{"a":1}` gains the footer and the links
+ * here, while `attributeText` would have returned it byte-identical because it
+ * parsed. Trusting the declared format over a guess is the same rule the
+ * "prose that merely opens with a brace" test states, taken one level up: the
+ * renderer knows what it rendered, and a parse is only a fallback for a surface
+ * that does not say.
+ */
+export function attributeResourceText(text: string): string {
+  return withAttributionFooter(linkifyRows(text));
+}
+
+/**
+ * Attribute one finished resource read, or return it unchanged.
+ *
+ * The envelope differs from a tool result in the one way that matters: a
+ * resource returns `contents`, not `content`, and its entries are
+ * `{ uri, text, mimeType }` with no `type` discriminator. A `findIndex` on
+ * `type === 'text'` finds nothing here, which is the mechanical reason a
+ * naive reuse of `attributeResult` would install cleanly and attribute nothing
+ * — the same silent-no-op failure mode this file's header warns about.
+ *
+ * The first attributable entry is the one decorated, matching `attributeResult`.
+ * A read returning several is not a shape `src/resources/` produces (both
+ * `text()` and `json()` return exactly one), and rewriting all of them would
+ * put a second copy of a payload behind the first.
+ */
+export function attributeResourceResult(result: unknown): unknown {
+  if (result == null || typeof result !== 'object') return result;
+  const record = result as { contents?: unknown; [NON_CONTENT]?: unknown };
+  if (record[NON_CONTENT] === true) return result;
+  if (!Array.isArray(record.contents)) return result;
+  const index = record.contents.findIndex(isAttributableContent);
+  if (index < 0) return result;
+  const block = record.contents[index] as { text: string };
+  const text = attributeResourceText(block.text);
+  if (text === block.text) return result;
+  const contents = [...record.contents];
+  contents[index] = { ...block, text };
+  return { ...record, contents };
+}
+
+/**
+ * The resource half of the cross-cutting boundary (#696). Wraps every
+ * registered resource read callback and attributes the finished contents.
+ *
+ * A separate installer rather than a third method folded into
+ * `installAttributionBoundary`, for two reasons. §5.17's contract is already
+ * written against the tool methods and is pinned by `tests/attribution.test.ts`;
+ * widening that function in place would change a landed contract's meaning
+ * without changing its tests, which is how a boundary stops being the thing its
+ * documentation says it is. And the two surfaces have genuinely different
+ * envelopes and different exemptions — a resource has no `isError` flag and no
+ * `response_format`, but it does have a `?format=json` variant it declares
+ * structurally — so one function serving both would need a dispatch table where
+ * two named entry points state the difference.
+ *
+ * Both methods are wrapped because the SDK offers both and the tree uses the
+ * deprecated one: `src/resources/index.ts` and `src/resources/templates.ts` call
+ * `server.resource(...)` at all four registration sites, and a boundary that
+ * covered only `registerResource` would cover nothing at all. Both take the
+ * callback last, so both use the same `args.length - 1` position.
+ */
+export function installResourceAttributionBoundary(server: object): void {
+  const enabled = attributionEnv();
+  const api = server as {
+    resource: (...args: unknown[]) => unknown;
+    registerResource: (...args: unknown[]) => unknown;
+  };
+  const originalResource = api.resource.bind(server);
+  const originalRegisterResource = api.registerResource.bind(server);
+
+  const remember = (args: unknown[]): void => {
+    if (!enabled) return;
+    const callbackIndex = args.length - 1;
+    if (typeof args[callbackIndex] !== 'function') return;
+    const callback = args[callbackIndex] as (...callArgs: unknown[]) => unknown;
+    args[callbackIndex] = async (...callArgs: unknown[]) =>
+      attributeResourceResult(await callback(...callArgs));
+  };
+
+  api.resource = (...args: unknown[]) => {
+    remember(args);
+    return originalResource(...args);
+  };
+  api.registerResource = (...args: unknown[]) => {
+    remember(args);
+    return originalRegisterResource(...args);
+  };
 }

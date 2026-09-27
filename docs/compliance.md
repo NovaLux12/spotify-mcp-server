@@ -161,12 +161,55 @@ decision rather than an omission.** All three are pinned by
   what a programmatic consumer matches on. The two channels are allowed to
   differ: the text block is read by a person, the structured one by code.
 
+**Resources are a second read surface, and the decision is that they are
+covered, not exempted.** [#696](https://github.com/NovaLux12/spotify-mcp-server/issues/696)
+wrapped `server.tool` and `server.registerTool`. MCP Resources register through
+`server.resource`, which this server calls at all four registration sites, so
+the 17 fixed resources and 28 resource templates were rendering the same
+`| URI: <uri>` rows with neither the footer nor the link — and a host reaches
+one by reading a URI, naming no tool at all.
+
+Recording the exemption was a legitimate option and was rejected on the
+substance. Developer Policy Sec. II.4.a is about *displaying Spotify Content*,
+and a resource read displays Spotify Content; there is no reading of the clause
+under which an attribution is owed for a tool result and not for a track's name
+reached by a different MCP method. The gap was also undocumented in both places
+that state the obligation as met, which made it documentation drifting from
+behaviour — the same shape #696 was filed about, one MCP surface over. Covering
+it is a small change rather than a large one, because `renderWithApiErrors` and
+the four registration sites are shared.
+
+`installResourceAttributionBoundary` is a separate installer beside
+`installAttributionBoundary` rather than a third method on it, because the
+envelopes differ — a resource returns `contents` of `{ uri, text, mimeType }`
+with no `type` discriminator — and because §5.17's tool contract is already
+written and pinned. It wraps both `server.resource` and its replacement
+`server.registerResource`; the deprecated name is the one this tree calls, so a
+boundary covering only the replacement would have covered nothing. It must be
+installed *before* the read surfaces register, because the SDK stores the read
+callback at registration time and dispatches through that stored reference.
+
+Two resource reads are met without a footer, and both are decisions rather than
+omissions, pinned by `tests/resourceattribution.test.ts`. A **`?format=json`**
+read is decided off the `mimeType` the renderer set rather than a parse, on the
+same `external_urls` argument as the tool path's `json` mode. A read answering
+**403 / 404 / 429** reports state rather than content: it names this server's
+own resource label and an HTTP status, and carries no track, album, artist or
+URI. The renderer declares that exemption through `markNonContent` rather than
+the boundary recovering it by matching the prose — reword the status line and a
+string comparison would silently start stamping the footer under an HTTP code.
+The marker is a `Symbol` and cannot be serialized, so it stays internal: the
+response schema is a loose object, and a string key would have reached the host
+as an undocumented field.
+
 **Why it is one boundary and not sixty edits.** Every row renderer in this
 server is a module-local template and there are roughly sixty modules; editing
 them is not an option twice, because the second time it is sixty edits that can
 disagree. `installAttributionBoundary` wraps every registered tool callback the
 way the truncation and acting-account boundaries already do, so the modules
-inherit it and a new one inherits it for free. The link-back is also *refused*
+inherit it and a new one inherits it for free — and the ~26 render sites in
+`src/resources/` inherit the resource installer for the same reason, across all
+four registration sites at once. The link-back is also *refused*
 rather than guessed where a URI cannot be resolved: a short id or an unknown
 kind is left byte-for-byte alone, because a fabricated `open.spotify.com` path
 is a link that leads nowhere and reads as though it did not.

@@ -30,6 +30,7 @@ import { walkFollowedArtists } from '../tools/following.js';
 import { deviceLine, DEVICES_EMPTY_MESSAGE } from '../devices.js';
 import { formatDuration } from '../result.js';
 import { createResourceReadRegistry, watchableFor, type ResourceReadRegistry } from './subscriptions.js';
+import { markNonContent } from '../attribution.js';
 
 type RenderableItem = {
   type?: string;
@@ -106,7 +107,14 @@ function gatedResourceResult(
       ...(error.status === 429 && waitSeconds !== undefined ? { retry_after: waitSeconds } : {}),
     });
   }
-  return text(uri, detail);
+  // Marked non-content (#1525), and the `json` branch above does not need the
+  // same mark: the attribution boundary exempts `application/json` structurally
+  // off the mimeType this module sets in `json()`. This branch has no such
+  // signal — it is `text/plain` and would be attributed as if it rendered
+  // Spotify metadata. It does not. `detail` names this server's own resource
+  // label and an HTTP status, and carries no track, album, artist or URI, so
+  // the footer would credit content that is not there.
+  return markNonContent(text(uri, detail));
 }
 
 /**
