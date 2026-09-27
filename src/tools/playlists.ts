@@ -967,15 +967,13 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             ...targets,
           ]),
         });
-        if (verdict === 'declined') {
-          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
-        }
-        if (verdict === 'error') {
-          throw new Error('Elicitation failed — refusing to remove playlist items without confirmation');
-        }
-        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-          throw new Error('Elicitation unavailable — refusing to remove playlist items without confirmation');
-        }
+        // #1237: the shared fail-closed guard. The hand-rolled branches this
+        // replaced threw on 'error' and on an unpromptable host, so a host
+        // that parsed the refusal got a result for a decline and an exception
+        // for the other two ways the same gate says no. Nothing about the gate
+        // is weakened — see requiredConfirmationRefusal.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       const tracks = args.uris.map((entry) =>
         typeof entry === 'string'
@@ -1126,15 +1124,12 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             increasing,
           ),
         });
-        if (verdict === 'declined') {
-          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
-        }
-        if (verdict === 'error') {
-          throw new Error('Elicitation failed — refusing to make playlist public without confirmation');
-        }
-        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-          throw new Error('Elicitation unavailable — refusing to make playlist public without confirmation');
-        }
+        // #1237: shared fail-closed guard — see the note on
+        // remove_from_playlist above. This is the visibility gate on a PUT
+        // that can overwrite a playlist, so the refusal shape is the part
+        // that matters most here.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
 
       await client.put(`/playlists/${encodeURIComponent(playlistId)}`, body);
@@ -1249,15 +1244,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             `Overwrite ALL existing items with ${args.uris.length} URI(s).`,
           ]),
         });
-        if (verdict === 'declined') {
-          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
-        }
-        if (verdict === 'error') {
-          throw new Error('Elicitation failed — refusing to replace playlist items without confirmation');
-        }
-        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-          throw new Error('Elicitation unavailable — refusing to replace playlist items without confirmation');
-        }
+        // #1237: shared fail-closed guard — see the note on
+        // remove_from_playlist above.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
       const id = encodeURIComponent(args.playlist_id);
       // #865: replace_playlist_items atomically PUTs the first chunk, then
@@ -1625,15 +1615,10 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             ...(ordered.length > preview.length ? [`(…and ${ordered.length - preview.length} more)`] : []),
           ]),
         });
-        if (verdict === 'declined') {
-          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
-        }
-        if (verdict === 'error') {
-          throw new Error('Elicitation failed — refusing to remove duplicate playlist items without confirmation');
-        }
-        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-          throw new Error('Elicitation unavailable — refusing to remove duplicate playlist items without confirmation');
-        }
+        // #1237: shared fail-closed guard — see the note on
+        // remove_from_playlist above.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
 
       // One DELETE per occurrence, highest position first: each request sees
@@ -1868,15 +1853,11 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
             ...(dirty.length > 10 ? [`(…and ${dirty.length - 10} more playlists)`] : []),
           ]),
         });
-        if (verdict === 'declined') {
-          return textResult('Cancelled — nothing was changed.', { ok: false, cancelled: true });
-        }
-        if (verdict === 'error') {
-          throw new Error('Elicitation failed — refusing to remove duplicate playlist items without confirmation');
-        }
-        if (verdict === 'unsupported' && process.env.SPOTIFY_MCP_CONFIRM !== 'never') {
-          throw new Error('Elicitation unavailable — refusing to remove duplicate playlist items without confirmation');
-        }
+        // #1237: shared fail-closed guard — see the note on
+        // remove_from_playlist above. A server-wide sweep, so the refusal is
+        // one result rather than a throw for a host that wants to branch.
+        const refusal = requiredConfirmationRefusal(verdict);
+        if (refusal) return textResult(refusal.message, refusal.payload);
       }
 
       let removedTotal = 0;

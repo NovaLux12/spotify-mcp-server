@@ -39,6 +39,14 @@ interface RegisteredTool {
 
 interface ElicitOptions {
   result?: unknown;
+  /**
+   * #1237: model a host that cannot prompt at all. elicitHost() probes for
+   * `elicitInput` on the inner server, so omitting `server` entirely is what
+   * produces the 'unsupported' verdict — the same shape the real MCP SDK
+   * presents when the client never advertised the capability. Previously this
+   * harness could only ever produce 'confirmed' or 'declined'.
+   */
+  unpromptable?: boolean;
 }
 
 function harness(
@@ -51,13 +59,21 @@ function harness(
 
   const fakeServer = {
     // Elicitation-capable client shape (mirrors tools.confirm.test.ts).
-    server: {
-      getClientCapabilities: () => ({ elicitation: { form: {} } }),
-      async elicitInput(request: { message: string }) {
-        elicitRequests.push(request);
-        return opts.result ?? { action: 'accept', content: { confirm: true } };
-      },
-    },
+    // #1237: `unpromptable` drops the inner server, and an Error result makes
+    // the prompt fail on the wire — the two verdict states the old harness
+    // could not express, and the two this gate used to turn into throws.
+    ...(opts.unpromptable
+      ? {}
+      : {
+          server: {
+            getClientCapabilities: () => ({ elicitation: { form: {} } }),
+            async elicitInput(request: { message: string }) {
+              elicitRequests.push(request);
+              if (opts.result instanceof Error) throw opts.result;
+              return opts.result ?? { action: 'accept', content: { confirm: true } };
+            },
+          },
+        }),
     tool(
       name: string,
       _description: string,
@@ -262,5 +278,61 @@ describe('remove_duplicate_playlist_items safety rails', () => {
     await h.invoke({});
     assert.equal(h.elicitRequests.length, 0);
     assert.equal(h.calls.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1237 — refusal shape parity
+// ---------------------------------------------------------------------------
+
+// remove_duplicate_playlist_items hand-rolled its refusal and did it
+// inconsistently within this one tool: 'declined' returned a structured
+// refusal, while 'error' and 'unsupported' threw. A host that handled the
+// refusal shape handled one of the three ways this gate says no. The
+// expected reasons below are literals, not recomputed from the helper.
+describe('#1237 remove_duplicate_playlist_items refuses in one shape', () => {
+  const twelveDupes = () =>
+    Array.from({ length: 12 }, (_, i) => [
+      track(`spotify:track:s${i}`, `Song ${i}`),
+      track(`spotify:track:s${i}`, `Song ${i}`),
+    ]).flat();
+
+  it('returns the shared refusal payload for all three verdicts, deleting nothing', async () => {
+    // 12 duplicates is above REMOVE_ELICIT_THRESHOLD, so the gate is entered;
+    // the accepted case below proves that rather than assuming it.
+    assert.ok(12 >= REMOVE_ELICIT_THRESHOLD);
+    for (const [label, opts, reason] of [
+      ['declined', { result: { action: 'decline' } }, undefined],
+      ['error', { result: new Error('transport failed') }, 'elicitation_failed'],
+      ['unsupported', { unpromptable: true }, 'confirmation_unavailable'],
+    ] as const) {
+      const h = harness(twelveDupes(), opts);
+      // Capture the row count rather than hardcoding it: twelveDupes() builds
+      // 12 pairs, so the playlist holds 24 rows and 12 of them are removable.
+      // Asserting against the fixture's own length keeps the "nothing moved"
+      // claim honest if that fixture ever changes.
+      const before = h.currentState().length;
+      const out = await h.invoke({});
+      assert.equal(h.calls.length, 0, `${label}: must issue no DELETE`);
+      assert.equal(h.currentState().length, before, `${label}: playlist must be untouched`);
+      const p = out.structuredContent as Record<string, unknown>;
+      assert.equal(p.ok, false, label);
+      assert.equal(p.cancelled, true, label);
+      if (reason === undefined) assert.equal('reason' in p, false, label);
+      else assert.equal(p.reason, reason, label);
+    }
+  });
+
+  it('SPOTIFY_MCP_CONFIRM=never still bypasses and deletes', async () => {
+    const previous = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    try {
+      const h = harness(twelveDupes(), { unpromptable: true });
+      await h.invoke({});
+      assert.equal(h.calls.length, 12, 'the bypass must still reach the wire');
+    } finally {
+      if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = previous;
+    }
   });
 });

@@ -757,15 +757,87 @@ describe('restore_library_snapshot confirmation gate', () => {
   });
 
   it('environment without elicitation support refuses rather than proceeding silently', async () => {
+    // #1237: this previously asserted assert.rejects(/Elicitation unavailable/),
+    // which pinned the throw this fix removes — an unpromptable host is a
+    // refusal, not an exception. The zero-writes half is kept and is the
+    // safety part; the shape is now the shared refusal contract.
     delete process.env[CONFIRM_ENV];
     const path = await snapshotFile(baseSnapshot());
     try {
       const h = harness(emptyState(), 'unsupported');
-      await assert.rejects(
-        h.invoke('restore_library_snapshot', { backup_path: path, dry_run: false }),
-        /Elicitation unavailable/,
-      );
+      const out = await h.invoke('restore_library_snapshot', { backup_path: path, dry_run: false });
       assert.equal(writesOf(h.client).length, 0);
+      assert.equal(out.structuredContent?.reason, 'confirmation_unavailable');
+      assert.equal(out.structuredContent?.ok, false);
+      assert.equal(out.structuredContent?.cancelled, true);
+    } finally {
+      await rm(join(path, '..'), { recursive: true, force: true });
+    }
+  });
+
+  // #1237: all three refusal verdicts, one shape. The harness's elicit modes
+  // are 'accept' | 'decline' | 'unsupported'; a transport failure is modelled
+  // below by a host that advertises the capability and then throws, which is
+  // the wire-error path confirmViaElicitation maps to 'error'. Expected
+  // reasons are literals, never recomputed from the helper under test.
+  //
+  // All three live in ONE test on purpose. Split across separate tests, the
+  // 'unsupported' case was not reached by the mutation check for this site:
+  // reverting the fix to a silent proceed on an unpromptable host left this
+  // test green, because it only ever drove 'declined' and 'error'.
+  it('returns the shared refusal payload for declined, error and unsupported, writing nothing', async () => {
+    delete process.env[CONFIRM_ENV];
+    const path = await snapshotFile(baseSnapshot());
+    try {
+      // A host that advertises elicitation and then fails on the wire: the
+      // only way to reach the 'error' verdict through the real code path.
+      const registered: RegisteredTool[] = [];
+      const throwingServer = {
+        tool(
+          name: string,
+          description: string,
+          schema: z.ZodRawShape,
+          handler: RegisteredTool['handler'],
+        ) {
+          registered.push({ name, description, validate: (a) => z.object(schema).parse(a), handler });
+        },
+        server: {
+          getClientCapabilities: () => ({ elicitation: {} }),
+          elicitInput: async () => {
+            throw new Error('elicitation transport failed');
+          },
+        },
+      };
+      const errorClient = makeClient(emptyState());
+      registerRestoreTools(throwingServer as unknown as McpServer, errorClient as unknown as SpotifyClient);
+      const errorTool = registered.find((t) => t.name === 'restore_library_snapshot')!;
+
+      const declined = harness(emptyState(), 'decline');
+      const unsupported = harness(emptyState(), 'unsupported');
+      const rows = [
+        ['declined', undefined, declined.client, await declined
+          .invoke('restore_library_snapshot', { backup_path: path, dry_run: false })],
+        ['unsupported', 'confirmation_unavailable', unsupported.client, await unsupported
+          .invoke('restore_library_snapshot', { backup_path: path, dry_run: false })],
+        ['error', 'elicitation_failed', errorClient, await errorTool.handler(
+          errorTool.validate({ backup_path: path, dry_run: false }),
+        )],
+      ] as const;
+
+      for (const [label, reason, client, out] of rows) {
+        // Nothing may be written on any refusal verdict — this is the half
+        // that is the actual safety property.
+        assert.equal(writesOf(client).length, 0, `${label}: no writes`);
+        const p = out.structuredContent as Record<string, unknown>;
+        assert.equal(p.ok, false, label);
+        assert.equal(p.cancelled, true, label);
+        // restore keeps its bespoke cancelled shaping, so the plan summary a
+        // host already parses must survive alongside the new fields.
+        assert.equal(p.status, 'cancelled', label);
+        assert.equal(p.tool, 'restore_library_snapshot', label);
+        if (reason === undefined) assert.equal('reason' in p, false, label);
+        else assert.equal(p.reason, reason, label);
+      }
     } finally {
       await rm(join(path, '..'), { recursive: true, force: true });
     }

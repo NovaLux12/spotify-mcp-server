@@ -32,6 +32,17 @@ type PlaylistItem = {
   item: { type: string; uri: string; name: string; artists?: Array<{ name: string }> } | null;
 };
 
+interface ElicitOptions {
+  result?: unknown;
+  /**
+   * #1237: model a host that cannot prompt at all. elicitHost() probes for
+   * `elicitInput` on the inner server, so omitting `server` is what yields
+   * the 'unsupported' verdict — the shape a real host presents when the
+   * client never advertised the capability.
+   */
+  unpromptable?: boolean;
+}
+
 function harness(
   playlists: Array<{ id: string; name: string; owner: string; items: PlaylistItem[] }>,
   opts: ElicitOptions = {},
@@ -45,13 +56,23 @@ function harness(
   for (const pl of playlists) state.set(pl.id, pl.items.map((e) => ({ ...e })));
 
   const fakeServer = {
-    server: {
-      getClientCapabilities: () => ({ elicitation: { form: {} } }),
-      async elicitInput(request: { message: string }) {
-        elicitRequests.push(request);
-        return opts.result ?? { action: 'accept', content: { confirm: true } };
-      },
-    },
+    // #1237: `unpromptable` drops the inner server so elicitHost() finds no
+    // elicitInput (the 'unsupported' verdict), and an Error result makes the
+    // prompt fail on the wire (the 'error' verdict). Both are refusal states
+    // the old harness could not express, and both used to leave this tool as
+    // a thrown Error rather than a parseable refusal.
+    ...(opts.unpromptable
+      ? {}
+      : {
+          server: {
+            getClientCapabilities: () => ({ elicitation: { form: {} } }),
+            async elicitInput(request: { message: string }) {
+              elicitRequests.push(request);
+              if (opts.result instanceof Error) throw opts.result;
+              return opts.result ?? { action: 'accept', content: { confirm: true } };
+            },
+          },
+        }),
     tool(
       name: string,
       _description: string,
@@ -323,5 +344,52 @@ describe('clean_all_playlists', () => {
       assert.match(textOf(out), /no duplicates found/);
       assert.doesNotMatch(textOf(out), /TRUNCATED|stopped at cap/);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1237 — refusal shape parity
+// ---------------------------------------------------------------------------
+
+// clean_all_playlists hand-rolled its refusal and did it inconsistently
+// within this one tool: 'declined' returned a structured refusal, while
+// 'error' and 'unsupported' threw. This is an account-wide sweep, so a host
+// most wants to branch on the reason rather than catch an exception. The
+// expected reasons below are literals, not recomputed from the helper.
+describe('#1237 clean_all_playlists refuses in one shape', () => {
+  const dupes12 = (): PlaylistItem[] =>
+    Array.from({ length: 12 }, (_, i) => track(`s${i}`, `Song ${i}`)).flatMap((t) => [t, t]);
+
+  it('returns the shared refusal payload for all three verdicts, deleting nothing', async () => {
+    for (const [label, opts, reason] of [
+      ['declined', { result: { action: 'decline' } }, undefined],
+      ['error', { result: new Error('transport failed') }, 'elicitation_failed'],
+      ['unsupported', { unpromptable: true }, 'confirmation_unavailable'],
+    ] as const) {
+      const h = harness(
+        [{ id: 'big', name: 'Big Mess', owner: 'me', items: dupes12() }],
+        opts,
+      );
+      const out = await h.invoke({ apply: true });
+      assert.equal(h.deletes.length, 0, `${label}: must delete nothing`);
+      const p = out.structuredContent as Record<string, unknown>;
+      assert.equal(p.ok, false, label);
+      assert.equal(p.cancelled, true, label);
+      if (reason === undefined) assert.equal('reason' in p, false, label);
+      else assert.equal(p.reason, reason, label);
+    }
+  });
+
+  it('still sweeps once the prompt is accepted', async () => {
+    // Proves the gate above is genuinely entered, so the refusals are not
+    // passing vacuously because the tool never got that far.
+    const h = harness(
+      [{ id: 'big', name: 'Big Mess', owner: 'me', items: dupes12() }],
+      { result: { action: 'accept', content: { confirm: true } } },
+    );
+    const out = await h.invoke({ apply: true });
+    assert.equal(h.elicitRequests.length, 1);
+    assert.equal(h.deletes.length, 12);
+    assert.equal((out.structuredContent as Record<string, unknown>).ok, true);
   });
 });
