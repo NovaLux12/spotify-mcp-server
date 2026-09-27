@@ -557,7 +557,27 @@ describe('tool surface: budget', () => {
       bytes <= CORE_MAX_BYTES,
       `core preset grew to ${bytes} bytes (ceiling ${CORE_MAX_BYTES})`,
     );
-    assert.ok(names.size < 608 / 2, `core must be materially smaller than the full surface (got ${names.size})`);
+    // #1562: this was `names.size < 608 / 2` — a fixed fraction of a
+    // hand-typed registry-wide count that no gate maintains, and that had
+    // already gone stale against a 556-tool surface. Both sides are measured
+    // now, so the statement is about the two surfaces rather than about a
+    // literal.
+    //
+    // Measured: core 128, all 556, so the ratio bound is 278 — which is above
+    // CORE_MAX_TOOLS (200). While that holds, this assertion is outranked by
+    // the one above it and cannot be the first to fail; it is currently a
+    // true statement, not a tripwire. `coreMaxTools` is the live ceiling, and
+    // it is set at 200 against a 128-tool default — see #565 for whether the
+    // default surface should be smaller. This assertion earns its place when
+    // that budget moves, or when the registry is trimmed far enough that half
+    // of it falls below the absolute ceiling; until then it is deliberately
+    // not tightened to bite, because a fraction chosen to fail today would be
+    // another hand-typed constant with nothing behind it.
+    const all = await listTools({ SPOTIFY_MCP_TOOLSETS: 'all' });
+    assert.ok(
+      names.size < all.length / 2,
+      `core must be materially smaller than the full surface (${names.size} of ${all.length})`,
+    );
   });
 
   it('a no-env session registers the default surface, not everything (#889)', async () => {
