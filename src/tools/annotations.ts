@@ -993,10 +993,10 @@ function registerVerifyReceiptTool(server: McpServer): void {
 
 export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('search', 'search', lazyModule('./search.js', 'registerSearchTools'), [1, 1821], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26953], { readOnlySafe: true }),
-  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [16, 14957]),
-  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12635]),
-  manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [5, 3953]),
+  manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26883], { readOnlySafe: true }),
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [16, 14932]),
+  manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12077]),
+  manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [5, 3948]),
   manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1613]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),
   manifestEntry('audiobookcopilot', 'audiobooks', lazyModule('./audiobookcopilot.js', 'registerAudiobookCopilotTools'), [3, 1985]),
@@ -1020,8 +1020,8 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 26,119 + 210 + 647 happens to land on the measurement, but the addition is
   // a coincidence of two independent edits and is not how the number was
   // obtained.
-  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26976]),
-  manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 5489]),
+  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26214]),
+  manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 5348]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [2, 1449], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
@@ -1048,11 +1048,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
   manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   manifestEntry('libraryanalytics', 'libraryanalytics', lazyModule('./libraryanalytics.js', 'registerLibraryAnalyticsTools'), [4, 3351], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10058], { scopeKey: 'library' }),
+  manifestEntry('portability', 'portability', lazyModule('./portability.js', 'registerPortabilityTools'), [11, 10036], { scopeKey: 'library' }),
   manifestEntry('libraryinsights', 'library', lazyModule('./libraryinsights.js', 'registerLibraryInsightsTools'), [3, 2751], { scopeKey: 'library' }),
   manifestEntry('libraryhygiene', 'library', lazyModule('./libraryhygiene.js', 'registerLibraryHygieneTools'), [1, 734], { scopeKey: 'library' }),
   manifestEntry('showradar', 'library', lazyModule('./showradar.js', 'registerShowRadarTools'), [1, 2125], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1562], { scopeKey: 'library' }),
+  manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1438], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1632], { readOnlySafe: true, scopeKey: 'library' }),
@@ -1066,7 +1066,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('searchhistory', 'searchhistory', lazyModule('./searchhistory.js', 'registerSearchHistoryTools'), [2, 1096], { readOnlySafe: true, scopeKey: 'search' }),
   manifestEntry('browse', 'browse', lazyModule('./browse.js', 'registerBrowseTools'), [3, 2634], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('artistwatch', 'artistwatch', lazyModule('./artistwatch.js', 'registerArtistWatchTools'), [6, 6284], { scopeKey: 'catalog' }),
-  manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3536], { scopeKey: 'playback' }),
+  manifestEntry('queueops', 'queueops', lazyModule('./queueops.js', 'registerQueueOpsTools'), [3, 3293], { scopeKey: 'playback' }),
   manifestEntry('playbackext', 'playbackext', lazyModule('./playbackext.js', 'registerPlaybackExtTools'), [13, 8178], { scopeKey: 'playback' }),
   // playbackintel 11,837 -> 11,882B (+45) is #851: market_availability's
   // description now names the concurrent batch, is_playable, and the
@@ -1075,25 +1075,27 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `tools/list` over stdio, not estimated.
   manifestEntry('playbackintel', 'playbackintel', lazyModule('./playbackintel.js', 'registerPlaybackIntelTools'), [15, 11882], { scopeKey: 'playback' }),
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
-  manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5285], { scopeKey: 'playlists' }),
+  manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5080], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
   manifestEntry('import', 'playlists', lazyModule('./import.js', 'registerImportTools'), [1, 1211], { scopeKey: 'playlists' }),
   manifestEntry('smart', 'playlists', lazyModule('./smart.js', 'registerSmartTools'), [1, 2364], { scopeKey: 'playlists' }),
-  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 8528], { scopeKey: 'exhaustmisc' }),
+  manifestEntry('exhaustmisc', 'playlists', lazyModule('./exhaustmisc.js', 'registerExhaustMiscTools'), [10, 8324], { scopeKey: 'exhaustmisc' }),
 
 
 
-  // [19, 19467] measured post-#1004 (the artist leg reads /artists/{id} now),
+  // [19, 19372] measured post-#1004 (the artist leg reads /artists/{id} now),
   // of which +226B is #781: `search_by_isrc` and `audiobooks_by_author` gained
   // the `offset` input their paging signal already pointed at. Not a new tool
   // and not a wider payload — a control that makes an already-emitted
   // next_offset actionable, and the truncation boundary keeps it only because
-  // the schema declares it.
-  manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19467], { readOnlySafe: true, scopeKey: 'catalog' }),
+  // the schema declares it. Then -95B when #922 removed the quota-circle
+  // glyphs and the cross-sell breadcrumbs from this module's descriptions,
+  // which cost nothing and read less to a model that does not weight emoji.
+  manifestEntry('exhaust2catalog', 'exhaust2catalog', lazyModule('./exhaust2_catalog.js', 'registerExhaust2CatalogTools'), [19, 19372], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('exhaust2enggating', 'exhaust2enggating', lazyModule('./exhaust2_enggating.js', 'registerExhaust2EnggatingTools'), [0, 0], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17683], { scopeKey: 'playback' }),
-  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23507], { scopeKey: 'playlists' }),
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [23, 17473], { scopeKey: 'playback' }),
+  manifestEntry('exhaust2playlists', 'exhaust2playlists', lazyModule('./exhaust2_playlists.js', 'registerExhaust2PlaylistsTools'), [18, 23326], { scopeKey: 'playlists' }),
   manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 23866], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
@@ -1105,18 +1107,18 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // a raise of AGGREGATE_SURFACE_LIMITS. The old quota line says "N GETs" for a
   // walk that issues up to N x (1 + fetchAllCap/100) requests, so the agents
   // paying for that are the ones this sentence is for.
-  manifestEntry('exhaust2extra', 'exhaust2extra', lazyModule('./exhaust2_extra.js', 'registerExhaust2ExtraTools'), [3, 4039], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 21887], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 20039], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('exhaust2extra', 'exhaust2extra', lazyModule('./exhaust2_extra.js', 'registerExhaust2ExtraTools'), [3, 4024], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 21825], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19919], { readOnlySafe: true, scopeKey: 'catalog' }),
   manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21075], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
   manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
   manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14155], { scopeKey: 'playback' }),
-  manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 31777], { scopeKey: 'playlists' }),
-  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23744], { scopeKey: 'playlists' }),
-  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 22590], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
+  manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 31587], { scopeKey: 'playlists' }),
+  manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23449], { scopeKey: 'playlists' }),
+  manifestEntry('swarm4playlists', 'swarm4playlists', lazyModule('./swarm4_playlists.js', 'registerSwarm4PlaylistsTools'), [18, 22016], { scopeKey: 'playlists' }),
 
 
 ] as const;
