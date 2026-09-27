@@ -1212,10 +1212,19 @@ export function moduleRegistrationStatus(
   // (#111). Scope filtering only ever splits a module that would otherwise
   // have been fully active — a missing write scope hides the writes (which
   // could only 403) instead of the reads the grant still carries (#1020).
-  if (!module.alwaysActive) {
-    if (!context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
-    if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
-  }
+  //
+  // `alwaysActive` buys a row exemption from the TOOLSET gate only, which is
+  // what it was introduced for (doctor/receipts/swarm3meta must survive a
+  // trimmed SPOTIFY_MCP_TOOLSETS so they can report the trimming). It was
+  // never a safety claim. Applying it to the read-only gate as well made that
+  // gate fail OPEN for a whole class of rows: a manifest entry added as
+  // `alwaysActive: true` without `readOnlySafe: true` registered its tools in
+  // SPOTIFY_MCP_READONLY sessions, which is precisely the "hides every
+  // write-capable module" guarantee being sold and not kept (#579). The three
+  // rows that carry the flag today are all `readOnlySafe`, so no shipped
+  // surface changes — what changes is that the next such row fails closed.
+  if (!module.alwaysActive && !context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
+  if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
   return context.scopeBlocked(module.scopeKey ?? module.registrationKey) ? 'scope_filtered' : 'active';
 }
 
