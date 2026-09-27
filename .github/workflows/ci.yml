@@ -85,6 +85,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run check:doc-tool-names -- --census-file .surface-census.json
 
+      - name: Registry schema conformance gate
+        # #655. `server.json` carries a `$schema` URL, which is an annotation,
+        # not a check: nothing was loading it. The only party that validated the
+        # manifest was `mcp-publisher`, at publish time, and it answers with an
+        # opaque 400 after `npm publish` has already made the release public.
+        # Fetched live from the URL the manifest declares rather than vendored,
+        # because a vendored copy rots silently and only fails at a release; the
+        # accepted cost is that an outage of static.modelcontextprotocol.io
+        # turns this step red, and the message names the host so it is
+        # attributable. It fails closed -- an unreachable host, a non-JSON body
+        # or an unresolvable ajv all exit non-zero rather than reporting a pass.
+        #
+        # `!cancelled()` for the reason the test step carries it: a failure in
+        # a documentation-inventory gate must not silence a correctness gate.
+        if: ${{ !cancelled() }}
+        run: node scripts/check-server-schema.mjs
+
       - name: Test with count and coverage gates
         # A documentation-inventory failure must not silence the
         # correctness gate, so these run unless cancelled.

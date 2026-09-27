@@ -105,11 +105,37 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      # This job used to run no Node at all — it installs a prebuilt binary and
+      # talks to the registry with it. The schema gate below is JS, so the
+      # runtime is pinned here to the same version the npm job uses rather than
+      # left to the runner image's default, which can change under the release.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "24.x"
+          cache: npm
+
       - name: Sync server.json version from tag
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
           jq --arg v "$VERSION" '.version = $v | .packages[0].version = $v' \
             server.json > server.tmp && mv server.tmp server.json
+
+      # The registry is the only party that validates this manifest against the
+      # schema in its own `$schema`, and it does so after `npm publish` has made
+      # the release public, answering with a 400 that names a property. CI runs
+      # the same gate on every PR (#655); this is the backstop over the exact
+      # bytes this job is about to hand over, which differ from the committed
+      # file by the version sync above.
+      #
+      # `npm ci` is here because the gate validates with ajv, which arrives as a
+      # transitive dependency of @modelcontextprotocol/sdk. Without an install
+      # the import resolves to nothing and the gate reports "unavailable" --
+      # non-zero on every release, or, if that were ever softened, a check that
+      # silently never ran.
+      - run: npm ci
+
+      - name: Validate server.json against the registry schema
+        run: node scripts/check-server-schema.mjs
 
       - name: Install mcp-publisher (version-pinned, checksum-verified)
         run: |
