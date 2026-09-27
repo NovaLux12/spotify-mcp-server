@@ -68,6 +68,7 @@ import type {
 } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { positionBaseClause, positionSchema } from '../positionbase.js';
+import { spotifyId } from '../refs.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -427,8 +428,8 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // this, either form was interpolated into the path verbatim and Spotify
       // answered 404 for a playlist that exists — the invariant "a reference
       // works" depended on which module the tool lived in.
-      playlist_id: z.string().optional().describe('Playlist ID'),
-      id: z.string().optional().describe('Alias for playlist_id'),
+      playlist_id: spotifyId('playlist').optional().describe('Playlist ID, spotify:playlist: URI, or open.spotify.com/playlist URL'),
+      id: spotifyId('playlist').optional().describe('Alias for playlist_id, resolved the same way'),
       limit: z
         .number()
         .int()
