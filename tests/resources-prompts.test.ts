@@ -114,7 +114,8 @@ function makeClientStub(opts: StubOptions = {}): SpotifyClient {
 async function connect(stub: SpotifyClient): Promise<Client> {
   const server = new McpServer({ name: 'test', version: '0.0.0' });
   registerResources(server, stub);
-  registerPrompts(server);
+  // Resources ARE registered here, so the prompt surface may name them (#715).
+  registerPrompts(server, { resourceHints: true });
   const client = new Client({ name: 'tester', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(clientTransport), client.connect(serverTransport)]);

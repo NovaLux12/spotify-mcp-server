@@ -58,6 +58,19 @@ export interface RegistryPassOptions {
    * hand-maintained table structurally cannot do.
    */
   readonly extra?: (server: McpServer) => void;
+  /**
+   * Whether the prompt surface is rendered as if the `resources` module were
+   * registered (#715). Defaults to `true`, which is the DEFAULT server
+   * configuration, so an existing caller is unaffected. Set it to `false` to
+   * render the trimmed configuration: prompts must then make no `spotify://`
+   * claim, because a host that trimmed the toolset registered no resources for
+   * the URI to resolve against.
+   *
+   * A test that only exercises the default would pass whether or not the
+   * degradation works, so a test asserting it must say which of the two it is
+   * looking at.
+   */
+  readonly resourceHints?: boolean;
 }
 
 /** Register the whole manifest the way a full-scope server does. */
@@ -187,7 +200,7 @@ export interface PromptSurface {
  */
 export async function promptSurface(options: RegistryPassOptions = {}): Promise<PromptSurface> {
   const server = await buildFullRegistryServer(options);
-  registerPrompts(server);
+  registerPrompts(server, { resourceHints: options.resourceHints ?? true });
 
   const client = new Client({ name: 'tester', version: '0.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

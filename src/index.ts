@@ -155,7 +155,9 @@ async function startMcpServer(): Promise<void> {
   // import of ./resources/index.js would drag `walkFollowedArtists` — and so
   // the whole of src/tools/following.ts — into every process, including one
   // that trimmed the `following` toolset.
-  if (isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes)) {
+  const resourcesActive =
+    isModuleActive('resources', activeSets, overrides) && !moduleBlockedByScopes('resources', grantedScopes);
+  if (resourcesActive) {
     const { registerTemplateResources } = await import('./resources/templates.js');
     const { registerResources } = await import('./resources/index.js');
     registerTemplateResources(server, client);
@@ -163,7 +165,11 @@ async function startMcpServer(): Promise<void> {
   }
   if (isModuleActive('prompts', activeSets, overrides) && !moduleBlockedByScopes('prompts', grantedScopes)) {
     const { registerPrompts } = await import('./prompts/index.js');
-    registerPrompts(server);
+    // ONE boolean decides both whether the resources are registered and what
+    // the prompts are allowed to say about them (#715). Derived twice, the two
+    // answers can drift and the drifting one ships a `spotify://` hint that
+    // resolves to nothing in the configuration it was served under.
+    registerPrompts(server, { resourceHints: resourcesActive });
   }
   assertToolNamingPolicy(Object.keys((server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {}));
 

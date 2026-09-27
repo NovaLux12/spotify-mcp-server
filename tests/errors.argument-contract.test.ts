@@ -101,7 +101,9 @@ async function surface(build: (server: McpServer) => void): Promise<Ask> {
 
 /** The real prompt surface, boundary included: `registerPrompts` installs it. */
 function promptSurface(): Promise<Ask> {
-  return surface((server) => registerPrompts(server));
+  // No resources registered, so the trimmed prompt form (#715). The argument
+  // boundary is installed either way, which is what this file measures.
+  return surface((server) => registerPrompts(server, { resourceHints: false }));
 }
 
 /** A tool surface with a described parameter and one without. */
