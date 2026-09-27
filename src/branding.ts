@@ -61,3 +61,32 @@ export const BRANDING_NOTICE = `${NON_AFFILIATION_NOTICE} ${TRADEMARK_NOTICE}`;
  * authored copy of it.
  */
 export const SHORT_NON_AFFILIATION_NOTICE = 'Not affiliated with Spotify.';
+
+/**
+ * The content-attribution line every rendered result carries (#696).
+ *
+ * This is the OTHER direction from the three above, and they do not substitute
+ * for each other. Those three deny a relationship; this one *credits* the
+ * content, which Developer Policy Sec. II.4.a makes mandatory: "If you display
+ * any Spotify Content you must clearly attribute the content as being supplied
+ * and made available by Spotify." The Branding Guidelines extend the same duty
+ * to metadata — "If you use any Spotify metadata (including artist, album and
+ * track names, album artwork, and audio playback) it must always be accompanied
+ * by the Spotify brand" — and this server displays exactly that metadata and
+ * nothing else. An unofficial client denying endorsement while displaying
+ * uncredited Spotify content is in breach, not compliant.
+ *
+ * The wording is nominative plain text, deliberately. It is not a claim of
+ * partnership and it reproduces no mark, so it stays on the right side of
+ * #698's guard; `docs/compliance.md` § "Visual attribution" is the authority on
+ * the mark itself and this line is the text-only path that policy explicitly
+ * says is sufficient ("Text-only hosts do not need any of this: the attribution
+ * requirement is met in prose, not with a picture").
+ *
+ * It lives here, beside the other three, because this module's own header says
+ * it is "the one place that owns the wording" and the coordination point for
+ * the sibling compliance units. The mechanics — when the line is emitted, what
+ * it is emitted next to, and the switch that turns it off — are
+ * `src/attribution.ts`. Nothing re-types the string.
+ */
+export const CONTENT_ATTRIBUTION_NOTICE = 'Music data supplied by Spotify.';

@@ -170,6 +170,7 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 | `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
 | `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
 | `SPOTIFY_MCP_RECEIPTS` | `1` | Persist mutation receipts so `verify_receipt`/`undo_mutation` survive a restart. |
+| `SPOTIFY_MCP_ATTRIBUTION` | `0` | Turn **off** the "Music data supplied by Spotify" footer and the per-row `open.spotify.com` link. On unless set to `0`/`false`/`no`/`off`; the disclosure is mandatory, so only an explicit falsy value removes it. |
 
 Full reference: [docs/configuration.md](docs/configuration.md)
 

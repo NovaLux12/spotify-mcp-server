@@ -120,6 +120,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/accounts.ts` | The account registry (#602): which local accounts exist, and which one this session is acting as. (0 registered tools) | — |
 | `src/actingaccount.ts` | The acting-account echo (#602). (0 registered tools) | — |
 | `src/artistreleases.ts` | One canonical artist-release probe (#900). (0 registered tools) | — |
+| `src/attribution.ts` | Rendered-row attribution and the link back to Spotify (#696). (0 registered tools) | — |
 | `src/audiobookview.ts` | The audiobook and chapter prose renderers, shared by the audiobook tools and the `spotify://audiobook/{id}`, `spotify://audiobook/{id}/chapters` and `spotify://chapter/{id}` resource templates (#603). (0 registered tools) | — |
 | `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | — |
 | `src/branding.ts` | The non-affiliation notice (#705) — the one place that owns the wording. (0 registered tools) | — |

@@ -32,7 +32,7 @@ import {
 } from '../toolsets.js';
 import { moduleBlockedByScopes, WRITE_SCOPE_REQUIREMENTS } from '../scopefilter.js';
 import { derivedAnalyticsEnabled } from '../derivedanalytics.js';
-import { scopeProfileFor } from '../config.js';
+import { scopeProfileFor, attributionEnv } from '../config.js';
 import { historyWriteStatus, historyLedgerStats } from '../history.js';
 import { BRANDING_NOTICE } from '../branding.js';
 
@@ -139,6 +139,17 @@ export interface DoctorSurface {
    * a read-only host look like it lost `personalization` entirely.
    */
   derived_analytics: boolean;
+  /**
+   * Whether rendered results carry the Spotify attribution footer and the link
+   * back to Spotify (#696), read from the boundary's own gate.
+   *
+   * Reported for the same reason `derived_analytics` is, and deliberately not
+   * folded into `read_only` or any `hidden_by_*` count: it withholds nothing.
+   * The question it answers is different in kind — "will the results this host
+   * renders be attributed?" — and an operator who turned attribution off needs
+   * to see that they are the one who did it.
+   */
+  attribution: boolean;
 }
 
 
@@ -680,6 +691,7 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
     // and must state what module registration actually acted on. It is NOT a
     // module-level gate, so it contributes no `hidden_by_*` count.
     derived_analytics: derivedAnalyticsEnabled(),
+    attribution: attributionEnv(),
   };
 }
 
@@ -704,6 +716,9 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
     // per-TOOL gate, so "N modules hidden" would be the wrong unit and would
     // overstate what was withheld.
     `derived_analytics=${surface.derived_analytics}`,
+    // A disclosure, not a count: nothing is withheld by this switch, so it has no
+    // place among the `hidden_by_*` totals.
+    `attribution=${surface.attribution}`,
   ];
   if (surface.prompts_without_resources) {
     // The prompts still work — they degrade to guidance the failed tool call

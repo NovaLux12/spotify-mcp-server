@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { runAuthFlow, loadTokens, getTokenFilePath, parseAuthArgs } from './auth.js';
 import { SpotifyClient } from './client.js';
-import { initConfig, renderEnvHelp, statsfmEnv } from './config.js';
+import { initConfig, renderEnvHelp, statsfmEnv, attributionEnv } from './config.js';
 import {
   applyToolAnnotations,
   applyToolOutputSchemas,
@@ -23,6 +23,7 @@ import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
 import { installProgressContextBoundary, installProgressNotifications } from './progress.js';
 import { installActingAccountBoundary, resolveActingAccount } from './actingaccount.js';
+import { installAttributionBoundary } from './attribution.js';
 import { installCancellationContextBoundary } from './cancellation.js';
 import { BRANDING_NOTICE, NON_AFFILIATION_NOTICE } from './branding.js';
 import { SERVER_INSTRUCTIONS } from './serverinstructions.js';
@@ -141,10 +142,25 @@ async function buildMcpServer(
   // never break a walk.
   installProgressNotifications(client, server);
 
-  // The acting-account echo (#602) installs LAST of the three boundaries, so it
-  // is the outermost wrapper and sees the finished, shaped result. It needs the
-  // client, which is why it cannot sit with the other two above.
+  // The acting-account echo (#602) installs AFTER the three boundaries above,
+  // so it is the outer wrapper and sees the finished, shaped result. It needs
+  // the client, which is why it cannot sit with the other two.
   installActingAccountBoundary(server, resolveActingAccount, client);
+
+  // The attribution boundary (#696) installs LAST of all of them, so it is the
+  // outermost wrapper and the last thing to touch a result's text block. It has
+  // to see the final prose, not the pre-shaping prose: the truncation boundary
+  // rewrites the last line of a capped result, and a footer appended under a
+  // line that is about to be replaced would end up in the wrong place.
+  //
+  // Order against the acting-account echo is not load-bearing and is stated
+  // rather than left to be inferred: the two write disjoint halves of the same
+  // result — the echo touches `structuredContent`, attribution touches the text
+  // block — so either order produces the same bytes. It goes last because
+  // "outermost, sees the finished result" is the property worth having, and
+  // because a later boundary must not be able to bypass a compliance line by
+  // being added after it.
+  installAttributionBoundary(server);
 
   // Tool modules load behind the toolset gate (#906). `registerManifestModules`
   // imports only the modules that are about to register — a module whose key is
@@ -433,6 +449,12 @@ async function runDoctor(): Promise<void> {
   // reason as the row above: this line is a disclosure, so it must state what
   // module registration actually acted on. Independent of the readonly row.
   console.log(`  derived analytics ${derivedAnalyticsEnabled() ? 'enabled' : 'disabled (opt-in via SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS)'}`);
+  // Read from the GATE (attributionEnv), not from cfg.attribution, for the same
+  // reason as the two rows above: this line is a disclosure, so it must state
+  // what the boundary actually acted on. An operator reading "on" here and
+  // finding no footer in a result is looking at a broken install, and this is
+  // where they find out.
+  console.log(`  attribution      ${attributionEnv() ? 'enabled' : 'disabled (SPOTIFY_MCP_ATTRIBUTION)'}`);
   if (cfg.market) console.log(`  market            ${cfg.market}`);
   if (cfg.scopes) console.log(`  scopes            ${cfg.scopes.join(', ')}`);
 
