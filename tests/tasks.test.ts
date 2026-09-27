@@ -867,6 +867,7 @@ describe('#600 the advertised task surface is the real one', () => {
     const server = new McpServer({ name: 'tasks-surface', version: '0.0.0' });
     await registerManifestModules(server, new SpotifyClient(), {
       readOnly: false,
+      disableOverrides: new Set<string>(),
       isModuleActive: () => true,
       scopeBlocked: () => false,
     });
