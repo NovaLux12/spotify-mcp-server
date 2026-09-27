@@ -97,6 +97,7 @@ import {
   proseProvenanceVerdict,
   proseSyncRefusals,
   proseUnitHash,
+  provenanceStampWarning,
   stampProvenance,
 } from '../scripts/prose-manifest.mjs';
 import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
@@ -179,6 +180,45 @@ async function withScratchDir<T>(run: (dir: string) => Promise<T>): Promise<T> {
 /** Run `git` in `dir`, letting a non-zero exit throw — a fixture that cannot be built is a bug. */
 function git(dir: string, ...argv: string[]): string {
   return execFileSync('git', ['-C', dir, ...argv], { encoding: 'utf8' }).replace(/\n$/, '');
+}
+
+/**
+ * A commit object that exists in this clone and that `HEAD` does not contain.
+ *
+ * This is the shape a squash-merge leaves behind. `main` squash-merges, so a
+ * feature branch's tip is a real object in the repository that is an ancestor of
+ * nothing once the PR lands (#1482), and modelling it needs exactly that: an
+ * object git can answer `--is-ancestor` about, which a made-up SHA is not — a
+ * SHA git has never heard of exits 128 and produces the `unverifiable` verdict,
+ * so a fixture of that shape would make every ancestry assertion below pass for
+ * the wrong reason.
+ *
+ * Identity comes from the environment rather than from `git config`, because
+ * this worktree may or may not have one and a test must not depend on whose
+ * checkout it is running in. Nothing here is ever pushed, signed, or attributed
+ * to a person, and no ref is moved: a parallel test running against the same
+ * repository cannot observe the object.
+ */
+function uncontainedCommit(message: string): string {
+  const tree = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD^{tree}'], { encoding: 'utf8' }).trim();
+  return execFileSync('git', ['-C', ROOT, 'commit-tree', tree, '-m', message], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Provenance Fixture',
+      GIT_AUTHOR_EMAIL: 'provenance@example.invalid',
+      GIT_COMMITTER_NAME: 'Provenance Fixture',
+      GIT_COMMITTER_EMAIL: 'provenance@example.invalid',
+    },
+  }).trim();
+}
+
+/** Is `sha` an ancestor of `HEAD` in this checkout? `true` / `false` / null when git cannot tell. */
+function isAncestor(sha: string): boolean | null {
+  const walk = spawnSync('git', ['-C', ROOT, 'merge-base', '--is-ancestor', sha, 'HEAD']);
+  if (walk.status === 0) return true;
+  if (walk.status === 1) return false;
+  return null;
 }
 
 /**
@@ -457,10 +497,132 @@ describe('prose pin provenance (#1440)', () => {
       const manifest = JSON.parse(await readFile(copy, 'utf8'));
       assert.deepEqual(
         manifest.provenance,
-        { head: CLEAN_TREE.head, upstream: CLEAN_TREE.upstream, behind: false },
+        { head: CLEAN_TREE.head, base: CLEAN_TREE.base, upstream: CLEAN_TREE.upstream, behind: false },
         'the pin must name the tree it was generated from, or the retirement reasons in it are unfalsifiable',
       );
     });
+  });
+
+  it('records the commit the tree was built on beside the branch tip, so the stamp survives the merge (#1482)', async () => {
+    // The failure #1482 is about, driven through the real command.
+    //
+    // `--prose-sync` stamps `provenance.head` with `HEAD`. This repository
+    // squash-merges, so that commit is an interior commit of the squash and is
+    // an ancestor of nothing afterwards: the stamp is orphaned by the very merge
+    // that lands the prose it describes, `--check` reports it as a rewritten
+    // history on a tree whose pinned paragraphs are all present, and clearing it
+    // costs a follow-up commit. Five PRs paid that in one session.
+    //
+    // The witness that *does* survive is the commit `HEAD` and `origin/main` last
+    // shared — an ancestor of both, and `main` only ever grows — so it is
+    // recorded beside the tip rather than instead of it, and the read side asks
+    // about it first. Asserted on the written file: a `--prose-sync` that
+    // recorded the tip alone would satisfy an exit-code assertion and leave
+    // every merge in this repository to orphan its own pin.
+    const tip = uncontainedCommit('a branch tip this tree does not contain (#1482)');
+    const base = execFileSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+    // Confirm the fixture is the shape it claims before relying on it: a base
+    // this tree does not contain would make the assertion below pass for a
+    // reason that has nothing to do with the stamp.
+    assert.equal(isAncestor(base), true, `the base must be in this tree's history, git said ${isAncestor(base)}`);
+    assert.equal(isAncestor(tip), false, `the tip must NOT be in this tree's history, git said ${isAncestor(tip)}`);
+
+    await withScratchDir(async (dir) => {
+      const repoBefore = await readFile(MANIFEST, 'utf8');
+      const copy = join(dir, 'manifest.json');
+      await writeFile(copy, repoBefore);
+      await writeProvenanceFile(dir, { ...CLEAN_TREE, head: tip, base, upstream: base });
+
+      const run = runCensus([
+        '--prose-sync',
+        '--prose-manifest', copy,
+        '--prose-provenance', join(dir, 'provenance.json'),
+      ]);
+      assert.equal(run.status, 0, `a clean, current tree must be accepted:\n${run.stderr}`);
+
+      const manifest = JSON.parse(await readFile(copy, 'utf8'));
+      assert.equal(manifest.provenance.head, tip, 'the tree the author was looking at is still recorded — it is the claim the retirements rest on');
+      assert.equal(
+        manifest.provenance.base,
+        base,
+        'the commit the stamp will be judged on was not recorded, so the merge that lands this prose orphans its own pin',
+      );
+
+      // And the read side, on a tree where the tip is gone and the base is not —
+      // which is the state a squash-merge produces, and the only thing the merge
+      // changes about the commit graph.
+      const checked = runCensus(['--check', '--prose-manifest', copy]);
+      assert.equal(
+        checked.status,
+        0,
+        `a stamp naming a commit this tree contains must pass the gate, whatever became of the branch tip:\n${checked.stderr}`,
+      );
+      const verdict = runCensus(['--prose-report', '--prose-manifest', copy]);
+      const provenance = JSON.parse(verdict.stdout).provenance as { status: string; detail: string };
+      assert.equal(provenance.status, 'verified', `the base is in this history, so the pin is verified: ${provenance.detail}`);
+      assert.match(provenance.detail, new RegExp(base.slice(0, 7)), 'the verdict must name the commit it verified against');
+      assert.match(provenance.detail, new RegExp(tip.slice(0, 7)), 'the branch tip that is not in this history must be named too, or "verified" reads as if nothing was lost');
+
+      assert.equal(await readFile(MANIFEST, 'utf8'), repoBefore, 'this test wrote to the checked-in manifest instead of the copy it was given');
+    });
+  });
+
+  it('judges a manifest stamped before the base was recorded on its branch tip alone', async () => {
+    // Backward compatibility, and deliberately in the strict direction.
+    //
+    // A manifest carrying no `base` was stamped by a version that had nowhere
+    // else to put one, so the branch tip is the only witness it has and the only
+    // witness it is judged on. That keeps today's `main` — whose stamp predates
+    // the field — on the pre-#1482 semantics, and it is the direction that can
+    // report `rewritten` where the base would not. Reading a missing `base` as
+    // "this tree is fine" instead would silently forgive a stamp that is wrong.
+    const tip = uncontainedCommit('a branch tip this tree does not contain (#1482, pre-base stamp)');
+    const verdict = proseProvenanceVerdict(
+      { provenance: { head: tip, upstream: 'b'.repeat(40), behind: false } },
+      { ancestor: () => false },
+    );
+    assert.equal(verdict.status, 'rewritten', 'a stamp with no base has only its tip to judge, and this tree does not have it');
+    assert.match(verdict.error!, new RegExp(tip.slice(0, 7)));
+
+    // The same pin with a base that this tree does contain is verified, which is
+    // what the field buys — asserted here so the pair cannot drift apart.
+    const base = 'd'.repeat(40);
+    const withBase = proseProvenanceVerdict(
+      { provenance: { head: tip, base, upstream: base, behind: false } },
+      { ancestor: (sha: string) => (sha === base ? true : false) },
+    );
+    assert.equal(withBase.status, 'verified');
+    assert.equal(withBase.error, null);
+  });
+
+  it('warns when the stamp it is about to write cannot survive the merge', async () => {
+    // A tree with no merge base — no `origin/main`, or two unrelated histories —
+    // has no commit that is an ancestor of both sides, so the only stamp it can
+    // produce names a branch tip. That is not a defect, and refusing over it
+    // would break the case `--allow-stale` exists for, so it is a warning: the
+    // write proceeds and the author is told the cost *before* they commit to it,
+    // rather than discovering it as a red `main` between two merges.
+    assert.equal(
+      provenanceStampWarning({ ...CLEAN_TREE, base: 'e'.repeat(40) }),
+      null,
+      'a stamp naming the merge base survives the merge, so there is nothing to warn about',
+    );
+    assert.equal(
+      provenanceStampWarning({ ...CLEAN_TREE, head: null, base: null }),
+      null,
+      'a tree with no head has no stamp to warn about — the refusal is proseSyncRefusals\' job',
+    );
+    assert.equal(
+      provenanceStampWarning({
+        usable: false, head: null, base: null, upstream: null, behind: false, detached: false, dirty: [], note: '',
+      }),
+      null,
+      'an unusable tree is refused by proseSyncRefusals, which has its own message; a second one here would be noise',
+    );
+
+    const warning = provenanceStampWarning({ ...CLEAN_TREE, base: null });
+    assert.match(warning!, /merge or rebase\s+origin\/main/, 'the warning has to say what to do, or it is a complaint');
+    assert.match(warning!, /red `main`|orphaned/, 'the warning has to say what it costs');
   });
 
   it('records an override as an acknowledgement, not as a quiet pass', async () => {
@@ -718,6 +880,65 @@ describe('prose pin provenance (#1440)', () => {
     assert.match(verdict.detail, /--prose-sync/);
   });
 
+  it('distinguishes a tip that is gone from a tip this checkout cannot see', async () => {
+    // A `fetch-depth: 1` clone — which is how CI checks this repository out — has
+    // the branch tip's object nowhere in it, so `merge-base --is-ancestor` exits
+    // 128 and `ancestor` returns null. That is not the same answer as exit 1, and
+    // it is not the absence of an answer about the base either, which is why the
+    // base is still `true` here. Rendering the unknown as silence made `verified`
+    // read as though the tip were still reachable, in exactly the environment
+    // where nobody could tell by looking.
+    const base = 'c'.repeat(40);
+    const tip = 'a'.repeat(40);
+    const manifest = { files: {}, provenance: { head: tip, base, upstream: base, behind: false } };
+    const cannotSee = (sha: string) => (sha === base ? true : null);
+    const verdict = proseProvenanceVerdict(manifest, { ancestor: cannotSee });
+
+    assert.equal(verdict.status, 'verified', 'the base is in this history, so the pin itself is verified');
+    assert.match(
+      verdict.detail,
+      new RegExp(tip.slice(0, 7)),
+      'the tip must still be named when its fate is unknown — omitting the sentence is what reads as "nothing was lost"',
+    );
+    assert.match(
+      verdict.detail,
+      /could not be determined/,
+      'and the reason has to say the answer is unavailable rather than implying the tip is present',
+    );
+
+    // The three-way distinction the paragraph is about: gone, unknown, and
+    // same-commit. A stamp whose head IS its base has no separate tip to ask
+    // about and must not claim to have looked for one.
+    const gone = proseProvenanceVerdict(manifest, { ancestor: (sha) => (sha === base ? true : false) });
+    assert.match(gone.detail, new RegExp(tip.slice(0, 7)));
+    assert.match(gone.detail, /is not in this history/, 'a definite "no" is reported as one');
+    assert.doesNotMatch(gone.detail, /could not be determined/);
+
+    // The reachable tip is the fourth state, and it is the one a check that only
+    // exercises the unhappy paths cannot see: a tip that IS in this history has
+    // nothing to disclose, so neither sentence may appear. Rendering the known
+    // answer as "could not be determined" would be its own kind of false claim.
+    const reachable = proseProvenanceVerdict(manifest, { ancestor: () => true });
+    assert.equal(reachable.status, 'verified');
+    assert.doesNotMatch(
+      reachable.detail,
+      /could not be determined/,
+      'a tip that is in this history must not be reported as an unanswerable question',
+    );
+    assert.doesNotMatch(
+      reachable.detail,
+      /is not in this history/,
+      'nor as one that is missing',
+    );
+
+    const same = proseProvenanceVerdict(
+      { files: {}, provenance: { head: base, base, upstream: base, behind: false } },
+      { ancestor: cannotSee },
+    );
+    assert.doesNotMatch(same.detail, /could not be determined/, 'head === base leaves no tip to ask about');
+    assert.doesNotMatch(same.detail, /is not in this history/);
+  });
+
   it('classifies each staleness case as hard or soft, and only the soft ones are overridable', async () => {
     // The split is the design, so it is pinned directly rather than only
     // through the CLI. Collapsing the two classes into one list is how a guard
@@ -742,8 +963,17 @@ describe('prose pin provenance (#1440)', () => {
     // and the write would be stamped with a different commit than the one the
     // decision was made against, and the two would silently disagree.
     const manifest = { files: { 'README.md': [] } };
-    const stamped = stampProvenance(manifest, { head: 'a'.repeat(40), upstream: 'b'.repeat(40), behind: true });
-    assert.deepEqual(stamped.provenance, { head: 'a'.repeat(40), upstream: 'b'.repeat(40), behind: true });
+    const stamped = stampProvenance(manifest, {
+      head: 'a'.repeat(40),
+      base: 'c'.repeat(40),
+      upstream: 'b'.repeat(40),
+      behind: true,
+    });
+    assert.deepEqual(
+      stamped.provenance,
+      { head: 'a'.repeat(40), base: 'c'.repeat(40), upstream: 'b'.repeat(40), behind: true },
+      'both commits the reading decided on are carried through: the tree that was synced, and the commit it was built on',
+    );
     assert.deepEqual(stamped.files, manifest.files, 'stamping must not disturb the pins it is recorded beside');
   });
 });
@@ -763,6 +993,45 @@ describe('git provenance readings (#1440)', () => {
       assert.equal(prov.detached, false);
       assert.deepEqual(prov.dirty, []);
       assert.deepEqual(proseSyncRefusals(prov).soft.length, 1, 'a real behind-reading must be a soft refusal, so the CLI test and this one agree');
+    });
+  });
+
+  it('reads the commit this tree and origin/main share, which is the one the merge keeps (#1482)', async () => {
+    // The reading the stamp is built from. `merge-base` is the only commit that
+    // is an ancestor of both sides, so it is the only stamp that survives a
+    // squash-merge — and it is a real git answer, not a construction: a `base`
+    // that was anything other than the merge base would be a stamp no merge
+    // could vouch for, and the field would be decoration.
+    await withScratchDir(async (dir) => {
+      const { path, head } = await scratchRepo(dir);
+      const first = execFileSync('git', ['-C', path, 'rev-list', '--max-parents=0', 'HEAD'], { encoding: 'utf8' }).trim();
+
+      // Behind: `origin/main` is a sibling of `HEAD`, so the newest commit they
+      // share is the one they forked at.
+      const behind = gitProvenanceIn(path, { docFiles: ['README.md'] });
+      assert.equal(behind.behind, true);
+      assert.equal(behind.base, first, 'a tree that forked from origin/main shares the fork point, not the tip it does not contain');
+
+      // Current: `origin/main` is behind `HEAD`, so the newest shared commit is
+      // `origin/main`'s own tip — the ordinary feature branch, and the case a
+      // stamp naming the branch tip gets wrong.
+      git(path, 'update-ref', 'refs/remotes/origin/main', first);
+      const current = gitProvenanceIn(path, { docFiles: ['README.md'] });
+      assert.equal(current.behind, false);
+      assert.equal(current.base, first, 'a branch that contains origin/main shares its tip, so a stamp on it survives the squash');
+      assert.notEqual(current.base, current.head, 'the base is the commit the tree was built on, not the tree itself — a stamp of HEAD is the #1482 bug');
+
+      // A checkout with no `origin/main` to share anything with has no base, and
+      // says so by leaving it null rather than substituting the head.
+      git(path, 'update-ref', '-d', 'refs/remotes/origin/main');
+      const detached = gitProvenanceIn(path, { docFiles: ['README.md'] });
+      assert.equal(detached.base, null, 'a commit that cannot be read must not be guessed at');
+      assert.equal(detached.upstream, null);
+      assert.equal(detached.head, head);
+      assert.ok(
+        provenanceStampWarning(detached),
+        'a stamp with no base is orphaned by the next squash-merge, and the author is told so',
+      );
     });
   });
 

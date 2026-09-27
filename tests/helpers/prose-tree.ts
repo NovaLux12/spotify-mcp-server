@@ -25,10 +25,16 @@
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** A real commit, an `origin/main` it already contains, nothing uncommitted, on a branch. */
+/** A real commit, the commit it was built on, an `origin/main` it contains, nothing uncommitted, on a branch. */
 export const CLEAN_TREE = {
   usable: true,
   head: 'a'.repeat(40),
+  // The commit `head` and `origin/main` last shared, which is the stamp that
+  // survives a squash-merge (#1482): it is an ancestor of both histories, while
+  // a branch tip is an ancestor of nothing once the PR lands. A distinct value
+  // from `head` on purpose — a fixture where they were equal could not tell a
+  // stamp of the merge base from a stamp of the branch tip.
+  base: 'c'.repeat(40),
   upstream: 'b'.repeat(40),
   behind: false,
   detached: false,

@@ -388,9 +388,38 @@ export function syncProseManifest(manifest, documents, { retire, date, reason })
  * `upstream` and `behind` are recorded too because they are the difference
  * between "this tree was current" and "this tree predates a docs PR", and that
  * difference is exactly what a later reader cannot reconstruct from a SHA.
+ *
+ * `base` is recorded beside `head` rather than instead of it (#1482). Both are
+ * facts: `head` is the tree the author was looking at, `base` is the commit that
+ * tree was built on and therefore the one that survives the merge. Keeping only
+ * one of them would mean either a stamp that a squash-merge orphans on the way
+ * in, or a record that cannot name the tree a retirement was decided against —
+ * and the second is the claim this block exists to make checkable.
  */
-export function stampProvenance(manifest, { head, upstream, behind }) {
-  return { ...manifest, provenance: { head, upstream: upstream ?? null, behind: Boolean(behind) } };
+export function stampProvenance(manifest, { head, base, upstream, behind }) {
+  return {
+    ...manifest,
+    provenance: { head, base: base ?? null, upstream: upstream ?? null, behind: Boolean(behind) },
+  };
+}
+
+/**
+ * The warning for a stamp that cannot survive a merge, or null when it can.
+ *
+ * A tree with no merge base — no `origin/main`, or two unrelated histories — has
+ * no commit that is an ancestor of both sides, so the only stamp it can produce
+ * names a branch tip and is orphaned by the next squash-merge. That is not a
+ * defect in the tree, and refusing over it would break the case `--allow-stale`
+ * exists for, so this is a warning rather than a refusal: the write is allowed
+ * to proceed, and the author is told the cost before they commit it rather than
+ * discovering it as a red `main`.
+ */
+export function provenanceStampWarning(prov) {
+  if (!prov.usable || prov.head === null || prov.base !== null) return null;
+  return `This tree shares no commit with ${short(prov.upstream)}, so the manifest is being stamped with a branch tip.\n`
+    + 'That stamp is orphaned by the squash-merge that lands it, and the follow-up re-stamp it needs is a\n'
+    + 'red main in the window between the two merges. If there is a commit on both sides — merge or rebase\n'
+    + 'origin/main, then re-run — the stamp will name it instead and survive on its own.';
 }
 
 /**
@@ -399,6 +428,7 @@ export function stampProvenance(manifest, { head, upstream, behind }) {
  * @typedef {object} GitProvenance
  * @property {boolean} usable       A commit was identified and git answered.
  * @property {string|null} head     `HEAD`'s commit, or null.
+ * @property {string|null} base      The commit `HEAD` and `origin/main` last share, or null.
  * @property {string|null} upstream `origin/main`'s commit, or null when unresolvable.
  * @property {boolean} behind       `origin/main` is not an ancestor of `HEAD`.
  * @property {boolean} detached     `HEAD` is not on a branch.
@@ -430,7 +460,7 @@ export function gitProvenanceIn(dir, { docFiles = [], manifestPath = '' } = {}) 
   const head = git('rev-parse', 'HEAD');
   if (!head) {
     return {
-      usable: false, head: null, upstream: null, behind: false, detached: false, dirty: [],
+      usable: false, head: null, base: null, upstream: null, behind: false, detached: false, dirty: [],
       note: `${dir} is not a git working tree (or has no commits), so there is no tree to record provenance against.`,
     };
   }
@@ -446,6 +476,15 @@ export function gitProvenanceIn(dir, { docFiles = [], manifestPath = '' } = {}) 
   // still in my history?", where 128 means the checkout is shallow and failing
   // it would redden every CI run.
   const behind = upstream ? git('merge-base', '--is-ancestor', upstream, head) === null : false;
+  // The one commit both histories agree on (#1482), and the only stamp that
+  // survives whatever the merge does. `HEAD` is not: this repository
+  // squash-merges, so a stamp naming the branch tip is orphaned by the very
+  // merge that lands the prose it describes. `merge-base` is an ancestor of
+  // `HEAD` *and* of `origin/main`, and `main` only ever grows, so it is an
+  // ancestor of the merged result under a squash, a rebase-merge or a true
+  // merge. Null when the two histories share nothing, which is the degenerate
+  // case and is left null rather than substituted — see `provenanceStampRefusal`.
+  const base = upstream ? git('merge-base', head, upstream) : null;
   const branch = git('symbolic-ref', '--quiet', '--short', 'HEAD');
 
   const watched = new Set([...docFiles, ...(manifestPath ? [manifestPath] : [])]);
@@ -465,6 +504,7 @@ export function gitProvenanceIn(dir, { docFiles = [], manifestPath = '' } = {}) 
   return {
     usable: true,
     head,
+    base,
     upstream,
     behind,
     detached: branch === null,
@@ -559,22 +599,63 @@ export const short = (sha) => (sha ? String(sha).slice(0, 7) : '(unknown)');
  * write side. The write refuses; this *reports*, because at check time the
  * honest verdicts are three and not two:
  *
- *  - **verified** — the recorded commit is an ancestor of `HEAD`. The manifest
- *    was written from a tree this branch still contains.
- *  - **rewritten** — the commit is not an ancestor. A rebase, an amend, or a
- *    history rewrite happened after the sync, so the manifest describes prose
- *    this branch does not have. This is an error: re-run `--prose-sync`.
+ *  - **verified** — the commit the pin was built on is an ancestor of `HEAD`.
+ *    The tree the manifest was generated from is still in this history.
+ *  - **rewritten** — it is not an ancestor. The pin was generated from a tree
+ *    that is in neither this branch's history nor the branch it merges into,
+ *    so the retirement reasons in it are claims about a tree nothing here
+ *    carries. This is an error: re-run `--prose-sync`.
  *  - **unverifiable** — the commit object is not present, which is the normal
  *    state of a `fetch-depth: 1` CI checkout and of any `--check` on a fresh
  *    clone. Not an error, because a gate that goes red because a CI checkout
  *    is shallow is a gate people learn to ignore.
  *
+ * ## Which commit is the subject, and why the branch tip is not (#1482)
+ *
+ * The subject is `provenance.base` — the commit `HEAD` and `origin/main` last
+ * shared — and the branch tip is a fallback for a manifest stamped before the
+ * base was recorded. This is the whole fix, and the reason it is not a
+ * convenience is that the tip is *never* the right subject in this repository:
+ * `main` squash-merges, so a commit that is a branch tip at sync time is an
+ * interior commit of the squash and is an ancestor of nothing afterwards. The
+ * gate asked "is the tip still here?", the answer on the merged result was
+ * always no, and the consequence was a `main` that went red on every PR
+ * carrying prose — on a tree whose pinned paragraphs were all present, which
+ * the same run had just confirmed. #1482 hit that on five PRs and paid for it
+ * with an identical two-line follow-up each time.
+ *
+ * The base is the right subject because it is the newest commit both histories
+ * contain: an ancestor of the branch that ran the sync *and* of the branch it
+ * merges into, and `main` only ever grows. Whatever the merge does to the
+ * branch's own commits, it cannot unmake a commit `main` already had.
+ *
+ * ## What this gives up, stated plainly
+ *
+ * Asking about the base cannot distinguish a squash-merge from a rebase, and
+ * cannot see an amend — the branch tip is a strictly more sensitive witness, and
+ * on a rebased branch it would have fired where the base does not. That is the
+ * price, and it is a price in *diagnosis* rather than in coverage: a rebase can
+ * only change the tree by pulling in commits from the branch it lands on, and
+ * every paragraph those commits could have dropped is a pinned paragraph
+ * `proseDrift` reports as missing, by content hash, in the same run. The
+ * content question is answered from the documents; the commit question was only
+ * ever a proxy for it, and the proxy is what was wrong.
+ *
+ * The branch tip is still recorded, so the "was this tree rewritten" question
+ * can still be *asked* — of somebody holding the objects — and the `verified`
+ * detail says out loud when the tip is the one that is missing.
+ *
  * `ancestor` is injected rather than shelled out to so the caller decides what
  * "ancestor" costs to determine and this stays testable without a repository.
+ * A manifest with no `base` is judged on `head` alone, which is the pre-#1482
+ * behaviour and the conservative direction: it can report `rewritten` where the
+ * base would not.
  */
 export function proseProvenanceVerdict(manifest, { ancestor }) {
   const recorded = manifest.provenance?.head ?? null;
-  if (!recorded) {
+  const base = manifest.provenance?.base ?? null;
+  const subject = base ?? recorded;
+  if (!subject) {
     return {
       status: 'unrecorded',
       error: null,
@@ -582,14 +663,41 @@ export function proseProvenanceVerdict(manifest, { ancestor }) {
         + 'Run `npm run count:tools -- --prose-sync` to stamp it.',
     };
   }
-  const verdict = ancestor(recorded);
+  const verdict = ancestor(subject);
   if (verdict === true) {
-    return { status: 'verified', error: null, detail: `generated from ${short(recorded)}, still in this branch's history.` };
+    // The tip is asked about only for the sentence, never for the verdict: a
+    // missing tip is the normal state of this repository after a squash-merge,
+    // and saying so is worth one more `--is-ancestor` on a run that has already
+    // shelled out to git and booted the server.
+    //
+    // `ancestor` answers three ways, and the third is not silence. A checkout
+    // that cannot walk the history — a `fetch-depth: 1` CI clone, which is how
+    // this repository is always tested — cannot tell "the tip is gone" from "I
+    // have never heard of the tip", and returns null for both. Rendering that
+    // the same as "nothing was lost" is the failure this paragraph exists to
+    // prevent: `verified` then reads as if the branch tip were still reachable,
+    // which is exactly the claim the sentence was added to qualify. So the
+    // unknown is stated, and the tip is named in that statement too.
+    const tipKnown = base && recorded !== base;
+    const tipVerdict = tipKnown ? ancestor(recorded) : null;
+    return {
+      status: 'verified',
+      error: null,
+      detail: `generated from a tree on ${short(subject)}, still in this branch's history.`
+        + (tipVerdict === false
+          ? ` The branch tip it was generated from (${short(recorded)}) is not in this history, which is what a `
+            + 'squash-merge does to a branch; the prose it pinned is reconciled separately, by content.'
+          : tipVerdict === null && tipKnown
+            ? ` Whether the branch tip it was generated from (${short(recorded)}) is in this history could not be `
+              + 'determined here — a shallow checkout cannot walk back far enough to say — so nothing is claimed '
+              + 'about it either way.'
+            : ''),
+    };
   }
   if (verdict === false) {
     return {
       status: 'rewritten',
-      error: `this manifest was generated from ${short(recorded)}, which is not an ancestor of HEAD — the branch was rebased, amended, or rewritten after the sync, so the pin describes prose this tree does not have. `
+      error: `this manifest was generated from a tree on ${short(subject)}, which is not an ancestor of HEAD — this branch contains neither that commit nor the one the tree was built on, so the pin describes prose no tree here has carried. `
         + 'Re-run `npm run count:tools -- --prose-sync` against the current tree.',
       detail: '',
     };
@@ -597,7 +705,7 @@ export function proseProvenanceVerdict(manifest, { ancestor }) {
   return {
     status: 'unverifiable',
     error: null,
-    detail: `generated from ${short(recorded)}, whose object is not in this checkout, so ancestry cannot be checked. `
+    detail: `generated from ${short(subject)}, whose object is not in this checkout, so ancestry cannot be checked. `
       + 'This is expected on a shallow CI clone; it is not evidence either way.',
   };
 }

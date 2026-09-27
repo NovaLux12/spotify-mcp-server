@@ -371,7 +371,7 @@
         "label": "Changing or deleting prose needs --prose-sync. That comm…"
       },
       {
-        "hash": "71c8832aa6743c3b",
+        "hash": "121c441e39ca2ca3",
         "label": "A retirement reason is a claim about a tree, and --prose…"
       },
       {
@@ -5411,6 +5411,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "71c8832aa6743c3b",
+      "label": "A retirement reason is a claim about a tree, and --prose…",
+      "date": "2026-09-27",
+      "reason": "rewrote the 'rebase invalidates the stamp' bullet as the 'judged on the merge base, not your branch tip' bullet: #1482 makes --prose-sync record base beside head and judges the read on base, so a prose PR no longer orphans its own pin on a squash-merge. Same rule (the stamp must name a commit that survives), stated as what the merge does rather than as a per-PR chore."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "8b049ed815b08ef7",
       "label": "That is enough when the only thing that differs is insid…",
       "date": "2026-09-27",
@@ -5803,8 +5810,9 @@
     }
   ],
   "provenance": {
-    "head": "35f46f14668cf962651e0d0eacc54d03b4e1120e",
-    "upstream": "35f46f14668cf962651e0d0eacc54d03b4e1120e",
+    "head": "a5db461b29e539274d5745bad97732870b1cd20d",
+    "base": "b3a21944cbbfcee58a0834437b18f73bba509a19",
+    "upstream": "b3a21944cbbfcee58a0834437b18f73bba509a19",
     "behind": false
   }
 }
