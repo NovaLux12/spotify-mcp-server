@@ -321,18 +321,22 @@ describe('swarm3_library: album groupings over the shared fixture (#761)', () =>
     assert.match(text, /\(unknown\)\s+1/);
   });
 
-  it('saved_albums_by_label counts a missing label as its own bucket', async () => {
+  it('saved_albums_by_label buckets only albums that carry a label, and publishes the coverage', async () => {
     const h = harness(FIXTURE);
     const { payload, text } = await h.invoke('saved_albums_by_label', SCAN);
 
     assert.equal(payload.total_albums, 5);
-    assert.equal(payload.distinct_labels, 3);
     const byLabel = Object.fromEntries(
       (payload.items as unknown as Array<{ label: string; count: number }>).map((r) => [r.label, r.count]),
     );
-    assert.deepEqual(byLabel, { 'Aurora Records': 3, 'Dust Records': 1, '(no label in payload)': 1 });
+    assert.deepEqual(byLabel, { 'Aurora Records': 3, 'Dust Records': 1 }, 'no placeholder bucket');
+    assert.equal(payload.distinct_labels, 2, 'the distinct count describes real labels, not a stand-in');
+    assert.equal(payload.albums_labelled, 4, 'coverage: how many albums actually reached a bucket');
+    assert.equal(payload.albums_without_label, 1, 'the rest are excluded, and said to be');
+    assert.equal(payload.albums_labelled + payload.albums_without_label, payload.total_albums, 'coverage adds up to the total');
     assert.equal((payload.items as unknown as Array<{ count: number }>)[0].count, 3, 'the biggest label ranks first');
-    assert.match(text, /Saved albums by label \(5 album\(s\), 3 distinct label\(s\)\)/);
+    assert.match(text, /Saved albums by label \(5 album\(s\), 2 distinct label\(s\)\)/);
+    assert.match(text, /grouped 4\/5 saved albums/, 'the prose states the coverage, not just the buckets');
   });
 
   it('saved_albums_by_type groups on album_type', async () => {

@@ -372,6 +372,12 @@ export interface UserProfile {
   display_name: string | null;
   uri: string;
   external_urls: { spotify: string };
+  // #639: Feb 2026 removed `email`, `country`, `product`, `followers` and
+  // `explicit_content` from `GET /me` (see `src/removed.ts` for the
+  // changelog citation). They are declared optional rather than deleted so a
+  // grandfathered pre-Nov-2024 registration that still sends one keeps
+  // type-checking at the call sites that read it under a guard — but a
+  // consumer must never supply a default for an absent one.
   email?: string | null;
   country?: string;
   product?: string;
@@ -412,9 +418,14 @@ export interface FollowedArtistsResponse {
 
 /**
  * Album row as listings and `/albums/{id}` return it: the simplified item
- * widened with label, copyrights, genres and the embedded track page. All four
- * are optional because the same row shape covers `/albums?ids=` (a requested
+ * widened with copyrights, genres and the embedded track page. Those are
+ * optional because the same row shape covers `/albums?ids=` (a requested
  * subset of fields) and the full album object.
+ *
+ * #639: `label` was in this widening and is no longer returned — Spotify's
+ * February 2026 changelog removed it from Album, and it is absent from
+ * `AlbumObject` in the current OpenAPI schema too. It stays declared so a
+ * grandfathered registration still type-checks, but no consumer may default it.
  */
 export interface SpotifyAlbumRow extends SpotifyAlbumItem {
   label?: string;
@@ -423,7 +434,14 @@ export interface SpotifyAlbumRow extends SpotifyAlbumItem {
   tracks?: { items: SpotifyTrackSimple[]; total: number };
 }
 
-/** `/artists/{id}/albums` row: the album row plus the release-group discriminator. */
+/**
+ * `/artists/{id}/albums` row: the album row plus the release-group
+ * discriminator.
+ *
+ * #639: `album_group` was removed from Album in February 2026. `album_type`
+ * — which the same payload still carries, and which `include_groups` filters
+ * on — is the surviving discriminator, so consumers group on that instead.
+ */
 export interface SpotifyArtistAlbumRow extends SpotifyAlbumRow {
   album_group?: string;
 }
@@ -491,7 +509,16 @@ export interface SpotifyPlaylistVisibilityRow extends SpotifyPlaylistWithImages 
   collaborative?: boolean;
 }
 
-/** `/me/top/artists` row: the full artist plus the follower and popularity counts. */
+/**
+ * `/me/top/artists` row: the full artist plus the follower and popularity
+ * counts.
+ *
+ * #639: both of those counts were removed from Artist in February 2026, so
+ * the widening no longer describes anything the API sends. They stay declared
+ * because the one consumer (`personalization.ts`) reads them behind a
+ * `typeof … === 'number'` guard and correctly omits an absent row — a real
+ * value on a grandfathered registration is still worth printing.
+ */
 export interface SpotifyArtistRow extends SpotifyArtistFull {
   followers?: { total: number };
   popularity?: number;

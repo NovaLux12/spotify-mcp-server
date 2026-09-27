@@ -80,7 +80,7 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
   // get_user_profile
   server.tool(
     'get_user_profile',
-    "Get any Spotify user's public profile (display name, follower count, profile image). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations",
+    "Get any Spotify user's public profile (display name, profile image). Removed by Spotify's February 2026 Web API changes — unavailable for newer app registrations. The `followers` field was separately removed from user profiles, so no follower count is reported",
     {
       user_id: spotifyId('user'),
       response_format: ResponseFormat,

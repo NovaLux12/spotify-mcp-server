@@ -558,7 +558,16 @@ test('a prompt argument the tool does not declare is reported (#670)', async () 
   assert.deepEqual(findUndeclaredPromptArgs(surface), []);
 });
 
-test('saved-shows resource falls back to "unknown publisher" when the field is absent (issues #78/#86; Feb 2026)', async () => {
+// #639: this previously asserted that a publisherless show is labelled
+// `unknown publisher`. That string is a stand-in press name — it reads
+// exactly like a show published by somebody called "unknown publisher" — and
+// in the tools that GROUP by publisher it became a census bucket holding every
+// show a current registration could read. What replaces it is an omission PLUS
+// a stated reason, so a reader who sees no byline knows the field is gone
+// rather than guessing this server dropped it. The second case is the control:
+// a grandfathered registration that still sends `publisher` keeps its byline,
+// because a real name is not the problem being fixed.
+test('saved-shows resource omits an absent publisher and says why, keeping a real one', async () => {
   const showItem = {
     added_at: '2026-02-02T00:00:00Z',
     show: {
@@ -566,10 +575,21 @@ test('saved-shows resource falls back to "unknown publisher" when the field is a
       description: '', total_episodes: 4,
     },
   };
+  const namedItem = {
+    added_at: '2026-02-03T00:00:00Z',
+    show: {
+      id: 'shw8', name: 'Named Show', uri: 'spotify:show:shw8',
+      description: '', total_episodes: 9, publisher: 'Wondery',
+    },
+  };
   const client = await connect(makeClientStub({
-    getAllPagesResponse: (path) => (path === '/me/shows' ? [showItem] : []),
+    getAllPagesResponse: (path) => (path === '/me/shows' ? [showItem, namedItem] : []),
   }));
 
   const shows = firstContent(await client.readResource({ uri: 'spotify://me/saved/shows' }));
-  assert.match(shows.text, /"Publisherless Show" — unknown publisher \(4 episodes/);
+  assert.doesNotMatch(shows.text, /unknown publisher/, 'no stand-in press name');
+  assert.match(shows.text, /"Publisherless Show" \(4 episodes/, 'the absent byline is simply absent');
+  assert.match(shows.text, /"Named Show" by Wondery \(9 episodes/, 'a real publisher is still printed');
+  assert.match(shows.text, /1 of 2 show\(s\) carry no byline/, 'the omission is accounted for');
+  assert.match(shows.text, /February 2026/, 'and the reason is the platform, not this server');
 });

@@ -184,6 +184,13 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   // #757: restore_library_snapshot documents the snapshot schema version it
   // now refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
+  // #639: find_show_by_publisher's description names the two keys that say
+  // the search did not run against publisher at all. `publisher_matches` is
+  // the count of real matches and is `null` — not 0 — when the facet is
+  // absent, and `publisher_facet_available` is how a caller tells those two
+  // apart. Both are keys the tool reports about its own result.
+  'publisher_facet_available',
+  'publisher_matches',
   // Cursors and caps a call reports back so the next call can continue.
   // #809: create_smart_playlist names the candidate-pool ceiling it reports.
   'pool_capped', 'pool_cap',
@@ -208,6 +215,10 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   'available_markets',
   'catalogue_total',
   'dir_bytes',
+  // #639: get_me's description names the profile fields Spotify removed in
+  // February 2026 so a caller does not go looking for one. Same category as
+  // `available_markets` above: a removed API field, never a tool.
+  'explicit_content',
   'exported_at',
   'followed_at',
   'fully_played',

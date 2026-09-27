@@ -20,6 +20,7 @@ import type {
 import { playlistItemTotal } from '../types/spotify.js';
 import { getConfig } from '../config.js';
 import { truncationAdvice, type TruncationCapabilities } from '../shaping.js';
+import { publisherAttribution, publisherByline } from '../removed.js';
 import { walkFollowedArtists } from '../tools/following.js';
 
 function formatDuration(ms: number): string {
@@ -560,9 +561,25 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     'Podcast shows saved in your library',
     (items) => {
       if (items.length === 0) return 'No saved shows.';
+      // #639: `publisher` was removed from Show payloads in Feb 2026, and this
+      // line used to fill the byline with the literal string
+      // `unknown publisher` — a stand-in press name that reads exactly like a
+      // show published by someone called "unknown publisher". The byline is
+      // now dropped instead, and the reason is stated ONCE below the list
+      // rather than repeated on every row: a reader who sees a show with no
+      // byline needs to know the field is gone, not guess that this server
+      // forgot it. A grandfathered registration that still sends `publisher`
+      // keeps its byline, because a real name is not the problem.
+      const withoutPublisher = items.filter(({ show }) => !publisherAttribution(show.publisher)).length;
       const lines = items.map(({ added_at, show }) =>
-        `  • "${show.name}" — ${show.publisher ?? 'unknown publisher'} (${show.total_episodes} episodes, added ${added_at.slice(0, 10)}) | ID: ${show.id}`,
+        `  • "${show.name}"${publisherByline(show.publisher)} (${show.total_episodes} episodes, added ${added_at.slice(0, 10)}) | ID: ${show.id}`,
       );
+      if (withoutPublisher > 0) {
+        lines.push(
+          `(${withoutPublisher} of ${items.length} show(s) carry no byline: Spotify removed \`publisher\` from show payloads in`
+            + ' February 2026, so it cannot be read. Shows that still report one are printed above.)',
+        );
+      }
       return `Saved shows (${items.length}):\n${lines.join('\n')}`;
     },
   );

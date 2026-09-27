@@ -1474,7 +1474,14 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       const missing = catalog.filter((a) => !savedIds.has(a.id));
       const capped = catalog.length >= cap;
       const breakdown = new Map<string, number>();
-      for (const a of missing) breakdown.set(a.album_group ?? a.album_type ?? 'unknown', (breakdown.get(a.album_group ?? a.album_type ?? 'unknown') ?? 0) + 1);
+      // #639: `album_group` was removed from Album in Feb 2026. `album_type`
+      // survives and is what this breakdown now groups on; the old terminal
+      // `'unknown'` was a fabricated bucket, and this map is published as
+      // `breakdown`, so it had to stop being a category nobody read.
+      for (const a of missing) {
+        const group = a.album_type?.trim() || '(untyped)';
+        breakdown.set(group, (breakdown.get(group) ?? 0) + 1);
+      }
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);
       const t = truncateItems(missing, maxResults);
       const payload = {
@@ -1488,7 +1495,7 @@ export function registerExhaust2MiscTools(server: McpServer, client: SpotifyClie
       lines.push(`Breakdown of missing: ${[...breakdown.entries()].map(([g, n]) => `${g}: ${n}`).join(', ') || 'nothing'}`);
       if (missing.length) {
         lines.push('', 'Missing releases:');
-        t.items.forEach((a) => lines.push(`  • [${a.album_group ?? a.album_type ?? '?'}] ${a.name} (${a.release_date ?? '?'})`));
+        t.items.forEach((a) => lines.push(`  • [${a.album_type?.trim() || '(untyped)'}] ${a.name} (${a.release_date ?? '?'})`));
         if (t.footer) lines.push(`(${t.footer})`);
       }
       return emit(rf, lines.join('\n'), payload);

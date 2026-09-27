@@ -1023,11 +1023,44 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the baseline so the derived ceiling is 0, let the startup gate fail loudly
   // with the real figure, then write that figure back. No ceiling was raised.
   manifestEntry('search', 'search', lazyModule('./search.js', 'registerSearchTools'), [1, 1821], { readOnlySafe: true }),
-  manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 26883], { readOnlySafe: true }),
-  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12521]),
+  // #639: descriptions only, same tool count in every one of these seven
+  // modules. Nothing here adds, removes or re-shapes a tool or an input
+  // property — the byte movement is entirely the tool descriptions, which now
+  // say what Spotify stopped sending instead of quietly reading it. `label`,
+  // `publisher` and `product` are gone from live payloads, and a description
+  // that tells a caller to read `get_me.product` or to group a census by
+  // `album.label` now points at a field that is always `undefined`.
+  //
+  // MEASURED, not estimated, and not hand-raised. Each of the seven baselines
+  // was first set to zero tools / 0 B, and the server's own startup budget gate
+  // then refused to serve tools/list — printing every module's real figure in
+  // its refusal message, which is where the right-hand column below comes from:
+  //
+  //     catalog          31 tools / 26883B -> 31 tools / 27222B  (+339B)
+  //     library          13 tools / 12521B -> 13 tools / 12814B  (+293B)
+  //     users             2 tools /  1613B ->  2 tools /  1696B  ( +83B)
+  //     swarm3discovery  24 tools / 22286B -> 24 tools / 22483B  (+197B)
+  //     swarm3bdiscovery 24 tools / 19952B -> 24 tools / 20147B  (+195B)
+  //     swarm3shows      24 tools / 21457B -> 24 tools / 22103B  (+646B)
+  //     swarm3library    24 tools / 18092B -> 24 tools / 18283B  (+191B)
+  //
+  // Every tool count is UNCHANGED, which is the point worth recording: this is
+  // a re-measure of the same surface, not a ceiling raise to let a breach pass.
+  // Total +1,944 B of description across the seven.
+  //
+  // Host-session payload impact: aggregate tools/list 606,353 B across 587
+  // tools, against the 640,000 B enforced cap — 14,647 B of headroom (2.36%),
+  // which is the tightest reading in the tree and is stated here rather than
+  // discovered later. No input schema changed, so the delta is entirely prose
+  // the caller reads once at registration. Re-measured after the rebase onto
+  // main, which had moved the aggregate under this branch: the per-module
+  // ceilings above are unchanged by it, the aggregate is not.
+
+  manifestEntry('catalog', 'catalog', lazyModule('./catalog.js', 'registerCatalogTools'), [31, 27222], { readOnlySafe: true }),
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 12814]),
   manifestEntry('playback', 'playback', lazyModule('./playback.js', 'registerPlaybackTools'), [16, 12077]),
   manifestEntry('following', 'following', lazyModule('./following.js', 'registerFollowingTools'), [3, 2502]),
-  manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1613]),
+  manifestEntry('users', 'users', lazyModule('./users.js', 'registerUsersTools'), [2, 1696]),
   manifestEntry('audiobooks', 'audiobooks', lazyModule('./audiobooks.js', 'registerAudiobookTools'), [4, 3715]),
   manifestEntry('audiobookcopilot', 'audiobooks', lazyModule('./audiobookcopilot.js', 'registerAudiobookCopilotTools'), [3, 1985]),
 
@@ -1226,15 +1259,15 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // hand-maintained baseline the startup gate treats as ground truth, and a
   // slightly-stale value usually still sits under its own derived ceiling, so
   // no gate would catch it. Read off the live registry after the rebase.
-  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 22286], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3discovery', 'swarm3discovery', lazyModule('./swarm3_discovery.js', 'registerSwarm3DiscoveryTools'), [24, 22483], { readOnlySafe: true, scopeKey: 'catalog' }),
   // #1224 +33B, same 24 tools: six tool descriptions now quote one
   // GET /albums/{id} per release rather than a batched /albums lookup.
-  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 19952], { readOnlySafe: true, scopeKey: 'catalog' }),
-  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 21457], { scopeKey: 'catalog' }),
+  manifestEntry('swarm3bdiscovery', 'swarm3bdiscovery', lazyModule('./swarm3b_discovery.js', 'registerSwarm3bDiscoveryTools'), [24, 20147], { readOnlySafe: true, scopeKey: 'catalog' }),
+  manifestEntry('swarm3shows', 'swarm3shows', lazyModule('./swarm3_shows.js', 'registerSwarm3ShowsTools'), [24, 22103], { scopeKey: 'catalog' }),
   manifestEntry('swarm3refs', 'swarm3refs', lazyModule('./swarm3_refs.js', 'registerSwarm3RefsTools'), [6, 4331], { readOnlySafe: true, scopeKey: 'catalog' }),
   // [24, 18951] measured post-#1004 (top_genre_census reads /artists/{id} now).
   manifestEntry('swarm3analytics', 'swarm3analytics', lazyModule('./swarm3_analytics.js', 'registerSwarm3AnalyticsTools'), [24, 18951], { readOnlySafe: true, scopeKey: 'personalization' }),
-  manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18092], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('swarm3library', 'swarm3library', lazyModule('./swarm3_library.js', 'registerSwarm3LibraryTools'), [24, 18283], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('swarm3playback', 'swarm3playback', lazyModule('./swarm3_playback.js', 'registerSwarm3PlaybackTools'), [24, 14043], { scopeKey: 'playback' }),
   manifestEntry('swarm3playlistops', 'swarm3playlistops', lazyModule('./swarm3_playlistops.js', 'registerSwarm3PlaylistopsTools'), [24, 31587], { scopeKey: 'playlists' }),
   manifestEntry('swarm3snapshots', 'swarm3snapshots', lazyModule('./swarm3_snapshots.js', 'registerSwarm3SnapshotsTools'), [24, 23449], { scopeKey: 'playlists' }),

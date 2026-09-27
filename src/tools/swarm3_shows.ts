@@ -14,8 +14,10 @@
  *   • No deprecated/removed endpoints (SPEC §9). Per issue #230, there is NO
  *     way to mark an episode as played via the API — mark_episode_played_plan
  *     is therefore a permanent, read-only PLAN tool.
- *   • Feb-2026 constraint: `publisher` is optional on show payloads; every
- *     consumer tolerates its absence ("(unknown publisher)").
+ *   • Feb-2026 constraint: `publisher` was REMOVED from show payloads, so every
+ *     consumer here reports absence as absence — `null` in structuredContent,
+ *     a dropped byline in prose, and an `available: false` + `reason` from the
+ *     tools that would otherwise group or match on it. See `src/removed.ts`.
  */
 import { z } from 'zod';
 import { capFor } from '../chunk.js';
@@ -23,6 +25,7 @@ import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
+import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 import { spotifyId, spotifyIdArray } from '../refs.js';
 import {
   DryRun,
@@ -163,9 +166,21 @@ const SearchOffset = z
   .optional()
   .describe('Catalogue rows to skip before the page (Spotify /search max offset 1000). Default 0');
 
-/** Publisher label tolerating the Feb-2026 removal of `publisher` from payloads. */
-function publisherOf(show: SpotifyShowSimple | SpotifyShowFull): string {
-  return show.publisher?.trim() || '(unknown publisher)';
+/**
+ * The show's publisher, or `null` when the payload carried none.
+ *
+ * #639: this used to return the string `'(unknown publisher)'`, which is fine
+ * in prose and wrong everywhere else. In `structuredContent` a sentinel string
+ * is indistinguishable from a publisher actually named "unknown publisher", and
+ * in the tools that GROUP by publisher it stopped being a token and became the
+ * group key. `null` is the honest absence marker — the same one
+ * `exhaust2_catalog.ts` already used for this field — and a caller that wants
+ * a display token composes its own.
+ */
+function publisherOf(show: SpotifyShowSimple | SpotifyShowFull | undefined | null): string | null {
+  if (!show) return null;
+  const name = typeof show.publisher === 'string' ? show.publisher.trim() : '';
+  return name || null;
 }
 
 /** Page the saved-shows shelf (fetch-all cap). */
@@ -466,7 +481,10 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       if (rf === 'json') return shape(rf, '', payload);
       return shape(rf, [
         `"${show.name}" (${show.id})`,
-        `  Publisher: ${publisherOf(show)} · ${show.total_episodes ?? '?'} episode(s) · ${show.explicit ? 'explicit' : 'clean'}`,
+        // #639: the `Publisher:` line is dropped rather than filled with a
+        // stand-in, so nothing on this card asserts a publisher nobody read.
+        ...(publisherOf(show) ? [`  Publisher: ${publisherOf(show)}`] : []),
+        `  ${show.total_episodes ?? '?'} episode(s) · ${show.explicit ? 'explicit' : 'clean'}`,
         `  Media: ${show.media_type ?? '?'} · Languages: ${(show.languages ?? []).join(', ') || '?'}`,
         `  ${cleanText(show.description).slice(0, 300) || '(no description)'}`,
       ].join('\n'), payload);
@@ -549,7 +567,9 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   server.tool(
     'saved_shows_publisher_census',
     'Count your saved shows by publisher and rank the biggest presses in your subscriptions — '
-      + "read-only census over the whole shelf. Defaults to top 10 publishers, 'concise' prose.",
+      + "read-only census over the whole shelf. Defaults to top 10 publishers, 'concise' prose. "
+      + 'Spotify removed `publisher` from show payloads in February 2026, so on a current registration this '
+      + 'reports `available: false` with a reason rather than reporting one publisher that does not exist.',
     {
       top_n: z.number().int().min(1).optional().describe('Publishers to list. Default 10'),
       ...sharedListFieldsShow(),
@@ -557,15 +577,36 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const rf = args.response_format;
       const rows = await fetchSavedShows(client);
+      // #639: `publisher` was removed from Show in Feb 2026, so
+      // `publisherOf(r.show)` returned the literal '(unknown publisher)' for
+      // every row and the census published one publisher, with show and
+      // episode counts, as a finding. Rows with no publisher are in no bucket.
+      const withShow = rows.filter((r) => r.show);
+      const { groups: byPubRaw, reported, missing } = facetGroups(withShow, (r) => r.show?.publisher);
+      if (byPubRaw.size === 0) {
+        const reason = facetUnavailableReason('publisher', 'show');
+        return shape(
+          rf,
+          `Publisher census across ${withShow.length} saved show(s): unavailable. ${reason}`,
+          {
+            ok: true,
+            saved_shows: rows.length,
+            shows_with_publisher: reported,
+            shows_without_publisher: missing,
+            available: false,
+            reason,
+            distinct_publishers: 0,
+            publishers: [],
+          },
+        );
+      }
       const byPub = new Map<string, { shows: number; episodes: number; names: string[] }>();
-      for (const r of rows) {
-        if (!r.show) continue;
-        const pub = publisherOf(r.show);
-        const entry = byPub.get(pub) ?? { shows: 0, episodes: 0, names: [] };
-        entry.shows++;
-        entry.episodes += r.show.total_episodes ?? 0;
-        entry.names.push(r.show.name);
-        byPub.set(pub, entry);
+      for (const [pub, group] of byPubRaw) {
+        byPub.set(pub, {
+          shows: group.length,
+          episodes: group.reduce((n, r) => n + (r.show?.total_episodes ?? 0), 0),
+          names: group.map((r) => r.show?.name ?? ''),
+        });
       }
       const ranked = [...byPub.entries()]
         .map(([publisher, v]) => ({ publisher, ...v }))
@@ -574,10 +615,17 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const prose = [
         `Publisher census across ${rows.length} saved show(s), ${ranked.length} distinct publisher(s):`,
         ...top.map((p) => `  • ${p.publisher}: ${p.shows} show(s), ${p.episodes} eps — ${p.names.slice(0, 3).join('; ')}${p.names.length > 3 ? '; …' : ''}`),
+        ...(missing > 0
+          ? [`  (${facetCoverageNote(reported, withShow.length, 'saved show')} carries no publisher because Spotify removed the field; they are excluded, not filed under a placeholder publisher.)`]
+          : []),
       ].join('\n');
       return shape(rf, prose, {
         ok: true,
         saved_shows: rows.length,
+        // #639: coverage, so the per-publisher show counts are checkable
+        // against `saved_shows` instead of merely plausible.
+        shows_with_publisher: reported,
+        shows_without_publisher: missing,
         distinct_publishers: ranked.length,
         publishers: ranked,
       });
@@ -602,7 +650,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const now = Date.now();
       const cutoff = addDays(formatDateStamp(new Date(now)), -lookback);
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
-      const quiet: Array<{ id: string; name: string; publisher: string; latest_release: string | null; days_since_latest: number | null }> = [];
+      const quiet: Array<{ id: string; name: string; publisher: string | null; latest_release: string | null; days_since_latest: number | null }> = [];
       let checked = 0;
       for (const r of shows) {
         if (checked >= budget) break;
@@ -654,7 +702,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const now = Date.now();
       const cutoff = addDays(formatDateStamp(new Date(now)), -threshold);
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
-      const stale: Array<{ id: string; name: string; publisher: string; latest_release: string | null; days_since_latest: number | null }> = [];
+      const stale: Array<{ id: string; name: string; publisher: string | null; latest_release: string | null; days_since_latest: number | null }> = [];
       let checked = 0;
       for (const r of shows) {
         if (checked >= budget) break;
@@ -739,10 +787,12 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     async (args) => {
       const show = await client.get<SpotifyShowFull>(`/shows/${encodeURIComponent(args.show_id)}`);
       const name = show?.name ?? args.show_id;
-      const publisher = show ? publisherOf(show) : '?';
+      const publisher = publisherOf(show);
       if (isDry(args)) {
         return shape(args.response_format, describeDryRun('unsubscribe from show', `"${name}" (${args.show_id})`, [
-          `Remove "${name}" (${publisher}) from your saved shows`,
+          // #639: omit the parenthetical rather than print a stand-in
+          // publisher in a confirmation an operator is about to act on.
+          `Remove "${name}"${publisher ? ` (${publisher})` : ''} from your saved shows`,
         ]), {
           ok: true,
           dry_run: true,
@@ -753,7 +803,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       }
       // #638: `DELETE /me/shows` was removed; see subscribe_to_show.
       await client.delete(`/me/library?uris=spotify:show:${encodeURIComponent(args.show_id)}`);
-      return shape(args.response_format, `Removed "${name}" (${publisher}) from your saved shows.`, {
+      return shape(args.response_format, `Removed "${name}"${publisher ? ` (${publisher})` : ''} from your saved shows.`, {
         ok: true,
         dry_run: false,
         show_id: args.show_id,
@@ -1071,7 +1121,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const budget = args.max_shows ?? 30;
       const now = Date.now();
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
-      const calendar: Array<{ id: string; name: string; publisher: string; latest_release: string | null; cadence_days: number | null; next_expected: string | null; overdue_days: number | null }> = [];
+      const calendar: Array<{ id: string; name: string; publisher: string | null; latest_release: string | null; cadence_days: number | null; next_expected: string | null; overdue_days: number | null }> = [];
       let checked = 0;
       for (const r of shows) {
         if (checked >= budget) break;
@@ -1161,7 +1211,9 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
   server.tool(
     'publisher_portfolio',
     'Per-publisher portfolio across saved shows: show count, listed episode totals, and sampled '
-      + 'runtime of their recent episodes. Defaults to 20 show lookups and 10 recent episodes per show.',
+      + 'runtime of their recent episodes. Defaults to 20 show lookups and 10 recent episodes per show. '
+      + 'Spotify removed `publisher` from show payloads in February 2026, so on a current registration this '
+      + 'reports `available: false` with a reason rather than one fabricated publisher.',
     {
       eps_per_show: z.number().int().min(1).max(50).optional().describe('Recent episodes sampled per show for runtime. Default 10'),
       max_shows: z.number().int().min(1).max(200).optional().describe('Max per-show episode lookups (request budget). Default 20'),
@@ -1172,33 +1224,68 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
       const perShow = args.eps_per_show ?? 10;
       const budget = args.max_shows ?? 20;
       const shows = (await fetchSavedShows(client)).filter((r) => r.show?.id);
+      // #639: `publisher` was removed from Show in Feb 2026, so the old
+      // `publisherOf(r.show)` keyed every show under the literal
+      // '(unknown publisher)' and this portfolio published that one bucket
+      // with a show count, an episode total and a sampled runtime — the
+      // #803 shape, with a real runtime attached. A show with no publisher is
+      // in no bucket; the loop below still samples its episodes so the
+      // `shows_without_publisher` count is honest about what was read.
       const byPub = new Map<string, { shows: string[]; listed_episodes: number; sampled_ms: number; sampled_eps: number }>();
       const failedShows: Array<{ id: string; name: string; error: string }> = [];
       let checked = 0;
+      let withoutPublisher = 0;
       for (const r of shows) {
         if (checked >= budget) break;
         checked++;
-        const pub = publisherOf(r.show);
-        try {
-          const eps = await latestShowEpisodes(client, r.show.id, perShow);
-          const entry = byPub.get(pub) ?? { shows: [], listed_episodes: 0, sampled_ms: 0, sampled_eps: 0 };
-          entry.shows.push(r.show.name);
-          entry.listed_episodes += r.show.total_episodes ?? 0;
-          for (const ep of eps) {
-            entry.sampled_ms += ep.duration_ms ?? 0;
-            entry.sampled_eps++;
+        const pub = (r.show?.publisher ?? '').trim();
+        if (pub) {
+          try {
+            const eps = await latestShowEpisodes(client, r.show.id, perShow);
+            const entry = byPub.get(pub) ?? { shows: [], listed_episodes: 0, sampled_ms: 0, sampled_eps: 0 };
+            entry.shows.push(r.show.name);
+            entry.listed_episodes += r.show.total_episodes ?? 0;
+            for (const ep of eps) {
+              entry.sampled_ms += ep.duration_ms ?? 0;
+              entry.sampled_eps++;
+            }
+            byPub.set(pub, entry);
+          } catch (error) {
+            failedShows.push({
+              id: r.show.id,
+              name: r.show.name,
+              error: error instanceof Error ? error.message : String(error),
+            });
           }
-          byPub.set(pub, entry);
-        } catch (error) {
-          failedShows.push({
-            id: r.show.id,
-            name: r.show.name,
-            error: error instanceof Error ? error.message : String(error),
-          });
+        } else {
+          withoutPublisher++;
         }
       }
       const showsSkipped = shows.length - checked;
       const showsScanned = checked - failedShows.length;
+      if (byPub.size === 0) {
+        const reason = facetUnavailableReason('publisher', 'show');
+        return shape(
+          rf,
+          `Publisher portfolio — shows_checked: ${checked} of ${shows.length}: unavailable. ${reason}`,
+          {
+            ok: true,
+            saved_shows: shows.length,
+            shows_total: shows.length,
+            shows_checked: checked,
+            shows_scanned: showsScanned,
+            shows_skipped: showsSkipped,
+            budget_truncated: showsSkipped > 0,
+            max_shows: budget,
+            shows_failed: failedShows.length,
+            failed_shows: failedShows,
+            shows_without_publisher: withoutPublisher,
+            available: false,
+            reason,
+            portfolio: [],
+          },
+        );
+      }
       const portfolio = [...byPub.entries()]
         .map(([publisher, v]) => ({
           publisher,
@@ -1215,6 +1302,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         `Publisher portfolio — shows_checked: ${checked} of ${shows.length}, shows_scanned: ${showsScanned}${showsSkipped > 0 ? `; ${showsSkipped} show(s) skipped by max_shows budget` : ''}${failedShows.length > 0 ? `; ${failedShows.length} show lookup(s) failed` : ''}; ${portfolio.length} publisher(s):`,
         ...view.items.map((p) => `  • ${p.publisher}: ${p.show_count} show(s), ${p.listed_episodes} listed eps, sampled runtime ${msToClock(p.sampled_runtime_ms)} (avg ${p.avg_episode_ms != null ? msToClock(p.avg_episode_ms) : '?'}/ep)`),
         view.footer ? `(${view.footer})` : '',
+        // #639: the budget/failure disclosures above are worth their care;
+        // the absent field gets the same.
+        withoutPublisher > 0
+          ? `  (${withoutPublisher} checked show(s) carry no publisher because Spotify removed the field; they are excluded, not filed under a placeholder publisher.)`
+          : '',
       ].filter(Boolean).join('\n');
       return shape(rf, prose, {
         ok: true,
@@ -1228,6 +1320,7 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         max_shows: budget,
         shows_failed: failedShows.length,
         failed_shows: failedShows,
+        shows_without_publisher: withoutPublisher,
         portfolio: view.items,
       });
     },
@@ -1329,7 +1422,10 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
     'Search the catalog and match shows whose PUBLISHER (network) matches your query — the '
       + 'missing publisher facet on show search. Reads ONE catalogue page of 1-10 rows (Feb-2026 '
       + '/search cap; default 10) and reports catalogue_total plus scan_complete, so a publisher '
-      + 'whose shows fall outside the scanned page is reported as a partial answer, not as absent.',
+      + 'whose shows fall outside the scanned page is reported as a partial answer, not as absent. '
+      + 'Spotify removed `publisher` from show payloads in February 2026, so on a current registration '
+      + 'no publisher is ever matched: the tool falls back to name matching only, reports '
+      + '`publisher_facet_available: false` and `publisher_matches: null` (not 0), and says so in prose.',
     {
       query: z.string().describe('Publisher or network name, e.g. "Wondery"'),
       market: MARKET_CODE.optional().describe('ISO 3166-1 alpha-2 market for the search, e.g. \'US\''),
@@ -1369,20 +1465,40 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
             ? `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — complete page.`
             : `Scan: ${rowsExamined} of ${catalogueTotal} catalogue row(s) examined (limit ${pageLimit}, offset ${offset}) — PARTIAL page, a publisher whose shows fall outside it reads as absent; raise offset to scan deeper.`;
       const q = args.query.toLowerCase();
-      const publisherMatches = all.filter((s) => publisherOf(s).toLowerCase().includes(q));
+      // #639: `publisher` was removed from Show in Feb 2026. The old predicate
+      // was `publisherOf(s).toLowerCase().includes(q)` where `publisherOf`
+      // returns the CONSTANT '(unknown publisher)' for every row on a current
+      // registration, which failed in two directions at once: a real query
+      // ("Wondery") matched nothing and was reported as `0 publisher match(es)`
+      // with a scan note blaming page coverage, while a query of "unknown" or
+      // "publisher" matched EVERY row and stamped each one `publisher_match:
+      // true`. A facet the payload does not carry is not searched.
+      const { reported: publisherReported } = facetGroups(all, (s) => s.publisher);
+      const publisherFacetAvailable = publisherReported > 0;
+      const publisherFacetReason = facetUnavailableReason('publisher', 'show');
+      const publisherMatches = publisherFacetAvailable
+        ? all.filter((s) => (s.publisher ?? '').toLowerCase().includes(q))
+        : [];
       const nameMatches = all.filter((s) => !publisherMatches.includes(s) && s.name.toLowerCase().includes(q));
       const view = truncateItems([...publisherMatches, ...nameMatches], resolveMaxResults(args.max_results, getConfig().maxItems));
       const rows = view.items.map((s) => ({
         id: s.id,
         name: s.name,
-        publisher: publisherOf(s),
+        publisher: s.publisher ?? null,
         total_episodes: s.total_episodes ?? null,
         publisher_match: publisherMatches.includes(s),
       }));
       const prose = [
-        `Shows for "${args.query}": ${publisherMatches.length} publisher match(es), ${nameMatches.length} name-only match(es) in the scanned page.`,
-        ...rows.map((r) => `  ${r.publisher_match ? '★' : '·'} ${r.name} — ${r.publisher} · ${r.total_episodes ?? '?'} eps`),
-        '(★ = publisher match)',
+        publisherFacetAvailable
+          ? `Shows for "${args.query}": ${publisherMatches.length} publisher match(es), ${nameMatches.length} name-only match(es) in the scanned page.`
+          : `Shows for "${args.query}": 0 publisher match(es), ${nameMatches.length} name-only match(es) in the scanned page.`,
+        // When the facet is gone the zero is not a searched answer, and the
+        // scan note below must not be read as the reason for it.
+        ...(publisherFacetAvailable
+          ? []
+          : [`Publisher matching UNAVAILABLE: ${publisherFacetReason} The 0 above is "not searched", not "none found", and the scan note below is about page coverage only.`]),
+        ...rows.map((r) => `  ${r.publisher_match ? '★' : '·'} ${r.name} — ${r.publisher ?? 'no publisher in payload'} · ${r.total_episodes ?? '?'} eps`),
+        ...(publisherFacetAvailable ? ['(★ = publisher match)'] : []),
         scanNote,
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n');
@@ -1396,7 +1512,11 @@ export function registerSwarm3ShowsTools(server: McpServer, client: SpotifyClien
         catalogue_total: catalogueTotal,
         scan_complete: scanComplete,
         truncated: view.truncated,
-        publisher_matches: publisherMatches.length,
+        // #639: `null`, not `0`, when the facet was not searched — a zero here
+        // is indistinguishable from "this publisher publishes none of these".
+        publisher_matches: publisherFacetAvailable ? publisherMatches.length : null,
+        publisher_facet_available: publisherFacetAvailable,
+        ...(publisherFacetAvailable ? {} : { reason: publisherFacetReason }),
         shows: rows,
       });
     },

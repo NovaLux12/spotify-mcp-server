@@ -7,6 +7,7 @@ import type {
   SpotifyPlaylistSimple,
   SpotifySearchResults,
 } from '../types/spotify.js';
+import { publisherAttribution, publisherByline } from '../removed.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -219,7 +220,7 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
       const shows = sectionItems(all, 'shows');
       if (shows) {
         emit('SHOWS', { items: shows.items, total: shows.total }, (s) =>
-          `"${s.name}" by ${s.publisher ?? 'unknown publisher'} (${s.total_episodes} episodes) | URI: ${s.uri}`,
+          `"${s.name}"${publisherByline(s.publisher)} (${s.total_episodes} episodes) | URI: ${s.uri}`,
         );
       }
 
@@ -234,7 +235,8 @@ export function registerSearchTools(server: McpServer, client: SpotifyClient): v
       if (audiobooks) {
         emit('AUDIOBOOKS', { items: audiobooks.items, total: audiobooks.total }, (ab) => {
           const authors = ab.authors.map((a) => a.name).join(', ');
-          return `"${ab.name}" by ${authors} (${ab.publisher ?? 'unknown publisher'}, ${ab.total_chapters} chapters) | URI: ${ab.uri}`;
+          const publisher = publisherAttribution(ab.publisher);
+          return `"${ab.name}" by ${authors} (${publisher ? `${publisher}, ` : ''}${ab.total_chapters} chapters) | URI: ${ab.uri}`;
         });
       }
 

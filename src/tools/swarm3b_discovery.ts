@@ -4,9 +4,12 @@
  *
  * 24 read-only tools in three families:
  *   1. Artist-catalog exploration — discography overviews, release timelines,
- *      era maps, release-type breakdowns, label attribution, decade spreads,
- *      name-pattern detectors (reissues, live albums) and full-text release
- *      search.
+ *      era maps, release-type breakdowns, decade spreads, name-pattern
+ *      detectors (reissues, live albums) and full-text release search. The two
+ *      label tools are here too, but see the Feb-2026 note below: `label` is
+ *      gone from album payloads, so both answer `available: false` with a
+ *      reason on a current registration and only do real work on one created
+ *      before November 2024.
  *   2. Album-level deep dives — track exploration with cross-album duplicate
  *      detection, side-A openers, deep-cut heuristics, B-side detectors,
  *      runtime profiles, release-origin lookups and anniversary checks.
@@ -16,6 +19,9 @@
  *
  * Everything is computed client-side from allowed read endpoints only; no
  * deprecated surfaces (SPEC §9), no popularity/follower fields anywhere.
+ * `album_group` and `label` are also gone (Feb 2026); where a tool would group
+ * on either, it groups only the rows that carry one and publishes the coverage.
+ * See `src/removed.ts`.
  * NOTE: `artist_discography_timeline` already exists in exhaust2_catalog.ts
  * (#337) — this slice deliberately does NOT re-register that name.
  */
@@ -45,6 +51,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
+import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE, fetchAlbumsPerId, type PerIdUnresolved } from './catalog.js';
 
 // ---------------------------------------------------------------------------
@@ -249,12 +256,6 @@ function unreadableNote(unresolved: readonly PerIdUnresolved[]): string {
 /** Full track listing for one album via /albums/{id}/tracks (walks all pages). */
 async function albumTracksFull(client: SpotifyClient, albumId: string): Promise<SpotifyTrackSimple[]> {
   return client.getAllPages<SpotifyTrackSimple>(`/albums/${encodeURIComponent(albumId)}/tracks`, { limit: '50' });
-}
-
-/** Label string from an album payload, with a stable fallback. */
-function labelOf(album: AlbumWithMeta): string {
-  const raw = (album.label ?? '').trim();
-  return raw.length > 0 ? raw : '(unknown label)';
 }
 
 // ---------------------------------------------------------------------------
@@ -564,7 +565,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
   // ------------------------------------------------------------------ 8
   server.tool(
     'label_discography_explorer',
-    'Group an artist\'s albums and singles by record label (via per-id /albums/{id} payloads) and rank labels by release count with year ranges. Quota: paginated walk + 1 GET /albums/{id} per release.',
+    'Group an artist\'s albums and singles by record label (via per-id /albums/{id} payloads) and rank labels by release count with year ranges. Spotify removed `label` from album payloads in February 2026, so on a current registration this reports `available: false` with a reason rather than collapsing every release under a placeholder. Quota: paginated walk + 1 GET /albums/{id} per release.',
     {
       artist_id: spotifyId('artist').describe('Spotify artist ID, URI, or URL'),
       include_groups: IncludeGroups,
@@ -575,11 +576,29 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const rf = args.response_format;
       const albums = await artistAlbums(client, args.artist_id, args.include_groups ?? 'album,single', fetchAllCap());
       const { items: metas, unresolved: labelUnresolved } = await fetchAlbumBatches(client, albums.map((a) => a.id));
+      // #639: `label` was removed from Album in Feb 2026, so the old
+      // `labelOf(m) ?? '(unknown label)'` collapsed every release into one
+      // bucket and ranked it. A release with no value is in no bucket now.
+      const { groups: labelled, reported, missing } = facetGroups(metas, (m) => m.label);
+      if (labelled.size === 0) {
+        const reason = facetUnavailableReason('label', 'album');
+        return emit(
+          rf,
+          `Labels across ${metas.length} release(s): unavailable. ${reason}`,
+          listStructuredContent([], paginationInfo({ total: 0, returned: 0 }), {
+            artist_id: args.artist_id,
+            releases_grouped: metas.length,
+            releases_labelled: reported,
+            releases_without_label: missing,
+            album_unresolved: labelUnresolved,
+            available: false,
+            reason,
+          }),
+        );
+      }
       const byLabel = new Map<string, Array<{ name: string; year: number | null; id: string }>>();
-      for (const m of metas) {
-        const label = labelOf(m);
-        if (!byLabel.has(label)) byLabel.set(label, []);
-        byLabel.get(label)!.push({ name: m.name, year: yearOf(m.release_date), id: m.id });
+      for (const [label, group] of labelled) {
+        byLabel.set(label, group.map((m) => ({ name: m.name, year: yearOf(m.release_date), id: m.id })));
       }
       const rows = [...byLabel.entries()]
         .map(([label, items]) => ({
@@ -594,14 +613,22 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       const trunc = truncateItems(rows, cap);
       const labelNote = unreadableNote(labelUnresolved);
       const prose = [
-        `Labels across ${metas.length} releases${labelNote ? ` (${labelNote} — excluded, not counted as "(unknown label)")` : ''}:`,
+        `Labels across ${metas.length} releases${labelNote ? ` (${labelNote} — excluded, and not counted as an unlabelled release)` : ''}:`,
         '',
         ...trunc.items.map((r) => `${r.label}: ${r.count} release(s), ${r.first_year === 9999 ? '????' : r.first_year}–${r.latest_year || '????'} · e.g. ${r.samples.join(', ')}`),
         trunc.footer ? `\n(${trunc.footer})` : '',
+        // #639: say how much of the discography the facet actually reached.
+        missing > 0 ? `\n(${facetCoverageNote(reported, metas.length, 'release')} carry no label because Spotify removed the field; they are excluded, not filed under a placeholder.)` : '',
       ].join('\n');
       const payload = listStructuredContent(trunc.items, paginationInfo({
         total: trunc.total, returned: trunc.returned,
-      }), { artist_id: args.artist_id, releases_grouped: metas.length, album_unresolved: labelUnresolved });
+      }), {
+        artist_id: args.artist_id,
+        releases_grouped: metas.length,
+        releases_labelled: reported,
+        releases_without_label: missing,
+        album_unresolved: labelUnresolved,
+      });
       return emit(rf, prose, payload);
     },
   );

@@ -416,7 +416,10 @@ export function registerArtistWatchTools(server: McpServer, client: SpotifyClien
         return { content: [{ type: 'text', text: `Resolved "${args.query}" → artist ID: ${id} | URI: spotify:artist:${id}` }], structuredContent: { id, uri: `spotify:artist:${id}` } };
       }
       const limit = args.limit ?? 5;
-      const data = await client.get<{ artists: { items: Array<{ id: string; name: string; uri: string; genres?: string[]; popularity?: number }>; total: number } }>('/search', {
+      // #639: no `popularity` in this inline row type — Spotify removed it from
+      // Artist in Feb 2026, and this call site never read it, so declaring it
+      // described a field the API stopped sending. `genres` likewise.
+      const data = await client.get<{ artists: { items: Array<{ id: string; name: string; uri: string }>; total: number } }>('/search', {
         q: args.query,
         type: 'artist',
         limit: String(limit),
