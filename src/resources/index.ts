@@ -295,13 +295,28 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
   // so bare requests hit the fixed entry and `?…` requests hit the twin.
   // Both share one renderer; `wantsJson` picks prose vs raw JSON.
 
-  /** Register `render` at `uri` and at its `?format=json` template twin. */
+  /**
+   * Register `render` at `uri` and at its `?format=json` template twin.
+   *
+   * `params` is a list of `[name, doc]` pairs rather than bare names, so the
+   * bound, default and valid values of every parameter are stated once in the
+   * registry and reach all three registered entries. #883's lens applies to
+   * resources for the same reason it applies to tools: these parameters are
+   * where a natural-language request becomes a number, and this read
+   * *silently* normalises rather than failing. `?limit=999` clamps to 50 and
+   * `?time_range=all_time` falls back to `medium_term` — a caller that guessed
+   * the bound gets a shorter window than it asked for, or the wrong window
+   * entirely, and nothing in the response says the request was rewritten. The
+   * number is the only warning, and a number is not a warning. So the range,
+   * the default and the legal values of an enum are stated in the description
+   * the caller reads before building the URI.
+   */
   const registerResourcePair = (
     name: string,
     uri: string,
     description: string,
     render: (url: URL) => Promise<ResourceContents>,
-    params?: readonly string[],
+    params?: readonly (readonly [string, string])[],
   ): void => {
     const renderWithApiErrors = async (url: URL): Promise<ResourceContents> => {
       try {
@@ -321,13 +336,14 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     // description, and a host reading the template entry sees only that one —
     // a parameter set documented solely on the bare entry does not reach the
     // reader who is about to build a URI with it.
-    const suffix = params && params.length > 0 ? ` Parameters: ?${params.join(', ?')}.` : '';
+    const suffix =
+      params && params.length > 0 ? ` Parameters: ${params.map(([p, doc]) => `?${p} (${doc})`).join(', ')}.` : '';
     const jsonNote = ' (?format=json returns raw JSON)';
     server.resource(name, uri, { description: `${description}${suffix}`, mimeType: 'text/plain' }, renderWithApiErrors);
     server.resource(
       `${name}-query`,
       new ResourceTemplate(
-        `${uri}${params && params.length > 0 ? `{?format,${params.join(',')}}` : '{?format}'}`,
+        `${uri}${params && params.length > 0 ? `{?format,${params.map(([p]) => p).join(',')}}` : '{?format}'}`,
         { list: undefined },
       ),
       {
@@ -388,6 +404,16 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     const raw = url.searchParams.get('time_range');
     return raw && TIME_RANGES.has(raw) ? raw : 'medium_term';
   };
+
+  // #603/#883: the parameter contract, stated once. These strings are not
+  // decoration — they are the same bounds `intParam` and `timeRangeParam`
+  // enforce a few lines above, written down so a caller can read the limit
+  // instead of inferring it from a silently-clamped response. If a bound moves,
+  // move it here and the registered description follows.
+  const LIMIT_DOC = '1-50, default 20; values outside the range are clamped';
+  const OFFSET_DOC = 'zero-based, default 0';
+  const TIME_RANGE_DOC = 'long_term | medium_term | short_term, default medium_term; any other value reads medium_term';
+  const CURSOR_DOC = 'Unix epoch milliseconds';
 
   // spotify://me — current user profile
   registerResourcePair(
@@ -536,7 +562,11 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       }
       return text(uri, lines.join('\n'));
     },
-    ['time_range', 'limit', 'offset'],
+    [
+      ['time_range', TIME_RANGE_DOC],
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ],
   );
 
   // spotify://me/top/artists — top artists, windowed by query parameters (#603).
@@ -573,7 +603,11 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       }
       return text(uri, lines.join('\n'));
     },
-    ['time_range', 'limit', 'offset'],
+    [
+      ['time_range', TIME_RANGE_DOC],
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ],
   );
 
   // spotify://me/recently-played — recently played, windowed by query parameters
@@ -631,7 +665,11 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
       }
       return text('spotify://me/recently-played', lines.join('\n'));
     },
-    ['limit', 'after', 'before'],
+    [
+      ['limit', LIMIT_DOC],
+      ['after', `${CURSOR_DOC}; page further back`],
+      ['before', `${CURSOR_DOC}; page forward`],
+    ],
   );
 
   // spotify://me/playlists — all user playlists
@@ -747,7 +785,10 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         }
         return text(uri, withCapFooter(uri, renderProse(walk.items, `${collection} (${walk.items.length}):`), disclosure, cap));
       },
-      ['limit', 'offset'],
+      [
+        ['limit', LIMIT_DOC],
+        ['offset', OFFSET_DOC],
+      ],
     );
   };
 
@@ -853,7 +894,7 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
     };
     // #603: same rule as registerResourcePair — the parameter set and the
     // ?format=json twin are named on each entry, not only on the bare one.
-    const paramNote = ' Parameters: ?offset, ?limit.';
+    const paramNote = ` Parameters: ?offset (${OFFSET_DOC}), ?limit (${LIMIT_DOC}).`;
     const jsonNote = ' (?format=json returns raw JSON)';
     server.resource('saved-tracks', uri, { description: `Tracks saved in your library, paginated via ?offset&limit ('?format=json' returns raw paged object)${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
     server.resource('saved-tracks-query', new ResourceTemplate(`${uri}{?format,offset,limit}`, { list: undefined }), { description: `Query-string variant of '${uri}'${jsonNote}${paramNote}`, mimeType: 'text/plain' }, async (u: URL) => render(u));
@@ -963,7 +1004,10 @@ export function registerResources(server: McpServer, client: SpotifyClient): voi
         withCapFooter(uri, `Saved audiobooks (${items.length}):\n${renderRows(items).join('\n')}`, disclosure, cap),
       );
     };
-    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render, ['limit', 'offset']);
+    registerResourcePair('saved-audiobooks', uri, "Audiobooks saved in your library ('?format=json' returns the raw items)", render, [
+      ['limit', LIMIT_DOC],
+      ['offset', OFFSET_DOC],
+    ]);
   })();
 
   // spotify://playlist/{id}/tracks — templated resource (#59): hosts that

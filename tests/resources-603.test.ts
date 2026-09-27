@@ -741,6 +741,66 @@ test('each new resource declares its format twin and its parameter set in its de
   }
 });
 
+test('a bounded parameter states its bound, not just its name (#603, #883)', async () => {
+  const { client } = makeClientStub();
+  const mcp = await connect(client);
+
+  const described = [
+    ...(await mcp.listResources()).resources,
+    ...(await mcp.listResourceTemplates()).resourceTemplates,
+  ].map((e) => ({ uri: 'uri' in e ? e.uri : e.uriTemplate, description: e.description ?? '' }));
+
+  // A parameter named without its bound is the #883 failure on the resource
+  // surface. These reads NORMALISE rather than fail: `?limit=999` clamps to 50
+  // and `?time_range=all_time` silently reads medium_term. A caller that
+  // guessed the bound gets a different window than it asked for and no error
+  // says so — so the bound has to be readable before the URI is built.
+  //
+  // The `[^)]*` guards are what make this test able to fail: a bare
+  // `?limit` followed by an unrelated parenthetical elsewhere in the sentence
+  // would otherwise satisfy a naive /\?limit/ match, and the whole assertion
+  // would be decoration.
+  const claims: readonly [string, RegExp][] = [
+    ['?limit', /\?limit \(1-50, default 20/],
+    ['?offset', /\?offset \(zero-based, default 0/],
+    ['?time_range', /\?time_range \(long_term \| medium_term \| short_term/],
+    ['?after', /\?after \(Unix epoch milliseconds/],
+    ['?before', /\?before \(Unix epoch milliseconds/],
+  ];
+
+  for (const uri of [
+    'spotify://me/top/tracks',
+    'spotify://me/top/tracks{+qs}',
+    'spotify://me/top/artists',
+    'spotify://me/top/artists{+qs}',
+    'spotify://me/recently-played',
+    'spotify://me/recently-played{+qs}',
+    'spotify://me/saved/albums',
+    'spotify://me/saved/albums{+qs}',
+    'spotify://me/saved/tracks',
+    'spotify://me/saved/tracks{+qs}',
+  ]) {
+    const entry = described.find((d) => d.uri === uri);
+    assert.ok(entry, `no listing entry for ${uri}`);
+    for (const [param, bound] of claims) {
+      // Only assert a bound for a parameter this entry actually advertises.
+      if (!entry.description.includes(param)) continue;
+      assert.match(
+        entry.description,
+        bound,
+        `${uri} advertises ${param} without stating its bound`,
+      );
+    }
+  }
+
+  // And the enum resource must not merely list a parameter name: an
+  // unrecognised window is rewritten to medium_term, so the legal values and
+  // the fallback are both load-bearing.
+  const topTracks = described.find((d) => d.uri === 'spotify://me/top/tracks');
+  assert.match(topTracks!.description, /default medium_term/);
+  assert.match(topTracks!.description, /any other value reads medium_term/);
+});
+
 test('an unrecognised query parameter still routes, via the {+qs} catch-all (#603)', async () => {
   const { client } = makeClientStub({
     getResponse: (path) => (path === '/me/top/tracks' ? topTracksPage(20) : undefined),
