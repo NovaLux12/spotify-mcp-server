@@ -15,7 +15,7 @@
  *
  * Red against the pre-fix tree (origin/main @ cfa13b5, verified by stashing
  * nothing — the assertions were run against a checkout of that commit):
- *   - #1005 `playlist-modify-private` still exposed pin_playlist (raw 403);
+ *   - #1005 `playlist-modify-private` still exposed the follow pair (raw 403);
  *   - #1005 `user-library-modify` / `user-follow-modify` hid a tool the
  *     endpoint authorises (unknown-tool error for a valid call);
  *   - #1009 a read-only grant exposed taste_to_playlist;
@@ -63,17 +63,24 @@ const TASTE_READ_TOOLS = [
   'taste_obsession_ladder',
 ];
 
-describe('#1005 pin/unpin advertise the scopes /me/library actually accepts', () => {
+describe('#1005 follow/unfollow advertise the scopes /me/library actually accepts', () => {
   // PUT/DELETE /me/library authorises user-library-modify, user-follow-modify
   // OR playlist-modify-public (AGENTS.md §1). Each of these three grants must
   // therefore SEE the pair; a per-tool `user-follow-modify` requirement would
   // hide a tool the caller's token authorises, which is worse than the 403
   // this gate exists to prevent.
+  // #1099: the pair is four registered names, not two — canonical plus the
+  // one-release deprecated aliases. The gate keys on the MODULE, so all four
+  // appear or none do; asserting only the canonical pair would have let a
+  // half-scoped alias ship advertised to a grant that cannot authorise it.
+  const FOLLOW_PAIR = ['follow_playlist', 'unfollow_playlist', 'pin_playlist', 'unpin_playlist'];
+
   for (const grant of ['playlist-modify-public', 'user-library-modify', 'user-follow-modify']) {
-    it(`exposes pin_playlist/unpin_playlist to a "${grant}"-only grant`, async () => {
+    it(`exposes the whole follow pair to a "${grant}"-only grant`, async () => {
       const names = await visibleTools({ scope: grant });
-      assert.ok(names.has('pin_playlist'), `pin_playlist hidden from a ${grant} grant, which authorises it`);
-      assert.ok(names.has('unpin_playlist'), `unpin_playlist hidden from a ${grant} grant, which authorises it`);
+      for (const name of FOLLOW_PAIR) {
+        assert.ok(names.has(name), `${name} hidden from a ${grant} grant, which authorises it`);
+      }
     });
   }
 
@@ -83,15 +90,17 @@ describe('#1005 pin/unpin advertise the scopes /me/library actually accepts', ()
     // every call. playlist_template_apply still needs the private scope and
     // keeps its own row, so nothing legitimate is lost with the pair.
     const names = await visibleTools({ scope: 'playlist-modify-private' });
-    assert.equal(names.has('pin_playlist'), false, 'pin_playlist advertised to a grant that cannot authorise it');
-    assert.equal(names.has('unpin_playlist'), false, 'unpin_playlist advertised to a grant that cannot authorise it');
+    for (const name of FOLLOW_PAIR) {
+      assert.equal(names.has(name), false, `${name} advertised to a grant that cannot authorise it`);
+    }
     assert.ok(names.has('playlist_template_apply'), 'the playlist-create tool keeps playlist-modify-private');
   });
 
   it('withholds the pair from a read-only grant', async () => {
     const names = await visibleTools({ scope: READ_ONLY_GRANT });
-    assert.equal(names.has('pin_playlist'), false);
-    assert.equal(names.has('unpin_playlist'), false);
+    for (const name of FOLLOW_PAIR) {
+      assert.equal(names.has(name), false, `${name} advertised to a read-only grant`);
+    }
   });
 
   it('keeps every scope the endpoint accepts on the row', async () => {

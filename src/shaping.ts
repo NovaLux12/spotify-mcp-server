@@ -488,6 +488,37 @@ export function resolvePlaylistInput(
   return resolution([selectedA, selectedB], deprecatedInputs, 'playlist_a/playlist_b');
 }
 
+/**
+ * The canonical-only resolution: no legacy spelling on the call, so no note and
+ * no metadata. Callers that thread an optional resolution pass this rather than
+ * branching on `undefined` inside the two `with*` helpers.
+ */
+export const NO_INPUT_DEPRECATION: PlaylistInputResolution = Object.freeze({
+  values: [], deprecatedInputs: [], deprecationNote: null,
+});
+
+/**
+ * A deprecated TOOL NAME (#1099), as distinct from a deprecated input.
+ *
+ * Same one-release contract, so it produces the same resolution shape and
+ * travels through the same two helpers rather than a hand-rolled second copy of
+ * the metadata — a caller parsing `deprecation_note` off one tool must not have
+ * to learn a new key for the next.
+ *
+ * `deprecatedInputs` carries the legacy spelling the caller used, which here is
+ * the tool name itself. The note says so in words, because the field name
+ * alone would read as a parameter the tool was called with and it is not: this
+ * tool's parameters are playlist_id / dry_run / response_format, none of which
+ * appears in that array.
+ */
+export function resolveDeprecatedToolName(alias: string, canonical: string): PlaylistInputResolution {
+  return Object.freeze({
+    values: [],
+    deprecatedInputs: [alias],
+    deprecationNote: `Deprecated tool name ${alias}; use ${canonical}. Alias support ends with v2.1 (removed in 2.1).`,
+  });
+}
+
 /** Add machine-readable deprecation metadata only when a legacy alias was used. */
 export function withPlaylistInputMetadata<T extends Record<string, unknown>>(
   payload: T,

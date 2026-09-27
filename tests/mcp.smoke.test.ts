@@ -64,6 +64,8 @@ const READONLY_WRITE_TOOLS = [
   'play_on', 'queue_next', 'seek_relative', 'remove_saved_shows', 'save_episode',
   'remove_saved_episode', 'unsave_orphan_tracks', 'remove_from_library_by_playlist',
   'playlist_to_library', 'save_artist_new_releases', 'pin_playlist',
+  // #1099: the canonical names must be gated exactly like the aliases.
+  'follow_playlist', 'unfollow_playlist',
 ];
 
 const EXPECTED_PROMPTS = ['artist_deep_dive', 'crate_digging', 'discover_weekly_alternative', 'dj', 'listening_recap', 'migrate_library', 'morning_briefing', 'music_briefing', 'music_taste_summary', 'playlist_audit', 'playlist_from_mood', 'podcast_catchup', 'triage_liked_songs', 'weekly_digest'];

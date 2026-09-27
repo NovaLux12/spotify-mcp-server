@@ -311,7 +311,10 @@ describe('tool surface: annotations', () => {
     // UNLESS it is an audited OVERRIDES row (DESTRUCTIVE_OVERRIDES, the mirror
     // of READ_ONLY_OVERRIDES). #1100 added unpin_playlist that way: `unpin` is
     // in neither MUTATING_PREFIXES nor DESTRUCTIVE_PREFIXES, so the name alone
-    // classified a library removal as a harmless write.
+    // classified a library removal as a harmless write. #1099 renamed the pair
+    // to follow_playlist/unfollow_playlist and kept the old names as aliases;
+    // `unfollow` IS a destructive prefix so the canonical tool needs no row,
+    // while the alias keeps this one until it retires in 2.1.
     //
     // The audit is NOT relaxed. DESTRUCTIVE_OVERRIDES is derived from OVERRIDES,
     // so widening it requires a new OVERRIDES row with its own written

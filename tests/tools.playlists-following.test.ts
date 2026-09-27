@@ -2609,20 +2609,25 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     dry_run: false,
   });
 
-  it('unpin accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
-    // #1100: unpin_playlist now uses the shared requiredConfirmationRefusal
+  it('unfollow accepts, declines, refuses unsupported, refuses error, and honors never', async () => {
+    // #1100: the unfollow half now uses the shared requiredConfirmationRefusal
     // guard, so every refusal verdict RETURNS a result carrying a
     // machine-readable `reason` instead of throwing. The old test asserted
     // assert.rejects for 'error' and 'unsupported'; that assertion encoded the
     // shape the fix removed, so it is replaced by the refusal contract rather
     // than deleted (the "does not write" half is kept and is the safety part).
+    //
+    // #1099 renamed the tool; this drives the CANONICAL name. The deprecated
+    // `unpin_playlist` alias is registered against the same handler, and its
+    // gate parity is asserted in tests/tools.playlistmisc.test.ts — so this
+    // suite is about the operation, not about one spelling of it.
     for (const [label, result, shouldWrite, expectedReason] of [
       ['accepted', accept, true, undefined],
       ['declined', { action: 'decline' }, false, undefined],
       ['error', new Error('transport failed'), false, 'elicitation_failed'],
     ] as const) {
       const h = harness(undefined, registerPlaylistFollowTools, result);
-      const out = await h.invoke('unpin_playlist', { playlist_id: 'pl1' });
+      const out = await h.invoke('unfollow_playlist', { playlist_id: 'pl1' });
       assert.equal(
         h.client.calls.filter((c) => c.method === 'DELETE').length,
         shouldWrite ? 1 : 0,
@@ -2637,7 +2642,7 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     }
 
     const unsupported = harness(undefined, registerPlaylistFollowTools);
-    const refused = await unsupported.invoke('unpin_playlist', { playlist_id: 'pl1' });
+    const refused = await unsupported.invoke('unfollow_playlist', { playlist_id: 'pl1' });
     assert.equal(unsupported.client.calls.length, 0);
     assert.equal(refused.structuredContent?.reason, 'confirmation_unavailable');
     assert.equal(refused.structuredContent?.ok, false);
@@ -2646,7 +2651,7 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     process.env.SPOTIFY_MCP_CONFIRM = 'never';
     try {
       const bypass = harness(undefined, registerPlaylistFollowTools);
-      await bypass.invoke('unpin_playlist', { playlist_id: 'pl1' });
+      await bypass.invoke('unfollow_playlist', { playlist_id: 'pl1' });
       assert.equal(bypass.client.calls.filter((c) => c.method === 'DELETE').length, 1);
     } finally {
       if (previous === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;

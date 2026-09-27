@@ -152,7 +152,7 @@ describe('scope-filtered module registration (#1020)', () => {
     for (const name of ['undo_preview', 'restore_playlist_plan', 'apply_volume_plan', 'save_queue_as_playlist', 'get_saved_tracks']) {
       assert.ok(!names.has(name), `${name} must stay hidden under SPOTIFY_MCP_READONLY`);
     }
-    const leaked = ['play_on', 'queue_next', 'pin_playlist', 'save_episode', 'remove_saved_shows', 'follow_artist',
+    const leaked = ['play_on', 'queue_next', 'pin_playlist', 'follow_playlist', 'unfollow_playlist', 'save_episode', 'remove_saved_shows', 'follow_artist',
       'unsave_orphan_tracks', 'playlist_to_library', 'save_artist_new_releases', 'remove_from_library_by_playlist']
       .filter((name) => names.has(name));
     assert.deepEqual(leaked, [], `write tools visible under SPOTIFY_MCP_READONLY=1: [${leaked.join(', ')}]`);

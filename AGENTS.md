@@ -303,7 +303,8 @@ not just `confirm.ts`: `REMOVE_ELICIT_THRESHOLD = 10` and
 100` and `MOVE_ELICIT_THRESHOLD = 50` (playlistbatch.ts),
 `VISIBILITY_ELICIT_THRESHOLD = 1` (playlists.ts), and
 `ARCHIVE_ELICIT_THRESHOLD = 50` (episodemgmt.ts). Four operations gate with no threshold at all and always ask:
-`unpin_playlist`, the union replace, the subtract replace, and library
+`unfollow_playlist` (and its deprecated `unpin_playlist` alias, which shares the
+one handler), the union replace, the subtract replace, and library
 snapshot restore.
 
 `SPOTIFY_MCP_CONFIRM=never` is the **only** automation bypass, and the value

@@ -541,7 +541,7 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The finalized default MCP registry exposes **592 tools** (all 592 attributed to the 66 files under `src/tools/`), organized by 45 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
+The finalized default MCP registry exposes **594 tools** (all 594 attributed to the 66 files under `src/tools/`), organized by 45 registration keys and 13 named toolsets. Registration keys: `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1133,6 +1133,8 @@ Sends `PUT /me/library?uris=…`.
 #### `remove_from_library`
 Remove one or more items from the user's library via the unified endpoint in a single request.
 
+For a single playlist there is also the always-gated `unfollow_playlist` (see [Playlist follow family](#playlist-follow-family-1099)), which prompts before writing and refuses `public=false` outright.
+
 **Inputs:**
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -1149,6 +1151,8 @@ Check whether items are saved in or followed by the user via the unified contain
 **Inputs:** `uris` (string[], required, max 40 — track, album, episode, show, audiobook, artist, user, or playlist URIs)
 
 Sends `GET /me/library/contains?uris=…`. **Returns:** array of booleans matching input order.
+
+> **The read half accepts more URI types than the write half.** `contains` takes eight kinds including `artist`; `PUT`/`DELETE /me/library` take seven and exclude it. Playlist URIs are accepted by all three, so playlist follow/unfollow is fully expressible and `follow_artists` is not — see [Playlist follow family](#playlist-follow-family-1099).
 
 ---
 
@@ -1214,10 +1218,48 @@ A confirmation-gated write that is refused returns a **result**, never an except
 
 Two properties are worth stating because they are the ones a host depends on:
 
-- **The verdict is machine-readable, not prose.** A caller distinguishes "the human said no" from "we could not ask" from the parsed `reason` field, never by matching text. Both halves of the pin/unpin pair return an identical payload for the same verdict, so a host needs no per-tool special case for a tool and its own inverse.
-- **A refusal is a result, not a crash.** An unpromptable host previously got a bare thrown `Error` from `unpin_playlist` on the failure verdicts while `pin_playlist` returned a structured refusal (#1100). That is fixed, and it is a visible behaviour change for any host that distinguished the two: a failure to establish confirmation is a refusal, not an exceptional condition. The gate itself is unchanged — every verdict other than `confirmed` still stops the write.
+- **The verdict is machine-readable, not prose.** A caller distinguishes "the human said no" from "we could not ask" from the parsed `reason` field, never by matching text. Both halves of the follow pair return an identical payload for the same verdict, so a host needs no per-tool special case for a tool and its own inverse. That parity holds across the four registered names (#1099), because the aliases share the canonical handlers rather than reimplementing them.
+- **A refusal is a result, not a crash.** An unpromptable host previously got a bare thrown `Error` from the unfollow half on the failure verdicts while the follow half returned a structured refusal (#1100). That is fixed, and it is a visible behaviour change for any host that distinguished the two: a failure to establish confirmation is a refusal, not an exceptional condition. The gate itself is unchanged — every verdict other than `confirmed` still stops the write.
 
-Annotations are orthogonal to this gate and do not substitute for it. `destructiveHint: true` is a static host hint applied after registration; it never prompts, and a tool carrying it is still gated (and vice versa). `unpin_playlist` carries it because it removes a library entry the user may have curated by hand, and `unpin` matches no `DESTRUCTIVE_PREFIXES` entry — the hint is stated through the `OVERRIDES` table rather than by widening a prefix, so #1099's planned rename to the `unfollow` verb needs no re-application (`unfollow` is already a destructive prefix, and that row retires with the old name).
+Annotations are orthogonal to this gate and do not substitute for it. `destructiveHint: true` is a static host hint applied after registration; it never prompts, and a tool carrying it is still gated (and vice versa). `unfollow_playlist` carries it because it removes a library entry the user may have curated by hand, and `unfollow` matches a `DESTRUCTIVE_PREFIXES` entry, so it needs no `OVERRIDES` row. The deprecated `unpin_playlist` alias still does: `unpin` matches no entry in either prefix list, so the hint is stated through `OVERRIDES` rather than by widening a prefix. That row retires in 2.1 with the alias; adding `unpin` to a prefix list instead would leave a live rule behind encoding a verb no tool then has.
+
+#### Playlist follow family (#1099)
+
+`follow_playlist` and `unfollow_playlist` save and remove a playlist in the caller's own library. Both gate on `confirmViaElicitation` + `requiredConfirmationRefusal` with **no threshold** — they always ask.
+
+| Tool | Sends | `dry_run` default | Notes |
+|---|---|---|---|
+| `follow_playlist` | `PUT /me/library?uris=spotify:playlist:{id}` | `true` | Opt-out of preview (#870): following is a write, and this family in particular was committing while callers believed they were previewing. |
+| `unfollow_playlist` | `DELETE /me/library?uris=spotify:playlist:{id}` | `false` | Always asks. |
+
+**These tools do not pin, and never have.** The endpoint Spotify's February 2026 changelog retired — `PUT`/`DELETE /playlists/{id}/followers` — was a *follow*, not a pin: it added the caller to the playlist's followers. Nothing ever pinned. The two were named `pin_playlist` / `unpin_playlist` while doing that, so a caller reading the tool name had no way to learn the difference, and the only place it was documented was prose inside the description. #1099 renamed them.
+
+**What a follow now does, exactly.** It saves the playlist URI to your library. The old endpoint's request body carried a `public` flag that published the playlist to the caller's public profile; `PUT /me/library` takes no body, so that side effect has no equivalent. `public` is therefore rejected rather than silently ignored: `public: false` throws before any Spotify request, and `public: true` is accepted for call-site compatibility but reaches neither the request nor the confirmation prompt.
+
+**Why playlists and not artists.** `GET /me/library/contains` accepts `spotify:artist:` URIs; `PUT`/`DELETE /me/library` do not. Following an artist is therefore unexpressible as a write, and `follow_artists` is being removed for that reason. Playlist URIs are accepted by the read *and* the write, so this family migrated cleanly and what remained was purely a naming defect.
+
+**Returns** (canonical calls): `{ ok: true, playlist_id, followed: boolean }` on commit, `{ ok: true, dry_run: true, playlist_id, would_follow | would_unfollow: true }` on preview, or the refusal payload above.
+
+#### Deprecated tool names — one release, then removed
+
+`pin_playlist` and `unpin_playlist` remain registered as **deprecated aliases** through 2.0 and are **removed in 2.1**.
+
+| Deprecated | Use instead |
+|---|---|
+| `pin_playlist` | `follow_playlist` |
+| `unpin_playlist` | `unfollow_playlist` |
+
+Each alias is registered against the **same handler** as its replacement, with the same input schema — not a copy — so the two cannot drift in behaviour and the alias is not a route around the confirmation gate. A call that used a deprecated name carries `deprecated_inputs` and `deprecation_note` in `structuredContent`, plus the same one-line note in the prose/JSON text; a canonical call carries neither:
+
+```json
+{ "ok": true, "playlist_id": "pl1", "followed": true,
+  "deprecated_inputs": ["pin_playlist"],
+  "deprecation_note": "Deprecated tool name pin_playlist; use follow_playlist. Alias support ends with v2.1 (removed in 2.1)." }
+```
+
+`deprecated_inputs` carries the legacy *spelling the caller used* — here the tool name itself, not a parameter. The tool's parameters are `playlist_id` / `public` / `dry_run` / `response_format`, none of which appears in that array; the note says "tool name" in words for that reason.
+
+**Migration:** replace the tool name in any prompt, saved recipe, or host allowlist. No input changes — the schemas are identical, and the requests the two names issue are byte-identical.
 
 #### Playlist set/diff input contract (#912)
 
@@ -1803,7 +1845,8 @@ spotify-mcp/
 │   │   ├── playlistbatch.ts  # batch_add_to_playlist, copy_playlist, move_items_between_playlists
 │   │   ├── playlistdna.ts    # grow_playlist (co-occurrence)
 │   │   ├── playlisthealth.ts # playlist_health_check, get_playlist_followers, playlist_collaboration_report, snapshot_playlist, diff_since_snapshot, list_playlist_snapshots
-│   │   ├── playlistmisc.ts   # pin_playlist, unpin_playlist, playlist_template_apply
+│   │   ├── playlistfollow.ts # follow_playlist, unfollow_playlist (+ deprecated pin_playlist, unpin_playlist aliases)
+│   │   ├── playlistmisc.ts   # playlist_template_apply
 │   │   ├── playlistops.ts    # merge_playlists, diff_playlists, overlap_playlists
 │   │   ├── playlists.ts      # clean_all_playlists, remove_duplicate_playlist_items, get_user_playlists, get_playlist, get_playlist_items, create_playlist, add_to_playlist, remove_from_playlist, update_playlist, reorder_playlist_items, replace_playlist_items, find_duplicates_in_playlist, get_playlist_cover, upload_playlist_cover
 │   │   ├── podcastsession.ts # plan_podcast_session, start_podcast_session

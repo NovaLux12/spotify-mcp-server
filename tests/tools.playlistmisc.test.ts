@@ -57,10 +57,10 @@ function harness(responder: Responder=()=>null, elicitResult?: unknown) {
 const textOf=(o:{content:Array<{text:string}>})=>o.content[0].text;
 const track=(id:string)=>({ uri:`spotify:track:${id}`, name:`Track ${id}`, artists:[{name:`Artist ${id}`}] });
 
-describe('pin_playlist',()=>{
+describe('follow_playlist (#1099 rename)',()=>{
   it('PUTs the playlist URI to /me/library after confirmation (Feb 2026)',async()=>{
     const h=harness(()=>null,{action:'accept',content:{confirm:true}});
-    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    const out=await h.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
     const puts=h.client.calls.filter(c=>c.method==='PUT');
     assert.equal(puts.length,1);
     // Assert the real request, not the return value: a stub answers whatever
@@ -69,19 +69,19 @@ describe('pin_playlist',()=>{
     assert.equal(puts[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
     assert.equal(puts[0].arg,undefined,'/me/library carries uris in the query, not a body');
     assert.ok(!h.client.calls.some(c=>c.path.includes('/followers')),'no request may touch the removed endpoint');
-    assert.match(textOf(out),/Pinned/);
+    assert.match(textOf(out),/Saved playlist pl1 to your library/);
   });
   it('rejects public=false: the replacement has no visibility flag',async()=>{
     const h=harness(()=>null,new Error('must not elicit'));
     await assert.rejects(
-      ()=>h.invoke('pin_playlist',{playlist_id:'pl1',public:false,dry_run:false}),
+      ()=>h.invoke('follow_playlist',{playlist_id:'pl1',public:false,dry_run:false}),
       /no visibility parameter/,
     );
     assert.equal(h.client.calls.length,0,'refuses before issuing any request');
   });
   it('accepts public=true and sends no body',async()=>{
     const h=harness(()=>null,{action:'accept',content:{confirm:true}});
-    await h.invoke('pin_playlist',{playlist_id:'pl1',public:true,dry_run:false});
+    await h.invoke('follow_playlist',{playlist_id:'pl1',public:true,dry_run:false});
     assert.equal(h.client.calls[0].arg,undefined);
     assert.equal(h.client.calls[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
   });
@@ -91,91 +91,97 @@ describe('pin_playlist',()=>{
     // interpolated "(public: true)" — telling the user their follow would be
     // public at the exact moment they authorised a private library save.
     const flagged=harness(()=>null,{action:'accept',content:{confirm:true}});
-    await flagged.invoke('pin_playlist',{playlist_id:'pl1',public:true,dry_run:false});
+    await flagged.invoke('follow_playlist',{playlist_id:'pl1',public:true,dry_run:false});
     const bare=harness(()=>null,{action:'accept',content:{confirm:true}});
-    await bare.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    await bare.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
     assert.equal(flagged.prompts.length,1);
     assert.equal(flagged.prompts[0],bare.prompts[0],
       'public:true must not change the prompt when it does not change the request');
     assert.doesNotMatch(flagged.prompts[0],/public/i,
       'the prompt must not claim a visibility the request never sends');
-    assert.equal(flagged.prompts[0],'About to pin playlist "pl1":\n- Follow playlist pl1\n\nProceed?');
+    assert.equal(flagged.prompts[0],'About to follow playlist "pl1":\n- Save playlist pl1 to your library\n\nProceed?');
     // ...and the request it authorises really is the bodyless library save.
     assert.equal(flagged.client.calls[0].arg,undefined);
     assert.equal(flagged.client.calls[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
   });
   it('previews by default: an omitted dry_run issues no PUT (#870)',async()=>{
     const h=harness(()=>null,new Error('must not elicit'));
-    const out=await h.invoke('pin_playlist',{playlist_id:'pl1'});
+    const out=await h.invoke('follow_playlist',{playlist_id:'pl1'});
     assert.equal(h.client.calls.length,0);
     assert.match(textOf(out),/dry run/);
-    assert.equal(out.structuredContent?.would_pin,true);
+    assert.equal(out.structuredContent?.would_follow,true);
   });
   it('declined confirmation refuses without PUTting',async()=>{
     const h=harness(()=>null,{action:'decline'});
-    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    const out=await h.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
     assert.equal(h.client.calls.length,0);
     assert.match(textOf(out),/Cancelled/);
     assert.equal(out.structuredContent?.cancelled,true);
   });
   it('a failed elicitation refuses fail-closed rather than PUTting',async()=>{
     const h=harness(()=>null,new Error('transport failed'));
-    const out=await h.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    const out=await h.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
     assert.equal(h.client.calls.length,0);
     assert.equal(out.structuredContent?.reason,'elicitation_failed');
   });
   it('an unpromptable client is refused unless SPOTIFY_MCP_CONFIRM=never',async()=>{
     const unsupported=harness(()=>null);
-    const out=await unsupported.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+    const out=await unsupported.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
     assert.equal(unsupported.client.calls.length,0);
     assert.equal(out.structuredContent?.reason,'confirmation_unavailable');
     const previous=process.env.SPOTIFY_MCP_CONFIRM;
     process.env.SPOTIFY_MCP_CONFIRM='never';
     try{
       const bypass=harness(()=>null);
-      const done=await bypass.invoke('pin_playlist',{playlist_id:'pl1',dry_run:false});
+      const done=await bypass.invoke('follow_playlist',{playlist_id:'pl1',dry_run:false});
       assert.equal(bypass.client.calls.filter(c=>c.method==='PUT').length,1);
-      assert.match(textOf(done),/Pinned/);
+      assert.match(textOf(done),/Saved playlist pl1 to your library/);
     } finally {
       if(previous===undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
       else process.env.SPOTIFY_MCP_CONFIRM=previous;
     }
   });
 });
-describe('unpin_playlist',()=>{
+describe('unfollow_playlist (#1099 rename)',()=>{
   it('dry_run previews without DELETE',async()=>{
     const h=harness(()=>null,new Error('must not elicit'));
-    const out=await h.invoke('unpin_playlist',{playlist_id:'pl1',dry_run:true});
+    const out=await h.invoke('unfollow_playlist',{playlist_id:'pl1',dry_run:true});
     assert.equal(h.client.calls.length,0);
     assert.match(textOf(out),/dry run/);
   });
   it('DELETEs the playlist URI from /me/library after elicitation accept',async()=>{
     const h=harness(()=>null,{action:'accept',content:{confirm:true}});
-    const out=await h.invoke('unpin_playlist',{playlist_id:'pl1'});
+    const out=await h.invoke('unfollow_playlist',{playlist_id:'pl1'});
     const dels=h.client.calls.filter(c=>c.method==='DELETE');
     assert.equal(dels.length,1);
     // Same reasoning as pin: pin the recorded request, not the reply.
     assert.equal(dels[0].path,'/me/library?uris=spotify%3Aplaylist%3Apl1');
     assert.ok(!h.client.calls.some(c=>c.path.includes('/followers')),'no request may touch the removed endpoint');
-    assert.match(textOf(out),/Unpinned/);
+    assert.match(textOf(out),/Removed playlist pl1 from your library/);
   });
   it('declined cancels',async()=>{
     const h=harness(()=>null,{action:'decline'});
-    const out=await h.invoke('unpin_playlist',{playlist_id:'pl1'});
+    const out=await h.invoke('unfollow_playlist',{playlist_id:'pl1'});
     assert.equal(h.client.calls.length,0);
     assert.match(textOf(out),/Cancelled/);
   });
 });
 
 // ---------------------------------------------------------------------------
-// #1100 — unpin_playlist refuses in the same shape as pin_playlist
+// #1100 — unfollow_playlist refuses in the same shape as follow_playlist
 //
 // This is a safety change, so every test below is about the gate FAILING
-// CLOSED. The bug was not that unpin could write without confirmation — it
+// CLOSED. The bug was not that unfollow could write without confirmation — it
 // could not, and still cannot — but that the two halves of one feature
-// disagreed about what "refused" looks like: pin returned a machine-readable
-// `reason` while unpin threw a bare Error. A host that keys off that
+// disagreed about what "refused" looks like: follow returned a machine-readable
+// `reason` while unfollow threw a bare Error. A host that keys off that
 // discriminator had to special-case one of its own inverse pair.
+//
+// #1099 renamed the pair; the gate assertions below are unchanged by that,
+// because both names are registered against the SAME handler. An alias with a
+// copied body would be free to drift, and the first thing to drift in a copy of
+// a gated write is the gate — so the alias is asserted against it directly
+// further down.
 //
 // Assertions are on PARSED STRUCTURE (structuredContent fields), never on
 // substrings of the prose: `text.includes('elicitation_failed')` would pass on
@@ -183,9 +189,9 @@ describe('unpin_playlist',()=>{
 // decoration AGENTS.md §6 warns about.
 // ---------------------------------------------------------------------------
 
-describe('unpin_playlist refusal contract (#1100)', () => {
+describe('unfollow_playlist refusal contract (#1100, #1099)', () => {
   /**
-   * Drive unpin_playlist to the point where the verdict is decided, with the
+   * Drive unfollow_playlist to the point where the verdict is decided, with the
    * elicitation stub installed, and return both the recorded calls and the
    * result so a test can assert on each independently.
    *
@@ -194,7 +200,7 @@ describe('unpin_playlist refusal contract (#1100)', () => {
    */
   const attempt = (elicitResult?: unknown) => {
     const h = harness(() => null, elicitResult);
-    return h.invoke('unpin_playlist', { playlist_id: 'pl1', dry_run: false })
+    return h.invoke('unfollow_playlist', { playlist_id: 'pl1', dry_run: false })
       .then((out) => ({ out, deletes: h.client.calls.filter((c) => c.method === 'DELETE') }));
   };
 
@@ -240,16 +246,18 @@ describe('unpin_playlist refusal contract (#1100)', () => {
     }
   });
 
-  it('a declined prompt refuses with no `reason` — the shape pin_playlist already returns', async () => {
+  it('a declined prompt refuses with no `reason` — the shape follow_playlist already returns', async () => {
     // Deliberate asymmetry, pinned: `declined` is the human's own "no", so the
     // payload is the bare {ok:false, cancelled:true} and carries no reason.
     // Asserting an exact object (not a field or two) is what stops a future
-    // edit from quietly bolting an extra field onto this specific verdict.
+    // edit from quietly bolting an extra field onto this specific verdict. It
+    // also pins that a CANONICAL call carries no deprecation keys at all —
+    // #1099's aliases must not leak metadata into the names that replace them.
     const { out } = await attempt({ action: 'decline' });
     assert.deepEqual(out.structuredContent, { ok: false, cancelled: true });
   });
 
-  it('refuses in the SAME shape as pin_playlist for the same verdict (#1100 was the divergence)', async () => {
+  it('refuses in the SAME shape as follow_playlist for the same verdict (#1100 was the divergence)', async () => {
     // The regression that matters: parity is asserted by comparing the two
     // tools' payloads for the same stubbed verdict, not by re-asserting each
     // tool's values. If one half of the pair drifts, this fails even if both
@@ -259,17 +267,20 @@ describe('unpin_playlist refusal contract (#1100)', () => {
       ['transport-error', new Error('boom')],
       ['unpromptable-host', undefined],
     ] as const) {
-      const unpin = await attempt(elicit);
-      const pinHarness = harness(() => null, elicit);
-      const pin = await pinHarness.invoke('pin_playlist', { playlist_id: 'pl1', dry_run: false });
+      const unfollow = await attempt(elicit);
+      const followHarness = harness(() => null, elicit);
+      const follow = await followHarness.invoke('follow_playlist', { playlist_id: 'pl1', dry_run: false });
       assert.deepEqual(
-        unpin.out.structuredContent,
-        pin.structuredContent,
-        `${label}: pin and unpin must return an identical refusal payload`,
+        unfollow.out.structuredContent,
+        follow.structuredContent,
+        `${label}: follow and unfollow must return an identical refusal payload`,
       );
+      // The refusal text is operation-agnostic by design, so this is a plain
+      // equality now. It used to need a pin->unpin substitution, which is
+      // itself the point: the two halves no longer speak in different verbs.
       assert.equal(
-        textOf(unpin.out).replace(/pin\b/g, 'unpin'),
-        textOf(pin),
+        textOf(unfollow.out),
+        textOf(follow),
         `${label}: the human-readable refusal must also match across the pair`,
       );
     }
@@ -327,14 +338,21 @@ describe('unpin_playlist refusal contract (#1100)', () => {
     assert.equal(MUTATING_PREFIXES.test('unpin_playlist'), false);
     assert.equal(READ_ONLY_PREFIXES.test('unpin_playlist'), false);
 
-    // #1099 renames the pair to follow_playlist/unfollow_playlist, and
+    // #1099 renamed the pair to follow_playlist/unfollow_playlist, and
     // `unfollow` is ALREADY in both prefix lists — so the renamed tool is
-    // classified correctly with no override at all. Asserted here so the
+    // classified correctly with no override of its own. Asserted here so the
     // rename carries this fix across rather than needing it re-applied.
     assert.equal(DESTRUCTIVE_PREFIXES.test('unfollow_playlist'), true);
     assert.equal(MUTATING_PREFIXES.test('unfollow_playlist'), true);
+    assert.equal(classifyToolAnnotations('unfollow_playlist').destructiveHint, true);
+    // A follow is a library save, not a removal, so it must NOT claim the
+    // destructive hint — the one place the old pair could have over-corrected.
+    assert.equal(classifyToolAnnotations('follow_playlist').destructiveHint, false);
+    assert.equal(classifyToolAnnotations('follow_playlist').readOnlyHint, undefined);
 
-    // Not in the audited READ-ONLY override set: a tool may not be both.
+    // The #1100 row is still LOADED: the deprecated `unpin_playlist` alias is
+    // registered for one more release and still needs its hint. It retires in
+    // 2.1 with the alias, which is what makes this assertion worth making now.
     assert.equal(READ_ONLY_OVERRIDES.has('unpin_playlist'), false);
   });
 });
@@ -363,9 +381,13 @@ describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
       'src/tools/playlistfollow.ts names a removed endpoint outside a comment: '+offenders.join(' | '));
   });
 
-  it('advertises no removed endpoint in either tool description',()=>{
+  it('advertises no removed endpoint in any of the four tool descriptions',()=>{
     const h=harness();
-    for(const name of ['pin_playlist','unpin_playlist']){
+    // #1099: the family is two operations under four names (canonical +
+    // one-release deprecated alias). All four descriptions are in scope, so a
+    // stale endpoint path cannot survive on the alias after the canonical
+    // description was corrected.
+    for(const name of ['follow_playlist','unfollow_playlist','pin_playlist','unpin_playlist']){
       const tool=h.registered.find(t=>t.name===name);
       assert.ok(tool,`tool ${name} registered`);
       assert.ok(!/\/followers/.test(tool.description),
@@ -375,6 +397,122 @@ describe('February 2026 removed-endpoint guards (playlist follow family)',()=>{
       assert.match(tool.description,/\/me\/library/,
         `${name} should name its actual endpoint`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1099 — the names and descriptions said "pin"; the code has always followed
+//   (saved the playlist to the caller's library via /me/library).
+//
+// This suite is the regression test for the rename itself. The bug is a lying
+// contract, so the assertions that matter are about what a caller can LEARN
+// from tools/list and from a result — not about the request, which
+// `follow_playlist` already got right before the rename.
+// ---------------------------------------------------------------------------
+
+describe('#1099 the pin_playlist/unpin_playlist names were a lie', () => {
+  it('registers follow_playlist/unfollow_playlist, and no canonical description claims a pin', () => {
+    const h = harness();
+    for (const name of ['follow_playlist', 'unfollow_playlist']) {
+      const tool = h.registered.find((t) => t.name === name);
+      assert.ok(tool, `${name} must be registered — this is the whole fix`);
+      // The defect, stated as a test: the tool that saves a playlist was named
+      // for a verb Spotify has no playlist equivalent of.
+      assert.doesNotMatch(
+        tool.description,
+        /\bpin\b/i,
+        `${name} must not claim to pin; it saves to the library`,
+      );
+      // ...and it must still say what it actually does, not just drop the lie.
+      assert.match(tool.description, /library/i, `${name} must name the effect it has`);
+      assert.match(tool.description, /\/me\/library/, `${name} must name the endpoint it calls`);
+    }
+  });
+
+  it('the deprecated aliases still work, name their replacement, and are marked deprecated', async () => {
+    const h = harness(() => null, { action: 'accept', content: { confirm: true } });
+    for (const [alias, canonical] of [['pin_playlist', 'follow_playlist'], ['unpin_playlist', 'unfollow_playlist']]) {
+      const tool = h.registered.find((t) => t.name === alias);
+      assert.ok(tool, `${alias} must stay callable for one release (AGENTS.md §5)`);
+      assert.match(tool.description, new RegExp(`DEPRECATED.*${canonical}`), `${alias} must name its replacement`);
+      assert.match(tool.description, /2\.1/, `${alias} must say when it goes away`);
+    }
+    // And "still work" is behavioural, not just a registration row.
+    const out = await h.invoke('pin_playlist', { playlist_id: 'pl1', dry_run: false });
+    assert.deepEqual(
+      h.client.calls.filter((c) => c.method === 'PUT').map((c) => c.path),
+      ['/me/library?uris=spotify%3Aplaylist%3Apl1'],
+      'the alias must still PUT the library URI',
+    );
+    assert.equal(out.structuredContent?.followed, true);
+  });
+
+  it('an alias call carries deprecated_inputs/deprecation_note; a canonical call carries neither', async () => {
+    const legacy = harness(() => null, { action: 'accept', content: { confirm: true } });
+    const out = await legacy.invoke('pin_playlist', { playlist_id: 'pl1', dry_run: false });
+    // Machine-readable first: a host must be able to branch on the field
+    // without scraping prose.
+    assert.deepEqual(out.structuredContent?.deprecated_inputs, ['pin_playlist']);
+    assert.match(String(out.structuredContent?.deprecation_note), /use follow_playlist/);
+    // ...and the same one-line note in the text, per AGENTS.md §5.
+    assert.match(textOf(out), /Deprecated tool name pin_playlist; use follow_playlist\./);
+
+    const canonical = harness(() => null, { action: 'accept', content: { confirm: true } });
+    const clean = await canonical.invoke('follow_playlist', { playlist_id: 'pl1', dry_run: false });
+    assert.equal(clean.structuredContent?.deprecated_inputs, undefined, 'canonical calls omit deprecated_inputs');
+    assert.equal(clean.structuredContent?.deprecation_note, undefined, 'canonical calls omit deprecation_note');
+    assert.doesNotMatch(textOf(clean), /Deprecated tool name/);
+  });
+
+  it('the alias is not a way around the always-ask gate — it asks exactly like the canonical name', async () => {
+    // The one failure mode that would make this rename unsafe: a copied alias
+    // body that lost the elicitation call. Both names are registered against
+    // ONE handler, so this asserts the property rather than the implementation.
+    for (const name of ['unfollow_playlist', 'unpin_playlist']) {
+      for (const [label, elicit] of [
+        ['declined', { action: 'decline' }],
+        ['transport-error', new Error('boom')],
+        ['unpromptable-host', undefined],
+      ] as const) {
+        const h = harness(() => null, elicit);
+        const out = await h.invoke(name, { playlist_id: 'pl1', dry_run: false });
+        assert.equal(
+          h.client.calls.filter((c) => c.method === 'DELETE').length,
+          0,
+          `${name}/${label}: an unconfirmed unfollow must never reach Spotify`,
+        );
+        assert.equal(out.structuredContent?.cancelled, true, `${name}/${label}: refusal must be cancelled:true`);
+      }
+    }
+  });
+
+  it('the alias and the canonical name are the same operation, not two implementations', async () => {
+    // Parity asserted by comparison, not by re-listing expected values on both
+    // sides: strip the deprecation keys from the alias result and the two must
+    // be byte-identical, request included.
+    for (const [alias, canonical] of [['pin_playlist', 'follow_playlist'], ['unpin_playlist', 'unfollow_playlist']]) {
+      const a = harness(() => null, { action: 'accept', content: { confirm: true } });
+      await a.invoke(alias, { playlist_id: 'pl1', dry_run: false });
+      const c = harness(() => null, { action: 'accept', content: { confirm: true } });
+      await c.invoke(canonical, { playlist_id: 'pl1', dry_run: false });
+      assert.deepEqual(a.client.calls, c.client.calls, `${alias} must issue the same request as ${canonical}`);
+      assert.deepEqual(
+        a.registered.find((t) => t.name === alias)?.validate({ playlist_id: 'pl1' }),
+        c.registered.find((t) => t.name === canonical)?.validate({ playlist_id: 'pl1' }),
+        `${alias} must accept the same inputs as ${canonical}`,
+      );
+    }
+  });
+
+  it('an alias that contradicts itself about visibility fails before any Spotify request', async () => {
+    // The rejection names the tool the CALLER used, not the canonical one —
+    // an error pointing at a name the caller never typed is its own small lie.
+    const h = harness(() => null, new Error('must not elicit'));
+    await assert.rejects(
+      () => h.invoke('pin_playlist', { playlist_id: 'pl1', public: false, dry_run: false }),
+      /^Error: pin_playlist cannot honour public=false/,
+    );
+    assert.equal(h.client.calls.length, 0, 'refuses before issuing any request');
   });
 });
 describe('playlist_template_apply',()=>{

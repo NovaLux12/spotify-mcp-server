@@ -17,9 +17,12 @@
  *
  *   - creation (`create_playlist` / `copy_playlist` POST `/me/playlists`): the
  *     playlist has no prior visibility to widen;
- *   - `pin_playlist` (playlistmisc.ts:97), which PUTs `public` to
- *     `/playlists/{id}/followers` — that is the FOLLOWER's visibility, the
- *     caller's own follow state, not the playlist's;
+ *   - the playlist FOLLOW family (`follow_playlist` / `pin_playlist`,
+ *     playlistfollow.ts), which took a `public` flag aimed at the follower's
+ *     own follow state, not the playlist's. #1099 renamed the pair and moved
+ *     the flag's rejection into that module; the flag reached neither the
+ *     request nor the prompt long before the removal, so nothing here ever
+ *     widens the playlist;
  *   - item/image rewrites (`PUT /playlists/{id}/items`, `/images`), which carry
  *     no visibility flags at all.
  *
@@ -94,10 +97,13 @@ describe('#871 grep guard: existing-playlist visibility writes are gated', () =>
       ),
       false,
     );
-    // pin_playlist writes the CALLER's follow state, not the playlist's flags.
+    // The follow family writes the CALLER's own state, not the playlist's flags.
+    // The name is illustrative — `pin_playlist` was the real one before #1099
+    // renamed it to `follow_playlist`, and `widensVisibility` classifies the
+    // SHAPE (a `public` flag aimed at the followers endpoint), not the name.
     assert.equal(
       widensVisibility(
-        "server.tool('pin_playlist', 'd', { public: z.boolean().optional() }, async (a) => { " +
+        "server.tool('follow_playlist', 'd', { public: z.boolean().optional() }, async (a) => { " +
           'await client.put(`/playlists/${id}/followers`, { public: a.public }); });',
       ),
       false,
