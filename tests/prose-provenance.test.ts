@@ -86,6 +86,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -103,6 +104,40 @@ import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MANIFEST = join(ROOT, 'scripts', 'doc-prose-manifest.json');
 const CENSUS = join(ROOT, 'scripts', 'surface-census.mjs');
+
+/**
+ * Is this checkout one where an `--is-ancestor` walk is truncated at `HEAD`?
+ *
+ * Mirrors `shallowHeadCannotWalk` in `scripts/surface-census.mjs`, which is not
+ * exported. The duplication is deliberate and bounded, because the test below
+ * branches on the answer and its two branches assert **opposite** outcomes: a
+ * probe that drifts from the census sends the test down the branch the gate
+ * contradicts, and it fails loudly. It cannot pass by being wrong quietly.
+ *
+ * This is the condition that made the test un-runnable in CI rather than
+ * merely strict there. `actions/checkout` defaults to `fetch-depth: 1`, so
+ * `HEAD` sits on the shallow boundary; git reports "not an ancestor" for a
+ * commit created in this clone, but the walk that produced that answer never
+ * reached past `HEAD`, so the census correctly returns `null` — the verdict is
+ * `unverifiable`, not `rewritten` — and the gate stays silent *on purpose*.
+ * Asserting a non-zero exit in that environment asserts the bug away.
+ */
+function headIsGraftPoint(): boolean {
+  const commonDir = spawnSync('git', ['-C', ROOT, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+    encoding: 'utf8',
+  });
+  if (commonDir.error || commonDir.status !== 0) return false;
+  let boundary: string;
+  try {
+    boundary = readFileSync(join(commonDir.stdout.trim(), 'shallow'), 'utf8');
+  } catch {
+    // No boundary file at all: a full clone, so a "no" really is a "no".
+    return false;
+  }
+  const head = spawnSync('git', ['-C', ROOT, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  if (head.error || head.status !== 0) return false;
+  return boundary.split('\n').some((line) => line.trim() === head.stdout.trim());
+}
 
 /** The reason string the retirement tests record. */
 const RETIREMENT_REASON = 'reworded by upstream #1402';
@@ -516,7 +551,7 @@ describe('prose pin provenance (#1440)', () => {
     });
   });
 
-  it('fails the real --check when the pin names a commit this branch no longer contains', async () => {
+  it('refuses a pin naming an absent commit where that is answerable, and stays silent where it is not', async () => {
     // The wiring proof for the read side, and the reason it exists separately
     // from the verdict test below. `proseProvenanceVerdict` returning a correct
     // error proves nothing if `checkDocumentation` never asks for it — which is
@@ -563,9 +598,33 @@ describe('prose pin provenance (#1440)', () => {
       await writeFile(copy, JSON.stringify(manifest, null, 2));
 
       const run = runCensus(['--check', '--prose-manifest', copy]);
-      assert.notEqual(run.status, 0, 'the documentation gate passed a pin that describes prose this branch does not have');
-      assert.match(run.stderr, /not an ancestor of HEAD/, 'the failure must name the rewritten-history condition, not just fail');
-      assert.match(run.stderr, new RegExp(dangling.slice(0, 7)), 'the failure must name the commit the pin claims, so a reader can go and look at it');
+
+      // Which of the two documented behaviours applies is a property of the
+      // checkout, not of the code under test, and asserting the wrong one is
+      // asserting a bug away. On a full clone the walk reaches an answer, the
+      // verdict is `rewritten`, and the gate must fail naming the commit. On a
+      // `fetch-depth: 1` CI checkout `HEAD` is a graft point, the walk is
+      // truncated before it can answer, the verdict is `unverifiable`, and the
+      // gate is silent on purpose — the census documents that as "expected on a
+      // shallow CI clone; it is not evidence either way".
+      //
+      // Both branches are real assertions, and they are opposite: a `headIs-
+      // GraftPoint()` that disagreed with the census would land here in the
+      // branch the gate contradicts, so this cannot pass by mis-detecting.
+      if (headIsGraftPoint()) {
+        assert.equal(
+          run.status,
+          0,
+          'the gate failed on a pin this checkout provably cannot judge. Ancestry is '
+            + 'unanswerable at a shallow boundary, so the verdict is `unverifiable` and the '
+            + 'gate is silent by design; a failure here means it invented an answer:\n' + run.stderr,
+        );
+      } else {
+        assert.notEqual(run.status, 0, 'the documentation gate passed a pin that describes prose this branch does not have');
+        assert.match(run.stderr, /not an ancestor of HEAD/, 'the failure must name the rewritten-history condition, not just fail');
+        assert.match(run.stderr, new RegExp(dangling.slice(0, 7)), 'the failure must name the commit the pin claims, so a reader can go and look at it');
+      }
+
       assert.equal(
         await readFile(MANIFEST, 'utf8'),
         repoBefore,
