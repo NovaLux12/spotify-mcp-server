@@ -110,12 +110,39 @@ const GLYPH: Record<DoctorStatus, string> = { pass: '✓', fail: '✗', warn: '�
 // src/toolsets.ts TOOLSETS entries) so gating follows the active toolsets.
 // ---------------------------------------------------------------------------
 
+/**
+ * A group of write tools on one module, with the scopes they need.
+ *
+ * `anyOf` and `allOf` are both present because Spotify's authorization is not
+ * uniform across these endpoints, and collapsing the two into one list is what
+ * made this check report confidently wrong answers:
+ *
+ *   - `anyOf` is EITHER-OF, the same rule `scopefilter.ts` applies when it
+ *     hides a module. A caller holding only `playlist-modify-public` can
+ *     create a playlist; the module stays registered; telling them they are
+ *     missing `playlist-modify-private` sends them to re-auth for a scope
+ *     that changes nothing.
+ *   - `allOf` is EVERY-OF, for a scope that is genuinely additive on top of a
+ *     satisfied precondition — `upload_playlist_cover` needs a playlist-modify
+ *     scope to touch the playlist AND `ugc-image-upload` to upload the bytes.
+ *
+ * `requiresAnyOf` is a precondition, not a requirement: the group is only
+ * meaningful once one of those is granted. Without it a caller with no
+ * playlist-modify scope at all is told about `ugc-image-upload` on top of the
+ * two modify scopes it is already missing, which is noise about a tool that
+ * would fail on the modify scope first.
+ */
 interface WriteRequirement {
   key: string;
   /** Human description of what breaks when these scopes are missing. */
   label: string;
   tools: string;
-  scopes: readonly string[];
+  /** At least one must be granted, or the whole group is unavailable. */
+  anyOf?: readonly string[];
+  /** Every one must be granted; each missing one is named. */
+  allOf?: readonly string[];
+  /** When present, the group applies only if at least one of these is granted. */
+  requiresAnyOf?: readonly string[];
 }
 
 const WRITE_REQUIREMENTS: readonly WriteRequirement[] = [
@@ -123,19 +150,34 @@ const WRITE_REQUIREMENTS: readonly WriteRequirement[] = [
     key: 'playback',
     label: 'playback control',
     tools: 'play, pause, seek, set_volume, skip_next/previous, set_repeat/shuffle',
-    scopes: ['user-modify-playback-state'],
+    anyOf: ['user-modify-playback-state'],
   },
   {
     key: 'playlists',
     label: 'playlist mutations',
-    tools: 'create_playlist, track add/remove/reorder, upload_playlist_cover',
-    scopes: ['playlist-modify-public', 'playlist-modify-private'],
+    tools: 'create_playlist, track add/remove/reorder',
+    // Either-of, matching `WRITE_SCOPE_REQUIREMENTS.playlists`. A public-only
+    // grant is a working grant.
+    anyOf: ['playlist-modify-public', 'playlist-modify-private'],
+  },
+  {
+    // #681: split out of the `playlists` group, which advertised
+    // `upload_playlist_cover` while checking only the modify scopes. The tool
+    // PUTs `/playlists/{id}/images` and Spotify 403s that without
+    // `ugc-image-upload` on the app, so the gap the check exists to catch was
+    // structurally uncatchable. Its own group also keeps the label honest: the
+    // playlists group's scope set does not cover this tool.
+    key: 'playlists',
+    label: 'playlist cover upload',
+    tools: 'upload_playlist_cover',
+    requiresAnyOf: ['playlist-modify-public', 'playlist-modify-private'],
+    allOf: ['ugc-image-upload'],
   },
   {
     key: 'library',
     label: 'library mutations',
     tools: 'save_to_library, remove_from_library',
-    scopes: ['user-library-modify'],
+    anyOf: ['user-library-modify'],
   },
   // #638: the `following` row is gone with `follow_artists` / `unfollow_artists`.
   // It existed to warn a caller whose token lacks `user-follow-modify` that
@@ -283,7 +325,65 @@ async function tokenRows(tokenFile: string): Promise<{ rows: DoctorRow[]; tokens
   return { rows, tokens };
 }
 
-/** Auth-time scopes vs the write tools enabled by the active toolsets. */
+/**
+ * Whether a write-scope requirement applies to this run, and if not, why.
+ *
+ * The predicate is `active_modules` — deliberately NOT `exposed_modules`, which
+ * is what #681 found this reading.
+ *
+ * `exposed_modules` subtracts `hidden_by_scopes` as well, and a module can only
+ * land in `hidden_by_scopes` BECAUSE its write scope is missing. Filtering the
+ * requirements by it therefore cancelled the check against its own subject: a
+ * token with no `user-modify-playback-state` hides `playback` by scope, which
+ * dropped the `playback` requirement from the loop, which is why the row reported
+ * "all write-requiring tools on the exposed surface are covered" for exactly the
+ * tokens with the largest gap. It never fired in production — only a token whose
+ * `scope` was literally empty, which fails OPEN in `moduleBlockedByScopes` and so
+ * hides nothing, ever produced a warn.
+ *
+ * The distinction the two surfaces draw: `exposed_modules` answers "what will
+ * `tools/list` return", which is the right question for the `surface` row. This
+ * row answers "what will 403 if a caller reaches for it", and a module hidden by
+ * scope is exactly the case worth reporting. Overrides ARE honoured, because
+ * `active_modules` is resolved through `isModuleActive(key, sets, overrides)` —
+ * the same call `index.ts` makes — so a disabled module is not registered and is
+ * correctly not asked about.
+ *
+ * READONLY is handled once, at row level, in `scopeRows`; it is not re-checked
+ * per requirement, because a second gate that must agree with the first is a
+ * second place for them to disagree.
+ */
+function requirementApplies(
+  req: WriteRequirement,
+  surface: DoctorSurface,
+): { applies: true } | { applies: false; reason: string } {
+  if (!surface.active_modules.includes(req.key)) {
+    return { applies: false, reason: `module ${req.key} is not registered on this surface` };
+  }
+  return { applies: true };
+}
+
+const READONLY_SCOPE_ROW: DoctorRow = {
+  id: 'scopes',
+  status: 'info',
+  summary:
+    'readonly mode — write tools are not registered, so write-scope gaps do not apply; the grant was not compared against the write surface',
+  detail:
+    `SPOTIFY_MCP_READONLY hides every write module, so no write tool on this surface can 403 for a missing scope. ` +
+    `Read the 'surface' row (hidden_by_readonly) for what READONLY removed. Unset it to check the write surface.`,
+};
+
+/**
+ * Auth-time scopes vs the write tools the configuration actually registers.
+ *
+ * Two properties this row has to hold, both of which it violated before #681:
+ *
+ *   - it must ask about the tools THIS run registers — trim, enable/disable
+ *     overrides and READONLY all decided by the same `isModuleActive` call
+ *     `index.ts` makes, not by static set membership;
+ *   - it must not let the scope gate silence it. A module removed for want of
+ *     a scope is the finding, not a reason to skip the finding.
+ */
 function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorRow[] {
   if (!tokens) return [];
   if (typeof tokens.scope !== 'string') {
@@ -297,26 +397,45 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
     ];
   }
 
+  // READONLY is not a trim the operator chose per-module; it removes the whole
+  // write surface by one switch, so the question "which write tools need what"
+  // has no answer here. Say so as its own row rather than reporting a `pass`
+  // that reads as "the grant was checked and is sufficient" — which is the
+  // confident-wrong-answer shape #681 is about, in the other direction.
+  if (surface.read_only) return [READONLY_SCOPE_ROW];
+
   const granted = new Set(tokens.scope.split(/\s+/).filter(Boolean));
-  // Report granted scopes count vs default
   const grantedList = [...granted].sort().join(', ');
 
   const gaps: string[] = [];
+  const skipped: string[] = [];
   for (const req of WRITE_REQUIREMENTS) {
-    if (!surface.exposed_modules.includes(req.key)) continue;
-    const missing = req.scopes.filter((scope) => !granted.has(scope));
+    const verdict = requirementApplies(req, surface);
+    if (!verdict.applies) {
+      skipped.push(`${req.label}: ${verdict.reason}`);
+      continue;
+    }
+    const missing = requiredScopesFor(req, granted);
     if (missing.length > 0) {
       gaps.push(`${req.label} (${req.tools}): missing ${missing.join(', ')}`);
     }
   }
+
+  const detail = [
+    gaps.length > 0 ? gaps.join('; ') : null,
+    skipped.length > 0 ? `not checked — ${skipped.join('; ')}` : null,
+    `granted: ${grantedList}`,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' | ');
 
   if (gaps.length === 0) {
     return [
       {
         id: 'scopes',
         status: 'pass',
-        summary: `all write-requiring tools on the exposed surface are covered by the granted scopes (${granted.size} scopes)`,
-        detail: `granted: ${grantedList}`,
+        summary: `all write-requiring tools registered on this surface are covered by the granted scopes (${granted.size} scopes)`,
+        detail,
       },
     ];
   }
@@ -325,9 +444,28 @@ function scopeRows(tokens: ParsedTokens | null, surface: DoctorSurface): DoctorR
       id: 'scopes',
       status: 'warn',
       summary: `${gaps.length} write capability group(s) lack required scopes — affected tools will 403 until you re-run "spotify-mcp auth"`,
-      detail: `${gaps.join('; ')} | granted: ${grantedList}`,
+      detail,
     },
   ];
+}
+
+/**
+ * The scopes a requirement is still missing, phrased for the operator.
+ *
+ * An either-of group that is unsatisfied reports the whole set, because any one
+ * of them would satisfy it and the operator has to pick — naming only the first
+ * would be an arbitrary suggestion. An all-of group reports only what is
+ * actually absent. A group whose precondition is unmet is not reported at all;
+ * the unsatisfied precondition is a bigger and more actionable gap than
+ * whatever this group would add.
+ */
+function requiredScopesFor(req: WriteRequirement, granted: Set<string>): string[] {
+  const { anyOf, allOf, requiresAnyOf } = req;
+  if (requiresAnyOf && !requiresAnyOf.some((scope) => granted.has(scope))) return [];
+  if (anyOf && !anyOf.some((scope) => granted.has(scope))) {
+    return [`any of ${anyOf.join(' | ')}`];
+  }
+  return (allOf ?? []).filter((scope) => !granted.has(scope));
 }
 
 /** Modules hidden by scope, keyed by the same scope-owner passed in index.ts. */
