@@ -22,7 +22,7 @@ machine; each one carries a gate marker and is covered by the outbound approval
 gate below, which is not optional.
 
 <!-- BEGIN:generated surface-census -->
-Current default production baseline: **570 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
+Current default production baseline: **571 tools**, **17 fixed resources**, **47 resource templates**, and **14 prompts**. Regenerate with `npm run count:tools -- --write`; never substitute historical prose.
 <!-- END:generated surface-census -->
 
 ## Outbound approval gate

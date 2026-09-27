@@ -1421,6 +1421,37 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
   manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2023], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  // #598. `alwaysActive` for the same reason `swarm3meta` above carries it:
+  // the DEFAULT session serves the `prompts` set, and `dj` /
+  // `playlist_from_mood` / `discover_weekly_alternative` / `crate_digging` now
+  // name this tool. A helper the default prompts reference but that a toolset
+  // trim can remove is a name in prose that resolves to nothing, which is the
+  // same defect the rate-limit footer was rebuilt to avoid (#715). It is one
+  // read-only tool, and the cost of carrying it in every session is the
+  // per-module figure measured below.
+  //
+  // `readOnlySafe: true` is a claim about the MODULE, and it holds: the tool
+  // calls no Spotify endpoint and writes no server state. It does issue a
+  // `sampling/createMessage` request to the HOST on a sampling-capable
+  // session, which spends host tokens — not a mutation of this server or the
+  // account, which is the axis `readOnlyHint` describes.
+  //
+  // Baseline pair MEASURED, not estimated: seeded a deliberately oversized
+  // pair, built, then read this module's tool count and schema bytes out of
+  // `perModule` / `perModuleSchemaBytes` in `node scripts/surface-census.mjs`.
+  // Deliberately NOT read from the census's `schemaBudgets` output, which
+  // echoes the manifest baseline back and would only have confirmed the seed.
+  // (The seed's own numbers are left out of this comment on purpose: prose
+  // that quotes a tool count is read as a claim about this module, which is
+  // the same trap `tests/doc-figures.test.ts` exists to catch.)
+  //
+  // The 987B is the description + inputSchema, which is what the per-module
+  // budget measures. The tool's actual cost to the aggregate tools/list was
+  // measured separately, by reverting this entry and re-running the census:
+  // 591,276B -> 592,376B, so +1,100B. The 113B difference is the tool name and
+  // its registry metadata, which the per-module formula excludes by design and
+  // the aggregate count includes.
+  manifestEntry('moodexpand', 'moodexpand', lazyModule('./moodexpand.js', 'registerMoodExpandTools'), [1, 987], { alwaysActive: true, readOnlySafe: true }),
   // #695: baseline is the DEFAULT surface (3 tools); `listening_heatmap` is a
   // derived listening-clock metric and registers only under
   // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS. Sized for the larger surface.
