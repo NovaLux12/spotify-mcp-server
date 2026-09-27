@@ -208,4 +208,38 @@ describe('#1358 — the erasure-safety check must use the env the stores came fr
     assert.match(output(), /exports\s+REFUSED\s+Exports/);
     assert.match(output(), /is the home directory/);
   });
+
+  it('refuses, rather than erases, a store that points outside the sandbox', async () => {
+    // The other half of the same contract, and the one that decides what
+    // happens to a path *outside* the home this run declared: refused, never
+    // erased. A symlinked store is the shape that gets there — the link's
+    // target is not what the user was asked about, and following it is how the
+    // #623 class of bug reaches outside the store. (`runLogout` derives each
+    // store's root from its own path, so the realpath-containment rule cannot
+    // be reached from here; `tests/logout.test.ts` covers it with a
+    // hand-built store, which is the only way to state it.)
+    //
+    // The victim is a `mkdtemp` sibling, not something outside this file's own
+    // root: a test that proved the guard by pointing it at a real directory
+    // would be betting the user's files on the guard being right.
+    const box = sandbox();
+    const escapeRoot = await fs.mkdtemp(join(tmpdir(), 'spotify-mcp-logout-escape-'));
+    created.push(escapeRoot);
+    const victim = join(escapeRoot, 'precious.json');
+    await fs.writeFile(victim, 'do not delete me', { mode: 0o600 });
+
+    // A directory inside the declared home, holding a link to the escape root.
+    const exportsDir = join(box.data, 'exports');
+    await fs.mkdir(exportsDir, { recursive: true, mode: 0o700 });
+    await fs.symlink(escapeRoot, join(exportsDir, 'linked'));
+    const env = { ...box.env, SPOTIFY_MCP_EXPORT_DIR: join(exportsDir, 'linked') };
+
+    const { io: seam, output } = io('y');
+    const code = await runLogout([], seam, { env, allowGioTrash: false });
+
+    assert.match(output(), /exports\s+REFUSED/);
+    assert.match(output(), /is a symlink to/);
+    assert.equal(code, 1, 'a refusal must not exit 0');
+    assert.equal(await fs.readFile(victim, 'utf8'), 'do not delete me');
+  });
 });
