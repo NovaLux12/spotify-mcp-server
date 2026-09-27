@@ -32,11 +32,18 @@ export type ProseUnitPin = { hash: string; label: string };
 /** A pin that was deliberately dropped, with the reason it was dropped. */
 export type ProseRetirement = ProseUnitPin & { file: string; date: string; reason: string };
 
+/**
+ * The commit a sync ran against, recorded so a later reader can tell a genuine
+ * deletion from one a rebase manufactured (#1440).
+ */
+export type ProseProvenance = { head: string; upstream: string | null; behind: boolean };
+
 /** The hand-maintained pin file, as `scripts/doc-prose-manifest.json` holds it. */
 export type ProseManifest = {
   note?: string;
   files?: Record<string, ProseUnitPin[]>;
   retired?: ProseRetirement[];
+  provenance?: ProseProvenance;
 };
 
 /**
@@ -90,3 +97,108 @@ export function syncProseManifest(
   retired: ProseRetirement[];
   refused: boolean;
 };
+
+/**
+ * What a working tree can prove about itself, as `gitProvenanceIn` reports it.
+ *
+ * `usable` is false rather than throwing on every failure: this runs on source
+ * tarballs and shallow CI checkouts, and the caller's job is to *refuse* on a
+ * tree it cannot vouch for, not to crash before it can explain itself.
+ */
+export type GitProvenance = {
+  usable: boolean;
+  head: string | null;
+  upstream: string | null;
+  behind: boolean;
+  detached: boolean;
+  dirty: string[];
+  note: string;
+};
+
+/**
+ * The two refusal classes, kept apart on purpose.
+ *
+ * A hard refusal has no escape — there is no tree to record provenance against,
+ * and a guess would be the false record the pin exists to prevent. A soft one
+ * names a situation rather than a defect, and is what `--allow-stale "<why>"`
+ * acknowledges: it does not silence the warning, it moves the reason into
+ * `provenance` where a reviewer reads it beside the retirement it qualifies.
+ */
+export type ProseSyncRefusals = { hard: string[]; soft: string[] };
+
+/**
+ * The read side of #1440, which *reports* where the write side refuses.
+ *
+ * `unverifiable` is not an error: a `fetch-depth: 1` CI checkout cannot prove
+ * ancestry, and a gate that goes red for that is a gate people learn to ignore.
+ */
+export type ProseProvenanceVerdict = {
+  status: 'verified' | 'rewritten' | 'unverifiable' | 'unrecorded';
+  error: string | null;
+  detail: string;
+};
+
+/**
+ * Record the commit a manifest was generated from, beside the content it
+ * describes — a SHA alone does not say whether the tree predates a docs PR.
+ */
+export function stampProvenance(
+  manifest: ProseManifest,
+  provenance: { head: string; upstream?: string | null; behind?: boolean },
+): ProseManifest & { provenance: ProseProvenance };
+
+/**
+ * Read the provenance of the working tree in `dir` (#1440).
+ *
+ * `dirty` is filtered to the paths the pin actually depends on: a dirty
+ * `src/tools/foo.ts` cannot make a prose retirement false, and refusing on it
+ * would train people to pass `--allow-stale` out of habit until the flag stops
+ * meaning anything.
+ */
+export function gitProvenanceIn(
+  dir: string,
+  options?: { docFiles?: string[]; manifestPath?: string },
+): GitProvenance;
+
+/** The staleness cases `--prose-sync` has to refuse, split by whether they can be. */
+export function proseSyncRefusals(
+  provenance: GitProvenance,
+  options?: { allowStale?: string | null },
+): ProseSyncRefusals;
+
+/** The short form of a SHA used in messages, or a placeholder for a missing one. */
+export function short(sha: string | null | undefined): string;
+
+/**
+ * Check a manifest's recorded provenance against the tree it now sits in.
+ *
+ * `ancestor` is injected rather than shelled out to, so the caller decides what
+ * "ancestor" costs to determine and this stays testable without a repository.
+ * It returns `true`/`false` for a commit that is or is not in history, and
+ * `null` for one whose object is absent — a shallow clone, not a verdict.
+ */
+export function proseProvenanceVerdict(
+  manifest: ProseManifest,
+  options: { ancestor: (recorded: string) => boolean | null },
+): ProseProvenanceVerdict;
+
+/**
+ * Read documents as they are at a ref.
+ *
+ * A file absent at that ref is **omitted**, not returned as an empty string: a
+ * document that does not exist upstream is a different fact from one that
+ * exists and is empty, and the caller has to be able to tell them apart.
+ */
+export function readFilesAtRef(dir: string, ref: string, files: string[]): ProseDocuments;
+
+/**
+ * Which of the paragraphs a run is about to retire are *still present upstream*.
+ *
+ * Matched by content hash, not by label prefix: a partial reword keeps the
+ * opening and changes the tail, and matching the label would report that
+ * legitimate retirement as contradicted — refusing the tool's actual job.
+ */
+export function contradictedByUpstream(
+  dropped: Array<ProseUnitPin & { file: string }>,
+  upstreamDocuments: ProseDocuments,
+): Array<ProseUnitPin & { file: string }>;
