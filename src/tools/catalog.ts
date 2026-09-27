@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { getConfig } from '../config.js';
 import { isGatedError, isRemovedEndpointFailure } from '../gating.js';
 import { publisherByline } from '../removed.js';
 import type {
@@ -578,22 +579,38 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       // reached the paged branch and silently missed the walk.
       const market = await resolveRequestMarket(client, args.market);
       let result: SpotifyArtistAlbumsResponse | null;
+      // #886: `fetch_all` is a documented BYPASS of `max_results` (see
+      // `renderList`), so the walk may not take its cap from it. It used to,
+      // which made `fetch_all` with a lowered `max_results` read one page and
+      // then report that page's length as the artist's total. The walk is
+      // bounded by the fetch-all cap like every other fetch_all path.
+      let walk: { items: SpotifyArtistAlbumsResponse['items'][number][]; truncated: boolean; reportedTotal: number | null } | null = null;
       if (args.fetch_all) {
-        const items = await client.getAllPages<SpotifyArtistAlbumsResponse['items'][number]>(
+        const walked = await client.getAllPagesWithTruncation<SpotifyArtistAlbumsResponse['items'][number]>(
           `/artists/${encodeURIComponent(args.id)}/albums`,
           {
             include_groups: (args.include_groups ?? ['album', 'single']).join(','),
             limit: String(ARTIST_ALBUM_PAGE_LIMIT),
             ...(market.market ? { market: market.market } : {}),
           },
-          { maxItems: args.max_results },
+          { maxItems: getConfig().fetchAllCap },
         );
+        walk = walked;
         // #1343: this synthesized a `href: ''` and a `previous` the paged
         // wrapper does not have, then cast the whole thing. `total` is the
         // number of rows the walk actually returned — not a count Spotify
         // stated for the collection — so it is derived from what was read
-        // rather than asserted to be a page.
-        result = { items, total: items.length, limit: items.length, offset: 0, next: null };
+        // rather than asserted to be a page. When Spotify DID state a total
+        // for the collection, that is the truer number, and #886 is what makes
+        // the difference visible: a walk stopped at the cap must not read as
+        // "this artist has N albums".
+        result = {
+          items: walked.items,
+          total: walked.reportedTotal ?? walked.items.length,
+          limit: walked.items.length,
+          offset: 0,
+          next: null,
+        };
       } else {
         result = (await getWithMarketFallback<SpotifyArtistAlbumsResponse>(
           client,
@@ -613,15 +630,29 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       }
       return withMarketSource(
         renderList(args.response_format, result.items, {
-          header: `Albums for artist (${result.total} total):`,
+          // A walk bounded by the fetch-all cap says what it read, and says so
+          // when the cap cut the collection short. Reporting `result.total`
+          // alone would let a capped walk read as the artist's whole discography.
+          header: walk
+            ? `Albums for artist (walked ${walk.items.length} of ${result.total}${walk.truncated ? ` — fetch-all cap ${getConfig().fetchAllCap} reached, albums past it were not read` : ''}):`
+            : `Albums for artist (${result.total} total):`,
           line: (album) => {
             const artists = album.artists.map((a) => a.name).join(', ');
             return `  • "${album.name}" by ${artists} (${album.album_type}, ${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`;
           },
           total: result.total,
-          offset: args.offset,
-          limit: Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT),
-          maxResults: args.max_results,
+          // A fetch_all response is one completed walk, not a page: there is no
+          // offset to resume from and no `limit` to echo back as a page size.
+          offset: walk ? undefined : args.offset,
+          limit: walk ? undefined : Math.min(args.limit ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT),
+          // renderList re-slices by `maxResults`; under fetch_all the handler
+          // returns everything it walked and says so, so re-slicing would make
+          // the text and structuredContent disagree about the same response.
+          // The cap is the WALKED count, not `max_results` and not `undefined`:
+          // `undefined` resolves to SPOTIFY_MCP_MAX_ITEMS (50), which would
+          // re-truncate the very rows the caller asked to walk.
+          maxResults: walk ? walk.items.length : args.max_results,
+          extra: walk ? { fetch_all: true, walked: walk.items.length, truncated_by_cap: walk.truncated } : undefined,
         }),
         market,
       );
@@ -702,16 +733,26 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       // configured default reaches it instead of only the paged branch.
       const market = await resolveRequestMarket(client, args.market);
       let result: SpotifyPaged<SpotifyTrackSimple> | null;
+      // #886: as in `get_artist_albums`, `fetch_all` bypasses `max_results`, so
+      // the walk takes the fetch-all cap and not the display cap.
+      let walk: { items: SpotifyTrackSimple[]; truncated: boolean; reportedTotal: number | null } | null = null;
       // #1343: `fetch_all` is declared by the schema directly above; the cast
       // that used to read it was laundering a known field into an `unknown`
       // for no gain.
       if (args.fetch_all) {
-        const items = await client.getAllPages<SpotifyTrackSimple>(
+        const walked = await client.getAllPagesWithTruncation<SpotifyTrackSimple>(
           `/albums/${encodeURIComponent(args.id)}/tracks`,
           market.market ? { market: market.market } : undefined,
-          { maxItems: args.max_results }
+          { maxItems: getConfig().fetchAllCap }
         );
-        result = { items, total: items.length, limit: items.length, offset: 0, next: null } as SpotifyPaged<SpotifyTrackSimple>;
+        walk = walked;
+        result = {
+          items: walked.items,
+          total: walked.reportedTotal ?? walked.items.length,
+          limit: walked.items.length,
+          offset: 0,
+          next: null,
+        } as SpotifyPaged<SpotifyTrackSimple>;
       } else {
         result = (await getWithMarketFallback<SpotifyPaged<SpotifyTrackSimple>>(
           client,
@@ -730,15 +771,18 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       }
       return withMarketSource(
         renderList(args.response_format, result.items, {
-          header: `Tracks for album (${result.total} total):`,
+          header: walk
+            ? `Tracks for album (walked ${walk.items.length} of ${result.total}${walk.truncated ? ` — fetch-all cap ${getConfig().fetchAllCap} reached, tracks past it were not read` : ''}):`
+            : `Tracks for album (${result.total} total):`,
           line: (track) => {
             const trackArtists = track.artists.map((a) => a.name).join(', ');
             return `  ${track.track_number}. "${track.name}" by ${trackArtists} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`;
           },
           total: result.total,
-          offset: args.offset,
-          limit: args.limit ?? 20,
-          maxResults: args.max_results,
+          offset: walk ? undefined : args.offset,
+          limit: walk ? undefined : args.limit ?? 20,
+          maxResults: walk ? walk.items.length : args.max_results,
+          extra: walk ? { fetch_all: true, walked: walk.items.length, truncated_by_cap: walk.truncated } : undefined,
         }),
         market,
       );

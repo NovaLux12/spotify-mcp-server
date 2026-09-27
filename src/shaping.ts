@@ -91,7 +91,25 @@ export const ResponseFormat = z
   .describe("'concise' = human prose, 'detailed' = more fields in prose, 'json' = raw API object");
 export type ResponseFormatValue = z.infer<typeof ResponseFormat>;
 
-/** Optional per-call truncation override for list-type tools (#53). */
+/**
+ * Optional per-call truncation override for list-type tools (#53).
+ *
+ * ONE meaning, and only this one (#886): how many ROWS to render from a result
+ * set the tool has already produced. It is a display cap and never a work cap.
+ * A tool that must bound how much it FETCHES declares its own, correctly named
+ * parameter for that — `item_cap` (a snapshot walk), `walk_cap` (a backup
+ * walk), `fetch_all_cap`, `max_removals` — because a caller's reflex for
+ * shrinking a response is to lower `max_results`, and a walk cap wearing this
+ * name silently truncates durable output (a snapshot file, a backup file)
+ * rather than a page of prose.
+ *
+ * This is the canonical DECLARATION, but not every tool uses it: several
+ * modules declare `max_results` locally with a shorter wording of the same
+ * rule, which is left alone. The rule is not about wording but about flow, so
+ * it is enforced where it can be checked mechanically — see
+ * `tests/max-results-contract.test.ts`, which fails if any `maxItems` in
+ * `src/tools/` takes its value from `max_results`.
+ */
 export const MaxResults = z
   .number()
   .int()
@@ -99,6 +117,31 @@ export const MaxResults = z
   .max(2000)
   .optional()
   .describe(`Max items to return (default: SPOTIFY_MCP_MAX_ITEMS env or ${DEFAULT_MAX_ITEMS})`);
+
+/**
+ * A cap on how much a tool WALKS, for a tool whose result is a durable file
+ * rather than a page of rows (#886).
+ *
+ * Named to match what it bounds, and described as what it is: a caller who
+ * wants a smaller ANSWER has `max_results` for that. Someone reaching for this
+ * parameter is deliberately bounding the work, and the description has to say
+ * so — the whole defect was one name carrying both jobs.
+ *
+ * @param subject What the walk covers, in the tool's own words ("playlist items").
+ * @param capEnv  The env var naming the default, for the description.
+ */
+export function walkCap(subject: string, capEnv: string) {
+  return z
+    .number()
+    .int()
+    .positive()
+    .max(2000)
+    .optional()
+    .describe(
+      `Cap on ${subject} walked for THIS call (default: ${capEnv}). `
+      + 'Bounds what is READ, not rows rendered — use max_results to shrink the response.',
+    );
+}
 
 /** Opt-in preview mode for destructive operations (#57). */
 export const DryRun = z
@@ -610,6 +653,69 @@ export function retiredInputMessage(retired: readonly string[], canonical: strin
     ? `${retired[0]} was removed in ${RETIRED_PLAYLIST_INPUTS_REMOVED_IN}`
     : `${retired.join(' and ')} were removed in ${RETIRED_PLAYLIST_INPUTS_REMOVED_IN}`;
   return `${subject}; use ${canonical} instead.`;
+}
+
+/**
+ * The release that withdrew `max_results` as a walk cap from two tools (#886).
+ *
+ * A second constant rather than a reuse of the playlist one, because that one
+ * is named for what it governs and borrowing it would make the name a lie. The
+ * value is not free to differ: `tests/max-results-contract.test.ts` asserts the
+ * two agree, so "removed in v3.0" is one promise stated in two tables and
+ * cannot drift into a third version.
+ */
+export const RETIRED_WALK_CAP_INPUTS_REMOVED_IN = 'v3.0';
+
+/** One tool's withdrawn walk-cap name, and what replaced it. */
+export type WalkCapRetirement = { retired: string; canonical: string };
+
+/**
+ * The tools that published `max_results` as a WORK cap and no longer do (#886).
+ *
+ * Both were durable-write tools: `take_playlist_snapshot` walked playlist
+ * items and `backup_library` walked per category, and each wrote the capped
+ * result to a file. A caller's reflex — lower `max_results` to keep a response
+ * small — therefore truncated a **snapshot or backup on disk** while the
+ * response looked normal. The caps now carry their own names.
+ *
+ * A separate table from `RETIRED_PLAYLIST_INPUTS` because the replacement is
+ * per-tool here, not derived from a `kind`: both tools retired the same name
+ * and each has a different successor, which the playlist shape cannot express.
+ */
+export const RETIRED_WALK_CAP_INPUTS: Readonly<Record<string, WalkCapRetirement>> = Object.freeze({
+  take_playlist_snapshot: { retired: 'max_results', canonical: 'item_cap' },
+  backup_library: { retired: 'max_results', canonical: 'walk_cap' },
+});
+
+/**
+ * The retired walk cap on one call, or `undefined` when it carries none.
+ *
+ * `undefined` for an unlisted tool as well as for a listed tool that did not
+ * send the name, so a caller cannot tell the two apart by accident and neither
+ * can invent a retirement for a tool this table says nothing about.
+ */
+export function retiredWalkCapOnCall(
+  tool: string,
+  args: Readonly<Record<string, unknown>>,
+): WalkCapRetirement | undefined {
+  if (!Object.hasOwn(RETIRED_WALK_CAP_INPUTS, tool)) return undefined;
+  const config = RETIRED_WALK_CAP_INPUTS[tool];
+  if (!config) return undefined;
+  return args[config.retired] === undefined ? undefined : config;
+}
+
+/**
+ * The refusal text for a call still sending a retired walk cap.
+ *
+ * It names the name the caller sent AND the name that replaced it, because the
+ * generic unknown-parameter message does neither: it tells the caller to "use
+ * only parameters advertised by the tool schema", which is a claim the server
+ * never had `max_results` — false, it published it through 2.1.2 — and leaves
+ * the caller to go re-read a schema to discover what to send instead.
+ */
+export function retiredWalkCapMessage(retirement: WalkCapRetirement): string {
+  return `${retirement.retired} was removed as a walk cap in ${RETIRED_WALK_CAP_INPUTS_REMOVED_IN}; `
+    + `use ${retirement.canonical} instead.`;
 }
 
 /** The release that stopped REGISTERING the legacy taste_* tool names (#908). */

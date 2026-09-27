@@ -331,11 +331,13 @@ test('get_artist_albums fetch_all pages at 10, consults the default chain, and o
       calls.push({ method: 'GET', path, ...(params === undefined ? {} : { params }) });
       return null;
     },
-    getAllPages: async (path: string, params?: Record<string, string>) => {
+    getAllPagesWithTruncation: async (path: string, params?: Record<string, string>) => {
       calls.push({ method: 'GET', path, params });
       assert.equal(params?.limit, '10');
       assert.equal(params?.market, undefined);
-      return [];
+      // #886: the walk takes the fetch-all cap, not the display cap, and the
+      // verdict is returned rather than stored (#864).
+      return { items: [], truncated: false, truncatedByCap: false, reportedTotal: null, pages: 1 };
     },
     post: async () => null,
     put: async () => undefined,

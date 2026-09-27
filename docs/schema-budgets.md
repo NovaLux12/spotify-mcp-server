@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 594,200B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 594,390B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 64,959B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 17,800B | 2.9% of the enforced limit |
+| Headroom | 17,610B | 2.9% of the enforced limit |
 
-Headroom is **17,800B** of the 612,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
+Headroom is **17,610B** of the 612,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -194,7 +194,7 @@ than maintained.
 | saveddedupe | 1 | 1,438 | 1 | 1,438 | 2 | 1,582 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
 | backupfirst | 1 | 513 | 1 | 513 | 2 | 565 |
-| backup | 2 | 1,632 | 2 | 1,632 | 3 | 1,796 |
+| backup | 2 | 1,724 | 2 | 1,724 | 3 | 1,897 |
 | backupdelete | 1 | 959 | 1 | 959 | 2 | 1,055 |
 | restore | 1 | 2,072 | 1 | 2,072 | 2 | 2,280 |
 | undo | 2 | 1,663 | 2 | 1,663 | 3 | 1,830 |
@@ -229,7 +229,7 @@ than maintained.
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
 | swarm3playback | 17 | 10,006 | 17 | 10,006 | 18 | 11,007 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |
-| swarm3snapshots | 24 | 23,731 | 24 | 23,731 | 25 | 26,105 |
+| swarm3snapshots | 24 | 23,829 | 24 | 23,829 | 25 | 26,212 |
 | swarm4playlists | 18 | 23,228 | 18 | 23,228 | 19 | 25,551 |
 <!-- END:generated schema-budget-table -->
 

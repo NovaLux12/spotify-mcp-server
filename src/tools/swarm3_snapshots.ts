@@ -26,6 +26,7 @@ import {
   resolveMaxResults,
   truncateItems,
   parseSpotifyUri,
+  walkCap,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
@@ -481,7 +482,12 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
     {
       playlist: spotifyId('playlist').describe('Playlist ID or spotify:playlist: URI to snapshot'),
       notes: z.string().optional().describe('Free-text note stored in the snapshot _meta block'),
-      max_results: MaxResults,
+      // #886: this was `max_results`, the shared DISPLAY cap. Lowering it to
+      // keep a response small silently truncated the snapshot FILE instead, so
+      // the walk cap now carries its own name and `max_results` means rows
+      // rendered. There is nothing to render here — the tool returns a receipt
+      // for a file on disk — so the display cap is not declared at all.
+      item_cap: walkCap('playlist items', 'SPOTIFY_MCP_FETCH_ALL_CAP'),
       response_format: ResponseFormat,
       dry_run: DryRunDefault,
     },
@@ -489,7 +495,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
       const playlistId = normalizePlaylistRef(args.playlist);
       // ONE derivation of the walk ceiling: the dry run advertises this exact
       // number and the commit walk is bounded by this exact number (#878).
-      const cap = resolveMaxResults(args.max_results, getConfig().fetchAllCap);
+      const cap = resolveMaxResults(args.item_cap, getConfig().fetchAllCap);
       if (isDry(args)) {
         const payload: Record<string, unknown> = {
           dry_run: true,
@@ -550,7 +556,7 @@ export function registerSwarm3SnapshotsTools(server: McpServer, client: SpotifyC
         `- Playlist: ${live.name} (${live.id})`,
         `- Tracks: ${live.tracks.length} (${unique.size} unique${live.reported_total !== null ? `, reported total ${live.reported_total}` : ''})`,
         ...(live.cap_reached
-          ? [`- TRUNCATED: item walk stopped at the cap of ${live.item_walk_cap} items; the playlist is larger — raise max_results to cover more.`]
+          ? [`- TRUNCATED: item walk stopped at the cap of ${live.item_walk_cap} items; the playlist is larger — raise item_cap to cover more.`]
           : []),
       ].join('\n');
       return emit(args.response_format, prose, payload);

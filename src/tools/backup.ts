@@ -24,7 +24,7 @@
  * names every shortfall through the shared completenessFooter vocabulary.
  *
  * Every walk is capped at getConfig().fetchAllCap (SPOTIFY_MCP_FETCH_ALL_CAP,
- * default 500); an explicit max_results argument overrides it for this call.
+ * default 500); an explicit walk_cap argument overrides it for this call.
  */
 import { z } from 'zod';
 import { lstat, mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises';
@@ -38,6 +38,7 @@ import {
   DryRun,
   completenessFooter,
   describeDryRun,
+  walkCap,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
@@ -1012,17 +1013,15 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
     {
       notes: z.string().optional().describe('Free-text note stored in the snapshot _meta block'),
       response_format: ResponseFormat,
-      max_results: z
-        .number()
-        .int()
-        .positive()
-        .max(2000)
-        .optional()
-        .describe('Per-category walk cap for THIS call (default: SPOTIFY_MCP_FETCH_ALL_CAP)'),
+      // #886: this was `max_results`, declared LOCALLY with a description that
+      // said "walk cap" — the tell. It was never the display cap; it bounded
+      // the per-category walk whose result is written to a backup file, so
+      // lowering it to shrink a response silently truncated the file on disk.
+      walk_cap: walkCap('items per category', 'SPOTIFY_MCP_FETCH_ALL_CAP'),
       dry_run: DryRun,
     },
     async (args) => {
-      const cap = args.max_results ?? getConfig().fetchAllCap;
+      const cap = args.walk_cap ?? getConfig().fetchAllCap;
       if (args.dry_run) {
         const perCatPages = Math.ceil(cap / 50);
         const wouldWalk = {
@@ -1134,7 +1133,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
             pruned: prune.removed,
             bytes_freed: prune.bytes_freed,
           };
-          const prose = `Quota hit during backup_library (Retry-After: ${quotaHit.retry_after ?? 'unknown'}s) — partial snapshot${file ? ` written to ${file}` : ' (no file)'} . Retry later or lower max_results.`;
+          const prose = `Quota hit during backup_library (Retry-After: ${quotaHit.retry_after ?? 'unknown'}s) — partial snapshot${file ? ` written to ${file}` : ' (no file)'} . Retry later or lower walk_cap.`;
           return shapeResult(args.response_format, prose, payload);
         }
         throw e;
