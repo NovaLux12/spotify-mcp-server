@@ -748,7 +748,7 @@ async function buildRegistry(): Promise<McpServer> {
     getAllPages: async () => [],
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   } as never;
-  const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
   const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, context);
   for (const module of loaded) registerManifestModule(server, client, module, context);
   return server;

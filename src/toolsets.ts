@@ -101,6 +101,34 @@ export const TOOLSETS: Record<string, readonly string[]> = {
 const ALL_KEYS: readonly string[] = Object.values(TOOLSETS).flat();
 
 /**
+ * Registration keys an operator may name in `SPOTIFY_MCP_ENABLE_TOOLS` /
+ * `SPOTIFY_MCP_DISABLE_TOOLS` that are not members of any set, because their
+ * manifest row carries `alwaysActive` (#580).
+ *
+ * These are real registration keys, so the override resolver has to recognise
+ * them. It used to learn the legal vocabulary from `ALL_KEYS` alone, which made
+ * `DISABLE_TOOLS=doctor` print "Unknown SPOTIFY_MCP_DISABLE_TOOLS entry
+ * ignored" and then register `spotify_doctor` anyway — one line telling the
+ * operator the key was meaningless while the module stayed on the surface. The
+ * registry gate honours the override for exactly these keys, so a key the
+ * override cannot even name is a key the override cannot be used to turn off.
+ *
+ * Kept as a literal rather than derived from the manifest because this module
+ * is a leaf: `annotations.ts` statically imports `doctortool.ts`, which
+ * imports this one, so reaching the manifest from here would close a cycle and
+ * pull every registrar into anything that only wanted the set names. The list
+ * is therefore PINNED to the manifest's own `alwaysActive` flag by
+ * `tests/toolsets.test.ts`, so a fifth ungated row cannot land without that
+ * test failing — the same drift guard the census applies to tool names.
+ */
+export const UNGATED_REGISTRATION_KEYS: readonly string[] = [
+  'doctor',
+  'swarm3meta',
+  'moodexpand',
+  'receipts',
+];
+
+/**
  * The sets registered when `SPOTIFY_MCP_TOOLSETS` is unset, empty, or
  * whitespace (#889).
  *
@@ -231,7 +259,7 @@ export function resolveToolOverrides(
   unknown: { enable: string[]; disable: string[] };
 } {
   const known: Record<string, true> = {};
-  for (const k of ALL_KEYS) known[k.toLowerCase()] = true;
+  for (const k of [...ALL_KEYS, ...UNGATED_REGISTRATION_KEYS]) known[k.toLowerCase()] = true;
 
   const parse = (
     spec: string | undefined,

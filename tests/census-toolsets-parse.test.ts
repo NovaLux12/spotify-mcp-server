@@ -141,13 +141,29 @@ function writeFixture(dir: string, name: string, source: string): string {
  * the expectation. These two are the pair the issue is about — same entries,
  * same keys, one indentation level apart — and holding them as literals is what
  * makes "only the indentation differs" checkable by reading them side by side.
+ *
+ * It carries `UNGATED_REGISTRATION_KEYS` too, because the census reads that
+ * literal as well (#580). A fixture without it is not a well-formed module any
+ * more: the parse fails closed on a missing literal, which is the correct
+ * behaviour and would make this fixture assert a throw rather than a parse.
+ * `swarm3meta` is deliberately in both, mirroring the real file, where it is a
+ * toolset member *and* ungated — so the union below is what proves the census
+ * dedupes rather than concatenates.
  */
 const WELL_FORMED = [
   'export const TOOLSETS: Record<string, readonly string[]> = {',
   "  core: ['search', 'library'],",
   "  playback: ['playback'],",
   "  catalog: ['catalog', 'browse'],",
+  "  swarm3meta: ['swarm3meta'],",
   '} as const;',
+  '',
+  'export const UNGATED_REGISTRATION_KEYS: readonly string[] = [',
+  "  'doctor',",
+  "  'swarm3meta',",
+  "  'moodexpand',",
+  "  'receipts',",
+  '];',
   '',
 ].join('\n');
 
@@ -163,8 +179,18 @@ describe('#1513 the TOOLSETS parse fails closed on a zero-match', () => {
       // Asserted against literals written above, not recomputed from the
       // fixture: an expectation derived from the same input the code under test
       // reads proves nothing (AGENTS.md §6).
-      assert.deepEqual(parsed.toolsets, ['core', 'playback', 'catalog']);
-      assert.deepEqual(parsed.registrationKeys, ['search', 'library', 'playback', 'catalog', 'browse']);
+      assert.deepEqual(parsed.toolsets, ['core', 'playback', 'catalog', 'swarm3meta']);
+      // The union in the order the census builds it: every toolset member, then
+      // every ungated key. `swarm3meta` is deliberately in both terms, so it
+      // appears TWICE here — this is the raw concatenation, and the dedupe is
+      // the caller's (`[...new Set(allRegistrationKeysFromSource())]` in
+      // `registrationKeyList`). Asserting the deduped list at this layer would
+      // be asserting a behaviour this function does not have, and the rendered
+      // block's single `swarm3meta` is what proves the caller dedupes.
+      assert.deepEqual(
+        parsed.registrationKeys,
+        ['search', 'library', 'playback', 'catalog', 'browse', 'swarm3meta', 'doctor', 'swarm3meta', 'moodexpand', 'receipts'],
+      );
     });
   });
 

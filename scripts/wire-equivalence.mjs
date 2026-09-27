@@ -338,7 +338,7 @@ export async function captureSnapshot() {
   // the whole surface rather than the curated default. A snapshot of the
   // default would miss every tool a `SPOTIFY_MCP_TOOLSETS=all` host sees, and
   // those are exactly the tools a refactor consolidates.
-  const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const context = { readOnly: false, disableOverrides: new Set(), isModuleActive: () => true, scopeBlocked: () => false };
   for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, context)) {
     registerManifestModule(server, stubClient(), module, context);
   }

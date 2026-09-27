@@ -50,6 +50,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { UNGATED_REGISTRATION_KEYS, allRegistrationKeys } from '../src/toolsets.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -160,6 +161,26 @@ function documentedAsUnsupported(): Set<string> {
   return out;
 }
 
+/**
+ * The registration keys `SPOTIFY_MCP_ENABLE_TOOLS` / `SPOTIFY_MCP_DISABLE_TOOLS`
+ * accept, as docs/configuration.md lists them: the backticked tokens on the
+ * line after "complete key list is".
+ *
+ * Anchored on that sentence deliberately. A scan for backticked snake_case
+ * tokens anywhere in the file would also match tool names and file paths, and
+ * a list that cannot be located precisely cannot be compared precisely.
+ */
+function documentedRegistrationKeys(): Set<string> {
+  const text = read('docs/configuration.md');
+  const marker = 'complete key list is:';
+  const at = text.indexOf(marker);
+  assert.notEqual(at, -1, 'docs/configuration.md no longer says "complete key list is:"');
+  const after = text.slice(at + marker.length);
+  const line = after.slice(after.indexOf('`')).split('\n').find((l) => l.includes('`'));
+  assert.ok(line, 'the registration-key list must be a backticked run of keys on one line');
+  return new Set([...line.matchAll(/`([^`]+)`/g)].map((m) => m[1]!));
+}
+
 describe('advertised environment variables (#590)', () => {
   const readSet = readVariables();
   const declared = declaredIdentifiers();
@@ -207,6 +228,30 @@ describe('advertised environment variables (#590)', () => {
         + 'row for them, so the knob is unsettable from the documentation an operator '
         + 'is pointed at:\n  ' + unadvertised.join('\n  ')
         + '\nAdd a summary-table row, or stop reading the variable.',
+    );
+  });
+
+  it('names exactly the registration keys the override resolver accepts (#580)', () => {
+    // The page says "The complete key list is". It was not complete: `accounts`
+    // was missing, and so were the three ungated rows — so the one sentence an
+    // operator consults before reaching for the override to shrink a too-large
+    // surface omitted a quarter of what they could name. Both directions,
+    // because both are operator-visible: a listed key the resolver rejects is
+    // reported "Unknown ... entry ignored" at startup, and a real key absent
+    // from the list is simply not discoverable.
+    //
+    // `accounts` was missing before #580 too — it is a toolset key like any
+    // other and its absence was never a consequence of the ungated flag. It is
+    // fixed here because the sentence it sits in is the claim being made true.
+    const documented = documentedRegistrationKeys();
+    const accepted = new Set<string>([...allRegistrationKeys, ...UNGATED_REGISTRATION_KEYS]);
+    const unlisted = [...accepted].filter((key) => !documented.has(key)).sort();
+    const bogus = [...documented].filter((key) => !accepted.has(key)).sort();
+    assert.deepEqual(unlisted, [], 'These registration keys work but the reference omits them:\n  ' + unlisted.join('\n  '));
+    assert.deepEqual(
+      bogus,
+      [],
+      'These are listed as registration keys but the resolver rejects them as unknown:\n  ' + bogus.join('\n  '),
     );
   });
 

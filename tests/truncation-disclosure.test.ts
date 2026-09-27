@@ -191,7 +191,7 @@ async function observeRegisteredToolNames(): Promise<Set<string>> {
 
   const resolved = await loadManifestRegistrars(REGISTRAR_MANIFEST, {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   });
   for (const { key, registrar } of resolved) {

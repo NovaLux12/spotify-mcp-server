@@ -299,7 +299,7 @@ async function measureOwnership(): Promise<Map<string, string[]>> {
   const client = new SpotifyClient();
   const context: RegistrarManifestContext = {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   };
   await registerManifestModules(server, client, context);

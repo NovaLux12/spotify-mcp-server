@@ -1541,7 +1541,7 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
     // (#906). It asks for the resolved manifest explicitly rather than going
     // through `registerManifestModules`, which would gate on the census's own
     // context — this loop registers unconditionally to attribute every name.
-    const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const censusContext = { readOnly: false, disableOverrides: new Set(), isModuleActive: () => true, scopeBlocked: () => false };
     const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, censusContext);
     for (const module of loaded) {
       registerManifestModule(server, clientStub, module, censusContext);
@@ -1660,7 +1660,7 @@ async function measureGatedSurface() {
     getAllPages: async () => [],
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
-  const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const censusContext = { readOnly: false, disableOverrides: new Set(), isModuleActive: () => true, scopeBlocked: () => false };
   const measurePass = async () => {
     const server = new McpServer({ name: 'gated-census', version: '0.0.0' });
     try {
@@ -2038,8 +2038,67 @@ function parseToolsetsModule(source = readFileSync(join(ROOT, 'src/toolsets.ts')
   }
   return {
     TOOLSETS: Object.fromEntries(names),
-    allRegistrationKeys: names.flatMap(([, keys]) => keys),
+    allRegistrationKeys: [...names.flatMap(([, keys]) => keys), ...ungatedKeysFromSource(source)],
   };
+}
+
+/**
+ * `UNGATED_REGISTRATION_KEYS`, read from source — the keys `resolveToolOverrides`
+ * accepts that belong to no set (#580).
+ *
+ * ## Why this is a second read rather than a wider entry pattern
+ *
+ * `allRegistrationKeys` is the vocabulary `SPOTIFY_MCP_ENABLE_TOOLS` /
+ * `SPOTIFY_MCP_DISABLE_TOOLS` validate against, and until #580 that was
+ * `ALL_KEYS` alone. #580 gave the resolver a second input,
+ * `UNGATED_REGISTRATION_KEYS`, for the four rows whose manifest entry carries
+ * `alwaysActive` — they register whatever the trim says, so an operator has to
+ * be able to name them to turn them off. The env reference is generated from
+ * what the resolver accepts, so leaving this read out made the block
+ * under-report: `DISABLE_TOOLS=doctor` was accepted and undocumented at the
+ * same time, which is the defect #1521 existed to remove, re-entered from the
+ * other direction.
+ *
+ * ## Why it is read, never typed
+ *
+ * The four names are a literal in `src/toolsets.ts`, and this reads that
+ * literal. Hand-copying them here would be a second list to keep in step, and
+ * the census would then report green on a stale copy — the same drift #1521
+ * closed for the key list. `tests/toolsets.test.ts` separately pins the literal
+ * to the manifest's own `alwaysActive` rows, so the two ends are both guarded.
+ *
+ * ## Fails closed, for the same reason the TOOLSETS parse does
+ *
+ * A zero-match here must throw rather than yield `[]`. Returning `[]` on a
+ * reformat would silently drop four keys from the generated block, and unlike
+ * the TOOLSETS zero-match that at least announced itself as an implausible
+ * count, this one is invisible: the block would still be a plausible list of
+ * forty-odd registration keys, and `--check` would report it fresh. The
+ * fixture-driven guard in `tests/census-toolsets-parse.test.ts` drives both
+ * arms through `--toolsets-fixture`.
+ */
+function ungatedKeysFromSource(source) {
+  const literal = /UNGATED_REGISTRATION_KEYS: readonly string\[\] = \[([\s\S]*?)\];/.exec(source)?.[1];
+  if (literal === undefined) {
+    throw new Error(
+      'src/toolsets.ts: cannot derive UNGATED_REGISTRATION_KEYS. '
+      + 'resolveToolOverrides accepts these keys alongside the toolset members (#580), so the env reference is '
+      + 'generated from both; a block rendered without them documents a key the parser accepts and the page omits. '
+      + 'This is a bug in scripts/surface-census.mjs, NOT a stale documentation block — do not run '
+      + '`npm run count:tools -- --write`, which would shrink the list and report success. '
+      + 'Widen the pattern above to match the file, or restore the formatting it expects.',
+    );
+  }
+  const keys = [...literal.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  if (keys.length === 0) {
+    throw new Error(
+      'src/toolsets.ts: found the UNGATED_REGISTRATION_KEYS literal but matched 0 keys. '
+      + 'The pattern is indentation- and quoting-sensitive, so a reformat leaves the literal matched and every key '
+      + 'unmatched. This is a bug in scripts/surface-census.mjs, NOT a stale documentation block — do not run '
+      + '`npm run count:tools -- --write`, which would shrink the list and report success.',
+    );
+  }
+  return keys;
 }
 
 /**

@@ -119,7 +119,7 @@ interface RegistryPin {
 async function measureManifestOwnership(): Promise<Map<string, string[]>> {
   const server = new McpServer({ name: 'registry-pin', version: '0.0.0' });
   const client = new SpotifyClient();
-  const context: RegistrarManifestContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const context: RegistrarManifestContext = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
   await registerManifestModules(server, client, context);
   return new Map(REGISTRAR_MANIFEST.map((module) => [module.key, [...moduleToolNames(server, module.key)]]));
 }
@@ -209,7 +209,7 @@ describe('registry pin: no duplicate names', () => {
     // `registerManifestModule` annotates the failure with both owners.
     const server = new McpServer({ name: 'duplicate-probe', version: '0.0.0' });
     const client = new SpotifyClient();
-    const context: RegistrarManifestContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context: RegistrarManifestContext = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
 
     // Resolve the first module's lazy registrar the way production does (#906).
     const [first] = await loadManifestRegistrars(REGISTRAR_MANIFEST, context);

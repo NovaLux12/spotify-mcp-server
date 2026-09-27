@@ -85,7 +85,7 @@ async function registered(options: { readOnly?: boolean } = {}): Promise<{ names
   const server = new McpServer({ name: 'readonly-gate-test', version: '0.0.0' });
   await registerManifestModules(server, new SpotifyClient(), {
     readOnly: options.readOnly ?? false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   });
   const owned = new Map(REGISTRAR_MANIFEST.map((module) => [module.key, moduleToolNames(server, module.key)]));
@@ -227,7 +227,7 @@ describe('#579 the gate fails closed, including for alwaysActive rows', () => {
   it('reads as hidden, not active, for an alwaysActive row that is not readOnlySafe', () => {
     const status: ModuleRegistrationStatus = moduleRegistrationStatus(alwaysActiveWriter, {
       readOnly: true,
-      isModuleActive: () => true,
+      disableOverrides: new Set<string>(), isModuleActive: () => true,
       scopeBlocked: () => false,
     });
     assert.equal(status, 'read_only_hidden', 'an alwaysActive write row is not gated by SPOTIFY_MCP_READONLY');
@@ -242,11 +242,69 @@ describe('#579 the gate fails closed, including for alwaysActive rows', () => {
       { ...alwaysActiveWriter, readOnlySafe: true },
       {
         readOnly: false,
-        isModuleActive: () => false,
+        disableOverrides: new Set<string>(), isModuleActive: () => false,
         scopeBlocked: () => false,
       },
     );
     assert.equal(status, 'active', 'alwaysActive no longer survives a trimmed toolset');
+  });
+
+  it('lets an explicit disable outrank the alwaysActive toolset exemption (#580)', () => {
+    // The companion to the case above, and the one that was failing. The
+    // exemption exists so a trimmed server can report the trim; it is a
+    // statement about set membership, not about whether the operator may name
+    // the key. Folding `disable` into `isModuleActive` alone cannot express
+    // this, because that call reports an alwaysActive row as active for both
+    // "its set is trimmed" and "it was explicitly disabled" — so the gate has
+    // to ask the disable term on its own, before the exemption is applied.
+    //
+    // Both halves are driven, not asserted from a shared source: the row's own
+    // `alwaysActive` flag is the premise and the context's set is empty, so
+    // the only thing that can move the verdict from 'active' to
+    // 'toolset_trimmed' is the disable entry.
+    const row = { ...alwaysActiveWriter, readOnlySafe: true };
+    const trimmed = new Set<string>();
+    const bySet = moduleRegistrationStatus(row, {
+      readOnly: false,
+      disableOverrides: new Set<string>(),
+      isModuleActive: () => false,
+      scopeBlocked: () => false,
+    });
+    assert.equal(bySet, 'active', 'premise: the set trim alone does not hide an alwaysActive row');
+
+    const byDisable = moduleRegistrationStatus(row, {
+      readOnly: false,
+      disableOverrides: new Set([row.registrationKey]),
+      isModuleActive: () => false,
+      scopeBlocked: () => false,
+    });
+    assert.equal(byDisable, 'toolset_trimmed', 'an explicit disable must outrank the alwaysActive exemption');
+  });
+
+  it('leaves a non-alwaysActive row on the set-trim path unchanged (#580)', () => {
+    // The other direction: the new disable term must not become a second way
+    // for a normally-gated row to be hidden, and must not have changed what
+    // hides one. Same status value, so a consumer reading
+    // `moduleRegistrationStatus` sees one fact, not two.
+    const normal = { ...alwaysActiveWriter, alwaysActive: false, readOnlySafe: true };
+    assert.equal(
+      moduleRegistrationStatus(normal, {
+        readOnly: false,
+        disableOverrides: new Set<string>(),
+        isModuleActive: () => false,
+        scopeBlocked: () => false,
+      }),
+      'toolset_trimmed',
+    );
+    assert.equal(
+      moduleRegistrationStatus(normal, {
+        readOnly: false,
+        disableOverrides: new Set([normal.registrationKey]),
+        isModuleActive: () => true,
+        scopeBlocked: () => false,
+      }),
+      'toolset_trimmed',
+    );
   });
 
   it('defaults a manifest row to write-capable when it says nothing', () => {
@@ -258,7 +316,7 @@ describe('#579 the gate fails closed, including for alwaysActive rows', () => {
     const silent = manifestEntry('synthetic-silent', 'synthetic', alwaysActiveWriter, [1, 100]);
     assert.equal(silent.readOnlySafe, false, 'a row that declares nothing is not read-only by default');
     assert.equal(
-      moduleRegistrationStatus(silent, { readOnly: true, isModuleActive: () => true, scopeBlocked: () => false }),
+      moduleRegistrationStatus(silent, { readOnly: true, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false }),
       'read_only_hidden',
     );
   });
@@ -280,7 +338,7 @@ describe('#579 the anti-vacuity guard is not itself vacuous', () => {
     await registerManifestModules(
       server,
       new SpotifyClient(),
-      { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false },
+      { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false },
       [], // deliberately empty: stands in for a registry that failed to build
     );
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);

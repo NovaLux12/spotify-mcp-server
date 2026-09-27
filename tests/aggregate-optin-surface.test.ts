@@ -128,7 +128,7 @@ async function measureBothSurfaces(): Promise<{ off: Surface; on: Surface }> {
     const server = new McpServer({ name: 'optin-figures', version: '0.0.0' });
     const client = new SpotifyClient();
     try {
-      await registerManifestModules(server, client, { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
+      await registerManifestModules(server, client, { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false });
       const registered = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
       assertToolNamingPolicy(Object.keys(registered));
       applyToolOutputSchemas(server);

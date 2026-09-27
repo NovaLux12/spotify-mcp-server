@@ -84,7 +84,7 @@ export async function buildFullRegistryServer(options: RegistryPassOptions = {})
     // Always-active matches how the surface-budget audit (#1124) and the
     // scope-filter test (#1020) build a complete registry; a trimmed toolset
     // would hide tools prompts still reference.
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: (key: string) => moduleBlockedByScopes(key, granted),
   };
   // The manifest holds thunks, not imported registrars (#906), so this pass has

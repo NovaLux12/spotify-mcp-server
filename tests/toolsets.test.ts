@@ -10,6 +10,7 @@ import {
   TOOLSETS,
   DEFAULT_TOOLSETS,
   STATSFM_REGISTRATION_KEYS,
+  UNGATED_REGISTRATION_KEYS,
   allRegistrationKeys,
   assertToolsetsUsable,
   resolveToolsets,
@@ -398,6 +399,41 @@ describe('resolveToolOverrides', () => {
     );
     assert.deepEqual([...enable], ['personalization']);
     assert.deepEqual(unknown.enable.sort(), ['constructor', 'tostring']);
+  });
+
+  it('accepts the ungated registration keys rather than reporting them unknown (#580)', () => {
+    // The resolver learned the legal vocabulary from the toolset table alone.
+    // An `alwaysActive` row is in no set, so `DISABLE_TOOLS=doctor` was
+    // reported as an unknown entry and ignored — the warning and the outcome
+    // agreeing that the key meant nothing, while the module stayed registered.
+    // This asserts the acceptance half; env-switch-registry.test.ts asserts
+    // that the accepted key actually removes the tools.
+    const keys = ungatedManifestKeys(REGISTRAR_MANIFEST);
+    assert.ok(keys.length > 0, 'premise: the manifest declares ungated rows');
+    const { enable, disable, unknown } = resolveToolOverrides(keys.join(','), keys.join(','));
+    assert.deepEqual([...enable].sort(), keys);
+    assert.deepEqual([...disable].sort(), keys);
+    assert.deepEqual(unknown, { enable: [], disable: [] });
+  });
+
+  it('pins UNGATED_REGISTRATION_KEYS to the manifest alwaysActive flag', () => {
+    // The list is a literal rather than a manifest read because src/toolsets.ts
+    // is a leaf: annotations.ts statically imports doctortool.ts, which imports
+    // src/toolsets.ts, so reaching REGISTRAR_MANIFEST from here closes a cycle
+    // and pulls every registrar into anything that only wants the set names.
+    // That makes this assertion the drift guard, and it has to compare against
+    // the manifest rather than restate the list — a pin that reads the same
+    // literal it is pinning cannot fail.
+    //
+    // Two directions, because the failure this replaces was a two-way drift:
+    // the doctor's hand-kept list named `spotify_doctor` (a tool name, not a
+    // registration key) and omitted `moodexpand`, so it was wrong in both
+    // senses at once.
+    assert.deepEqual(
+      [...UNGATED_REGISTRATION_KEYS].sort(),
+      ungatedManifestKeys(REGISTRAR_MANIFEST),
+      'the hand-kept ungated key list has drifted from the manifest alwaysActive flag',
+    );
   });
 });
 

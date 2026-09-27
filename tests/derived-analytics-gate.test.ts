@@ -242,7 +242,7 @@ describe('#695 — derived listening analytics opt-in', () => {
       const server = new McpServer({ name: 'gate-budget', version: '0.0.0' });
       await registerManifestModules(server, new RealSpotifyClient(), {
         readOnly: false,
-        isModuleActive: () => true,
+        disableOverrides: new Set<string>(), isModuleActive: () => true,
         scopeBlocked: () => false,
       });
       try {
@@ -290,7 +290,7 @@ describe('#695 — derived listening analytics opt-in', () => {
       const server = new McpServer({ name: 'gate-budget-default', version: '0.0.0' });
       await registerManifestModules(server, new RealSpotifyClient(), {
         readOnly: false,
-        isModuleActive: () => true,
+        disableOverrides: new Set<string>(), isModuleActive: () => true,
         scopeBlocked: () => false,
       });
       try {
