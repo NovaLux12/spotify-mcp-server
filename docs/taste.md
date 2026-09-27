@@ -21,7 +21,7 @@ Network-backed taste tools require an explicit `statsfm_user` string. The local-
 
 `statsfm_taste_profile` with `response_format: "json"` returns raw stats.fm payloads under exactly these top-level keys: `topArtists`, `topGenres`, `topTracks`, and `recentStreams`. The server does not translate that JSON mode into the summary fields used by its concise and detailed modes.
 
-> **Live-shape handling:** concise and detailed profile modes resolve nested stats.fm entity names such as `entry.artist`, `entry.track`, and `entry.album`, while genres may be bare strings. JSON mode remains raw as described above.
+> **Live-shape handling:** stats.fm's live top-list payloads are wrapped — `entry.artist`, `entry.track`, `entry.album`, and `entry.genre.tag`. Concise and detailed profile modes resolve those nested names. Older flat shapes (`{ name }`, a bare genre string) come from fixtures rather than the live API, but the normalizer still tolerates them. JSON mode remains raw as described above.
 
 ## The starting point
 
@@ -65,7 +65,7 @@ For each of the top 3 genres (indie folk, ambient, alt-r&b), one anchor and one 
 
 | Genre | Anchor (from profile) | Discovery (new artist, same orbit) |
 |---|---|---|
-| indie folk | Anchor One — best-known track via `search_tracks` | a lesser-known folk opener from `grow_playlist` candidates |
+| indie folk | Anchor One — best-known track via `search_tracks` | a lesser-known folk opener from a `search_tracks "indie folk"` walk with `offset` past the best-known results |
 | ambient | Anchor Two — longest saved track | an ambient deep cut surfaced by `search_deep` |
 | alt-r&b | Anchor Three — this month's most-streamed | a cross-genre alt-r&b pick outside the top artists |
 
