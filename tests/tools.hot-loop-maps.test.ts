@@ -35,7 +35,8 @@ import { groupSessions } from '../src/tools/statsfm_taste.js';
 import type { TasteStream } from '../src/tools/statsfm_taste.js';
 import { initConfig } from '../src/config.js';
 import { capFor } from '../src/chunk.js';
-import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
+import type { PlaylistItemObject } from '../src/types/spotify.js';
+import { StubSpotifyClient } from './helpers/stub-client.js';
 
 // ---------------------------------------------------------------------------
 // Linear-scan counters
@@ -108,13 +109,6 @@ interface RecordedWrite {
   body: unknown;
 }
 
-/** Per-call walk options, matching the real client's `GetAllPagesOptions`. */
-interface PageWalkOptions {
-  maxItems?: number;
-  initialOffset?: number;
-  onPage?: (info: { page: number; fetched: number }) => void;
-}
-
 /**
  * Stub client that page-serves playlist items and records writes. Metadata GETs
  * answer with the fixture's name so the balancer's backup path has something
@@ -122,103 +116,43 @@ interface PageWalkOptions {
  */
 function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 100) {
   const writes: RecordedWrite[] = [];
-  const client = {
-    writes,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      const meta = /^\/playlists\/([^/]+)$/.exec(path);
+  // #659: this file reimplemented `getAllPagesWithTruncation` — including the
+  // `pages` request count (#899) and the per-call `onPage` hook (#902) those
+  // tools report their read cost from — with a hardcoded `?? 500` cap that
+  // did not track SPOTIFY_MCP_FETCH_ALL_CAP. That is why the 3x5,000 fixture
+  // below needed an initConfig workaround to survive a 500-row cap its own
+  // copy would have applied. The shared stub runs the production walk, so the
+  // cap it honours is the real configured one and the workaround is now load
+  // bearing for the right reason.
+  const client = new StubSpotifyClient();
+  const record = (method: RecordedWrite['method']) => (call: { path: string; arg?: unknown }) => {
+    writes.push({ method, path: call.path, body: call.arg });
+  };
+  client.route('GET', /^.*$/, {
+    respond: (call) => {
+      const params = call.arg as Record<string, string> | undefined;
+      const meta = /^\/playlists\/([^/]+)$/.exec(call.path);
       if (meta) {
         const id = decodeURIComponent(meta[1]);
-        return { id, name: `Playlist ${id}` } as T;
+        return { id, name: `Playlist ${id}` };
       }
-      const items = /^\/playlists\/([^/]+)\/items$/.exec(path);
+      const items = /^\/playlists\/([^/]+)\/items$/.exec(call.path);
       if (!items) return null;
       const all = playlists[decodeURIComponent(items[1])] ?? [];
       const offset = Number(params?.offset ?? 0);
-      const page = all.slice(offset, offset + pageSize);
       return {
-        items: page,
+        items: all.slice(offset, offset + pageSize),
         total: all.length,
         limit: pageSize,
         offset,
         next: null,
-      } as unknown as SpotifyPaged<T>;
-    },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      writes.push({ method: 'POST', path, body });
-      return { snapshot_id: 'snap' } as T;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      writes.push({ method: 'PUT', path, body });
-      return { snapshot_id: 'snap' } as T;
-    },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> {
-      writes.push({ method: 'DELETE', path, body });
-      return null;
-    },
-    /** Mirrors SpotifyClient.getAllPagesWithTruncation over the stubbed get(),
-     *  so the real pagination loop runs against paged fixtures. The playlist
-     *  set-operation tools read through the truncating variant (#902), so it
-     *  carries the same verdict the production walk returns, and the request
-     *  count (#899) those tools report their read cost from. ONE method, not
-     *  two: a delegating wrapper beside the real loop resolves to itself in
-     *  the object literal and recurses forever. */
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: PageWalkOptions,
-    ): Promise<T[]> {
-      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
-    },
-    async getAllPagesWithTruncation<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: PageWalkOptions,
-    ): Promise<{
-      items: T[];
-      truncated: boolean;
-      truncatedByCap: boolean;
-      reportedTotal: number | null;
-      pages: number;
-    }> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      let pageNumber = 0;
-      let lastTotal: number | null = null;
-      let pages = 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        pages++;
-        if (!page || !Array.isArray(page.items)) break;
-        if (typeof page.total === 'number') lastTotal = page.total;
-        all.push(...page.items);
-        opts?.onPage?.({ page: ++pageNumber, fetched: all.length });
-        if (all.length >= maxItems) {
-          return {
-            items: all.slice(0, maxItems),
-            truncated:
-              all.length > maxItems
-              || typeof page.total !== 'number'
-              || all.length < page.total,
-            truncatedByCap: true,
-            reportedTotal: lastTotal,
-            pages,
-          };
-        }
-        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return {
-        items: all,
-        truncated: lastTotal !== null && all.length < lastTotal,
-        truncatedByCap: false,
-        reportedTotal: lastTotal,
-        pages,
       };
     },
-  };
+  });
+  client.route('POST', /^.*$/, { respond: (call) => { record('POST')(call); return { snapshot_id: 'snap' }; } });
+  client.route('PUT', /^.*$/, { respond: (call) => { record('PUT')(call); return { snapshot_id: 'snap' }; } });
+  client.route('DELETE', /^.*$/, { respond: (call) => { record('DELETE')(call); return null; } });
+  (client as unknown as { writes: RecordedWrite[] }).writes = writes;
   return client;
 }
 

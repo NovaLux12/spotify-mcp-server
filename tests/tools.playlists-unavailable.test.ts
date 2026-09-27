@@ -24,7 +24,9 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
-import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
+import type { PlaylistItemObject } from '../src/types/spotify.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder, StubCall } from './helpers/stub-client.js';
 import { registerPlaylistTools } from '../src/tools/playlists.js';
 
 type ToolResult = {
@@ -39,11 +41,9 @@ interface RegisteredTool {
   handler: (args: Record<string, unknown>) => Promise<ToolResult>;
 }
 
-interface RecordedCall {
-  method: 'GET' | 'POST' | 'PUT' | 'PUT_RAW' | 'DELETE';
-  path: string;
-  arg?: unknown;
-}
+// #659: the shared stub records exactly this shape, so the per-file recorder
+// is deleted rather than kept in step with a second copy of it.
+type RecordedCall = StubCall;
 
 /** Anything that would change Spotify: the first PUT is the atomic replace. */
 const writes = (calls: RecordedCall[]) =>
@@ -109,65 +109,37 @@ function harness(playlists: Record<string, PlaylistItemObject[]>) {
     return playlists[decodeURIComponent(match[1]!)] ?? null;
   };
 
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      const rows = rowsFor(path);
-      if (rows) {
-        const offset = Number(params?.offset ?? 0);
-        return {
-          items: rows.slice(offset, offset + 100),
-          total: rows.length,
-          limit: 100,
-          offset,
-        } as unknown as T;
-      }
-      const id = decodeURIComponent(path.replace('/playlists/', ''));
-      return { id, name: `Playlist ${id}`, items: { total: playlists[id]?.length ?? 0 } } as unknown as T;
-    },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'POST', path, arg: body });
-      if (path === '/me/playlists') return { id: 'newPlaylist' } as unknown as T;
-      return { snapshot_id: 'snap-post' } as unknown as T;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'PUT', path, arg: body });
-      return { snapshot_id: 'snap-put' } as unknown as T;
-    },
-    async putRaw(): Promise<void> {},
-    async delete<T>(): Promise<T | null> {
-      return null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get so the rewrite
-    // tools see the same rows a real walk would, including the one-row probe
-    // the cap test depends on.
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
+  // #659: same hand-copied loop with its hardcoded `?? 500` cap, and the same
+  // argument-dropping `putRaw()`/`delete()`. The shared stub runs the
+  // production walk and records the body of every write.
+  const read: LegacyResponder = (path, params) => {
+    const rows = rowsFor(path);
+    if (rows) {
+      const offset = Number((params as Record<string, string> | undefined)?.offset ?? 0);
+      return {
+        items: rows.slice(offset, offset + 100),
+        total: rows.length,
+        limit: 100,
+        offset,
+      };
+    }
+    const id = decodeURIComponent(path.replace('/playlists/', ''));
+    return { id, name: `Playlist ${id}`, items: { total: playlists[id]?.length ?? 0 } };
   };
+  const client = new StubFromResponder(read, {
+    writes: {
+      POST: (path) => (path === '/me/playlists' ? { id: 'newPlaylist' } : { snapshot_id: 'snap-post' }),
+      PUT: () => ({ snapshot_id: 'snap-put' }),
+      DELETE: () => null,
+      PUT_RAW: () => undefined,
+    },
+  });
 
-  registerPlaylistTools(server, client as unknown as SpotifyClient);
+  registerPlaylistTools(server, client);
 
   return {
-    calls,
+    calls: client.calls,
+    client,
     // Schema-validating invoke: mirrors how the MCP server screens args
     // before a handler ever sees them.
     async invoke(name: string, args: Record<string, unknown> = {}): Promise<ToolResult> {

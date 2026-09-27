@@ -35,6 +35,8 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../src/client.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerSwarm3PlaylistopsTools } from '../src/tools/swarm3_playlistops.js';
 import { registerExhaust2PlaylistsTools } from '../src/tools/exhaust2_playlists.js';
 import type { PlaylistItemObject, SpotifyPaged } from '../src/types/spotify.js';
@@ -175,9 +177,12 @@ function makeStub({ mutates, playlists }: StubOptions) {
     return p;
   };
 
-  const client = {
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      const itemsMatch = /^\/playlists\/([^/]+)\/items$/.exec(path);
+  // #659: this file's walk stopped on `!page.next` and applied no cap at all,
+  // so neither the production cap nor its short-page break could reach it. The
+  // shared stub runs the real loop over these same fixtures.
+  const read: LegacyResponder = (path, rawParams) => {
+    const params = rawParams as Record<string, string> | undefined;
+    const itemsMatch = /^\/playlists\/([^/]+)\/items$/.exec(path);
       if (itemsMatch) {
         const p = resolve(decodeURIComponent(itemsMatch[1]));
         const limit = Number(params?.limit ?? '100');
@@ -190,12 +195,12 @@ function makeStub({ mutates, playlists }: StubOptions) {
           offset,
           total: p.uris.length,
           next: next ? `offset=${offset + limit}` : null,
-        } as unknown as T;
+        };
       }
       const metaMatch = /^\/playlists\/([^/]+)$/.exec(path);
       if (metaMatch) {
         const p = resolve(decodeURIComponent(metaMatch[1]));
-        return { id: p.id, name: p.name, tracks: { total: p.uris.length } } as unknown as T;
+        return { id: p.id, name: p.name, tracks: { total: p.uris.length } };
       }
       if (path === '/search') {
         return {
@@ -208,51 +213,37 @@ function makeStub({ mutates, playlists }: StubOptions) {
             limit: Number(params?.limit ?? '20'),
             offset: Number(params?.offset ?? '0'),
           },
-        } as unknown as T;
+        };
       }
       return null;
-    },
-    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
-      const all: T[] = [];
-      let offset = 0;
-      const limit = Number(params?.limit ?? '100');
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (opts?.maxItems && all.length >= opts.maxItems) return all.slice(0, opts.maxItems);
-        if (!page.next) break;
-        offset += limit;
-      }
-      return all;
-    },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
+  };
+  const writePost: LegacyResponder = (path, body) => {
       const created = /^\/me\/playlists$/.test(path);
       const addMatch = /^\/playlists\/([^/]+)\/items$/.exec(path);
       if (created) {
         const id = `new${++nextId}`;
         if (mutates) resolve(id);
-        return { id, uri: `spotify:playlist:${id}`, snapshot_id: `snap-${id}` } as unknown as T;
+        return { id, uri: `spotify:playlist:${id}`, snapshot_id: `snap-${id}` };
       }
       if (addMatch) {
         const p = resolve(decodeURIComponent(addMatch[1]));
         writes.push({ method: 'POST', id: p.id, body });
         if (mutates) p.uris.push(...((body as { uris?: string[] }).uris ?? []));
-        return { snapshot_id: `snap-${p.id}` } as unknown as T;
+        return { snapshot_id: `snap-${p.id}` };
       }
       return null;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
+  };
+  const writePut: LegacyResponder = (path, body) => {
       const replaceMatch = /^\/playlists\/([^/]+)\/items$/.exec(path);
       if (replaceMatch) {
         const p = resolve(decodeURIComponent(replaceMatch[1]));
         writes.push({ method: 'PUT', id: p.id, body });
         if (mutates) p.uris = [...((body as { uris?: string[] }).uris ?? [])];
-        return { snapshot_id: `snap-${p.id}` } as unknown as T;
+        return { snapshot_id: `snap-${p.id}` };
       }
       return null;
-    },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> {
+  };
+  const writeDelete: LegacyResponder = (path, body) => {
       const delMatch = /^\/playlists\/([^/]+)\/items$/.exec(path);
       if (delMatch) {
         const p = resolve(decodeURIComponent(delMatch[1]));
@@ -270,11 +261,13 @@ function makeStub({ mutates, playlists }: StubOptions) {
             }
           }
         }
-        return { snapshot_id: `snap-${p.id}` } as unknown as T;
+        return { snapshot_id: `snap-${p.id}` };
       }
       return null;
-    },
   };
+  const client = new StubFromResponder(read, {
+    writes: { POST: writePost, PUT: writePut, DELETE: writeDelete },
+  });
   return { client, writes, playlists: byId };
 }
 
@@ -289,7 +282,7 @@ function harness(register: (s: McpServer, c: SpotifyClient) => void, options: St
     },
   } as unknown as McpServer;
   const stub = makeStub(options);
-  register(fakeServer, stub.client as unknown as SpotifyClient);
+  register(fakeServer, stub.client);
   return {
     stub,
     invoke: async (name: string, args: Record<string, unknown>) => {

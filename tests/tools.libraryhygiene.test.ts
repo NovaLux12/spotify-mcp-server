@@ -15,7 +15,8 @@ import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SavedTrackItem, SpotifyAlbumFull } from '../src/types/spotify.js';
 import { registerLibraryHygieneTools } from '../src/tools/libraryhygiene.js';
@@ -39,41 +40,12 @@ interface RegisteredTool {
 }
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: Array<{ method: string; path: string; arg?: unknown }> = [];
-  let respond: Responder = responder;
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return respond(path, params) as T | null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get().
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = 0;
-      for (;;) {
-        const page = await this.get<{ items: T[]; total?: number; limit?: number }>(path, {
-          ...params,
-          offset: String(offset),
-        });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
-  };
-  return client;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so
+  // the cap comes from `getConfig().fetchAllCap` and the short-page / total
+  // breaks are the production ones. This file's hand-copied loop (hardcoded
+  // `?? 500`) could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder);
+  return { calls: client.calls, client };
 }
 
 function harness(responder: Responder = () => null) {
@@ -93,11 +65,12 @@ function harness(responder: Responder = () => null) {
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerLibraryHygieneTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerLibraryHygieneTools(fakeServer, stub.client);
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
@@ -538,8 +511,16 @@ describe('library_hygiene edges and shapes', () => {
       'near_complete',
       'ok',
       'orphaned_singles',
+      // #659: this key is here because the stub is now a REAL SpotifyClient.
+      // The hand-written stub had no `getRateLimitStatus`, so `quotaSnapshot`
+      // returned null and `quotaDelta` contributed nothing — the assertion
+      // below was pinning a payload shape that production never emits. The
+      // real client answers 0 requests spent, which is the honest figure for a
+      // walk the stub intercepted.
+      'requests_made',
       'scanned',
     ]);
+    assert.equal(parsed.requests_made, 0);
     assert.equal(parsed.ok, true);
     assert.equal(parsed.groups.length, 1);
     const group = parsed.groups[0];

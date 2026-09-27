@@ -13,6 +13,8 @@ import { saveMiscStore } from '../src/tools/exhaust2_misc.js';
 import { classifyToolAnnotations } from '../src/tools/annotations.js';
 import { ARTIST_ALBUM_PAGE_LIMIT } from '../src/tools/catalog.js';
 import { finalInputSchema } from '../src/shaping.js';
+import { StubSpotifyClient } from './helpers/stub-client.js';
+import type { SpotifyClient } from '../src/client.js';
 import { issueReceipt } from '../src/receipts.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,7 +46,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
 }
 
 /** Register and extract the handler for one tool by name. */
-function getHandler(toolName: string, client: ReturnType<typeof makeClient>): Handler {
+function getHandler(toolName: string, client: SpotifyClient): Handler {
   let captured: Handler | undefined;
   const server = {
     tool(name: string, _desc: string, _shape: unknown, handler: Handler) {
@@ -599,28 +601,34 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const OWNED = new Set(ALL.slice(0, 30).map((a) => a.id));
     const albumRequests: Array<Record<string, string>> = [];
 
-    const h = getHandler('artist_complete_check', makeClient({
-      // Single-request path: honours the caller's limit, exactly as Spotify would.
-      get: mock.fn(async (path: string, params: Record<string, string> = {}) => {
-        if (!path.startsWith('/artists/aid/albums')) return null;
-        albumRequests.push({ path, ...params });
-        const limit = Number(params.limit ?? 50);
-        return { items: ALL.slice(0, limit), limit, offset: 0, total: ALL.length };
-      }),
-      getAllPages: mock.fn(async (path: string, params: Record<string, string> = {}, opts: { maxItems?: number } = {}) => {
-        if (!path.startsWith('/artists/aid/albums')) return [...OWNED].map((id) => ({ album: { id } }));
-        const maxItems = opts.maxItems ?? 500;
-        const limit = Number(params.limit ?? 50);
-        const out: Array<typeof ALL[number]> = [];
-        for (let offset = 0; out.length < maxItems; offset += limit) {
-          albumRequests.push({ path, ...params, offset: String(offset) });
-          const slice = ALL.slice(offset, offset + limit);
-          out.push(...slice);
-          if (slice.length < limit) break;
+    // #659: this test carried the last hand-written paging loop in the suite,
+    // with its own `?? 500` cap. It pages through a REAL StubSpotifyClient now,
+    // so the walk that produced the 80 releases is the production one.
+    const stub = new StubSpotifyClient();
+    stub.route('GET', /.*/, {
+      respond: (call) => {
+        const params = call.arg as Record<string, string> | undefined;
+        if (call.path.startsWith('/artists/aid/albums')) {
+          albumRequests.push({ path: call.path, ...params });
+          const limit = Number(params?.limit ?? 50);
+          const offset = Number(params?.offset ?? 0);
+          return {
+            items: ALL.slice(offset, offset + limit),
+            limit,
+            offset,
+            total: ALL.length,
+          };
         }
-        return out.slice(0, maxItems);
-      }),
-    }));
+        if (call.path === '/me/albums') {
+          const limit = Number(params?.limit ?? 50);
+          const offset = Number(params?.offset ?? 0);
+          const saved = [...OWNED].map((id) => ({ album: { id } }));
+          return { items: saved.slice(offset, offset + limit), total: saved.length, limit, offset };
+        }
+        return null;
+      },
+    });
+    const h = getHandler('artist_complete_check', stub);
 
     const res = await h({ artist_id: 'aid', include_singles: true, response_format: 'concise' });
     const sc = res.structuredContent as { total_albums: number; missing: number; capped: boolean };

@@ -12,6 +12,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerSavedDedupeTools } from '../src/tools/saveddedupe.js';
 import type { SavedTrackItem, SpotifyTrack } from '../src/types/spotify.js';
 
@@ -34,40 +36,12 @@ interface RegisteredTool {
 }
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: Array<{ method: string; path: string; arg?: unknown }> = [];
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return responder(path, params) as T | null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get().
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = 0;
-      for (;;) {
-        const page = await this.get<{ items: T[]; total?: number; limit?: number }>(path, {
-          ...params,
-          offset: String(offset),
-        });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
-  };
-  return client;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so
+  // the cap comes from `getConfig().fetchAllCap` and the short-page / total
+  // breaks are the production ones. This file's hand-copied loop (hardcoded
+  // `?? 500`) could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder);
+  return { calls: client.calls, client };
 }
 
 function harness(responder: Responder = () => null) {
@@ -87,11 +61,12 @@ function harness(responder: Responder = () => null) {
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerSavedDedupeTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerSavedDedupeTools(fakeServer, stub.client);
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);

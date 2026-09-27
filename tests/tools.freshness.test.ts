@@ -20,8 +20,8 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
-import type { SpotifyPaged } from '../src/types/spotify.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerFreshnessTools } from '../src/tools/freshness.js';
 import { initConfig } from '../src/config.js';
 
@@ -50,95 +50,43 @@ interface RegisteredTool {
 }
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: RecordedCall[] = [];
   let respond: Responder = responder;
-  // The client's own request counter and cooldown, so the tool's self-reported
-  // request total can be cross-checked against a second source instead of
-  // against itself: `requests_made` (counted here) and `cost.requests` (summed
-  // in freshness.ts) are produced by different code and must agree.
-  let requestsTotal = 0;
+  // #659: the paging walk below used to be a hand copy of
+  // `getAllPagesWithTruncation` with a hardcoded `?? 500` cap, so a change to
+  // the real cap, short-page break or `pages` count could not reach a test in
+  // this file. It is now INHERITED from SpotifyClient via the shared stub.
+  //
+  // The quota surface upstream added alongside it is kept and now sits on the
+  // real client's `getRateLimitStatus`, so `requests_made` (counted here) and
+  // `cost.requests` (summed in freshness.ts) are still produced by different
+  // code and must still agree.
   let cooldownRemainingMs = 0;
-
-  const client = {
-    calls,
-    setResponder(fn: Responder) {
-      respond = fn;
-    },
-    setCooldown(ms: number) {
-      cooldownRemainingMs = ms;
-    },
-    getRateLimitStatus() {
-      return { requestsTotal, cooldownRemainingMs };
-    },
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
+  // #659: the request counter counts DISPATCHED calls, because the real
+  // client increments `requestsTotal` inside its own request path and the stub
+  // short-circuits that. Counting here — once per route hit, on the object the
+  // recorder also pushes to — is what keeps `requests_made` and
+  // `cost.requests` cross-checkable against `h.client.calls.length`, which is
+  // the whole point of upstream's assertions.
+  let requestsTotal = 0;
+  const client = new StubFromResponder((path, arg) => (respond as LegacyResponder)(path, arg));
+  client.route('GET', /.*/, {
+    respond: (call) => {
       requestsTotal++;
-      return respond(path, params) as T | null;
+      return (respond as LegacyResponder)(call.path, call.arg);
     },
-    /**
-     * Mirrors SpotifyClient.getAllPagesWithTruncation (#864) — same cap, same
-     * short-page end-of-data rule, and the same split between "rows are
-     * missing" (truncated) and "the cap is why" (truncatedByCap). whats_new
-     * reads this verdict, so a stub that returned a bare array would hand the
-     * tool a shape it never sees in production.
-     */
-    async getAllPagesWithTruncation<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
-    ): Promise<{
-      items: T[];
-      truncated: boolean;
-      truncatedByCap: boolean;
-      reportedTotal: number | null;
-      pages: number;
-    }> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      let lastTotal: number | null = null;
-      let requests = 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        requests++;
-        if (!page || !Array.isArray(page.items)) break;
-        if (typeof page.total === 'number') lastTotal = page.total;
-        all.push(...page.items);
-        if (all.length >= maxItems) {
-          return {
-            items: all.slice(0, maxItems),
-            truncated:
-              all.length > maxItems
-              || typeof page.total !== 'number'
-              || all.length < page.total,
-            truncatedByCap: true,
-            reportedTotal: lastTotal,
-            pages: requests,
-          };
-        }
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return {
-        items: all,
-        truncated: lastTotal !== null && all.length < lastTotal,
-        truncatedByCap: false,
-        reportedTotal: lastTotal,
-        pages: requests,
-      };
-    },
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
-      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
-    },
-  };
-  return client;
+  });
+  const realQuota = client.getRateLimitStatus.bind(client);
+  Object.defineProperty(client, 'getRateLimitStatus', {
+    value: () => ({ ...realQuota(), requestsTotal, cooldownRemainingMs }),
+  });
+  Object.defineProperty(client, 'setResponder', {
+    value: (fn: Responder) => { respond = fn; },
+  });
+  Object.defineProperty(client, 'setCooldown', {
+    value: (ms: number) => { cooldownRemainingMs = ms; },
+  });
+  const calls = client.calls as unknown as RecordedCall[];
+  return { calls, client };
 }
 
 function harness(responder: Responder = () => null) {
@@ -158,12 +106,13 @@ function harness(responder: Responder = () => null) {
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerFreshnessTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerFreshnessTools(fakeServer, stub.client);
 
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);

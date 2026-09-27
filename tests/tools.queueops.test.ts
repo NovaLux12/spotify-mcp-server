@@ -8,6 +8,8 @@ import { registerQueueOpsTools } from '../src/tools/queueops.js';
 import { installGatedPathContract } from '../src/gating.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 
 function track(id: string) { return { id, uri: `spotify:track:${id}`, name: `T ${id}`, type: 'track', duration_ms: 200000, artists: [{ id: 'a', name: 'A' }], album: { id: 'al', name: 'Al', uri: 'spotify:album:al' } } as any; }
 function episode(id: string) { return { uri: `spotify:episode:${id}`, type: 'episode', id } as any; }
@@ -36,9 +38,14 @@ function harness(overrides: Partial<{
   const rows = new Map<string, any[]>();
   const itemsPath = /^\/playlists\/([^/]+)\/items$/;
   const fakeServer = { tool(name: string, _d: string, schema: any, handler: any) { registered.push({ name, schema, handler }); } } as unknown as McpServer;
-  const client = {
-    async get(path: string) {
-      getCalls.push(path);
+  // #659: this file's `get` took NO parameters and its `getAllPages` returned
+  // a canned array, so neither a wrong-market nor a wrong-offset regression
+  // could show up here — and the paging walk it substituted was not the one
+  // production runs. The shared stub runs the real walk and records the params
+  // this file used to discard.
+  const read: LegacyResponder = (path, arg) => {
+    const params = arg as Record<string, string> | undefined;
+    getCalls.push(path);
       if (path === '/me/player/queue') return overrides.queueData ?? { currently_playing: track('cur'), queue: [track('q1'), track('q2')] };
       if (path === '/me' && overrides.meResponse) return overrides.meResponse;
       if (path === '/me') return { id: 'user123' } as any;
@@ -53,16 +60,35 @@ function harness(overrides: Partial<{
       if (path.startsWith('/albums/')) return { items: overrides.albumTracks ?? [track('t1'), track('t2')], total: 2 } as any;
       const items = itemsPath?.exec(path);
       if (items) {
-        const list = rows.get(decodeURIComponent(items[1])) ?? [];
-        return { items: list, total: list.length, next: null } as any;
+        // Only a playlist this run actually created or wrote to has committed
+        // rows. Any other id is a fixture read, and the old canned walk served
+        // `overrides.playlistItems` for it — answering with the (empty)
+        // committed map instead would make every fixture read look empty.
+        const id = decodeURIComponent(items[1]);
+        const list = rows.get(id);
+        if (list !== undefined) return { items: list, total: list.length, next: null };
       }
       return null;
-    },
-    async getAllPages(path: string) {
-      if (path.includes('/playlists/')) return overrides.playlistItems ?? [{ item: track('p1') }, { item: track('p2') }];
-      return [];
-    },
-    async post(path: string, body?: unknown) {
+  };
+  // A path the read responder does not model must still answer with a real
+  // paging envelope: the production walk now runs here, and it rejects a
+  // response with no `items` array. `playlistItems` is this file's fixture for
+  // the playlist walks, as the old canned walk served.
+  const read2: LegacyResponder = (path, arg) => {
+    const answered = read(path, arg);
+    if (answered !== null) return answered;
+    if (path.includes('/playlists/')) {
+      const list = overrides.playlistItems ?? [{ item: track('p1') }, { item: track('p2') }];
+      return { items: list, total: list.length, next: null };
+    }
+    return { items: [], total: 0, next: null };
+  };
+  const client = new StubFromResponder(read2, {
+    writes: { POST: post, PUT: write, DELETE: write },
+  });
+  // `post`/`write` are hoisted functions so the legacy-path guard and the write
+  // list stay in one place, and so the responder table can name them.
+  async function post(path: string, body?: unknown) {
       posts.push(path); postBodies.push(body);
       const queueError = path.startsWith('/me/player/queue?')
         ? overrides.postErrorFor?.(path, posts.length - 1)
@@ -93,16 +119,16 @@ function harness(overrides: Partial<{
         throw Object.assign(new Error('legacy /playlists/{id}/tracks is retired, use /items'), { status: 404 });
       }
       return null;
-    },
-    async put(path: string) { throw Object.assign(new Error('no endpoint'), { status: 404 }); },
-    async delete(path: string) { throw Object.assign(new Error('no endpoint'), { status: 404 }); },
-  };
+  }
+  async function write(): Promise<never> {
+    throw Object.assign(new Error('no endpoint'), { status: 404 });
+  }
   // The real client is wrapped by src/gating.ts at construction, so a gated
   // 403 arrives ANNOTATED. Tests that assert on the gated class need that
   // annotation to be present, or they would only be exercising the fallback
   // predicate's status check.
   if (overrides.installContract !== false) installGatedPathContract(client as unknown as SpotifyClient);
-  registerQueueOpsTools(fakeServer, client as unknown as SpotifyClient);
+  registerQueueOpsTools(fakeServer, client);
   const find = (n: string) => registered.find((r: any) => r.name === n);
   const invoke = async (name: string, args: any) => {
     const t = find(name); assert.ok(t, `tool ${name} not found`); const parsed = z.object(t.schema).parse(args); return t.handler(parsed);
@@ -319,9 +345,17 @@ describe('queueops', () => {
   it('save_queue_as_playlist appends to target_playlist_id', async () => {
     const h = harness({ queueData: { currently_playing: track('cur'), queue: [track('q1')] } });
     const out = await h.invoke('save_queue_as_playlist', { target_playlist_id: 'existingPl' });
-    // /items path (#840), not the retired /tracks.
-    assert.ok(h.posts.some((p) => p.includes('existingPl/items')));
-    assert.ok(!h.posts.some((p) => p.includes('existingPl/tracks')), 'must not POST to legacy /playlists/{id}/tracks');
+    // #659: pinned as an EXACT path, not a substring. `includes('…/items')`
+    // would also have been satisfied by a stray probe and reads as if the
+    // legacy path were merely discouraged; the retired `/playlists/{id}/tracks`
+    // must be unable to satisfy this at all. The shared stub 404s that path
+    // the way Spotify does, so a regression to it fails here rather than
+    // silently "succeeding" against a permissive fake.
+    assert.ok(
+      h.posts.includes('/playlists/existingPl/items'),
+      `expected an exact POST to /playlists/existingPl/items, saw ${JSON.stringify(h.posts)}`,
+    );
+    assert.ok(!h.posts.some((p) => p.includes('/playlists/') && p.includes('/tracks')), 'must not POST to legacy /playlists/{id}/tracks');
     assert.match(out.content[0].text, /Appended 2 items/i);
   });
   it('batch_add_to_queue POSTs each URI and returns a summary', async () => {

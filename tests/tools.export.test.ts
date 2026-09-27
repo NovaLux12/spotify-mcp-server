@@ -17,8 +17,8 @@ import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SpotifyClient } from '../src/client.js';
-import type { SpotifyPaged } from '../src/types/spotify.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerExportTools } from '../src/tools/export.js';
 import { parseCsvDocument, FORMULA_LEAD } from './csv-reader.js';
 
@@ -47,39 +47,13 @@ interface RegisteredTool {
 }
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: RecordedCall[] = [];
-  let respond: Responder = responder;
-
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return respond(path, params) as T | null;
-    },
-    // Mirrors SpotifyClient.getAllPages offset semantics so fixtures paginate.
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number },
-    ): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) return all.slice(0, maxItems);
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return all;
-    },
-  };
-  return client;
+  // #659: the shared stub, which INHERITS SpotifyClient.getAllPages. This file
+  // used to carry its own copy of the paging loop with a hardcoded
+  // `?? 500` cap; that copy could not catch a regression in the real walk and
+  // had already diverged from it. The cap now comes from
+  // `getConfig().fetchAllCap` through the real constructor.
+  const client = new StubFromResponder(responder as LegacyResponder);
+  return { calls: client.calls, client };
 }
 
 function harness(responder: Responder = () => null) {
@@ -111,12 +85,13 @@ function harness(responder: Responder = () => null) {
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerExportTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerExportTools(fakeServer, stub.client);
 
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);

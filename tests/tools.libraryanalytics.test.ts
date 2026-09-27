@@ -7,6 +7,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import type { SpotifyClient } from '../src/client.js';
 import { SpotifyApiError } from '../src/client.js';
 import { registerLibraryAnalyticsTools } from '../src/tools/libraryanalytics.js';
@@ -19,52 +21,15 @@ interface RegisteredTool {
 type Responder = (path: string, params?: Record<string, string>) => unknown;
 
 function makeStubClient(responder: Responder) {
-  const calls: Array<{ path: string; params?: Record<string, string> }> = [];
-  const client = {
-    calls,
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ path, params });
-      return responder(path, params) as T | null;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so the
+  // cap comes from `getConfig().fetchAllCap` and the short-page / total breaks
+  // are the production ones. This file's hand-copied loop (hardcoded `?? 500`)
+  // could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder, {
+    writes: {
     },
-    // Mirrors the real walk, and the real verdict rules in client.ts: the cap
-    // is only a truncation if rows really are missing, and `reportedTotal` is
-    // the server's own count or null — never the walked length.
-    async getAllPagesWithTruncation<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }) {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = Number(params?.offset ?? 0);
-      let lastTotal: number | null = null;
-      for (;;) {
-        const pageParams = { ...params, offset: String(offset) };
-        const page = await this.get<SpotifyPaged<T>>(path, pageParams);
-        if (!page || !Array.isArray(page.items)) break;
-        if (typeof page.total === 'number') lastTotal = page.total;
-        all.push(...page.items);
-        if (all.length >= maxItems) {
-          return {
-            items: all.slice(0, maxItems) as T[],
-            truncated: all.length > maxItems || typeof page.total !== 'number' || all.length < page.total,
-            truncatedByCap: true,
-            reportedTotal: lastTotal,
-          };
-        }
-        const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return {
-        items: all as T[],
-        truncated: lastTotal !== null && all.length < lastTotal,
-        truncatedByCap: false,
-        reportedTotal: lastTotal,
-      };
-    },
-    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number }): Promise<T[]> {
-      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
-    },
-  };
-  return client;
+  });
+  return { calls: client.calls, client };
 }
 
 function harness(responder: Responder) {
@@ -74,10 +39,12 @@ function harness(responder: Responder) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerLibraryAnalyticsTools(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerLibraryAnalyticsTools(fakeServer, stub.client);
   return {
-    registered, client,
+    registered,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown>) => {
       const t = registered.find((x) => x.name === name)!;
       assert.ok(t, `tool ${name} registered`);

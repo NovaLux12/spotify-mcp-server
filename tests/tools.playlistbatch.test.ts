@@ -4,6 +4,8 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { expandAlbumToTracks, registerPlaylistBatchTools } from '../src/tools/playlistbatch.js';
 import { installGatedPathContract } from '../src/gating.js';
@@ -13,19 +15,19 @@ interface RecordedCall { method: string; path: string; arg?: unknown; }
 type Responder = (path: string, arg: unknown, method?: string) => unknown;
 interface RegisteredTool { name: string; description: string; validate: (args: Record<string, unknown>) => Record<string, unknown>; handler: (args: Record<string, unknown>) => Promise<{ content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }>; }
 function makeStubClient(responder: Responder) {
-  const calls: RecordedCall[] = []; let respond: Responder = responder;
-  const client = {
-    calls, setResponder(fn: Responder) { respond = fn; },
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> { calls.push({ method: 'GET', path, arg: params }); return respond(path, params, 'GET') as T | null; },
-    async post<T>(path: string, body?: unknown): Promise<T | null> { calls.push({ method: 'POST', path, arg: body }); return respond(path, body, 'POST') as T | null; },
-    async put<T>(path: string, body?: unknown): Promise<T | null> { calls.push({ method: 'PUT', path, arg: body }); return respond(path, body) as T | null; },
-    async putRaw(path: string, body: string): Promise<void> { calls.push({ method: 'PUT_RAW', path, arg: body }); },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> { calls.push({ method: 'DELETE', path, arg: body }); return respond(path, body) as T | null; },
-    async getAllPages<T>(path: string, params?: Record<string, string>, opts?: { maxItems?: number; initialOffset?: number }): Promise<T[]> {
-      const maxItems = opts?.maxItems ?? 500; const all: T[] = []; let offset = opts?.initialOffset ?? 0;
-      for (;;) { const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) }); if (!page || !Array.isArray(page.items)) break; all.push(...page.items); if (all.length >= maxItems) return all.slice(0, maxItems); const limit = typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length; offset += limit; if (page.items.length === 0 || page.items.length < limit) break; if (typeof page.total === 'number' && offset >= page.total) break; } return all;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so the
+  // cap comes from `getConfig().fetchAllCap` and the short-page / total breaks
+  // are the production ones. This file's hand-copied loop (hardcoded `?? 500`)
+  // could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder, {
+    writes: {
+    POST: responder as LegacyResponder,
+    PUT: responder as LegacyResponder,
+    DELETE: responder as LegacyResponder,
+    PUT_RAW: () => undefined,
     },
-  }; return client;
+  });
+  return { calls: client.calls, client };
 }
 function harness(responder: Responder = () => null, elicitResult?: unknown) {
   const registered: RegisteredTool[] = []; const fakeServer: Record<string, unknown> = {
@@ -33,9 +35,9 @@ function harness(responder: Responder = () => null, elicitResult?: unknown) {
     registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler }); },
   };
   if (elicitResult !== undefined) { fakeServer.server = { getClientCapabilities: () => ({ elicitation: { form: {} } }), elicitInput: async () => { if (elicitResult instanceof Error) throw elicitResult; return elicitResult; } } as unknown as typeof fakeServer.server; }
-  const client = makeStubClient(responder);
-  registerPlaylistBatchTools(fakeServer as unknown as McpServer, client as unknown as SpotifyClient);
-  return { registered, client, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name); assert.ok(tool, `tool "${name}" should be registered`); return tool.handler(tool.validate(args)); } };
+  const stub = makeStubClient(responder);
+  registerPlaylistBatchTools(fakeServer, stub.client);
+  return { registered, client: stub.client, calls: stub.calls, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name); assert.ok(tool, `tool "${name}" should be registered`); return tool.handler(tool.validate(args)); } };
 }
 const textOf = (out: { content: Array<{ text: string }> }) => out.content[0].text;
 const track = (id: string) => `spotify:track:${id}`;
@@ -63,7 +65,7 @@ describe('album source expansion', () => {
       offset: 0,
       next: null,
     } : { items: [], total: 0, limit: 50, offset: 0, next: null });
-    const uris = await expandAlbumToTracks(h.client as unknown as SpotifyClient, { id: 'a1', name: 'Album' }, 2);
+    const uris = await expandAlbumToTracks(h.client, { id: 'a1', name: 'Album' }, 2);
     assert.deepEqual(uris, [track(firstTrackId), track(secondTrackId)]);
     const read = h.client.calls.find((call) => call.method === 'GET' && call.path === '/albums/a1/tracks');
     assert.deepEqual(read?.arg, { limit: '50', offset: '0' });
@@ -463,7 +465,7 @@ describe('batch_add_to_playlist distinguishes per-source failures (#867)', () =>
   // top-tracks as gated (production installs it from src/index.ts).
   function gatedHarness(responder: Responder): ReturnType<typeof harness> {
     const h = harness(responder);
-    installGatedPathContract(h.client as unknown as SpotifyClient);
+    installGatedPathContract(h.client);
     return h;
   }
 
@@ -871,10 +873,11 @@ describe('multi-chunk write partial state (#865)', () => {
       if (path === `/playlists/${MOVE_SOURCE}/items` && method === 'GET') return pagedSource(bigSource, _arg) as unknown;
       if (path === `/playlists/${MOVE_TARGET}/items` && method === 'GET') return { items: [], total: 0, limit: 100, offset: 0, next: null } as unknown;
       if (method === 'POST' && path === `/playlists/${MOVE_TARGET}/items`) return { snapshot_id: 'snap' } as unknown;
-      // The harness's stub records calls as DELETE but does not pass the
-      // method to the responder, so fall back to inspecting the path AND the
-      // call counter when looking at DELETE-shaped writes (no POST hits this).
-      if (method === undefined && path === `/playlists/${MOVE_SOURCE}/items`) {
+      // #659: the old fake client did not pass the verb to the responder, so
+      // this branch had to be written as `method === undefined` and the
+      // handler's real DELETE was only distinguishable by its path. The shared
+      // stub passes the method, so the intent is finally expressible directly.
+      if (method === 'DELETE' && path === `/playlists/${MOVE_SOURCE}/items`) {
         deleteCount++;
         if (deleteCount === 1) return { snapshot_id: 'snap' } as unknown;
         throw new SpotifyApiError(500, 'boom');

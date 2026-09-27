@@ -18,6 +18,8 @@ import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../src/client.js';
+import { StubFromResponder } from './helpers/stub-client.js';
+import type { LegacyResponder } from './helpers/stub-client.js';
 import type { SpotifyClient } from '../src/client.js';
 import { isGatedPath } from '../src/gating.js';
 import type { SpotifyPaged } from '../src/types/spotify.js';
@@ -72,77 +74,19 @@ const wireCalls = (calls: RecordedCall[]) =>
   calls.map((c) => ({ method: c.method, path: c.path, arg: c.arg }));
 
 function makeStubClient(responder: Responder = () => null) {
-  const calls: RecordedCall[] = [];
-  let respond: Responder = responder;
-
-  const client = {
-    calls,
-    setResponder(fn: Responder) {
-      respond = fn;
+  // #659: the shared stub. `getAllPages` is INHERITED from SpotifyClient, so the
+  // cap comes from `getConfig().fetchAllCap` and the short-page / total breaks
+  // are the production ones. This file's hand-copied loop (hardcoded `?? 500`)
+  // could not catch a regression in any of that.
+  const client = new StubFromResponder(responder as LegacyResponder, {
+    writes: {
+    POST: responder as LegacyResponder,
+    PUT: responder as LegacyResponder,
+    DELETE: responder as LegacyResponder,
+    PUT_RAW: responder as LegacyResponder,
     },
-    async get<T>(path: string, params?: Record<string, string>): Promise<T | null> {
-      calls.push({ method: 'GET', path, arg: params });
-      return respond(path, params) as T | null;
-    },
-    async post<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'POST', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    async put<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'PUT', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    async putRaw(path: string, body: string, contentType?: string): Promise<void> {
-      calls.push({ method: 'PUT_RAW', path, arg: body, extra: contentType });
-      await respond(path, body);
-    },
-    async delete<T>(path: string, body?: unknown): Promise<T | null> {
-      calls.push({ method: 'DELETE', path, arg: body });
-      return respond(path, body) as T | null;
-    },
-    // Mirrors SpotifyClient.getAllPages over the stubbed get() so fetch_all
-    // refactors (issue #67) are exercised against real pagination semantics,
-    // and returns the truncation verdict alongside the rows (#864) because
-    // the real client does: the MCP SDK dispatches without awaiting, so a
-    // verdict stored on the client would be another walk's answer.
-    async getAllPages<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
-    ): Promise<T[]> {
-      return (await this.getAllPagesWithTruncation<T>(path, params, opts)).items;
-    },
-    async getAllPagesWithTruncation<T>(
-      path: string,
-      params?: Record<string, string>,
-      opts?: { maxItems?: number; initialOffset?: number },
-    ): Promise<{ items: T[]; truncated: boolean }> {
-      const maxItems = opts?.maxItems ?? 500;
-      const all: T[] = [];
-      let offset = opts?.initialOffset ?? 0;
-      for (;;) {
-        const page = await this.get<SpotifyPaged<T>>(path, { ...params, offset: String(offset) });
-        if (!page || !Array.isArray(page.items)) break;
-        all.push(...page.items);
-        if (all.length >= maxItems) {
-          return {
-            items: all.slice(0, maxItems),
-            truncated:
-              all.length > maxItems
-              || typeof page.total !== 'number'
-              || all.length < page.total,
-          };
-        }
-        const limit =
-          typeof page.limit === 'number' && page.limit > 0 ? page.limit : page.items.length;
-        offset += limit;
-        if (page.items.length === 0 || page.items.length < limit) break;
-        if (typeof page.total === 'number' && offset >= page.total) break;
-      }
-      return { items: all, truncated: false };
-    },
-  };
-  return client;
+  });
+  return { calls: client.calls, client };
 }
 
 function harness(
@@ -195,12 +139,13 @@ function harness(
       });
     },
   } as unknown as McpServer;
-  const client = makeStubClient(responder);
-  registerFn(fakeServer, client as unknown as SpotifyClient);
+  const stub = makeStubClient(responder);
+  registerFn(fakeServer, stub.client);
 
   return {
     registered,
-    client,
+    client: stub.client,
+    calls: stub.calls,
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
@@ -1420,6 +1365,13 @@ describe('remove_from_playlist positional receipt verification (#626)', () => {
         // Serves both the tool's pre-mutation baseline read and any
         // independent get_playlist count.
         return { id: 'pl', name: 'P', owner: { id: 'o' }, items: { total: ids.length } };
+      }
+      if (path === '/playlists/pl/images') {
+        // #659: `get_playlist` falls back to this endpoint when the playlist
+        // object carries no embedded cover, so the fixture above — which has
+        // none — makes this a real call. The old stub answered `null` and the
+        // strict one refuses to invent it. `[]` is the truthful answer here.
+        return [];
       }
       if (path === '/playlists/pl/items') {
         // The DELETE carries a `tracks` body; the walk carries paging params.
