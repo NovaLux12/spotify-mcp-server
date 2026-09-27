@@ -461,11 +461,23 @@ missing. Three things follow:
   commit is still an ancestor of `HEAD`, and reports `verified` / `rewritten` /
   `unverifiable` from `--prose-report`; `unverifiable` is the normal state of a
   `fetch-depth: 1` CI checkout and is deliberately not an error.
-  **Rebasing invalidates the stamp** — the recorded commit is no longer an
-  ancestor of `HEAD` — so after a rebase or an amend, re-run `--prose-sync` on
-  the rebased tree and commit the result. Squash-merging a branch whose stamp
-  names one of its own commits has the same effect; the stamp must be committed
-  *after* the commit it names, which is why it lands as a second commit.
+  **The commit the stamp is judged on is the merge base, not your branch tip**
+  ([#1482](https://github.com/NovaLux12/spotify-mcp-server/issues/1482)), so a
+  prose PR does not orphan its own pin. `main` squash-merges, which makes a
+  branch tip an ancestor of nothing the moment it lands: stamping `HEAD` meant
+  every prose PR reddened `main` on a tree whose paragraphs were all still
+  pinned, and the recovery was an identical second commit. `--prose-sync` records
+  both commits — `head`, the tree the author was looking at, and `base`, the
+  commit `HEAD` and `origin/main` last share — and the read side asks about
+  `base`, which is an ancestor of both sides and so survives a squash, a
+  rebase-merge or a true merge alike. Nothing to do per PR, and a manifest
+  stamped before `base` existed is still judged on its `head` alone. The price is
+  that the stamp cannot now see a rebase or an amend, which the *content* check
+  covers instead: a rebased paragraph is a pinned paragraph `--check` reports as
+  missing, by content hash, in the same run. A tree that shares no commit with
+  `origin/main` has no base to record, so the run warns that its stamp will not
+  survive rather than refusing — refusing is what `--allow-stale` exists to
+  avoid.
 - **The pin is hand-maintained on purpose.** It is not in a generated block
   because `--write` would refresh it, and `--write` is the generated-block step
   of the documented recovery above: a generated pin would have gone green one

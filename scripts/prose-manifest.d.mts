@@ -33,10 +33,20 @@ export type ProseUnitPin = { hash: string; label: string };
 export type ProseRetirement = ProseUnitPin & { file: string; date: string; reason: string };
 
 /**
- * The commit a sync ran against, recorded so a later reader can tell a genuine
+ * The commits a sync ran against, recorded so a later reader can tell a genuine
  * deletion from one a rebase manufactured (#1440).
+ *
+ * Two SHAs, not one, and the difference is the whole of #1482. `head` is the
+ * tree the retirement reasons were decided against; `base` is the commit that
+ * tree was built on, which is the only one of the two a squash-merge leaves an
+ * ancestor of.
+ *
+ * `base` is optional because pins written before the field existed do not have
+ * it, and those are judged on `head` alone — the strict direction, so nothing is
+ * forgiven. A stamp written now always carries it, as `null` when the tree
+ * shared no commit with `origin/main`.
  */
-export type ProseProvenance = { head: string; upstream: string | null; behind: boolean };
+export type ProseProvenance = { head: string; base?: string | null; upstream: string | null; behind: boolean };
 
 /** The hand-maintained pin file, as `scripts/doc-prose-manifest.json` holds it. */
 export type ProseManifest = {
@@ -123,6 +133,7 @@ export function syncProseManifest(
 export type GitProvenance = {
   usable: boolean;
   head: string | null;
+  base: string | null;
   upstream: string | null;
   behind: boolean;
   detached: boolean;
@@ -154,13 +165,23 @@ export type ProseProvenanceVerdict = {
 };
 
 /**
- * Record the commit a manifest was generated from, beside the content it
+ * Record the commits a manifest was generated from, beside the content it
  * describes — a SHA alone does not say whether the tree predates a docs PR.
  */
 export function stampProvenance(
   manifest: ProseManifest,
-  provenance: { head: string; upstream?: string | null; behind?: boolean },
+  provenance: { head: string; base?: string | null; upstream?: string | null; behind?: boolean },
 ): ProseManifest & { provenance: ProseProvenance };
+
+/**
+ * The warning for a stamp that cannot survive a merge, or null when it can.
+ *
+ * A tree with no merge base has no commit that is an ancestor of both sides, so
+ * the only stamp it can produce names a branch tip and is orphaned by the next
+ * squash-merge. A warning rather than a refusal: the tree is not defective, and
+ * refusing is the case `--allow-stale` exists to avoid.
+ */
+export function provenanceStampWarning(provenance: GitProvenance): string | null;
 
 /**
  * Read the provenance of the working tree in `dir` (#1440).

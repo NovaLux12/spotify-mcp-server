@@ -26,6 +26,7 @@ import {
   proseDrift,
   proseProvenanceVerdict,
   proseSyncRefusals,
+  provenanceStampWarning,
   readFilesAtRef,
   short,
   stampProvenance,
@@ -842,8 +843,16 @@ if (args.includes('--prose-sync')) {
   // block rather than in the retirement reason, because it qualifies the tree
   // and not the prose: a reviewer asking "why might this reason be wrong" looks
   // at the retirement, and this is what answers it.
+  //
+  // `base` is stamped beside `head` (#1482) rather than instead of it: the branch
+  // tip is the tree the author was looking at, and the merge base is the commit
+  // that tree was built on — the only one of the two a squash-merge leaves an
+  // ancestor of. A stamp naming the tip alone orphans itself on the merge that
+  // lands the prose it describes.
+  const stampWarning = provenanceStampWarning(provenance);
   const stamped = stampProvenance(result.manifest, {
     head: provenance.head,
+    base: provenance.base ?? null,
     upstream: provenance.upstream,
     behind: Boolean(provenance.behind),
   });
@@ -855,6 +864,7 @@ if (args.includes('--prose-sync')) {
     + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : '')
     + (allowStale ? `, synced from a tree behind origin/main (acknowledged: ${allowStale})` : ''),
   );
+  if (stampWarning) console.error(`\n${stampWarning}\n`);
   process.exit(0);
 }
 const censusFileIndex = args.indexOf('--census-file');
