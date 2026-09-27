@@ -147,7 +147,7 @@ before(async () => {
   // of scope for an issue about playlist positions.
   const context = {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   };
   for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, context)) {

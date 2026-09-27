@@ -634,6 +634,70 @@ describe('spotify_doctor', () => {
     assert.ok(!surface?.exposed_modules.includes('library'));
   });
 
+  it('reports the ungated keys under a trim, and a disabled one as trimmed (#580)', async () => {
+    await writeTokenFile(VALID_TOKENS());
+    // A TRIMMED toolset, not `all`. This is the only configuration in which
+    // the `alwaysActive` exemption is consulted at all: `isModuleActive`
+    // returns true for a key that belongs to no set whatever the trim, so under
+    // `all` an ungated row looks active whether or not the exemption is
+    // applied. Asserting the exemption at `all` would be a test that cannot
+    // fail — which is the failure this case exists to rule out, having been
+    // written that way first.
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    const trimmed = (await harness().invoke({ response_format: 'json' })).structuredContent?.surface;
+
+    // The exemption itself. `swarm3meta` is the one ungated row that IS a toolset
+    // member, so `playback` trims its set and only the flag keeps it.
+    assert.equal(
+      trimmed?.active_modules.includes('swarm3meta'),
+      true,
+      `an alwaysActive row must survive a trimmed toolset: ${JSON.stringify(trimmed?.active_modules)}`,
+    );
+    // The module accounting. This list was hand-kept and had drifted twice: it
+    // named `spotify_doctor`, a TOOL name where every other list here is keyed
+    // by registration key, and it omitted `moodexpand`. So the report carried a
+    // module no env var can name and dropped one that actually registers.
+    for (const key of ['doctor', 'moodexpand', 'receipts']) {
+      assert.equal(
+        trimmed?.active_modules.includes(key),
+        true,
+        `${key} is an alwaysActive registration key and must be reported active under a trim`,
+      );
+    }
+    assert.equal(
+      trimmed?.active_modules.includes('spotify_doctor'),
+      false,
+      'spotify_doctor is a tool name, not a registration key, and must not appear as a module',
+    );
+
+    // And the override, which outranks that exemption. The server honours it
+    // after #580, so a report still listing the key as active would assert a
+    // registration that no longer happens — and `disable_overrides` on the same
+    // object made the contradiction visible: the report echoing the operator's
+    // request while reporting the module as on the surface.
+    process.env.SPOTIFY_MCP_DISABLE_TOOLS = 'swarm3meta';
+    const surface = (await harness().invoke({ response_format: 'json' })).structuredContent?.surface;
+    assert.deepEqual(surface?.disable_overrides, ['swarm3meta']);
+    assert.equal(
+      surface?.active_modules.includes('swarm3meta'),
+      false,
+      'a key named in DISABLE_TOOLS must not be reported active, however it is gated',
+    );
+    // It lands in the same bucket as a set-trimmed key rather than vanishing:
+    // dropping the row entirely would read as "this server has no such module".
+    assert.ok(
+      surface?.hidden_by_trim.includes('swarm3meta'),
+      `a disabled ungated key must be reported as trimmed: ${JSON.stringify(surface?.hidden_by_trim)}`,
+    );
+    assert.equal(
+      surface?.active_modules.length + surface?.hidden_by_trim.length,
+      surface?.total_modules,
+      'the module totals must still partition',
+    );
+    // The neighbouring ungated rows are separate keys and must survive.
+    assert.equal(surface?.active_modules.includes('doctor'), true);
+  });
+
   it('issues only the account read probe and no mutation request', async () => {
     await writeTokenFile(VALID_TOKENS());
     const { invoke, requestedPaths } = harness();

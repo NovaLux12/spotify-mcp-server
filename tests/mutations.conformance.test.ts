@@ -171,7 +171,7 @@ async function enumerateLiveRegistry(): Promise<SurfacedTool[]> {
   // them all rather than gating: the point is the full default surface (#906).
   const resolved = await loadManifestRegistrars(REGISTRAR_MANIFEST, {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   });
   for (const { key, registrar } of resolved) {

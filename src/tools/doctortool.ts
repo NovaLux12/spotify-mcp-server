@@ -25,6 +25,7 @@ import { getConfig } from '../config.js';
 import { parseAuthArgs } from '../auth.js';
 import {
   TOOLSETS,
+  UNGATED_REGISTRATION_KEYS,
   allRegistrationKeys,
   isModuleActive,
   resolveToolOverrides,
@@ -578,12 +579,6 @@ function scopeOwnersFor(registrationKey: string): ReadonlySet<string> {
   return owners;
 }
 
-// Modules that ignore `SPOTIFY_MCP_TOOLSETS` and the scope filter. `receipts`
-// joined them in #688: `verify_receipt` reads an in-process map, so it needs
-// no scope, and a session trimmed to a single toolset could otherwise be told
-// to verify a write and then find no tool to verify it with.
-const ALWAYS_REGISTERED_MODULES: readonly string[] = ['spotify_doctor', 'swarm3meta', 'receipts'];
-
 interface ToolRegistryHolder {
   _registeredTools?: Record<string, { enabled?: boolean }>;
 }
@@ -639,10 +634,29 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
     process.env.SPOTIFY_MCP_ENABLE_TOOLS,
     process.env.SPOTIFY_MCP_DISABLE_TOOLS,
   );
-  const allKeys = [...new Set([...allRegistrationKeys, ...ALWAYS_REGISTERED_MODULES])].sort();
-  const alwaysActive = new Set<string>(ALWAYS_REGISTERED_MODULES);
+  // The ungated rows — the modules that ignore `SPOTIFY_MCP_TOOLSETS` and the
+  // scope filter, so a trimmed server can still explain itself and a write it
+  // just made can still be verified. `receipts` joined them in #688: it reads
+  // an in-process map, so it needs no scope.
+  //
+  // This list used to be a hand-kept literal here and had already drifted
+  // twice: it named `spotify_doctor`, which is a TOOL name, where every other
+  // list in this file is keyed by registration key, and it omitted
+  // `moodexpand` entirely. So the report carried a module no env var can name
+  // and dropped one that actually registers (#580). UNGATED_REGISTRATION_KEYS
+  // is the same set as the manifest's `alwaysActive` rows and is pinned to it
+  // by tests/toolsets.test.ts, so a new ungated row cannot arrive undeclared.
+  const allKeys = [...new Set([...allRegistrationKeys, ...UNGATED_REGISTRATION_KEYS])].sort();
+  const ungated = new Set<string>(UNGATED_REGISTRATION_KEYS);
+  // The `disable` term comes FIRST and is not folded into the ungated
+  // exemption, which is exactly the precedence `moduleRegistrationStatus`
+  // applies after #580. Without it this filter kept reporting a module the
+  // operator had just switched off, while echoing their `disable_overrides`
+  // on the same surface — the report contradicting the request it was printed
+  // in answer to, on the one surface whose whole job is to be believed about
+  // what a token can reach.
   const activeModules = allKeys.filter(
-    (key) => alwaysActive.has(key) || isModuleActive(key, toolsets.sets, overrides),
+    (key) => !overrides.disable.has(key) && (ungated.has(key) || isModuleActive(key, toolsets.sets, overrides)),
   );
   const activeModuleSet = new Set(activeModules);
   const granted = new Set(

@@ -1259,6 +1259,21 @@ export interface RegistrarManifestEntry extends RegistrarSpec {
 export interface RegistrarManifestContext {
   readonly readOnly: boolean;
   readonly isModuleActive: (registrationKey: string) => boolean;
+  /**
+   * The registration keys named in `SPOTIFY_MCP_DISABLE_TOOLS`, already
+   * resolved and lowercased by `resolveToolOverrides`.
+   *
+   * This is a SET rather than a second predicate because it has to be told
+   * apart from the toolset trim: `isModuleActive` returns false both for a
+   * module whose set was trimmed AND for one the operator explicitly disabled,
+   * and the two are not the same question. Collapsing them is what made
+   * `alwaysActive` swallow the override (#580) — the flag short-circuited the
+   * only call that carried the answer. A set is also the one shape a test
+   * stub cannot get wrong by accident: `new Set()` says "nothing disabled"
+   * and is true of every row, where a `() => false` predicate is a claim about
+   * a specific row that a test can accidentally invert.
+   */
+  readonly disableOverrides: ReadonlySet<string>;
   readonly scopeBlocked: (scopeKey: string) => boolean;
 }
 
@@ -2112,6 +2127,20 @@ export function moduleRegistrationStatus(
   // write-capable module" guarantee being sold and not kept (#579). The three
   // rows that carry the flag today are all `readOnlySafe`, so no shipped
   // surface changes — what changes is that the next such row fails closed.
+  //
+  // An explicit `SPOTIFY_MCP_DISABLE_TOOLS` entry outranks that exemption
+  // (#580). `alwaysActive` was introduced to keep doctor/receipts/swarm3meta
+  // on the surface under a trimmed SPOTIFY_MCP_TOOLSETS so a trimmed server
+  // can still explain itself — it is a statement about SET MEMBERSHIP, not a
+  // claim that the operator cannot name the key. Reading it as the latter made
+  // `DISABLE_TOOLS=swarm3meta` a no-op that the resolver accepted, so the key
+  // produced neither a registered module nor a warning: the one failure mode
+  // where the override is both documented and silently untrue. The disable term
+  // is therefore consulted on its own, before the exemption is applied. It
+  // lands on the same status as a trim, because from the host's side it is
+  // the same fact — this module registers nothing — and a status that named
+  // the operator's own request differently would read as a bug.
+  if (context.disableOverrides.has(module.registrationKey.toLowerCase())) return 'toolset_trimmed';
   if (!module.alwaysActive && !context.isModuleActive(module.registrationKey)) return 'toolset_trimmed';
   if (context.readOnly && module.readOnlySafe !== true) return 'read_only_hidden';
   // A row the manifest declares `readOnlySafe` has, by that declaration, no

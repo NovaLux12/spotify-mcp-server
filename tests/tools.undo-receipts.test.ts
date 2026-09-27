@@ -301,7 +301,7 @@ function harness(account: StubAccount, opts: { canConfirm?: boolean } = {}) {
  */
 async function verifyReceiptTool(): Promise<CapturedTool> {
   const { server, tools } = fakeServer();
-  const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
   const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
   assert.ok(module, 'the receipts module must be in the registrar manifest');
   for (const loaded of await loadManifestRegistrars([module], context)) {
@@ -877,7 +877,7 @@ describe('#658 undo is annotated as a destructive write', () => {
 
   it('keeps verify_receipt read-only, so the three receipt tools are not one verdict', async () => {
     const server = new McpServer({ name: 'verify-annotations', version: '0.0.0' });
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
     for (const loaded of await loadManifestRegistrars([module], context)) {

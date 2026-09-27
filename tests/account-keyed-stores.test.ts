@@ -186,7 +186,7 @@ async function verifyReceiptToolFor(client: unknown): Promise<{
 
   const context = {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   };
   const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');

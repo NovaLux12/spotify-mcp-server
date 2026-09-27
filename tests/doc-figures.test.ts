@@ -167,7 +167,7 @@ async function measureIndependently() {
   const server = new McpServer({ name: 'doc-figures', version: '0.0.0' });
   const client = new SpotifyClient();
   try {
-    await registerManifestModules(server, client, { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
+    await registerManifestModules(server, client, { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false });
     const registered = (server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {};
     assertToolNamingPolicy(Object.keys(registered));
     // #687: the output-schema pass runs at startup BEFORE this measurement, and

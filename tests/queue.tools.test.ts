@@ -297,7 +297,7 @@ describe('#847 queue-read collapse', () => {
     // than off the module that registers it, so a rename elsewhere cannot make
     // it vacuous.
     const server = new McpServer({ name: 'queue-descriptions', version: '0.0.0' });
-    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
+    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false });
     applyToolAnnotations(server);
     installToolErrorBoundary(server);
     const client = new Client({ name: 'queue-desc-client', version: '0.0.0' });
@@ -337,7 +337,7 @@ describe('#847 retired queue-read names refuse with the exact replacement call',
 
   before(async () => {
     const server = new McpServer({ name: 'queue-refusals', version: '0.0.0' });
-    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
+    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false });
     applyToolAnnotations(server);
     installToolErrorBoundary(server);
     const client = new Client({ name: 'queue-refusal-client', version: '0.0.0' });

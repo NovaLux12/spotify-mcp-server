@@ -79,7 +79,7 @@ const RECORDER = join(REPO_ROOT, 'tests/fixtures/record-module-loads.mjs');
 /** Every module active: the default install, and the census's own context. */
 const ALL_ACTIVE: RegistrarManifestContext = {
   readOnly: false,
-  isModuleActive: () => true,
+  disableOverrides: new Set<string>(), isModuleActive: () => true,
   scopeBlocked: () => false,
 };
 
@@ -87,7 +87,7 @@ function contextForToolsets(spec: string): RegistrarManifestContext {
   const { sets } = resolveToolsets(spec);
   return {
     readOnly: false,
-    isModuleActive: (key) => isModuleActive(key, sets),
+    disableOverrides: new Set<string>(), isModuleActive: (key) => isModuleActive(key, sets),
     scopeBlocked: () => false,
   };
 }

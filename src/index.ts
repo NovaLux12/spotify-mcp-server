@@ -171,6 +171,7 @@ async function buildMcpServer(
   await registerManifestModules(server, client, {
     readOnly,
     isModuleActive: (key) => isModuleActive(key, activeSets, overrides),
+    disableOverrides: overrides.disable,
     scopeBlocked: (key) => moduleBlockedByScopes(key, grantedScopes),
   });
 

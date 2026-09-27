@@ -966,7 +966,7 @@ describe('verify_receipt label direction (#586)', () => {
    */
   async function callVerifyReceipt(receiptId: string): Promise<{ text: string; structuredContent: Record<string, unknown> }> {
     const server = new McpServer({ name: 'verify-receipt-audit', version: '0.0.0' });
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
     for (const loaded of await loadManifestRegistrars([module!], context)) {
@@ -1049,7 +1049,7 @@ describe('verify_receipt miss and registration gating (#688)', () => {
     const server = new McpServer({ name: 'verify-receipt-688', version: '0.0.0' });
     const module = REGISTRAR_MANIFEST.find((m) => m.key === 'receipts');
     assert.ok(module, 'the receipts module must be in the registrar manifest');
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     for (const loaded of await loadManifestRegistrars([module!], context)) {
       registerManifestModule(server, new SpotifyClient(), loaded, context);
     }
@@ -1164,7 +1164,7 @@ describe('verify_receipt miss and registration gating (#688)', () => {
     const noLibraryScopes = new McpServer({ name: 'no-library-scopes', version: '0.0.0' });
     const noScopeContext = {
       readOnly: false,
-      isModuleActive: () => true,
+      disableOverrides: new Set<string>(), isModuleActive: () => true,
       scopeBlocked: (key: string) => moduleBlockedByScopes(key, granted),
     };
     for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, noScopeContext)) {
@@ -1183,7 +1183,7 @@ describe('verify_receipt miss and registration gating (#688)', () => {
     const trimmed = new McpServer({ name: 'playback-only', version: '0.0.0' });
     const trimmedContext = {
       readOnly: false,
-      isModuleActive: (key: string) => isModuleActive(key, playbackOnly.sets),
+      disableOverrides: new Set<string>(), isModuleActive: (key: string) => isModuleActive(key, playbackOnly.sets),
       scopeBlocked: () => false,
     };
     for (const module of await loadManifestRegistrars(REGISTRAR_MANIFEST, trimmedContext)) {

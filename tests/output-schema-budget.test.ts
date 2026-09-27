@@ -225,7 +225,7 @@ describe('#1376 the schema budget counts outputSchema', () => {
     // rather than hardcoding a number means it survives the surface moving,
     // which a pinned figure would not.
     const server = new McpServer({ name: 'real', version: '0.0.0' });
-    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false });
+    await registerManifestModules(server, new SpotifyClient(), { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false });
     applyToolAnnotations(server);
     applyToolOutputSchemas(server);
     const registry = (server as unknown as { _registeredTools: Record<string, { outputSchema?: unknown }> })._registeredTools;

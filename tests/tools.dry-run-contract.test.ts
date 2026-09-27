@@ -81,7 +81,7 @@ async function playbackDryRunTools(): Promise<PlaybackDryRunTool[]> {
   // straight off the raw manifest would call `undefined`.
   const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   });
   for (const { key, registrar } of loaded) {

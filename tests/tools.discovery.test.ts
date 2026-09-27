@@ -96,6 +96,52 @@ describe('discovery tools read the live registry', () => {
       else process.env.SPOTIFY_MCP_TOOLSETS = prev;
     }
   });
+
+  it('toolset_report agrees with the registry gate about the ungated keys (#580)', async () => {
+    // `toolset_report` answers "which modules are active", so it has to give
+    // the same answer `moduleRegistrationStatus` does. It listed only
+    // `allRegistrationKeys`, which is the toolset table — an `alwaysActive`
+    // row is in no set, so the ungated rows that DO register were simply
+    // absent, and a key named in DISABLE_TOOLS was reported active while the
+    // server had already stopped registering it.
+    const handlers = harness({ search: { description: 'search', enabled: true } });
+    const prevSets = process.env.SPOTIFY_MCP_TOOLSETS;
+    const prevDisable = process.env.SPOTIFY_MCP_DISABLE_TOOLS;
+    // Trimmed, because at `all` the exemption is never consulted and the case
+    // would pass whatever the code did.
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    try {
+      const active = (await handlers.get('toolset_report')!({})).structuredContent.active_modules as string[];
+      for (const key of ['swarm3meta', 'doctor', 'moodexpand', 'receipts']) {
+        assert.ok(active.includes(key), `${key} is an alwaysActive key and must be reported under a trim`);
+      }
+      assert.equal(
+        active.includes('spotify_doctor'),
+        false,
+        'spotify_doctor is a tool name, not a registration key',
+      );
+
+      // `doctor` is a separate key from the one serving this report, so it is
+      // the case where the report is reachable AND the module is switched off.
+      process.env.SPOTIFY_MCP_DISABLE_TOOLS = 'doctor';
+      const disabled = (await handlers.get('toolset_report')!({})).structuredContent.active_modules as string[];
+      assert.equal(
+        disabled.includes('doctor'),
+        false,
+        'a key named in DISABLE_TOOLS must not be reported active',
+      );
+      assert.equal(
+        disabled.includes('swarm3meta'),
+        true,
+        'disabling one ungated key must not remove the others',
+      );
+    } finally {
+      if (prevSets === undefined) delete process.env.SPOTIFY_MCP_TOOLSETS;
+      else process.env.SPOTIFY_MCP_TOOLSETS = prevSets;
+      if (prevDisable === undefined) delete process.env.SPOTIFY_MCP_DISABLE_TOOLS;
+      else process.env.SPOTIFY_MCP_DISABLE_TOOLS = prevDisable;
+    }
+  });
 });
 
 /**

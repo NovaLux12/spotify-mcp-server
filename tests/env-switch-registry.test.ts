@@ -86,14 +86,14 @@ let ROWS: readonly ManifestRow[] = [];
 
 before(async () => {
   // One in-process registration pass, purely to learn which tools each manifest
-  // row owns. `isModuleActive: () => true` and `scopeBlocked: () => false`
+  // row owns. `disableOverrides: new Set<string>(), isModuleActive: () => true` and `scopeBlocked: () => false`
   // mirror the spawned baseline: no toolset spec, and no granted scopes (an
   // absent token file resolves to an empty granted set, which the scope filter
   // fails open on — `moduleBlockedByScopes`).
   const server = new McpServer({ name: 'env-switch-derivation', version: '0.0.0' });
   await registerManifestModules(server, new SpotifyClient(), {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: () => false,
   });
   ROWS = REGISTRAR_MANIFEST.map((entry) => ({
@@ -117,12 +117,20 @@ interface Switches {
  * manifest alone. Mirrors `isModuleActive`'s precedence (disable beats enable
  * beats set membership) and the row-level read-only gate: a row is hidden
  * unless it declares `readOnlySafe: true`.
+ *
+ * The `disable` term is applied BEFORE the `alwaysActive` exemption, which is
+ * the order `moduleRegistrationStatus` uses after #580. Folding it into
+ * `isModuleActive` alone would reproduce the bug this suite exists to catch:
+ * `isModuleActive` reports an alwaysActive key as trimmed only when its set is
+ * trimmed, so the exemption has to be a separate step, and an explicit
+ * `DISABLE_TOOLS` has to beat that exemption rather than join it.
  */
 function expectedToolNames(switches: Switches): Set<string> {
   const { sets } = resolveToolsets(switches.toolsets);
   const { enable, disable } = resolveToolOverrides(switches.enable, switches.disable);
   const names = new Set<string>();
   for (const row of ROWS) {
+    if (disable.has(row.registrationKey.toLowerCase())) continue;
     if (!row.alwaysActive && !isModuleActive(row.registrationKey, sets, { enable, disable })) continue;
     if (switches.readOnly === true && !row.readOnlySafe) continue;
     for (const name of row.tools) names.add(name);
@@ -674,6 +682,91 @@ describe('env switches at the registry (#661)', () => {
       assert.equal(diff.unexpected.length, 0, reportDiff('enable+disable playback', diff));
       assert.equal(diff.missing.length, 0, reportDiff('enable+disable playback', diff));
       assert.equal(surface.tools.includes('play'), false, 'disable must beat enable');
+    });
+
+    it('disables an alwaysActive registration key instead of ignoring it', async () => {
+      // #580. `alwaysActive` exempts a row from SET MEMBERSHIP so a trimmed
+      // server can still explain itself; it is not a claim that the operator
+      // cannot name the key. The gate read it as one, so
+      // DISABLE_TOOLS=swarm3meta was accepted by the resolver, warned about by
+      // nobody, and then registered the module anyway — a documented override
+      // that was silently untrue, on a key an operator reaches for precisely
+      // when the surface is too big.
+      const surface = await runSurface({ SPOTIFY_MCP_DISABLE_TOOLS: 'swarm3meta', SPOTIFY_MCP_TOOLSETS: 'all' });
+      const diff = surfaceDiff(
+        expectedToolNames({ disable: 'swarm3meta', toolsets: 'all' }),
+        new Set(surface.tools),
+      );
+      assert.equal(diff.unexpected.length, 0, reportDiff('swarm3meta disabled', diff));
+      assert.equal(diff.missing.length, 0, reportDiff('swarm3meta disabled', diff));
+      // Named, and sized. The count is the measured delta against a sibling
+      // spawn of the same tree, not a figure from a comment: a filter that
+      // silently hid the whole row plus a neighbour would satisfy every
+      // assertion above it.
+      const baseline = await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' });
+      assert.ok(baseline.tools.includes('find_tool'), 'the untrimmed surface must have the key to remove');
+      assert.equal(surface.tools.includes('find_tool'), false, 'disabling swarm3meta must remove find_tool');
+      for (const name of ['inspect_tool', 'toolset_report']) {
+        assert.equal(surface.tools.includes(name), false, `"${name}" belongs to swarm3meta and must go with it`);
+      }
+      assert.equal(
+        baseline.tools.length - surface.tools.length,
+        3,
+        'disabling swarm3meta must remove exactly its three tools',
+      );
+      // The tool the operator keeps — discovery has to survive the trim that
+      // the alwaysActive flag exists for.
+      assert.ok(surface.tools.includes('spotify_doctor'), 'disabling one ungated key must not remove the others');
+      assert.ok(surface.tools.includes('verify_receipt'), 'receipts is a separate key and must survive');
+    });
+
+    it('accepts every ungated registration key as a disable target, and names no unknown', async () => {
+      // The other three `alwaysActive` rows. Before #580 these were worse than
+      // inert: the resolver learned the legal key vocabulary from the toolset
+      // table, which an ungated row is not part of, so each one printed
+      // "Unknown SPOTIFY_MCP_DISABLE_TOOLS entry ignored" and then registered
+      // anyway — the warning and the outcome together told the operator the
+      // override did not exist while the tool stayed on the surface.
+      for (const [key, tool] of [
+        ['doctor', 'spotify_doctor'],
+        ['moodexpand', 'expand_mood_to_queries'],
+        ['receipts', 'verify_receipt'],
+      ] as const) {
+        const surface = await runSurface({ SPOTIFY_MCP_DISABLE_TOOLS: key, SPOTIFY_MCP_TOOLSETS: 'all' });
+        const diff = surfaceDiff(
+          expectedToolNames({ disable: key, toolsets: 'all' }),
+          new Set(surface.tools),
+        );
+        assert.equal(diff.unexpected.length, 0, reportDiff(`${key} disabled`, diff));
+        assert.equal(diff.missing.length, 0, reportDiff(`${key} disabled`, diff));
+        assert.equal(surface.tools.includes(tool), false, `disabling ${key} must remove ${tool}`);
+        assert.equal(
+          /Unknown SPOTIFY_MCP_(ENABLE|DISABLE)_TOOLS/.test(surface.stderr),
+          false,
+          `${key} is a real registration key; the resolver must not report it as unknown. stderr: ${surface.stderr}`,
+        );
+      }
+    });
+
+    it('still warns about a key that is in no table, and leaves the surface alone', async () => {
+      // The other half of the contract the previous two cases could have
+      // broken by making the resolver accept too much: widening the known set
+      // until every string resolves would silence the warning that tells an
+      // operator their typo did nothing.
+      const surface = await runSurface({
+        SPOTIFY_MCP_DISABLE_TOOLS: 'definitely_not_a_registration_key',
+        SPOTIFY_MCP_TOOLSETS: 'all',
+      });
+      const baseline = await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' });
+      const diff = surfaceDiff(expectedToolNames({ toolsets: 'all' }), new Set(surface.tools));
+      assert.equal(diff.unexpected.length, 0, reportDiff('unknown disable key', diff));
+      assert.equal(diff.missing.length, 0, reportDiff('unknown disable key', diff));
+      assert.equal(surface.tools.length, baseline.tools.length, 'an unknown key must change nothing');
+      assert.match(
+        surface.stderr,
+        /Unknown SPOTIFY_MCP_DISABLE_TOOLS entry ignored: definitely_not_a_registration_key/,
+        `an unknown key must still be reported. stderr: ${surface.stderr}`,
+      );
     });
   });
 

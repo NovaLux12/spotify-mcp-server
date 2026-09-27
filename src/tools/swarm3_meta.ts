@@ -20,6 +20,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   TOOLSETS,
+  UNGATED_REGISTRATION_KEYS,
   isModuleActive,
   allRegistrationKeys,
   resolveToolsets,
@@ -66,6 +67,12 @@ const REGISTRY_UNAVAILABLE =
  * Registration keys currently active, derived from the same env specs the
  * server registers with (`SPOTIFY_MCP_TOOLSETS` plus the per-key overrides).
  * Scope-driven hiding is not reflected here (it depends on the token).
+ *
+ * The ungated rows are included and the `disable` term is applied ahead of
+ * their exemption, so this agrees with `moduleRegistrationStatus` row for row
+ * (#580). Listing only `allRegistrationKeys` reported `swarm3meta` as active
+ * under `DISABLE_TOOLS=swarm3meta` — the answer the gate had already stopped
+ * giving, one surface behind.
  */
 function activeModules(): string[] {
   const sets = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS).sets;
@@ -73,7 +80,10 @@ function activeModules(): string[] {
     process.env.SPOTIFY_MCP_ENABLE_TOOLS,
     process.env.SPOTIFY_MCP_DISABLE_TOOLS,
   );
-  return allRegistrationKeys.filter((key) => isModuleActive(key, sets, overrides));
+  const ungated = new Set<string>(UNGATED_REGISTRATION_KEYS);
+  return [...allRegistrationKeys, ...UNGATED_REGISTRATION_KEYS].filter(
+    (key) => !overrides.disable.has(key) && (ungated.has(key) || isModuleActive(key, sets, overrides)),
+  );
 }
 
 export function registerSwarm3MetaTools(server: McpServer): void {

@@ -67,7 +67,7 @@ async function visibleTools(grant: readonly string[]): Promise<Set<string>> {
   const held = scopesFor(grant.join(' '));
   await registerManifestModules(server, new SpotifyClient(), {
     readOnly: false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: (key) => moduleBlockedByScopes(key, held),
   });
   return new Set(

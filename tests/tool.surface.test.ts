@@ -660,7 +660,7 @@ describe('tool surface: budget', () => {
   it('manifest audit measures every module and enforces every ceiling', async () => {
     const server = new McpServer({ name: 'schema-audit', version: '0.0.0' });
     const client = new SpotifyClient();
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     await registerManifestModules(server, client, context);
     const rows = collectModuleSchemaBudgets(server);
     assert.equal(rows.length, REGISTRAR_MANIFEST.length);
@@ -768,7 +768,7 @@ describe('tool surface: budget', () => {
   it('registers the exact core-first name sequence with every module once', async () => {
     const server = new McpServer({ name: 'order-audit', version: '0.0.0' });
     const client = new SpotifyClient();
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     await registerManifestModules(server, client, context);
     const names = Object.keys((server as unknown as { _registeredTools: Record<string, unknown> })._registeredTools);
     const coreCount = REGISTRAR_MANIFEST.slice(0, 4).reduce((sum, module) => sum + module.baseline.toolCount, 0);
@@ -797,7 +797,7 @@ describe('tool surface: budget', () => {
   it('manifest measurements equal the finalized production tools/list projection', async () => {
     const server = new McpServer({ name: 'wire-audit', version: '0.0.0' });
     const client = new SpotifyClient();
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     await registerManifestModules(server, client, context);
     applyToolAnnotations(server);
     installToolErrorBoundary(server);
@@ -834,7 +834,7 @@ describe('tool surface: budget', () => {
   it('toolset_report returns the same per-module measurements', async () => {
     const server = new McpServer({ name: 'report-audit', version: '0.0.0' });
     const client = new SpotifyClient();
-    const context = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const context = { readOnly: false, disableOverrides: new Set<string>(), isModuleActive: () => true, scopeBlocked: () => false };
     await registerManifestModules(server, client, context);
     const tool = (server as unknown as { _registeredTools: Record<string, { handler: (args: Record<string, never>) => Promise<{ structuredContent: { module_schema_budgets: unknown[] }; content: Array<{ text: string }> }> }> })._registeredTools.toolset_report;
     const result = await tool.handler({});

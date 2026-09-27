@@ -1540,7 +1540,7 @@ async function attributeToolsToModules(liveToolNames, finalizedTools) {
     // (#906). It asks for the resolved manifest explicitly rather than going
     // through `registerManifestModules`, which would gate on the census's own
     // context — this loop registers unconditionally to attribute every name.
-    const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+    const censusContext = { readOnly: false, disableOverrides: new Set(), isModuleActive: () => true, scopeBlocked: () => false };
     const loaded = await loadManifestRegistrars(REGISTRAR_MANIFEST, censusContext);
     for (const module of loaded) {
       registerManifestModule(server, clientStub, module, censusContext);
@@ -1652,7 +1652,7 @@ async function measureGatedSurface() {
     getAllPages: async () => [],
     getRateLimitStatus: () => ({ lastThrottleAt: null, retryAfterSec: null, cooldownRemainingMs: 0 }),
   };
-  const censusContext = { readOnly: false, isModuleActive: () => true, scopeBlocked: () => false };
+  const censusContext = { readOnly: false, disableOverrides: new Set(), isModuleActive: () => true, scopeBlocked: () => false };
   const measurePass = async () => {
     const server = new McpServer({ name: 'gated-census', version: '0.0.0' });
     try {

@@ -71,7 +71,7 @@ async function register(options: { scope?: string; readOnly?: boolean }): Promis
   const granted = scopesFor(options.scope);
   await registerManifestModules(server, new SpotifyClient(), {
     readOnly: options.readOnly ?? false,
-    isModuleActive: () => true,
+    disableOverrides: new Set<string>(), isModuleActive: () => true,
     scopeBlocked: (key) => moduleBlockedByScopes(key, granted),
   });
   return server;
