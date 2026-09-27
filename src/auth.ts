@@ -7,6 +7,16 @@ import { createInterface } from 'readline/promises';
 import { stdin as input, stdout as output } from 'process';
 import open from 'open';
 import type { TokenData } from './types/spotify.js';
+// The scope vocabulary and the boolean-env rule are owned by config.ts (#618,
+// #611) so the auth flow, the config loader and the documentation cannot hold
+// separate copies of either. Imported statically: config.ts imports nothing
+// from this module, so there is no cycle.
+import {
+  DEFAULT_SCOPES as SCOPE_DEFAULTS,
+  KNOWN_SPOTIFY_SCOPES,
+  isKnownScope,
+  truthyEnv,
+} from './config.js';
 
 const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
 // Derive bind port and route path from SPOTIFY_REDIRECT_URI so an overridden
@@ -81,34 +91,17 @@ function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;');
 }
 
-const DEFAULT_SCOPES_LIST: readonly string[] = [
-  'user-read-private',
-  'user-read-email',
-  'user-read-playback-state',
-  'user-modify-playback-state',
-  'user-read-currently-playing',
-  'user-read-recently-played',
-  'user-read-playback-position',
-  'user-top-read',
-  'user-library-read',
-  'user-library-modify',
-  'user-follow-read',
-  'ugc-image-upload',
-  'user-follow-modify',
-  'playlist-read-private',
-  'playlist-read-collaborative',
-  'playlist-modify-public',
-  'playlist-modify-private',
-];
-
-const DEFAULT_SCOPES = DEFAULT_SCOPES_LIST.join(' ');
-
-/** Known Spotify scope vocab — mirrors src/config.ts KNOWN_SPOTIFY_SCOPES. */
-const KNOWN_SCOPES = new Set<string>([
-  ...DEFAULT_SCOPES_LIST,
-  'app-remote-control',
-  'streaming',
-]);
+/**
+ * Scope vocabulary and defaults come from config.ts (#618) — this module used
+ * to hold a second hand-maintained copy of both, kept in step only by a
+ * comment. A scope added to one side and not the other produced a startup
+ * error that named this file, or a scope this flow requested and the server
+ * then rejected, and the failure looked like a config bug rather than an edit.
+ *
+ * `DEFAULT_SCOPES` is the array; the auth flow needs the space-joined form the
+ * token request carries.
+ */
+const DEFAULT_SCOPES = SCOPE_DEFAULTS.join(' ');
 
 /**
  * Parse SPOTIFY_SCOPES / --scopes: space- or comma-separated, validated,
@@ -138,9 +131,9 @@ export function parseScopesString(
   const seen = new Set<string>();
   for (const s of parts) {
     if (seen.has(s)) continue;
-    if (!KNOWN_SCOPES.has(s)) {
+    if (!isKnownScope(s)) {
       throw new Error(
-        `Unknown scope "${s}". Known scopes: ${[...KNOWN_SCOPES].sort().join(', ')}`,
+        `Unknown scope "${s}". Known scopes: ${[...KNOWN_SPOTIFY_SCOPES].sort().join(', ')}`,
       );
     }
     seen.add(s);
@@ -250,10 +243,6 @@ export function getTokenFile(cliProfile?: string): string {
  * For profile-aware resolution, use getTokenFile().
  */
 export const TOKEN_FILE = getTokenFile();
-
-function truthyEnv(raw: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
-}
 
 /**
  * Returns true when SPOTIFY_HEADLESS is truthy, indicating the auth flow

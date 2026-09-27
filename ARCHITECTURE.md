@@ -112,17 +112,17 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 <!-- BEGIN:generated module-map -->
 | File | Responsibility | LOC |
 |---|---|---:|
-| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 690 |
+| `src/auth.ts` | Runtime module for src/auth.ts. (0 registered tools) | 679 |
 | `src/cache.ts` | Tiny LRU + TTL cache used by SpotifyClient for immutable catalog reads (#54). (0 registered tools) | 325 |
 | `src/chunk.ts` | The batch-size policy for the whole server, in one place (#512, #583). (0 registered tools) | 143 |
 | `src/client.ts` | Runtime module for src/client.ts. (0 registered tools) | 1972 |
 | `src/concurrency.ts` | Bounded-concurrency fan-out for the freshness-radar walks (#783). (0 registered tools) | 169 |
-| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 373 |
+| `src/config.ts` | Central configuration loader for the SPOTIFY_MCP_* environment family. (0 registered tools) | 640 |
 | `src/cover-image.ts` | Shared cover-image helpers for the three playlist cover tools (#880). (0 registered tools) | 96 |
 | `src/csvsafe.ts` | CSV cell rendering shared by every writer that emits a spreadsheet (#630). (0 registered tools) | 32 |
 | `src/gating.ts` | The app-registration-gated error contract (#791, #428, #429; audit A14-016/A8-036) -- the graceful 403 mapping for Spotify's app-registration-gated endpoint family (probed 2026-08-26, memory/edge-probe-2026-08-26.json). (0 registered tools) | 322 |
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | 375 |
-| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 281 |
+| `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | 288 |
 | `src/lib/statsfm-client.ts` | Minimal client for the public stats.fm API (https://api.stats.fm/api/v1). (0 registered tools) | 138 |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | 221 |
 | `src/paths.ts` | Local-path confinement for export/import tools (#622). (0 registered tools) | 346 |
@@ -132,11 +132,11 @@ The table is generated from every TypeScript file recursively under `src/`, incl
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | 229 |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | 869 |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | 321 |
-| `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 78 |
+| `src/scopefilter.ts` | Scope-aware module gating (#111 item 6). (0 registered tools) | 80 |
 | `src/shaping.ts` | Shared shaping helpers for tool responses (#51/#52/#53/#57/#58): zod schema fragments, truncation math, pagination info, structuredContent emission, mutation batch summaries and dry-run descriptions. (0 registered tools) | 1027 |
 | `src/sidecar.ts` | Shared policy for local JSON sidecars (#839, #1051). (0 registered tools) | 199 |
 | `src/tools/analytics.ts` | Runtime module for src/tools/analytics.ts. (4 registered tools) | 515 |
-| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1872 |
+| `src/tools/annotations.ts` | MCP tool annotations (#565 / A0-002, A4-005). (1 registered tool) | 1883 |
 | `src/tools/artistwatch.ts` | Runtime module for src/tools/artistwatch.ts. (6 registered tools) | 937 |
 | `src/tools/audiobookcopilot.ts` | Audiobook chapter copilot (#112 idea 4): tools for navigating long-form audiobooks — full chapter tables regardless of the ~18-chapter app break (bounded by the fetch-all cap, and the bound is disclosed), 1-based chapter jumps, and "where was I?" (3 registered tools) | 396 |
 | `src/tools/audiobooks.ts` | Runtime module for src/tools/audiobooks.ts. (4 registered tools) | 400 |

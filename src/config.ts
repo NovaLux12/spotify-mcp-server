@@ -57,6 +57,15 @@ export interface SpotifyMcpConfig {
   scopes: string[] | null;
   /** Default market fallback (SPOTIFY_MCP_MARKET). Null = not set / invalid. */
   market: string | null;
+  /**
+   * Hard read-only mode (SPOTIFY_MCP_READONLY) — the same value the
+   * registration gate acts on, read through the same `readOnlyEnv` (#611).
+   *
+   * It lives on the snapshot rather than being re-read by the reporter so that
+   * doctor cannot print a flag state the registry did not use: one parse, one
+   * value, two readers. See `readOnlyModeEnabled` in src/tools/annotations.ts.
+   */
+  readonly: boolean;
 }
 
 export const DEFAULT_MAX_ITEMS = 50;
@@ -94,52 +103,84 @@ export const MAX_CONCURRENCY_CEILING = 32;
 /** Default per-request HTTP timeout when SPOTIFY_REQUEST_TIMEOUT_MS is unset. */
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
-/** Known Spotify scope vocabulary — used to validate SPOTIFY_SCOPES (#221). */
-export const KNOWN_SPOTIFY_SCOPES: ReadonlySet<string> = new Set([
-  'ugc-image-upload',
-  'user-read-playback-state',
-  'user-modify-playback-state',
-  'user-read-currently-playing',
-  'user-read-recently-played',
-  'user-read-playback-position',
-  'user-top-read',
-  'user-read-private',
-  'user-read-email',
-  'user-library-read',
-  'user-library-modify',
-  'user-follow-read',
-  'user-follow-modify',
-  'playlist-read-private',
-  'playlist-read-collaborative',
-  'playlist-modify-public',
-  'playlist-modify-private',
-  'app-remote-control',
-  'streaming',
-  // Keep complete — if Spotify adds a new scope, add it here so users can
-  // request it without waiting for a doc update. Unknown scopes are rejected
-  // with a named error at config load.
+/**
+ * The OAuth scope vocabulary (#618) — the SINGLE SOURCE for this repo.
+ *
+ * There were two hand-maintained copies (this one and a second beside the auth
+ * flow) that were equal only by hand. A scope added to one side produced a
+ * startup error that named the other side's file, and a scope removed from one
+ * was still requested at auth and rejected at config load. The failure surfaced
+ * as a crash unrelated to the edit that caused it, which is how a one-line
+ * vocabulary change reads as a config bug.
+ *
+ * Both lists are now derived from ONE array, so there is nothing to keep in
+ * step: the defaults are a subset, and the known set is the defaults plus the
+ * opt-ins. `src/auth.ts` imports both — it no longer holds a copy.
+ *
+ * Order is the order the consent screen shows, and it is meaningful only in
+ * that sense. `KNOWN_SPOTIFY_SCOPES` is a Set, so nothing depends on its order.
+ *
+ * Keep this complete as Spotify adds scopes: an unknown scope is rejected with
+ * a named error at config load, so a scope missing here cannot be requested at
+ * all until this file changes.
+ */
+const SCOPE_VOCABULARY = {
+  /**
+   * Requested when SPOTIFY_SCOPES is unset (17 scopes). The consent prompt
+   * shows exactly this set, so adding a scope here widens what every user is
+   * asked to approve — which is why `ugc-image-upload` is present (the cover
+   * upload tool needs it) and `streaming` is not (it is for the browser Web
+   * Playback SDK, not the Web API).
+   */
+  default: [
+    'user-read-private',
+    'user-read-email',
+    'user-read-playback-state',
+    'user-modify-playback-state',
+    'user-read-currently-playing',
+    'user-read-recently-played',
+    'user-read-playback-position',
+    'user-top-read',
+    'user-library-read',
+    'user-library-modify',
+    'user-follow-read',
+    'ugc-image-upload',
+    'user-follow-modify',
+    'playlist-read-private',
+    'playlist-read-collaborative',
+    'playlist-modify-public',
+    'playlist-modify-private',
+  ],
+  /**
+   * Accepted in SPOTIFY_SCOPES and `auth --scopes`, never requested by
+   * default. Both are legitimate Web API scopes that most operators do not
+   * want in the standing grant, so they are opt-in rather than excluded.
+   */
+  optIn: ['app-remote-control', 'streaming'],
+} as const satisfies Record<string, readonly string[]>;
+
+export type KnownScope =
+  | (typeof SCOPE_VOCABULARY.default)[number]
+  | (typeof SCOPE_VOCABULARY.optIn)[number];
+
+/** Default scopes when SPOTIFY_SCOPES is unset — the standing consent grant. */
+export const DEFAULT_SCOPES: readonly KnownScope[] = SCOPE_VOCABULARY.default;
+
+/** Every scope SPOTIFY_SCOPES / `auth --scopes` will accept (#221). */
+export const KNOWN_SPOTIFY_SCOPES: ReadonlySet<KnownScope> = new Set<KnownScope>([
+  ...SCOPE_VOCABULARY.default,
+  ...SCOPE_VOCABULARY.optIn,
 ]);
 
-/** Default scopes when SPOTIFY_SCOPES is unset — must match src/auth.ts DEFAULT_SCOPES. */
-export const DEFAULT_SCOPES: readonly string[] = [
-  'user-read-private',
-  'user-read-email',
-  'user-read-playback-state',
-  'user-modify-playback-state',
-  'user-read-currently-playing',
-  'user-read-recently-played',
-  'user-read-playback-position',
-  'user-top-read',
-  'user-library-read',
-  'user-library-modify',
-  'user-follow-read',
-  'ugc-image-upload',
-  'user-follow-modify',
-  'playlist-read-private',
-  'playlist-read-collaborative',
-  'playlist-modify-public',
-  'playlist-modify-private',
-];
+/**
+ * Narrow an arbitrary string to the vocabulary. The parsers receive whatever
+ * an operator typed, so the test has to accept a plain `string`; the guard is
+ * what lets a validated scope be used where a `KnownScope` is required without
+ * a cast at each call site.
+ */
+export function isKnownScope(candidate: string): candidate is KnownScope {
+  return KNOWN_SPOTIFY_SCOPES.has(candidate as KnownScope);
+}
 
 /** Parse a positive integer env value; anything else falls back to `fallback`. */
 function positiveInt(raw: string | undefined, fallback: number): number {
@@ -147,9 +188,70 @@ function positiveInt(raw: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-/** Truthy env convention: "1", "true", "yes", "on" (case-insensitive). */
+/**
+ * The boolean env convention (#611), as data rather than a literal buried in
+ * each call site.
+ *
+ * The asymmetry is deliberate and is the whole reason this is shared: an
+ * opt-IN flag (`SPOTIFY_MCP_READONLY`) is true when the value is in TRUTHY,
+ * while an opt_OUT flag (`SPOTIFY_MCP_SEARCH_HISTORY`, on unless disabled) is
+ * false when the value is in FALSY. Both tables name the same four words in
+ * opposite senses, so a reader that grabs the wrong one inverts a safety
+ * switch — `SPOTIFY_MCP_READONLY=off` must not mean "read-only ON".
+ *
+ * Naming both also gives `unrecognisedBooleanEnv` something to test against,
+ * which is how a typo gets a warning instead of silence.
+ */
+export const TRUTHY_ENV_VALUES: readonly string[] = ['1', 'true', 'yes', 'on'];
+export const FALSY_ENV_VALUES: readonly string[] = ['0', 'false', 'no', 'off'];
+
+/** Truthy env convention: "1", "true", "yes", "on" (case-insensitive, trimmed). */
 export function truthyEnv(raw: string | undefined): boolean {
-  return ['1', 'true', 'yes', 'on'].includes((raw ?? '').trim().toLowerCase());
+  return TRUTHY_ENV_VALUES.includes((raw ?? '').trim().toLowerCase());
+}
+
+/**
+ * Falsy env convention for opt-out flags: "0", "false", "no", "off"
+ * (case-insensitive, trimmed). The complement of `truthyEnv` in the sense that
+ * matters: an UNRECOGNISED value is neither, which is what lets a typo be told
+ * apart from a deliberate choice.
+ */
+export function falsyEnv(raw: string | undefined): boolean {
+  return FALSY_ENV_VALUES.includes((raw ?? '').trim().toLowerCase());
+}
+
+/**
+ * Whether `raw` names no boolean at all — a value that is neither truthy nor
+ * falsy, so the caller that wants a decision must supply a default and the
+ * caller that wants a warning can fire one.
+ *
+ * Unset and empty are NOT unrecognised: "the operator did not set this" is a
+ * complete answer, and warning on it would fire on every process start.
+ */
+export function unrecognisedBooleanEnv(raw: string | undefined): boolean {
+  const normalised = (raw ?? '').trim().toLowerCase();
+  if (normalised === '') return false;
+  return !TRUTHY_ENV_VALUES.includes(normalised) && !FALSY_ENV_VALUES.includes(normalised);
+}
+
+/**
+ * The single reader of SPOTIFY_MCP_READONLY (#611).
+ *
+ * This flag is the hard read-only guarantee: it hides every write-capable
+ * registration module, so an operator who sets it and does not get it is
+ * running a write-capable server while believing otherwise. It previously had
+ * its own three-value list with no trim and no `on`, in a different file from
+ * the parser the rest of the config surface used — so `SPOTIFY_MCP_READONLY=on`
+ * was silently ignored, and the flag appeared in no validation or diagnostic
+ * path at all.
+ *
+ * Exported from config.ts rather than from the tool layer because the
+ * disclosure (doctor) and the gate (module registration) must not be able to
+ * disagree; see `readOnlyModeEnabled` in src/tools/annotations.ts, the only
+ * consumer, and the `readonly` field on the config snapshot it reads.
+ */
+export function readOnlyEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_READONLY);
 }
 
 /**
@@ -209,7 +311,7 @@ export function parseScopes(raw: string | undefined): string[] | null {
   const seen = new Set<string>();
   for (const s of parts) {
     if (seen.has(s)) continue;
-    if (!KNOWN_SPOTIFY_SCOPES.has(s)) {
+    if (!isKnownScope(s)) {
       throw new Error(
         `Unknown scope in SPOTIFY_SCOPES: "${s}". Known scopes: ${[...KNOWN_SPOTIFY_SCOPES].sort().join(', ')}`,
       );
@@ -218,6 +320,33 @@ export function parseScopes(raw: string | undefined): string[] | null {
     deduped.push(s);
   }
   return deduped;
+}
+
+/**
+ * Parse SPOTIFY_MCP_READONLY at config-load time: warns when the value names
+ * no boolean, then defers to `readOnlyEnv` for the decision itself.
+ *
+ * The warning is the point. Without it a typo reads as "off" — the server
+ * registers every write module and says nothing, which is the one outcome an
+ * operator who set this flag is trying to rule out. The flag is a safety
+ * switch, so a value we cannot interpret earns a line on stderr naming the
+ * accepted spellings. It is NOT an error: refusing to start would take a
+ * read-only host offline over a cosmetic mistake, and silently downgrading to
+ * off — not saying so — is the actual failure mode.
+ *
+ * Only config load warns. The gate (`readOnlyModeEnabled`) is consulted at
+ * registration and again on every write-capable call, so warning there would
+ * repeat one line per request.
+ */
+export function parseReadOnly(raw: string | undefined): boolean {
+  if (unrecognisedBooleanEnv(raw)) {
+    console.error(
+      `[spotify-mcp] SPOTIFY_MCP_READONLY "${raw?.trim()}" names no boolean; treating read-only mode as OFF. `
+        + `Accepted: ${TRUTHY_ENV_VALUES.join(', ')}. `
+        + 'If you meant to enable it, the value above is not one this server reads as true.',
+    );
+  }
+  return readOnlyEnv({ SPOTIFY_MCP_READONLY: raw });
 }
 
 /**
@@ -274,6 +403,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     ),
     scopes,
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
+    readonly: parseReadOnly(env.SPOTIFY_MCP_READONLY),
   };
 }
 
@@ -370,4 +500,141 @@ export function initConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
 /** Process-wide config snapshot, lazily initialized from process.env. */
 export function getConfig(): SpotifyMcpConfig {
   return current ?? initConfig();
+}
+
+/**
+ * The variables `--help` and `.env.example` are generated from (#621).
+ *
+ * ## Why a registry rather than prose in two files
+ *
+ * `--help` listed five variables, `.env.example` listed six, and neither
+ * mentioned the ones that change the token file, the consent prompt or the tool
+ * surface — the three settings an operator most needs to find. The
+ * copy-to-.env template presents itself as complete, so filling it in still ran
+ * with the default profile, the full 17-scope grant, and no read-only notice,
+ * with nothing in the output to say so. Users and agents discovered these only
+ * by finding `docs/configuration.md`.
+ *
+ * A hand-written list in each file reproduces exactly that drift, so this is
+ * one list with the description and default next to the name. `--help` renders
+ * it, and `tests/docs.env-parity.test.ts` fails if `.env.example` or
+ * `docs/configuration.md` stops naming one of these.
+ *
+ * ## What is deliberately NOT here
+ *
+ * This is the QUICK-REFERENCE set, not the complete env surface — the server
+ * reads more than this (receipts, backup retention, sidecar paths, …), and
+ * docs/configuration.md remains the full reference. The registry is what an
+ * operator should be able to discover from `--help` alone: the variables that
+ * change which account is used, what is consented to, or which tools exist.
+ * Widening it to every variable would make `--help` a wall of tuning knobs and
+ * stop being a quick reference.
+ */
+export interface DocumentedEnvVar {
+  /** The variable name, exactly as the server reads it. */
+  name: string;
+  /** One-line purpose, written for someone configuring, not implementing. */
+  summary: string;
+  /** Shown in --help; `null` when there is no single default worth printing. */
+  default: string | null;
+  /** Whether --help mentions it. The full reference documents all of them. */
+  inHelp: boolean;
+}
+
+export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
+  {
+    name: 'SPOTIFY_CLIENT_ID',
+    summary: 'Required. OAuth Client ID of your Spotify app (developer.spotify.com dashboard).',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_REDIRECT_URI',
+    summary: 'OAuth redirect URI; must match the app dashboard exactly.',
+    default: 'http://127.0.0.1:8888/callback',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_HEADLESS',
+    summary: `Browserless paste-flow auth (${TRUTHY_ENV_VALUES.join('/')}).`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_TOKEN_FILE',
+    summary: 'Token file path. Wins over SPOTIFY_MCP_PROFILE.',
+    default: '~/.spotify-mcp/tokens.json',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_PROFILE',
+    summary: 'Profile name; selects ~/.spotify-mcp/tokens.<profile>.json. The `auth --profile` equivalent.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_SCOPES',
+    summary: `Space/comma-separated OAuth scopes to request instead of the ${DEFAULT_SCOPES.length} defaults. An unknown scope fails startup.`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_READONLY',
+    summary: `Hide every write-capable module (${TRUTHY_ENV_VALUES.join('/')}). The hard read-only guarantee.`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_CONFIRM',
+    summary: 'Set to exactly `never` to skip destructive-operation confirmation. Automation only.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_TOOLSETS',
+    summary: 'Comma-separated toolsets to register (`all` or unset registers everything).',
+    default: 'all',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_MARKET',
+    summary: 'Default ISO 3166-1 alpha-2 market for market-gated lookups.',
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_MAX_ITEMS',
+    summary: 'Default per-call item cap for list tools; `max_results` overrides per call.',
+    default: String(DEFAULT_MAX_ITEMS),
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_FETCH_ALL_CAP',
+    summary: 'Hard cap for fetch_all=true pagination walks.',
+    default: String(DEFAULT_FETCH_ALL_CAP),
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_HISTORY',
+    summary: `Log one JSONL line per agent-driven mutation (${TRUTHY_ENV_VALUES.join('/')}).`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_REQUEST_TIMEOUT_MS',
+    summary: 'Per-request timeout for Spotify API calls and token refresh.',
+    default: String(DEFAULT_REQUEST_TIMEOUT_MS),
+    inHelp: true,
+  },
+] as const;
+
+/** Render the registry as the `Environment:` block of `--help`. */
+export function renderEnvHelp(): string {
+  const width = Math.max(...DOCUMENTED_ENV_VARS.filter((v) => v.inHelp).map((v) => v.name.length));
+  return DOCUMENTED_ENV_VARS.filter((v) => v.inHelp)
+    .map((v) => {
+      const suffix = v.default ? ` (default ${v.default})` : '';
+      return `  ${v.name.padEnd(width)}  ${v.summary}${suffix}`;
+    })
+    .join('\n');
 }
