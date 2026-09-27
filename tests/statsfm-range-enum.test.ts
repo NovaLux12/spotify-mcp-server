@@ -73,9 +73,17 @@ const RANGE_TOOLS = collectRangeTools();
 
 test('the range-bearing surface is actually exercised', () => {
   // If a module stops registering a range tool this file would pass vacuously.
+  //
+  // The floor is a count of DISTINCT names, and it is 10 for a reason worth
+  // recording: before #908 the taste tools registered twice (canonical plus
+  // `taste_*` alias), so three of them were collected twice and the raw
+  // `RANGE_TOOLS.length` was 13 against a floor of 11. Deduplicating makes the
+  // floor mean "this many real range tools", so a module that re-registers one
+  // name under a second alias can no longer prop up a vacuous file.
+  const distinct = new Set(RANGE_TOOLS.map((tool) => tool.name));
   assert.ok(
-    RANGE_TOOLS.length >= 11,
-    `expected the endpoint, taste, and composite range tools to be registered, saw ${RANGE_TOOLS.length}`,
+    distinct.size >= 10,
+    `expected the endpoint, taste, and composite range tools to be registered, saw ${distinct.size} distinct (${RANGE_TOOLS.length} registrations)`,
   );
 });
 

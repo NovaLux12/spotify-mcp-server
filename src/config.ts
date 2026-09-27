@@ -285,6 +285,42 @@ export function readOnlyEnv(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /**
+ * Whether the retired `taste_*` tool names still resolve to their canonical
+ * `statsfm_*` handlers (#908).
+ *
+ * Off by default. The aliases were dropped from the REGISTRY, not from the
+ * product: they were eight duplicate rows of schema in every host's context,
+ * and a model choosing between `record_feedback` and
+ * `statsfm_record_feedback` had a coin flip to make. This flag is the
+ * compatibility window for a caller that has not finished migrating — it costs
+ * nothing in the payload, because the names are rewritten at dispatch and are
+ * never advertised in `tools/list`.
+ *
+ * Same parser and same file as `readOnlyEnv` for the same reason: one list of
+ * truthy spellings, so `SPOTIFY_MCP_LEGACY_ALIASES=on` cannot mean "off" here
+ * and "on" somewhere else.
+ */
+export function legacyAliasesEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_LEGACY_ALIASES);
+}
+
+/**
+ * Whether the stats.fm families should be registered without the operator
+ * naming them in `SPOTIFY_MCP_TOOLSETS` (#607).
+ *
+ * A convenience, not a second gate. `SPOTIFY_MCP_TOOLSETS=taste,statsfm` and
+ * `SPOTIFY_MCP_STATSFM=1` reach the same set of tools; the flag exists because
+ * "which three set names do I need" is not a question an operator should have
+ * to answer to get their stats.fm tools back. The keys it enables are listed in
+ * `STATSFM_REGISTRATION_KEYS` (src/toolsets.ts) and ride the ordinary
+ * `SPOTIFY_MCP_ENABLE_TOOLS` precedence, so an explicit
+ * `SPOTIFY_MCP_DISABLE_TOOLS=statsfm` still wins.
+ */
+export function statsfmEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_STATSFM);
+}
+
+/**
  * Validate a profile name: alphanumeric, dash, underscore, dot. Empty/undefined
  * yields undefined. Throws on invalid chars (sanitation for path injection).
  */
@@ -1034,8 +1070,20 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
   },
   {
     name: 'SPOTIFY_MCP_TOOLSETS',
-    summary: 'Comma-separated toolsets to register (`all` or unset registers everything).',
-    default: 'all',
+    summary: 'Comma-separated toolsets to register. Unset registers the curated default surface (`core`, plus the `resources` and `prompts` sets); `all` registers everything.',
+    default: 'core,resources,prompts',
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_STATSFM',
+    summary: `Register the stats.fm families without naming them in SPOTIFY_MCP_TOOLSETS (${TRUTHY_ENV_VALUES.join('/')}). They need a stats.fm username in STATSFM_USER_ID.`,
+    default: null,
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_LEGACY_ALIASES',
+    summary: `Still resolve the retired taste_* tool names to their statsfm_* handlers (${TRUTHY_ENV_VALUES.join('/')}). Off by default; needs the taste toolset.`,
+    default: null,
     inHelp: true,
   },
   {

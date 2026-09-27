@@ -246,7 +246,19 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // Measured from the live registry on the post-rebase tree, not derived by
     // subtracting: main moved underneath this branch twice, and the removals
     // did not compose with the other changes to the plain arithmetic.
-    assert.equal(full.toolCount, 578, 'the default surface must be unchanged');
+    //
+    // #908 took the full surface from 589 -> 581 by dropping the eight legacy
+    // `taste_*` alias registrations, each a duplicate of a canonical
+    // `statsfm_*` tool with the same params and the same handler. They are not
+    // in this number's arithmetic because they were never in the manifest — a
+    // registration with no row of its own, which is exactly why removing them
+    // could not be seen in a per-module diff and had to be measured.
+    //
+    // The message says "full surface", not "default surface": since #889 an
+    // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
+    // reader taking "the default surface must be unchanged" literally would be
+    // asserting a number this tripwire has never measured.
+    assert.equal(full.toolCount, 570, 'the full (TOOLSETS=all) surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

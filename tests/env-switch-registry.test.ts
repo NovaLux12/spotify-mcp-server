@@ -363,15 +363,35 @@ const READONLY_MUST_HIDE = [
 
 describe('env switches at the registry (#661)', () => {
   describe('baseline', () => {
-    it('serves every manifest tool when no switch is set', async () => {
-      const surface = await runSurface({});
-      const expected = expectedToolNames({});
+    it('serves every manifest tool when every toolset is requested', async () => {
+      // `all`, not the default. This case is about the MANIFEST and the
+      // registry agreeing, and the default surface no longer registers every
+      // module (#889), so "no switch set" would now answer a different
+      // question. The unset case is asserted separately, below.
+      const surface = await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' });
+      const expected = expectedToolNames({ toolsets: 'all' });
       const diff = surfaceDiff(expected, new Set(surface.tools));
-      assert.equal(diff.unexpected.length, 0, reportDiff('default surface', diff));
-      assert.equal(diff.missing.length, 0, reportDiff('default surface', diff));
+      assert.equal(diff.unexpected.length, 0, reportDiff('full surface', diff));
+      assert.equal(diff.missing.length, 0, reportDiff('full surface', diff));
       // If the derivation produced nothing the comparison above would be
       // trivially true, so the floor is stated rather than assumed.
       assert.ok(expected.size > 0, 'the manifest-derived surface must not be empty');
+    });
+
+    it('a server with no toolset set does NOT serve the full surface (#889)', async () => {
+      // The inverse of the case above, and the one that actually pins the
+      // curated default: with `SPOTIFY_MCP_TOOLSETS` unset, the registry is a
+      // strict subset of the manifest-derived surface. Asserting only the
+      // subset would pass for a server that registered NOTHING, so the floor
+      // below is what makes it mean something.
+      const unset = new Set((await runSurface({})).tools);
+      const full = new Set((await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' })).tools);
+      assert.ok(unset.size > 0, 'the default surface must not be empty');
+      assert.ok(unset.size < full.size, `unset registered ${unset.size} tools and all registered ${full.size}`);
+      // `all` must be a superset, not a different set: the flip is a trim, and
+      // an operator who sets it back must get back exactly what they had.
+      const missing = [...unset].filter((name) => !full.has(name));
+      assert.deepEqual(missing, [], `the default surface names tools \`all\` does not serve: ${missing.join(', ')}`);
     });
 
     it('claims each tool for exactly one manifest row', () => {
@@ -390,8 +410,8 @@ describe('env switches at the registry (#661)', () => {
 
   describe('SPOTIFY_MCP_READONLY', () => {
     it('serves exactly the readOnlySafe rows and nothing else', async () => {
-      const surface = await runSurface({ SPOTIFY_MCP_READONLY: '1' });
-      const expected = expectedToolNames({ readOnly: true });
+      const surface = await runSurface({ SPOTIFY_MCP_READONLY: '1', SPOTIFY_MCP_TOOLSETS: 'all' });
+      const expected = expectedToolNames({ readOnly: true, toolsets: 'all' });
       const diff = surfaceDiff(expected, new Set(surface.tools));
       assert.equal(diff.unexpected.length, 0, reportDiff('read-only surface', diff));
       assert.equal(diff.missing.length, 0, reportDiff('read-only surface', diff));
@@ -400,13 +420,17 @@ describe('env switches at the registry (#661)', () => {
       // both be caught here, but an empty derivation would not.
       assert.ok(expected.size > 0, 'read-only derivation must not be empty');
       assert.ok(
-        expected.size < expectedToolNames({}).size,
+        // `toolsets: 'all'` on BOTH sides, for the same reason as above: the
+        // comparison is "read-only vs not-read-only", and letting the
+        // expectation resolve the curated default would make the two sides
+        // differ by the toolset trim as well as by the gate.
+        expected.size < expectedToolNames({ toolsets: 'all' }).size,
         'the read-only surface must be a strict subset of the full surface, or the gate hid nothing',
       );
     });
 
     it('hides every write tool, by name, and keeps the read tools', async () => {
-      const surface = new Set((await runSurface({ SPOTIFY_MCP_READONLY: '1' })).tools);
+      const surface = new Set((await runSurface({ SPOTIFY_MCP_READONLY: '1', SPOTIFY_MCP_TOOLSETS: 'all' })).tools);
       for (const name of READONLY_MUST_HIDE) {
         assert.equal(surface.has(name), false, `write tool "${name}" must not be served when SPOTIFY_MCP_READONLY is set`);
       }
@@ -438,8 +462,8 @@ describe('env switches at the registry (#661)', () => {
       // this here means the row-granularity is a decision someone made rather
       // than a surprise, and that splitting the row to keep the reader would
       // have to move both names deliberately.
-      const readOnly = new Set((await runSurface({ SPOTIFY_MCP_READONLY: '1' })).tools);
-      const baseline = new Set((await runSurface({})).tools);
+      const readOnly = new Set((await runSurface({ SPOTIFY_MCP_READONLY: '1', SPOTIFY_MCP_TOOLSETS: 'all' })).tools);
+      const baseline = new Set((await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' })).tools);
       assert.ok(baseline.has('get_saved_tracks'), 'the default surface must serve get_saved_tracks');
       assert.equal(
         readOnly.has('get_saved_tracks'),
@@ -513,8 +537,8 @@ describe('env switches at the registry (#661)', () => {
       // src/index.ts, not in the manifest, and docs/configuration.md says they
       // remain available when their own gates permit. Both directions are
       // asserted by name-set equality, not by a count.
-      const baseline = await runSurface({});
-      const readOnly = await runSurface({ SPOTIFY_MCP_READONLY: '1' });
+      const baseline = await runSurface({ SPOTIFY_MCP_TOOLSETS: 'all' });
+      const readOnly = await runSurface({ SPOTIFY_MCP_READONLY: '1', SPOTIFY_MCP_TOOLSETS: 'all' });
       assert.ok(baseline.prompts.length > 0, 'the baseline server must serve prompts, or this proves nothing');
       assert.ok(baseline.resources.length > 0, 'the baseline server must serve resources, or this proves nothing');
       assert.deepEqual(readOnly.prompts, baseline.prompts, 'SPOTIFY_MCP_READONLY changed the prompt surface');
@@ -609,8 +633,11 @@ describe('env switches at the registry (#661)', () => {
 
   describe('SPOTIFY_MCP_ENABLE_TOOLS / SPOTIFY_MCP_DISABLE_TOOLS', () => {
     it('disables one registration key and leaves its neighbours alone', async () => {
-      const surface = await runSurface({ SPOTIFY_MCP_DISABLE_TOOLS: 'playback' });
-      const diff = surfaceDiff(expectedToolNames({ disable: 'playback' }), new Set(surface.tools));
+      // `all` alongside the disable, so the only variable is the disable. With
+      // the default surface (#889) `queueops` is not registered to begin with,
+      // and the assertion below would pass for a filter that hides everything.
+      const surface = await runSurface({ SPOTIFY_MCP_DISABLE_TOOLS: 'playback', SPOTIFY_MCP_TOOLSETS: 'all' });
+      const diff = surfaceDiff(expectedToolNames({ disable: 'playback', toolsets: 'all' }), new Set(surface.tools));
       assert.equal(diff.unexpected.length, 0, reportDiff('playback disabled', diff));
       assert.equal(diff.missing.length, 0, reportDiff('playback disabled', diff));
       for (const name of ['play', 'pause', 'get_now_playing', 'play_from_search']) {

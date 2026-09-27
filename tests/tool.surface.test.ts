@@ -48,6 +48,7 @@ import {
   toolNamingMetadata,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
+import { LEGACY_TOOL_ALIASES, LEGACY_TOOL_ALIAS_NAMES } from '../src/shaping.js';
 import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
@@ -346,14 +347,15 @@ describe('tool surface: annotations', () => {
     assert.deepEqual(stale, [], `DESTRUCTIVE_OVERRIDES names unregistered tools: [${stale.join(', ')}]`);
   });
 
-  it('local feedback aliases are explicit non-read-only writes', async () => {
+  it('the local feedback tool is an explicit non-read-only write', async () => {
     const tools = await listTools({});
-    for (const name of ['statsfm_record_feedback', 'record_feedback']) {
-      const tool = tools.find((entry) => entry.name === name);
-      assert.ok(tool, `${name} is not registered`);
-      assert.notEqual(tool.annotations?.readOnlyHint, true, `${name} is advertised read-only`);
-      assert.equal(tool.annotations?.destructiveHint, false, `${name} must explicitly be non-destructive`);
-    }
+    // #908 dropped the `record_feedback` alias registration, so this is one
+    // name rather than the pair it used to be. The alias is asserted absent
+    // separately, in the retired-alias tests.
+    const tool = tools.find((entry) => entry.name === 'statsfm_record_feedback');
+    assert.ok(tool, 'statsfm_record_feedback is not registered');
+    assert.notEqual(tool.annotations?.readOnlyHint, true, 'advertised read-only');
+    assert.equal(tool.annotations?.destructiveHint, false, 'must explicitly be non-destructive');
   });
   it('read verbs are not advertised as destructive', async () => {
     const tools = await listTools({});
@@ -524,7 +526,11 @@ describe('tool surface: budget', () => {
     const names = new Set(tools.map((t) => t.name));
     const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
 
-    for (const required of ['search', 'play', 'batch_add_to_playlist', 'export_all_playlists', 'statsfm_recent_streams', 'get_playlist_items', 'save_to_library']) {
+    // `statsfm_recent_streams` used to be in this list and moved out in #607:
+    // the stats.fm families are opt-in now, so requiring one here would pin the
+    // old default back in place. `tests/toolsets.test.ts` asserts the opt-in
+    // itself; this list is the Spotify daily loop.
+    for (const required of ['search', 'play', 'batch_add_to_playlist', 'export_all_playlists', 'get_playlist_items', 'save_to_library']) {
       assert.ok(names.has(required), `core preset must include ${required}`);
     }
     assert.ok(
@@ -536,6 +542,67 @@ describe('tool surface: budget', () => {
       `core preset grew to ${bytes} bytes (ceiling ${CORE_MAX_BYTES})`,
     );
     assert.ok(names.size < 608 / 2, `core must be materially smaller than the full surface (got ${names.size})`);
+  });
+
+  it('a no-env session registers the default surface, not everything (#889)', async () => {
+    // The regression this exists for. `listTools` defaults to
+    // `SPOTIFY_MCP_TOOLSETS: 'all'`, so the default path has to be asked for
+    // with the key explicitly deleted — a blanked value would be a different
+    // thing to pass.
+    const tools = await listTools({ SPOTIFY_MCP_TOOLSETS: undefined });
+    const names = new Set(tools.map((t) => t.name));
+    const all = await listTools({ SPOTIFY_MCP_TOOLSETS: 'all' });
+
+    assert.ok(
+      tools.length < all.length / 2,
+      `the default surface (${tools.length}) must be materially smaller than the full one (${all.length})`,
+    );
+    // What the default must still cover: the daily loop, and the tools that
+    // exist precisely so a trimmed session is not a dead end.
+    for (const required of ['search', 'play', 'get_playlist_items', 'save_to_library', 'spotify_doctor', 'find_tool', 'inspect_tool', 'toolset_report']) {
+      assert.ok(names.has(required), `the default surface must include ${required}`);
+    }
+  });
+
+  it('the default surface registers no stats.fm family (#607)', async () => {
+    const names = (await listTools({ SPOTIFY_MCP_TOOLSETS: undefined })).map((t) => t.name);
+    const statsfm = names.filter((name) => name.startsWith('statsfm_') || name.startsWith('taste_'));
+    assert.deepEqual(statsfm, [], `default surface still registers: ${statsfm.join(', ')}`);
+  });
+
+  it('SPOTIFY_MCP_STATSFM=1 brings the stats.fm families back (#607)', async () => {
+    const names = new Set((await listTools({ SPOTIFY_MCP_STATSFM: '1' })).map((t) => t.name));
+    assert.ok(names.size > 128, 'the opt-in registered nothing');
+    for (const required of ['statsfm_recent_streams', 'statsfm_taste_profile', 'taste_shift_report']) {
+      assert.ok(names.has(required), `SPOTIFY_MCP_STATSFM=1 must register ${required}`);
+    }
+  });
+
+  it('registers exactly the eight canonical taste names and no legacy alias (#908)', async () => {
+    const names = new Set((await listTools({})).map((t) => t.name));
+    const canonical = [...LEGACY_TOOL_ALIAS_NAMES].map((alias) => LEGACY_TOOL_ALIASES[alias]);
+    assert.equal(canonical.length, 8, 'the alias table no longer carries eight pairs');
+    for (const name of canonical) {
+      assert.ok(names.has(name), `canonical taste tool ${name} is not registered`);
+    }
+    for (const alias of LEGACY_TOOL_ALIAS_NAMES) {
+      assert.ok(!names.has(alias), `legacy alias ${alias} is still registered`);
+    }
+    // The module's own row in the manifest, which is the count the per-module
+    // schema budget is measured against. Deriving the expected eight from the
+    // alias table above would be circular — the table is the thing under test.
+    // Note the eight canonical names are NOT all `statsfm_taste_*`
+    // (`statsfm_artist_affinity`, `statsfm_exposure_check`,
+    // `statsfm_listening_eras`, `statsfm_listening_sessions`,
+    // `statsfm_forgotten_favorites` and `statsfm_record_feedback` sit beside
+    // them), so a prefix count would be the wrong assertion.
+    const tasteEntry = REGISTRAR_MANIFEST.find((module) => module.key === 'taste');
+    assert.ok(tasteEntry, 'the taste module is missing from the manifest');
+    assert.equal(
+      tasteEntry.baseline.toolCount,
+      canonical.length,
+      'the manifest baseline and the alias table disagree on how many tools the module has',
+    );
   });
 
   it('production aggregate gate fails closed on an injected overage', () => {

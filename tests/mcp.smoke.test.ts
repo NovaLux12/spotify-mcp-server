@@ -229,7 +229,18 @@ before(async () => {
     command: 'node',
     args: ['--import', 'tsx', 'src/index.ts'],
     cwd: REPO_ROOT,
-    env: hermeticServerEnv({ SPOTIFY_MCP_TOKEN_FILE: tokenFile }, 'smoke').env,
+    // `SPOTIFY_MCP_TOOLSETS=all` explicitly, for two reasons. This file is the
+    // guard against SILENT WIRING LOSS — a module that stops registering — so
+    // it has to see every module, and the default surface has been the curated
+    // `core` set since #889. And the second assertion below calls `get_me`,
+    // which is not in that set: leaving the default in place would make a
+    // passing run depend on a curated-surface decision rather than on wiring.
+    // The curated default is covered on purpose elsewhere, in
+    // tests/tool.surface.test.ts.
+    env: hermeticServerEnv(
+      { SPOTIFY_MCP_TOKEN_FILE: tokenFile, SPOTIFY_MCP_TOOLSETS: 'all' },
+      'smoke',
+    ).env,
   });
 
   // Handshake: initialize → initialized notification → protocol ready.

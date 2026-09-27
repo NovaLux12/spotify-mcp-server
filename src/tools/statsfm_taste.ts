@@ -29,6 +29,7 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  resolveLegacyToolAlias,
 } from '../shaping.js';
 
 import {
@@ -824,7 +825,7 @@ function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut
 }
 
 // ---------------------------------------------------------------------------
-// Dual registration: canonical statsfm_* names + backwards-compat taste_* aliases
+// Registration: canonical statsfm_* names only
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Registration
@@ -833,9 +834,18 @@ function textOut(lines: string[], structured?: Record<string, unknown>): ToolOut
 export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyClient): void {
   void _client; // stats.fm public API needs no Spotify client; kept for index.ts uniformity
 
-  // Register the canonical statsfm_* name plus the legacy taste_* alias.
-  // Both point at the same handler; gating stays at the 'taste' module key.
-  const dualRegister = (
+  // Register the canonical statsfm_* name. The legacy taste_* alias used to be
+  // registered here too, as a second `s.tool()` call with the same params and
+  // the same handler; #908 dropped it. The alias is not gone, it is no longer
+  // ADVERTISED: `LEGACY_TOOL_ALIASES` (src/shaping.ts) still resolves it, and
+  // the CallTool boundary rewrites a legacy name onto its canonical handler
+  // when SPOTIFY_MCP_LEGACY_ALIASES=1.
+  //
+  // `alias` is still a parameter, and is checked against that table, so the two
+  // halves cannot drift: adding a ninth tool here without a row in
+  // `LEGACY_TOOL_ALIASES` throws at registration rather than silently shipping
+  // a name that no caller can be migrated off.
+  const registerCanonicalTool = (
     canonical: string,
     alias: string,
     desc: string,
@@ -843,16 +853,21 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     handler: (args: any) => Promise<any>,
   ): void => {
+    if (resolveLegacyToolAlias(alias) !== canonical) {
+      throw new Error(
+        `[spotify-mcp] ${alias} -> ${canonical} disagrees with LEGACY_TOOL_ALIASES ` +
+        `(${resolveLegacyToolAlias(alias) ?? 'no entry'}); the registration table and the alias table must agree`,
+      );
+    }
     const s = server as unknown as {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tool(name: string, desc: string, params: any, handler: any): void;
     };
     s.tool(canonical, desc, params, handler);
-    s.tool(alias, `${desc} (Legacy alias of ${canonical} — prefer the canonical name.)`, params, handler);
   };
 
   // ---- taste_profile ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_taste_profile',
     'taste_profile',
     'Taste snapshot from stats.fm: core artists, top genres, loyalty-vs-novelty balance, and day-parting (when you listen). Read-only, no auth.',
@@ -956,7 +971,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- artist_affinity ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_artist_affinity',
     'artist_affinity',
     'How deep does an artist run? Lifetime intensity (share of top-artist streams) plus a recency half-life fitted to recent stream ages. Read-only, no auth.',
@@ -1020,7 +1035,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- exposure_check ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_exposure_check',
     'exposure_check',
     'Where does a subject sit on the exposure ladder — unheard / sampled / explored / established / favorite? Evidence cites lifetime + recent counts. Read-only, no auth.',
@@ -1085,7 +1100,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- listening_eras ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_listening_eras',
     'listening_eras',
     'Change points in monthly listening: groups months into eras split on top-artist turnover or >60% volume shifts. Read-only, no auth.',
@@ -1139,7 +1154,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- listening_sessions ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_listening_sessions',
     'listening_sessions',
     'Group recent streams into sessions: a gap longer than gap_minutes starts a new session (default 30). Read-only, no auth.',
@@ -1208,7 +1223,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- forgotten_favorites ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_forgotten_favorites',
     'forgotten_favorites',
     'High-lifetime tracks with zero recent plays — favorites that fell off. Ranked by lifetime streams. Read-only, no auth.',
@@ -1280,7 +1295,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- taste_recommendations ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_taste_recommendations',
     'taste_recommendations',
     'Bridge-mode recommendations: adjacent genres/artists between the listener\u2019s core and the unexplored, each with evidence and a risk note. Heuristic over stats.fm tops — read-only, no auth.',
@@ -1369,7 +1384,7 @@ export function registerStatsfmTasteTools(server: McpServer, _client: SpotifyCli
   );
 
   // ---- record_feedback ----
-  dualRegister(
+  registerCanonicalTool(
     'statsfm_record_feedback',
     'record_feedback',
     'Record a local-only taste verdict (love/like/mixed/boring/dislike) or list stored verdicts. Never touches the network. Verdicts persist in ~/.spotify-mcp/taste-feedback.json (SPOTIFY_MCP_DATA_DIR overrides) as a capped sidecar: the newest 500 survive, older ones are evicted and counted.',

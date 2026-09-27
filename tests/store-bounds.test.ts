@@ -56,7 +56,10 @@ function harness() {
     assert.ok(hit, `missing tool ${name}`);
     return hit;
   };
-  const hit = find('record_feedback');
+  // The canonical name, not the `record_feedback` alias retired in #908: the
+  // alias is no longer registered, so looking it up here would fail the whole
+  // file on a name that was never a separate tool.
+  const hit = find('statsfm_record_feedback');
   return {
     record: hit.handler as (a: Record<string, unknown>) => Promise<ToolContent>,
     params: hit.params,

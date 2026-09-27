@@ -584,7 +584,21 @@ async function probeServer(env: Record<string, string>, calls: ToolCall[]): Prom
     ['--import', 'tsx', '--import', pathToFileURL(stub).href, 'src/index.ts'],
     {
       cwd: REPO_ROOT,
-      env: { ...process.env, SPOTIFY_CLIENT_ID: 'enggating-test', SPOTIFY_MCP_TOKEN_FILE: tokens, ...env },
+      // The baseline is the FULL surface, pinned explicitly rather than left
+      // to the default: every canary in this file (category_resolver,
+      // market_validate, get_artist_genres) lives outside the curated `core`
+      // set that has been the default since #889, and a baseline measured on a
+      // trimmed surface would compare a trimmed profile against another trim
+      // and prove nothing. A caller that passes its own SPOTIFY_MCP_TOOLSETS
+      // still wins — the spread order is unchanged, which is what the
+      // SPOTIFY_MCP_TOOLSETS=playlists leg below relies on.
+      env: {
+        ...process.env,
+        SPOTIFY_CLIENT_ID: 'enggating-test',
+        SPOTIFY_MCP_TOKEN_FILE: tokens,
+        SPOTIFY_MCP_TOOLSETS: 'all',
+        ...env,
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     },
   );

@@ -472,6 +472,75 @@ export function retiredInputMessage(retired: readonly string[], canonical: strin
   return `${subject}; use ${canonical} instead.`;
 }
 
+/** The release that stopped REGISTERING the legacy taste_* tool names (#908). */
+export const RETIRED_TOOL_ALIASES_REMOVED_IN = 'v3.0';
+
+/**
+ * Legacy tool name → the canonical name that replaced it (#908).
+ *
+ * The eight stats.fm taste tools used to register twice: once under a canonical
+ * `statsfm_*` name and once under a `taste_*` alias, same zod params, same
+ * handler, description differing only by a suffix. Every host paid ~10 KB for
+ * the second copy on every `tools/list`, and a model choosing between
+ * `record_feedback` and `statsfm_record_feedback` had to pick a coin flip,
+ * because the two rows are behaviourally identical.
+ *
+ * What changed is the REGISTRATION, not the capability: `taste_*` was never a
+ * different tool. So the names stop being advertised while the table below
+ * keeps them resolvable, which is what
+ * {@link resolveLegacyToolAlias} and the `SPOTIFY_MCP_LEGACY_ALIASES=1` dispatch
+ * rewrite in `installToolErrorBoundary` read.
+ *
+ * It lives here rather than in `tools/statsfm_taste.ts` because the consumer is
+ * the CallTool boundary in `tools/annotations.ts`, and that module must never
+ * statically import a tool registrar — a static import would evaluate
+ * `statsfm_taste.ts` (and its whole analytics surface) in every process,
+ * including one that trimmed the `taste` toolset, undoing the lazy loading that
+ * `lazyModule` exists for. A table of eight strings costs nothing to import.
+ */
+export const LEGACY_TOOL_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  artist_affinity: 'statsfm_artist_affinity',
+  exposure_check: 'statsfm_exposure_check',
+  forgotten_favorites: 'statsfm_forgotten_favorites',
+  listening_eras: 'statsfm_listening_eras',
+  listening_sessions: 'statsfm_listening_sessions',
+  record_feedback: 'statsfm_record_feedback',
+  taste_profile: 'statsfm_taste_profile',
+  taste_recommendations: 'statsfm_taste_recommendations',
+});
+
+/** Every retired alias, for the doc-name gate and the census assertions. */
+export const LEGACY_TOOL_ALIAS_NAMES: readonly string[] = Object.freeze(
+  Object.keys(LEGACY_TOOL_ALIASES).sort(),
+);
+
+/**
+ * The canonical name a retired alias now dispatches to, or `undefined` when
+ * `name` was never an alias.
+ *
+ * `Object.hasOwn`, not a bare index, for the same reason
+ * {@link RETIRED_PLAYLIST_INPUTS} lookups are guarded: the table is a frozen
+ * object LITERAL and still carries `Object.prototype`, so `LEGACY_TOOL_ALIASES['constructor']`
+ * answers with a function. A caller-supplied tool name reaches this function
+ * from the wire, so that is not hypothetical.
+ */
+export function resolveLegacyToolAlias(name: string): string | undefined {
+  if (!Object.hasOwn(LEGACY_TOOL_ALIASES, name)) return undefined;
+  return LEGACY_TOOL_ALIASES[name];
+}
+
+/**
+ * The refusal text for a call that named a retired alias, whether or not the
+ * compatibility rewrite is switched on.
+ *
+ * It names the replacement rather than leaving the caller to the generic
+ * "did you mean…" nearest-name suggestion, because the replacement is known
+ * exactly and a suggestion list is a guess.
+ */
+export function retiredToolAliasMessage(name: string, canonical: string): string {
+  return `${name} was removed in ${RETIRED_TOOL_ALIASES_REMOVED_IN}; use ${canonical} instead.`;
+}
+
 interface PlaylistInputResolution {
   /** Canonical, normalized values in caller-supplied order. */
   values: string[];

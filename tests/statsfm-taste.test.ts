@@ -23,6 +23,7 @@ import {
   type TasteStream,
   type MonthlySummary,
 } from '../src/tools/statsfm_taste.js';
+import { LEGACY_TOOL_ALIASES } from '../src/shaping.js';
 
 /**
  * Label an era *should* carry: the boundary immediately before its startMonth.
@@ -178,40 +179,36 @@ test.after(() => {
 
 // ------------------------------------------------------------------ registry
 
-test('registers 8 canonical statsfm_taste_* tools + 8 taste_* aliases', () => {
+test('registers 8 canonical statsfm_* tools and no taste_* alias (#908)', () => {
   const { registered } = makeHarness();
-  const pairs: Array<[string, string]> = [
-    ['statsfm_taste_profile', 'taste_profile'],
-    ['statsfm_artist_affinity', 'artist_affinity'],
-    ['statsfm_exposure_check', 'exposure_check'],
-    ['statsfm_listening_eras', 'listening_eras'],
-    ['statsfm_listening_sessions', 'listening_sessions'],
-    ['statsfm_forgotten_favorites', 'forgotten_favorites'],
-    ['statsfm_taste_recommendations', 'taste_recommendations'],
-    ['statsfm_record_feedback', 'record_feedback'],
-  ];
-  for (const [canonical, alias] of pairs) {
-    assert.ok(registered.some((t) => t.name === canonical), `missing ${canonical}`);
-    assert.ok(registered.some((t) => t.name === alias), `missing alias ${alias}`);
+  // The pairs are read from the alias table rather than restated, so this test
+  // cannot pass by agreeing with itself: if a ninth alias were added to the
+  // table without a matching registration, the count below would move.
+  const canonical = Object.values(LEGACY_TOOL_ALIASES);
+  const aliases = Object.keys(LEGACY_TOOL_ALIASES);
+  for (const name of canonical) {
+    assert.ok(registered.some((t) => t.name === name), `missing ${name}`);
   }
-  assert.equal(registered.length, 16);
+  for (const alias of aliases) {
+    assert.ok(!registered.some((t) => t.name === alias), `${alias} is still registered`);
+  }
+  assert.equal(registered.length, 8);
 });
 
-test('aliases share the canonical handler', async () => {
+test('no registered tool describes itself as a legacy alias (#908)', () => {
+  // The description suffix was how a host could tell the two rows apart. With
+  // one row per handler there is nothing to disambiguate, so a surviving
+  // "Legacy alias of" string means a registration was added back somewhere.
   const { registered } = makeHarness();
-  const canonical = findTool(registered, 'statsfm_taste_profile');
-  const alias = findTool(registered, 'taste_profile');
-  const c = await invoke(canonical, { statsfm_user: 'demo' });
-  const a = await invoke(alias, { statsfm_user: 'demo' });
-  assert.equal(text(a), text(c));
-  assert.match(alias.description, /Legacy alias of statsfm_taste_profile/);
+  const stillAliased = registered.filter((tool) => /Legacy alias of/.test(tool.description));
+  assert.deepEqual(stillAliased.map((t) => t.name), [], 'a legacy-alias description survived');
 });
 
 // ------------------------------------------------------------- taste_profile
 
 test('taste_profile reports core artists, genres, loyalty/novelty, day-parting', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'taste_profile'), {
+  const result = await invoke(findTool(registered, 'statsfm_taste_profile'), {
     statsfm_user: 'demo',
   });
   const out = text(result);
@@ -229,7 +226,7 @@ test('taste_profile reports core artists, genres, loyalty/novelty, day-parting',
 
 test('taste_profile json mode returns raw payloads', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'taste_profile'), {
+  const result = await invoke(findTool(registered, 'statsfm_taste_profile'), {
     statsfm_user: 'demo',
     response_format: 'json',
   });
@@ -242,7 +239,7 @@ test('taste_profile json mode returns raw payloads', async () => {
 
 test('artist_affinity computes intensity tier + half-life', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'artist_affinity'), {
+  const result = await invoke(findTool(registered, 'statsfm_artist_affinity'), {
     statsfm_user: 'demo',
     artist: 'Core Band',
   });
@@ -256,7 +253,7 @@ test('artist_affinity computes intensity tier + half-life', async () => {
 
 test('artist_affinity reports unheard for unknown artists', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'artist_affinity'), {
+  const result = await invoke(findTool(registered, 'statsfm_artist_affinity'), {
     statsfm_user: 'demo',
     artist: 'Nobody Ever',
   });
@@ -276,7 +273,7 @@ test('exposure ladder thresholds classify correctly', () => {
 
 test('exposure_check cites lifetime + recent evidence', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'exposure_check'), {
+  const result = await invoke(findTool(registered, 'statsfm_exposure_check'), {
     statsfm_user: 'demo',
     subject: 'Dormant Star',
   });
@@ -378,7 +375,7 @@ test('listening_eras renders the boundary that started each era', async () => {
 
 test('listening_eras renders era lines', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'listening_eras'), {
+  const result = await invoke(findTool(registered, 'statsfm_listening_eras'), {
     statsfm_user: 'demo',
   });
   assert.match(text(result), /Listening eras for demo/);
@@ -402,7 +399,7 @@ test('groupSessions splits on gaps larger than the threshold', () => {
 
 test('listening_sessions honors a custom gap', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'listening_sessions'), {
+  const result = await invoke(findTool(registered, 'statsfm_listening_sessions'), {
     statsfm_user: 'demo',
     gap_minutes: 30,
   });
@@ -418,7 +415,7 @@ test('listening_sessions honors a custom gap', async () => {
 
 test('forgotten_favorites surfaces lifetime tops missing from recent', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'forgotten_favorites'), {
+  const result = await invoke(findTool(registered, 'statsfm_forgotten_favorites'), {
     statsfm_user: 'demo',
   });
   const out = text(result);
@@ -430,7 +427,7 @@ test('forgotten_favorites surfaces lifetime tops missing from recent', async () 
 
 test('taste_recommendations emits bridges with evidence + risks', async () => {
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'taste_recommendations'), {
+  const result = await invoke(findTool(registered, 'statsfm_taste_recommendations'), {
     statsfm_user: 'demo',
   });
   const out = text(result);
@@ -445,7 +442,7 @@ test('taste_recommendations emits bridges with evidence + risks', async () => {
 
 test('record_feedback stores local-only verdicts and lists them', async () => {
   const { registered } = makeHarness();
-  const tool = findTool(registered, 'record_feedback');
+  const tool = findTool(registered, 'statsfm_record_feedback');
   const stored = await invoke(tool, {
     subject_type: 'artist',
     subject: 'Core Band',
@@ -460,7 +457,7 @@ test('record_feedback stores local-only verdicts and lists them', async () => {
 test('record_feedback rejects record without required fields', async () => {
   const { registered } = makeHarness();
   await assert.rejects(
-    invoke(findTool(registered, 'record_feedback'), { subject: 'X' }),
+    invoke(findTool(registered, 'statsfm_record_feedback'), { subject: 'X' }),
     /requires subject_type, subject, and rating/,
   );
 });
@@ -612,7 +609,7 @@ test('taste_profile end-to-end with live-shaped wrapped fixtures shows real name
     throw new Error(`unexpected stats.fm path: ${url}`);
   });
   const { registered } = makeHarness();
-  const result = await invoke(findTool(registered, 'taste_profile'), {
+  const result = await invoke(findTool(registered, 'statsfm_taste_profile'), {
     statsfm_user: 'demo',
   });
   const out = text(result);

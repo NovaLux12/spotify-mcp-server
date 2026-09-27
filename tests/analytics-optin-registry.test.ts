@@ -45,7 +45,15 @@ async function surfaceWith(
   if (cached) return cached;
   const promise = (async (): Promise<Surface> => {
     const { env, home } = hermeticServerEnv(
-      { SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS: flag, ...extra },
+      // `SPOTIFY_MCP_TOOLSETS=all` on BOTH sides of every comparison in this
+      // file, for the same reason as the other registry tests: what is under
+      // test here is the analytics flag, not the toolset trim, and since #889
+      // an unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset — so the
+      // flag-off baseline would be missing most of the tools the flag-on side
+      // adds, and "the opt-in adds exactly the withheld tools" would be
+      // asserting the toolset default instead. A caller's own
+      // SPOTIFY_MCP_TOOLSETS still wins: the spread order is unchanged.
+      { SPOTIFY_MCP_TOOLSETS: 'all', SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS: flag, ...extra },
       `optin-${key.replace(/\W+/g, '-')}`,
     );
     // A real token file, as `scripts/surface-census.mjs` also writes one.

@@ -337,6 +337,20 @@ const retiredToolNames = new Set([
   // category tree is no longer served by any endpoint.
   'get_categories',
   'get_category_playlists',
+  // #908 — the eight legacy `taste_*` registrations. Each is a duplicate row of
+  // the `statsfm_*` tool it shadowed, same params and same handler; they are no
+  // longer advertised and resolve only through SPOTIFY_MCP_LEGACY_ALIASES=1.
+  // A migration table still has to be able to NAME what it replaced, which is
+  // the whole point of the table, so these are handled like the retired names
+  // above rather than as typos.
+  'taste_profile',
+  'artist_affinity',
+  'exposure_check',
+  'listening_eras',
+  'listening_sessions',
+  'forgotten_favorites',
+  'taste_recommendations',
+  'record_feedback',
 ]);
 /**
  * #1287 — parameter names this server published under a deprecation notice and

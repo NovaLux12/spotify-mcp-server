@@ -121,13 +121,13 @@ until it merges, the honest scope of this gate is the field list above.
 | Figure | Value | Where it comes from |
 |---|---:|---|
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
-| `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
-| `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 593,749B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 67,385B | 11.3% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 27,251B | 4.4% of the enforced limit |
+| `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
+| `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
+| Measured `tools/list` payload | 585,201B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 66,492B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 26,799B | 4.4% of the enforced limit |
 
-Headroom is **27,251B** of the 621,000B enforced limit — 4.4% — so the aggregate budget is **tight**.
+Headroom is **26,799B** of the 612,000B enforced limit — 4.4% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -179,7 +179,7 @@ than maintained.
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
 | analytics | 3 | 1,908 | 3 | 1,908 | 5 | 3,099 |
 | statsfm | 30 | 24,073 | 30 | 24,073 | 31 | 26,481 |
-| taste | 16 | 14,717 | 16 | 14,717 | 17 | 16,189 |
+| taste | 8 | 7,062 | 8 | 7,062 | 9 | 7,769 |
 | tastecomposites | 10 | 7,990 | 10 | 7,990 | 11 | 8,789 |
 | tasteplaylist | 1 | 1,718 | 1 | 1,718 | 2 | 1,890 |
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
@@ -249,7 +249,7 @@ plainly because it is the only reason the cap is the number it is:
 <!-- BEGIN:generated response-cap -->
 | | what it bounds | how often the host pays | ceiling |
 |---|---|---|---|
-| Schema budget (above) | `tools/list` — every tool's description and input schema | once per session | 620,000B |
+| Schema budget (above) | `tools/list` — every tool's description and input schema | once per session | 611,000B |
 | Response cap (`MAX_RESPONSE_BYTES`) | one `tools/call` result's json text + `structuredContent` | once per **call**, repeatable | 64,000B |
 
 `MAX_RESPONSE_BYTES` is ~1/10 of the schema budget: 10 capped calls cost about what the schema surface cost once. That is the whole argument for the ratio.

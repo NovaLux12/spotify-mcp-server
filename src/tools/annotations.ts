@@ -27,7 +27,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { StatsfmApiError } from '../lib/statsfm-client.js';
-import { readOnlyEnv } from '../config.js';
+import { readOnlyEnv, legacyAliasesEnv } from '../config.js';
 // Tool modules are NOT imported here (#906). The manifest below names each
 // one and loads it through a thunk, so a module whose registration key is
 // inactive is never evaluated. A static `import { registerXTools }` would
@@ -43,7 +43,7 @@ import {
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 
 /**
@@ -358,6 +358,34 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // back rather than carrying a ceiling sized for a surface that no longer
   // exists.
   //
+  // REPAID (#908 + #889). #908 dropped the eight legacy `taste_*` alias
+  // registrations, measured on a real stdio `tools/list` of the `all` surface:
+  // 602,553B -> 594,005B, so the eight aliases were worth 8,548B.
+  // `defaultMaxBytes` is 620,000 -> 611,000, which puts the enforced ceiling at
+  // 612,000B and headroom back where it was before the aliases were carried:
+  // 17,995B, 2.94%, against 18,447B / 2.97% on the tree that granted the
+  // 13,000B sweep allowance above. That allowance is spent and is not revived
+  // by this edit. (The tool counts behind both figures are in
+  // `docs/schema-budgets.md`, generated; the byte figures are what this ceiling
+  // is reasoned about, so they are the ones written here.) RE-MEASURED after
+  // rebasing onto the current main, which had moved the surface under the first
+  // measurement: 585,201B through this gate's own projection
+  // (`collectAggregateSurfaceMeasurement`, the same number startup enforces),
+  // so the headroom is 26,799B rather than the 17,995B the pre-rebase tree
+  // gave. The surplus grew because main removed tools; it is not spent here,
+  // and taking it back below what the surface actually needs would just move
+  // the failure to a future edit.
+  //
+  // #889 flips the DEFAULT surface, which buys a host that starts the server
+  // with no env 585,201B -> 139,718B (both measured on the post-rebase tree
+  // through this gate's own projection). It does NOT move this number, and the
+  // reason matters: the census and this gate both measure the surface the
+  // session actually registered, and `SPOTIFY_MCP_TOOLSETS=all` still
+  // registers the whole registry. The default flip is paid for by the startup
+  // log line, not by a ceiling. A curated default that let `all` keep running
+  // was the point — a
+  // default that broke the full surface would be a removal, not a default.
+  //
   // Reclaim-first remains the rule for any single edit. This grant is for the
   // queue; it is not a licence to spend 13,000B on one warrant.
   // WARRANT #866: +112B, the `playlistbatch` baseline moving 4,784 -> 4,896
@@ -374,7 +402,12 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // inside the SWEEP-2026-09 grant above, so this branch raises no ceiling of
   // its own and the aggregate gate keeps every per-tool and per-module ceiling
   // it had.
-  defaultMaxBytes: 620_000,
+  // `defaultMaxBytes` no longer describes a *default* surface: since #889 the
+  // default is the curated `core` set, measured at 139,718B, which this ceiling
+  // is nowhere near. What it bounds is the LARGEST surface a session can
+  // register — `SPOTIFY_MCP_TOOLSETS=all` at 585,201B. Read it as "the full
+  // surface, with headroom", not "the default".
+  defaultMaxBytes: 611_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -530,8 +563,13 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   canonicalize_spotify_uri: { readOnlyHint: true, idempotentHint: true },
   spotify_uri_stats: { readOnlyHint: true, idempotentHint: true },
 
+  // #908: only the canonical name needs a row now. The `record_feedback` entry
+  // that sat beside it was there because the alias was a second REGISTRATION
+  // and this table is keyed by registered name; with the alias gone the row was
+  // unreachable. A stale row here is not harmless — `classifyToolAnnotations`
+  // never consults it, so a future tool that happens to be named
+  // `record_feedback` would silently inherit someone else's annotation.
   statsfm_record_feedback: { destructiveHint: false },
-  record_feedback: { destructiveHint: false },
   export_playlist: { destructiveHint: false },
   // backup_library makes no Spotify write — every call is a GET, and the only
   // writes are to the local backup directory. Its name starts with `backup`,
@@ -1317,7 +1355,17 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // Host-session payload impact: the whole tools/list response goes
   // 610738 B -> 611468 B (+730 B, +0.12%) across 592 tools, measured the same
   // way on origin/main and on this branch.
-  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [16, 14717], { readOnlySafe: true }),
+  // #908: the eight legacy `taste_*` alias registrations are gone; the module
+  // registers its eight canonical `statsfm_*` names only, and the aliases are
+  // resolved at the CallTool boundary instead. MEASURED with `npm run
+  // count:tools` on 2026-09-27: 16 tools / 14,717 B -> 8 tools / 7,062 B, so the
+  // duplicate half was 7,655 B of schema. The baseline moves with the surface —
+  // leaving the old one in place would have made the derived ceiling a ceiling
+  // for a module that can no longer exist. (A `[n, m]` in this comment is the
+  // entry's own baseline; the before/after above is prose on purpose, so
+  // `tests/manifest-comment-baseline.test.ts` cannot mistake a superseded
+  // figure for a claim about the current surface.)
+  manifestEntry('taste', 'taste', lazyModule('./statsfm_taste.js', 'registerStatsfmTasteTools'), [8, 7062], { readOnlySafe: true }),
   // #927: same optional `statsfm_user` default as `taste`, on 10 tools.
   // MEASURED with `npm run count:tools` on 2026-09-27: 8040 B -> 7990 B, the
   // same -50 B for the same reason: out of `required`, shorter description.
@@ -2386,7 +2434,72 @@ function retiredInputResult(tool: string, requested: string, args: Readonly<Reco
   }, `retired playlist input ${JSON.stringify(retired.join(', '))}`);
 }
 
+/**
+ * The canonical tool name a retired legacy alias should dispatch to, or
+ * `undefined` when this call is not one (#908).
+ *
+ * Three conditions, and all three have to hold:
+ *  - the name is a known retired alias ({@link resolveLegacyToolAlias});
+ *  - `SPOTIFY_MCP_LEGACY_ALIASES` is on — the rewrite is an opt-in
+ *    compatibility window, off by default, because the whole point of #908 was
+ *    to stop paying for names nobody should be calling any more;
+ *  - the canonical name is registered AND enabled in THIS session. A caller who
+ *    set the flag but did not enable the `taste` toolset must get the refusal
+ *    below, not a dispatch into a module the toolset gate removed.
+ */
+function legacyAliasTarget(
+  requested: string,
+  registry: Record<string, RegistryEntry>,
+): string | undefined {
+  if (!legacyAliasesEnv()) return undefined;
+  const canonical = resolveLegacyToolAlias(requested);
+  if (canonical === undefined) return undefined;
+  const entry = registry[canonical];
+  if (!entry || entry.enabled === false) return undefined;
+  return canonical;
+}
+
+/**
+ * What a caller who hit a retired alias can actually DO about it, appended to
+ * the refusal's `fix`.
+ *
+ * Two knobs, and the order matters: the toolset gate is checked first at
+ * dispatch, so `SPOTIFY_MCP_LEGACY_ALIASES=1` alone does nothing on a server
+ * that trimmed `taste`. Naming only the compat flag would send a caller to set
+ * an env var and hit the same refusal again.
+ */
+const LEGACY_ALIAS_COMPAT_HINT =
+  ' (enable the taste toolset with SPOTIFY_MCP_TOOLSETS=taste, and set ' +
+  'SPOTIFY_MCP_LEGACY_ALIASES=1 to keep accepting the old name)';
+
+/**
+ * The refusal for a call that named a retired alias while the rewrite is off,
+ * or `undefined` when `requested` was not one.
+ *
+ * `kind` stays `unknown_tool` — the name genuinely is not in the registry, and
+ * a host routing on `kind` should not be told it was a validation failure. The
+ * stable discriminator is `reason: 'retired_tool_alias'`, matching the
+ * `retired_input` shape one function up, so a caller can tell "you used a name
+ * we withdrew on purpose, here is its replacement" from a genuine typo without
+ * parsing prose. It replaces the generic unknown-tool answer for these eight
+ * names, whose replacement is known exactly — `nearestNames` would only guess
+ * it, and would guess wrong for `record_feedback` if the canonical names ever
+ * moved again.
+ */
+function retiredAliasResult(requested: string) {
+  const canonical = resolveLegacyToolAlias(requested);
+  if (canonical === undefined) return undefined;
+  const tool = safeIdentifier(requested);
+  return errorResult(tool, {
+    kind: 'unknown_tool',
+    reason: 'retired_tool_alias',
+    fix: `Call ${canonical} instead${LEGACY_ALIAS_COMPAT_HINT}.`,
+    text: `${tool} is not an available tool; ${retiredToolAliasMessage(requested, canonical)}.`,
+  }, `retired tool alias ${JSON.stringify(requested)}`);
+}
+
 function unknownParamResult(tool: string, param: string, candidates: string[]) {
+
   let suggestions = nearestNames(param, candidates);
   if (suggestions.length === 0 && param === 'limit' && candidates.includes('offset')) {
     suggestions = ['offset'];
@@ -2583,10 +2696,19 @@ export function installToolErrorBoundary(server: McpServer): number {
   lowLevelServer.removeRequestHandler('tools/call');
   lowLevelServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const requested = request.params.name;
-    const entry = registry[requested];
-    if (!entry || entry.enabled === false) return unknownToolResult(registry, requested);
+    // #908: a retired legacy alias. `aliasTarget` is set only when the rewrite
+    // is switched on AND the canonical name is actually registered, so an
+    // opt-in rewrite can never dispatch into a module this session trimmed —
+    // the `taste` toolset being off has to win over SPOTIFY_MCP_LEGACY_ALIASES.
+    const aliasTarget = legacyAliasTarget(requested, registry);
+    const registered = registry[requested];
+    const resolved = aliasTarget ?? (registered && registered.enabled !== false ? requested : undefined);
+    if (resolved === undefined) {
+      return retiredAliasResult(requested) ?? unknownToolResult(registry, requested);
+    }
 
-    const tool = safeIdentifier(requested);
+    const entry = registry[resolved];
+    const tool = safeIdentifier(resolved);
     const shape = getObjectShape(entry.inputSchema);
     const knownParams = shape ? Object.keys(shape) : [];
     const args = request.params.arguments ?? {};
@@ -2597,8 +2719,9 @@ export function installToolErrorBoundary(server: McpServer): number {
     // notice we served them. It runs here, ahead of every handler and therefore
     // ahead of any Spotify request, which is where the removal contract says a
     // refused input must fail.
-    const retired = retiredInputResult(tool, requested, args);
+    const retired = retiredInputResult(tool, resolved, args);
     if (retired) return retired;
+
     const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
     if (unknown) return unknownParamResult(tool, unknown, knownParams);
 

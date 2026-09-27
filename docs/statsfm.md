@@ -2,7 +2,7 @@
 
 SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
-Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback` / `record_feedback`: its entries are identity-free, never sent to stats.fm, and persisted to a local sidecar at `~/.spotify-mcp/taste-feedback.json` (`SPOTIFY_MCP_DATA_DIR` overrides the directory) — see [Local state](#local-state). Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
+Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback`: its entries are identity-free, never sent to stats.fm, and persisted to a local sidecar at `~/.spotify-mcp/taste-feedback.json` (`SPOTIFY_MCP_DATA_DIR` overrides the directory) — see [Local state](#local-state). Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
 
 ## Setup
 
@@ -61,24 +61,24 @@ Typical flow: `statsfm_streams_stats` (how much history is visible?) → `statsf
 
 ### Taste-intelligence tools
 
-| Canonical tool | Legacy alias | What it returns |
-|---|---|---|
-| `statsfm_taste_profile` | `taste_profile` | Core artists, top genres, loyalty versus novelty, and UTC day-parting. |
-| `statsfm_artist_affinity` | `artist_affinity` | Artist intensity, recency half-life, and exposure tier. |
-| `statsfm_exposure_check` | `exposure_check` | An artist's, track's, album's, or genre's exposure tier. |
-| `statsfm_listening_eras` | `listening_eras` | Monthly change points grouped into listening eras. |
-| `statsfm_listening_sessions` | `listening_sessions` | Recent streams grouped by a configurable gap. |
-| `statsfm_forgotten_favorites` | `forgotten_favorites` | Lifetime top tracks absent from the recent sample. |
-| `statsfm_taste_recommendations` | `taste_recommendations` | Bridge-mode candidates with evidence and risk notes. |
-| `statsfm_record_feedback` | `record_feedback` | Local-only taste verdicts; it never contacts stats.fm. |
+| Tool | What it returns |
+|---|---|
+| `statsfm_taste_profile` | Core artists, top genres, loyalty versus novelty, and UTC day-parting. |
+| `statsfm_artist_affinity` | Artist intensity, recency half-life, and exposure tier. |
+| `statsfm_exposure_check` | An artist's, track's, album's, or genre's exposure tier. |
+| `statsfm_listening_eras` | Monthly change points grouped into listening eras. |
+| `statsfm_listening_sessions` | Recent streams grouped by a configurable gap. |
+| `statsfm_forgotten_favorites` | Lifetime top tracks absent from the recent sample. |
+| `statsfm_taste_recommendations` | Bridge-mode candidates with evidence and risk notes. |
+| `statsfm_record_feedback` | Local-only taste verdicts; it never contacts stats.fm. |
+
+**The legacy aliases were removed in v3.0 (#908).** Each of these eight used to be registered a second time under a bare name — `taste_profile`, `artist_affinity`, `exposure_check`, `listening_eras`, `listening_sessions`, `forgotten_favorites`, `taste_recommendations`, `record_feedback` — with identical parameters and an identical handler. That cost roughly 7.7 KB of schema in every session and gave a model choosing between two identical tools a coin flip. Calling one now returns an error naming its replacement. Set `SPOTIFY_MCP_LEGACY_ALIASES=1` to keep dispatching the old names for a release; nothing is added to `tools/list`, so the compat window is free.
 
 `statsfm_record_feedback` defaults to `action: "record"`, which requires `subject_type`, `subject`, and `rating`; `action: "list"` returns the stored entries. It accepts no `user_id` or `statsfm_user` because it never makes a network call. For example:
 
 ```json
 { "tool": "statsfm_record_feedback", "action": "record", "subject_type": "track", "subject": "Anchor Song", "rating": "love" }
 ```
-
-Use the registered `record_feedback` alias for the same call.
 
 ### Local state
 
