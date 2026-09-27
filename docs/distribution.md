@@ -184,7 +184,19 @@ CONTRIBUTING.md §3.
 
 ## Claim checklist
 
-- [ ] Smithery: https://smithery.ai — repo already carries `smithery.yaml`
+- [ ] Smithery: **not pursuing a hosted listing** — decided #710, and the
+  manifest that implied otherwise is gone. A hosted instance cannot complete
+  this server's OAuth. The flow is native-app PKCE: `validateRedirectUri`
+  accepts only a plain-HTTP loopback URL, and the callback listener binds
+  `127.0.0.1`/`::1` exclusively, so the browser redirect resolves to the
+  *user's* machine rather than the container and the authorization code never
+  arrives. Tokens are then written to that instance's own
+  `~/.spotify-mcp/tokens.json`. A listing that prompted for
+  `SPOTIFY_CLIENT_ID` would therefore start cleanly and fail at the PKCE step,
+  advertising a capability that does not work. `SPOTIFY_HEADLESS=1` is the one
+  non-browser path, and it needs a human to paste the redirect URL back — also
+  not something a hosted listing can do on the user's behalf.
+  `tests/distribution-channel-guard.test.ts` fails if the manifest returns.
 - [ ] Glama: submit via glama.ai/mcp/servers → verify tool list renders
 - [ ] mcp.so / PulseMCP / Cursor directory: use short blurb above
 - [ ] GitHub topic hygiene: `mcp`, `mcp-server`, `spotify`, `model-context-protocol`
