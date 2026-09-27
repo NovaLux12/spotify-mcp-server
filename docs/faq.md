@@ -70,7 +70,7 @@ It prints a URL — open it on any machine with a browser, approve, and paste th
 **Facts:**
 
 - Default token file: `~/.spotify-mcp/tokens.json` (mode 600). Override with `SPOTIFY_MCP_TOKEN_FILE`.
-- Multi-account: `SPOTIFY_MCP_PROFILE=<name>` (or `auth --profile <name>`) stores `tokens.<name>.json` sidecars. Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `SPOTIFY_MCP_PROFILE` > default.
+- Multi-account: `SPOTIFY_MCP_PROFILE=<name>` (or `auth --profile <name>`) stores `tokens.<name>.json` sidecars. Precedence: `SPOTIFY_MCP_TOKEN_FILE` > `--profile` > `SPOTIFY_MCP_PROFILE` > default, so an explicit `--profile` on the command line outranks the environment variable.
 - "Not authenticated" almost always means: tokens file missing (re-run `auth`), wrong profile selected, or redirect URI mismatch at auth time.
 - Ephemeral home directories (containers): mount a volume and point `SPOTIFY_MCP_TOKEN_FILE` at it, or auth expires with the container.
 - To disconnect, run `spotify-mcp logout`. It erases the Spotify-side local stores and prints where to revoke the token; see [Disconnecting](#how-do-i-revoke-access-and-delete-my-local-data).
