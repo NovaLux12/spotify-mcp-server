@@ -208,8 +208,14 @@ describe('localStorePaths', () => {
     // `cache.json.pending` marker is a file this build now writes, so leaving
     // it out would mean logout reported success while a file it created
     // survived.
+    //
+    // Matched by prefix, not by equality: the marker `expand`s like the cache
+    // store does (#1356), so its id carries the file name. This sandbox has one
+    // profile, so exactly one store comes back.
     const box = sandbox();
-    const store = localStorePaths({ env: box.env }).find((s) => s.id === 'cache-pending-marker');
+    const store = localStorePaths({ env: box.env }).find((s) =>
+      s.id.startsWith('cache-pending-marker'),
+    );
     assert.ok(store, 'the pending-save marker is not in the logout registry');
     assert.equal(
       store.erasure,

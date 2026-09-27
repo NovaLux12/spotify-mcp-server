@@ -40,7 +40,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
-import { cachePersistPath, savePersistedCache } from '../src/cachepersist.js';
+import { cachePersistPath, consumePendingMarker, savePersistedCache } from '../src/cachepersist.js';
 import { localStorePaths, runLogout, type LocalStore, type LogoutIo } from '../src/logout.js';
 
 const created: string[] = [];
@@ -173,6 +173,77 @@ describe('logout and the persisted read cache (#1300)', () => {
       // The marker beside it was already covered by #1296; a cache fix that
       // dropped it from the registry would be a regression, not a cleanup.
       await assert.rejects(fs.lstat(`${cache}.pending`), /ENOENT/);
+    });
+  });
+
+  it("erases every profile's PENDING MARKER, not only the active account's (#1356)", async () => {
+    // The marker is the other half of the store above, and it was registered
+    // with `resolve` while the cache got `expand` — so on a machine with
+    // profiles, logout named exactly one `cache*.json.pending` and left the
+    // rest on disk.
+    //
+    // A surviving marker is not a leftover file, it is a FALSE ALARM. The
+    // marker means "a previous process died mid-save". logout erases that
+    // cache on purpose, so the marker it leaves behind describes a loss of data
+    // the operator just chose to destroy — and the next start of that profile
+    // reports it. `consumePendingMarker` then also REMOVES the marker, so the
+    // alarm fires once against a cache that no longer exists, and the session
+    // that reads it is told it lost entries it never had.
+    const { root, env } = sandbox();
+    await withHome(root, async () => {
+      await seedToken(root, null);
+      await seedToken(root, 'work');
+      const written = [await writeCache(root, null), await writeCache(root, 'work')];
+      const markers = written.map((file) => `${file}.pending`);
+
+      const { io: seam, output } = io();
+      const code = await runLogout([], seam, { env, allowGioTrash: false });
+      const text = output();
+
+      assert.equal(code, 0, text);
+      for (const marker of markers) {
+        await assert.rejects(fs.lstat(marker), /ENOENT/, `${marker} survived logout`);
+        assert.ok(text.includes(marker), `the report must name ${marker}`);
+      }
+    });
+  });
+
+  it('does not report a lost session for a cache logout deliberately erased (#1356)', async () => {
+    // The consequence above, asserted rather than argued. The marker is seeded
+    // with a DEAD owner (`pid: -1`, which no process can have) so that a
+    // surviving marker really would report a loss — the shipped `pid: 1` would
+    // read as a live owner to a non-root user (EPERM) and this would pass
+    // whether or not the marker was erased, which is the "assertion inside a
+    // conditional that never fires" failure.
+    //
+    // logout runs for the ACTIVE profile, so the default account's marker is
+    // the one at risk of being left behind, and it is the one checked here.
+    const { root, env } = sandbox();
+    await withHome(root, async () => {
+      await seedToken(root, null);
+      await seedToken(root, 'work');
+      const written = [await writeCache(root, null), await writeCache(root, 'work')];
+      const deadMarker = { pid: -1, count: 7 };
+      for (const file of written) {
+        await fs.writeFile(`${file}.pending`, JSON.stringify(deadMarker), { mode: 0o600 });
+      }
+      assert.equal(consumePendingMarker({}, env), 7, 'precondition: a dead owner reports a loss');
+      // `consumePendingMarker` removes the marker once it has reported a loss,
+      // so the precondition above just consumed the default account's. Re-seed
+      // it, or the assertion after logout would pass against a file that no
+      // longer exists.
+      for (const file of written) {
+        await fs.writeFile(`${file}.pending`, JSON.stringify(deadMarker), { mode: 0o600 });
+      }
+
+      const { io: seam } = io();
+      await runLogout(['--profile', 'work'], seam, { env, allowGioTrash: false });
+
+      assert.equal(
+        consumePendingMarker({}, env),
+        null,
+        'a cache logout deliberately erased must not be reported as a lost session',
+      );
     });
   });
 

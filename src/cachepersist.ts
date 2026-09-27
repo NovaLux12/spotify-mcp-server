@@ -284,11 +284,41 @@ export function cachePersistPaths(env: NodeJS.ProcessEnv = process.env): string[
  * The marker path that sits beside the cache file: `cache.json.pending`.
  *
  * Derived from the SAME {@link cachePersistPath} call that names the cache, so
- * it inherits the profile suffix for free and two accounts can never share one
- * marker. There is no second profile resolution here to drift.
+ * it inherits the profile suffix for free and two accounts cannot share one
+ * marker.
+ *
+ * `env` is a DEFAULT argument, which JS evaluates per call rather than once at
+ * module load, so a caller that passes an explicit env and a caller that relies
+ * on the default can resolve different profiles — the two must not be mixed
+ * when arming and disarming one marker (#1356). The client is safe because it
+ * threads the resolved cache path through `opts.file`, and `cachePersistPath`
+ * returns that BEFORE reading `env` at all. That is a property of the call
+ * sites, not of this function, so it is not load-bearing here: anything
+ * enumerating rather than serving one live session must not rely on it, and
+ * must use {@link cachePendingPaths} instead.
  */
 export function cachePendingPath(env: NodeJS.ProcessEnv = process.env, opts: CachePersistOptions = {}): string {
   return `${cachePersistPath(env, opts)}.pending`;
+}
+
+/**
+ * Every pending marker this environment can own, not only the active one.
+ *
+ * The marker is per-account for the same reason the cache is (#1249), so a
+ * machine with profiles has one `cache.<profile>.json.pending` per profile and
+ * {@link cachePendingPath} — which resolves the ACTIVE profile — can name only
+ * one of them. Anything that has to reason about the whole set (`logout`
+ * erasing local stores) needs the rest.
+ *
+ * Derived from {@link cachePersistPaths} rather than from the token files again,
+ * so the set cannot drift from the set of caches the writer actually produces.
+ * A marker that logout fails to erase is not a leftover file: it outlives the
+ * cache it describes, and the next start of that profile reads it as a previous
+ * session dying mid-save — a data-loss alarm about a cache the operator just
+ * chose to delete (#1356).
+ */
+export function cachePendingPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  return cachePersistPaths(env).map((file) => `${file}.pending`);
 }
 
 /**
