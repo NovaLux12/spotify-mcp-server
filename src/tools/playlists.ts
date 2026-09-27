@@ -2391,7 +2391,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
   });
 
   // playlist_subtract (#291)
-  server.tool('playlist_subtract', 'Remove tracks of B..N from A. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: N GETs + PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL. Required; list only the subtraction sources in playlists.'), ...playlistListFields({ min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
+  server.tool('playlist_subtract', 'Remove tracks of B..N from A by REWRITING A: one PUT replaces every row with the ones that survive, so any row of A absent from the union is DELETED, and the rows that remain are re-written in order. Subtracting every track empties A via one PUT with an empty uris array (Spotify\'s documented clear); a reply with no snapshot_id reports unconfirmed, not ok. Quota: N GETs + PUT.', { base_playlist_id: PlaylistId.describe('Base playlist ID, URI, or URL. Required; list only the subtraction sources in playlists.'), ...playlistListFields({ min: 1, max: 10, limitReason: PAGED_WALK_LIST_REASON }), ...PlaylistSetWalkFields, response_format: ResponseFormat, dry_run: DryRun }, async (args) => {
     const input = resolvePlaylistInput(args, { kind: 'list', aliases: ['subtract_playlist_ids'] });
     // #1287: the pre-2.0 positional form (`playlists: [A, B, C]` meaning
     // "A minus B and C") was on the same removal schedule as the alias names and
@@ -2558,17 +2558,75 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     return textResult(withPlaylistInputNote(lines.join('\n'), input), payload);
   });
 
-  // playlist_trim (#293)
-  server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random). Quota: GET all + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), keep: z.number().int().min(1).max(500).describe('How many items to keep'), keep_which: z.enum(['first','last','random']).default('first').describe('Which end of the playlist to keep items from. Default first'), dry_run: DryRun }, async (args) => {
+  // playlist_trim (#293, gated #872)
+  server.tool('playlist_trim', 'Trim playlist to N items (keep first/last/random) by OVERWRITING the playlist: every row outside the kept set is DELETED, and the kept rows are re-written in the new order. An overwrite that deletes rows asks for confirmation first. Quota: 2 walks of the playlist items + 2 metadata GETs + PUT/POST.', { playlist_id: z.string().describe('Playlist ID, spotify:playlist: URI, or URL'), keep: z.number().int().min(1).max(500).describe('How many items to keep'), keep_which: z.enum(['first','last','random']).default('first').describe('Which end of the playlist to keep items from. Default first'), dry_run: DryRun }, async (args) => {
     const playlistId = normalizePlaylistReference(args.playlist_id);
-    const { uris, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
-    if (uris.length <= args.keep) return textResult(`Playlist already ${uris.length} ≤ ${args.keep} — nothing to trim`);
+    const { uris, rowCount, unavailablePositions, truncated } = await getPlaylistRows(playlistId);
+    // #872: this tool used to compare `uris.length` against `keep` and report
+    // "nothing to trim" on that basis. `uris` is the URI-filtered walk, so the
+    // count is smaller than the playlist whenever a row is unavailable, and it
+    // is capped by the walk when the playlist is larger than the cap — a
+    // 20-row playlist read under a 12-row cap is "already 12 <= 12" while it
+    // still holds all 20 rows, and the caller is told the trim it asked for
+    // had nothing to do. `rowCount` is what the playlist actually holds and
+    // `items.total` is what proves the walk reached the end, exactly as the
+    // union target and the subtract base already establish (#860).
+    const total = await getPlaylistRowTotal(playlistId);
+    const readWhole = !truncated && total === rowCount;
+    const unrepresentable = rowCount - uris.length;
     let kept: string[];
     if (args.keep_which === 'first') kept = uris.slice(0, args.keep);
     else if (args.keep_which === 'last') kept = uris.slice(-args.keep);
     else { const shuffled=[...uris]; for(let i=shuffled.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]];} kept=shuffled.slice(0,args.keep); }
-    if (args.dry_run) return textResult(planWithNotice(describeDryRun('trim playlist', playlistId, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which})`]), unavailableRowNotice(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY })));
+    // A no-op is a claim about the WHOLE playlist, so it needs a whole read.
+    // A capped or unreadable one is not a no-op: it is a plan whose impact is
+    // unknown, which is a prompt below, not a success line here.
+    if (readWhole && rowCount <= args.keep) {
+      return textResult(`Playlist already ${rowCount} ≤ ${args.keep} — nothing to trim`, { ok: true, unchanged: true, playlist: playlistId, existing_rows: rowCount, keep: args.keep, changed: false });
+    }
+    const impact = replacementImpact(uris, kept);
+    const removed = impact.removed;
+    const destructive = !impact.identical || unrepresentable > 0 || !readWhole;
+    if (args.dry_run) return textResult(planWithNotice(describeDryRun('trim playlist', playlistId, [`Would trim ${uris.length} → ${kept.length} (${args.keep_which}), deleting ${removed} row(s)${unrepresentable > 0 ? ` and dropping ${unrepresentable} row(s) with no URI` : ''}${!readWhole ? `; only ${rowCount} of ${total ?? 'an unknown number of'} row(s) could be read, so the true impact may be larger` : ''}`]), unavailableRowNotice(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY })));
+    // #860, unchanged: refuse ahead of the prompt. An operator who approves
+    // "delete 3 items" has still lost them, and asking about an irreversible
+    // row deletion is not consent for one.
     assertPlaylistRewritable(playlistId, unavailablePositions, { truncated, remedy: UNAVAILABLE_REMEDY });
+    // #872: the commit is a full destructive replace of every row, so it asks
+    // exactly as the union target and the subtract base do — the same
+    // fail-closed pair, on the same condition (anything but a provable no-op).
+    // This is the same question `remove_from_playlist` asks at the same scale,
+    // without the threshold: a trim of 1 of 3 rows is still 1 row the caller
+    // did not ask to lose, and the prompt is free to state the count.
+    if (destructive) {
+      const changes = [
+        `Overwrite ALL ${rowCount} existing item(s) with ${kept.length} URI(s), deleting ${removed} item(s) from the playlist.`,
+      ];
+      if (impact.reordered) changes.push(`Reorder ${uris.length} item(s): keep_which=${args.keep_which} rewrites the kept rows in a new order.`);
+      // No "drop the rows with no URI" line: #860 refuses the call just above,
+      // so a prompt can no longer arrive carrying one. The dry-run notice
+      // before that refusal is the place the count is still disclosed.
+      if (!readWhole) changes.push(`Only ${rowCount} of ${total ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
+      const verdict = await confirmViaElicitation(server, {
+        message: describeConfirmation('replace playlist items', playlistId, changes),
+      });
+      // Fails closed: declined, cancelled, a mid-flight elicitation error, and
+      // a client that cannot prompt all stop before the first PUT. Only an
+      // explicit accept — or SPOTIFY_MCP_CONFIRM=never — writes.
+      const refusal = requiredConfirmationRefusal(verdict);
+      if (refusal) return textResult(refusal.message, refusal.payload);
+    }
+    // The read the prompt quoted is now behind us. Re-read before the write so
+    // a concurrent edit cannot be overwritten with a plan the operator never
+    // saw, for the same reason the union target and the subtract base re-read.
+    const latest = await getPlaylistRows(playlistId);
+    const latestTotal = await getPlaylistRowTotal(playlistId);
+    const latestReadWhole = !latest.truncated && latestTotal === latest.rowCount;
+    if (latest.rowCount !== rowCount || latest.uris.join('\n') !== uris.join('\n')
+      || latest.unavailablePositions.join('\n') !== unavailablePositions.join('\n')
+      || latestReadWhole !== readWhole) {
+      throw new Error('playlist changed during trim; re-run to review the new destructive impact');
+    }
     const write = await replaceWithUris(playlistId, kept);
     if (!write.ok) {
       const lastUri = write.last_committed_chunk_uris[write.last_committed_chunk_uris.length - 1];
@@ -2577,6 +2635,6 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         : `Partial trim on playlist ${playlistId}: chunk 0 replaced ${write.last_committed_chunk_uris.length} URI(s) atomically, chunks 1–${write.failed_chunk_index} appended the rest, chunk ${write.failed_chunk_index + 1} of ${write.attempted_chunks} failed.${lastUri ? ` Last URI committed: ${lastUri}.` : ''} Retry the remaining ${write.remaining_uris} URI(s); the playlist currently holds the committed prefix. (${write.error})`;
       return textResult(prose, write);
     }
-    return textResult(withSnapshot(`Trimmed ${uris.length} → ${kept.length} (${args.keep_which})`, write.snapshot_id));
+    return textResult(withSnapshot(`Trimmed ${rowCount} → ${kept.length} (${args.keep_which})`, write.snapshot_id));
   });
 }

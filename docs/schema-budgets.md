@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 598,698B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 599,090B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 68,407B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 22,302B | 3.6% of the enforced limit |
+| Headroom | 21,910B | 3.5% of the enforced limit |
 
-Headroom is **22,302B** of the 621,000B enforced limit — 3.6% — so the aggregate budget is **tight**.
+Headroom is **21,910B** of the 621,000B enforced limit — 3.5% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -149,7 +149,7 @@ than maintained.
 | users | 2 | 1,696 | 2 | 1,696 | 3 | 1,866 |
 | audiobooks | 4 | 3,715 | 4 | 3,715 | 5 | 4,087 |
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
-| playlists | 26 | 23,861 | 26 | 23,861 | 27 | 26,248 |
+| playlists | 26 | 24,253 | 26 | 24,253 | 27 | 26,679 |
 | playlistops | 3 | 4,392 | 3 | 4,392 | 4 | 4,832 |
 | playlistbatch | 3 | 4,896 | 3 | 4,896 | 4 | 5,386 |
 | playlistfollow | 4 | 3,027 | 4 | 3,027 | 5 | 3,330 |

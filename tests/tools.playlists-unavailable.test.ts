@@ -314,7 +314,18 @@ describe('playlist_trim refuses a playlist with unavailable rows (#860)', () => 
 
     const out = await h.invoke('playlist_trim', { playlist_id: BASE, keep: 5, dry_run: false });
 
-    assert.match(textOf(out), /already 1 ≤ 5 — nothing to trim/);
+    // #872: the count is the playlist's ROW count, not the URI-filtered walk.
+    // It used to say "already 1 ≤ 5" for a playlist holding 2 rows, so the
+    // no-op line understated what the playlist actually contained.
+    assert.match(textOf(out), /already 2 ≤ 5 — nothing to trim/);
+    assert.deepEqual(out.structuredContent, {
+      ok: true,
+      unchanged: true,
+      playlist: BASE,
+      existing_rows: 2,
+      keep: 5,
+      changed: false,
+    });
     assert.deepEqual(writes(h.calls), []);
   });
 });

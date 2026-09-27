@@ -1332,6 +1332,18 @@ Two consequences callers can observe:
 
 **Migration note (breaking, v2.0):** a call that previously committed over a playlist with unavailable rows now fails. The tool names the count and the positions; run `remove_unavailable_playlist_items` (or `playlist_health_check` to find them) and retry.
 
+#### The overwrite gate on the set-algebra family (#872)
+
+`playlist_union` (into an existing `target_playlist_id`), `playlist_subtract` and `playlist_trim` each rewrite their target through that same atomic replace, so every row the incoming list does not contain is DELETED. Each measures what the overwrite costs before the first PUT and asks through elicitation, unless it can prove nothing is lost. The prompt names the overwrite itself (`Overwrite ALL <n> existing item(s) with <m> URI(s)`), how many rows the write would delete, how many existing rows carry no URI and therefore cannot be written back, and — when the item walk did not reach the end of the playlist — that the true impact may be larger.
+
+`playlist_trim` was the one that gated on nothing. Its description said "Trim playlist to N items (keep first/last/random)" and never named the deletion; it asked nothing before removing every row outside the kept set; and its no-op test compared the URI-filtered walk against `keep`, so a 20-row playlist read under a 12-row walk cap was `12 <= 12` — the tool reported an already-trimmed playlist that still held all 20 rows, and the caller was left believing a trim it never ran had nothing to do. It now reads the playlist's row total the way the other two already did, claims the no-op only for a whole read, and gates every other trim. The no-op result now reports the playlist's row count rather than the filtered walk, and carries the same `ok`/`unchanged` shape `playlist_union` and `playlist_subtract` return for their own no-ops. `playlist_subtract`'s description, which said it "removes" tracks from the base without saying it rewrites every row of it, now says so; its gate, its prompt and its refusal shape are unchanged.
+
+What #872 found already working, and left alone: `playlist_union` measures the target before the prompt, refuses the target-change race, and is ungated only when it creates a new playlist (`target_name`, which destroys no live rows); `playlist_subtract` measures the base the same way. All three now re-read the playlist after the prompt and refuse the write if it changed, so a plan no operator saw is never committed.
+
+A refusal here is a **result**, not a write, and carries the same payload as every other gated write in the server: `declined`/`cancel` → `{ok: false, cancelled: true}`; a prompt that fails on the wire → `reason: "elicitation_failed"`; a client that never advertised elicitation → `reason: "confirmation_unavailable"`. `SPOTIFY_MCP_CONFIRM=never` remains the only bypass, and the value must be exactly `never`. An operation that provably deletes nothing never asks.
+
+**Migration note (breaking, v2.0):** `playlist_trim` now asks before it deletes, and a client that cannot prompt is refused rather than served. Automation that trims unattended sets `SPOTIFY_MCP_CONFIRM=never`; everything else sees the prompt. A trim that used to report "nothing to trim" on a playlist larger than the walk cap now asks instead, because that playlist did have rows to lose.
+
 #### `merge_playlists`
 Merge several source playlists into one. Duplicates are dropped by track URI (falling back to track ID), keeping the **first-seen order across sources**; the merged URIs are then added in batches of 100. Passing `target_playlist_id` APPENDS — the target is never cleared — while `new_name` creates a fresh playlist first.
 

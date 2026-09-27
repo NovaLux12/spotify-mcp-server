@@ -1095,7 +1095,17 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // the removal itself, not an estimate: 26,214 -> 23,861, 5,348 -> 4,392,
   // 8,324 -> 7,876, 23,326 -> 22,423, 31,587 -> 28,891, 22,016 -> 21,084,
   // 3,065 -> 3,027 (-8,326B in total, which is also the aggregate drop).
-  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 23861]),
+  //
+  // #872, RE-MEASURED: 23,861 -> 24,253 (+392B) for the SAME 26 tools and the
+  // same input schemas — every byte is in two descriptions, and both are the
+  // same defect. `playlist_trim` never named the overwrite it performs (it
+  // deletes every row outside the kept set), never said the overwrite is
+  // confirmed first, and quoted a cost that excluded the two reads the gate
+  // and the pre-write re-check add; `playlist_subtract` said it "removes"
+  // tracks without saying it rewrites the whole base. A description that
+  // understates what a tool destroys is the #922 class this module keeps
+  // paying down. Measured, not derived.
+  manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 24253]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
   manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3027], { scopeKey: 'playlistfollow' }),
