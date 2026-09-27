@@ -5,11 +5,11 @@
  * **One template per URI shape (#685).** Each entity used to be registered
  * twice — a bare pattern plus a `{+qs}` catch-all twin — and the bare pattern
  * could not match a URI carrying a query string while the twin could not be
- * told apart from it, so `resources/templates/list` advertised 22 entries for
- * 10 resources and every one of the bare entries was shadowed by its own twin
- * for the bare URI. One template per shape now carries the whole parameter
- * set in a trailing form-style expression, which RFC 6570 §3.2.8 expands to
- * the empty string when nothing is defined, so the same entry serves
+ * told apart from it, so this file advertised 20 entries for 10 URI shapes
+ * and every one of the bare entries was shadowed by its own twin for the bare
+ * URI. One template per shape now carries the whole parameter set in a
+ * trailing form-style expression, which RFC 6570 §3.2.8 expands to the empty
+ * string when nothing is defined, so the same entry serves
  * `spotify://artist/x1`, `spotify://artist/x1?format=json` and
  * `spotify://artist/x1?market=GB`.
  *

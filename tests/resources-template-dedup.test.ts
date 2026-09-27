@@ -40,6 +40,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { registerReadSurfaces } from '../src/resources/register.js';
 import { registerResources } from '../src/resources/index.js';
 import { registerTemplateResources } from '../src/resources/templates.js';
+import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+
 import type { SpotifyClient } from '../src/client.js';
 
 // ---------------------------------------------------------------- fixtures
@@ -165,6 +167,17 @@ function liveTemplates(server: McpServer): RegisteredTemplate[] {
 
 function newServer(): McpServer {
   return new McpServer({ name: 'test', version: '0.0.0' });
+}
+
+/**
+ * The first content item's text. A `resources/read` result is a union of a text
+ * item and a blob item, so this narrows on the discriminant rather than casting
+ * — a cast here would be the same "stop checking" the repo's own guidance
+ * warns about, and it would let a blob read through as an empty string.
+ */
+function textOf(result: { contents: ReadResourceResult['contents'] }): string {
+  const first = result.contents[0];
+  return first !== undefined && 'text' in first ? first.text : '';
 }
 
 async function connect(server: McpServer): Promise<Client> {
@@ -320,10 +333,10 @@ test('spotify://playlist/pl1/tracks and its ?offset/?limit and ?format=json form
 
   const prose = await client.readResource({ uri: 'spotify://playlist/pl1/tracks' });
   assert.equal(prose.contents[0]?.mimeType, 'text/plain');
-  assert.match(prose.contents[0]?.text ?? '', /^Playlist pl1 — 1 items/);
+  assert.match(textOf(prose), /^Playlist pl1 — 1 items/);
 
   const windowed = await client.readResource({ uri: 'spotify://playlist/pl1/tracks?offset=100&limit=2' });
-  assert.match(windowed.contents[0]?.text ?? '', /at offset 100/);
+  assert.match(textOf(windowed), /at offset 100/);
   const paged = calls.at(-1);
   assert.equal(paged?.path, '/playlists/pl1/items');
   assert.equal(paged?.params?.offset, '100');
@@ -331,13 +344,13 @@ test('spotify://playlist/pl1/tracks and its ?offset/?limit and ?format=json form
 
   const raw = await client.readResource({ uri: 'spotify://playlist/pl1/tracks?format=json' });
   assert.equal(raw.contents[0]?.mimeType, 'application/json');
-  assert.equal((JSON.parse(raw.contents[0]?.text ?? '{}') as { items: unknown[] }).items.length, 1);
+  assert.equal((JSON.parse(textOf(raw)) as { items: unknown[] }).items.length, 1);
 });
 
 test('spotify://playlist/pl1 still routes to the playlist card, not to its tracks (#685)', async () => {
   const { client, calls } = await productionServer();
   const res = await client.readResource({ uri: 'spotify://playlist/pl1' });
-  assert.match(res.contents[0]?.text ?? '', /^Playlist: "P" by o/);
+  assert.match(textOf(res), /^Playlist: "P" by o/);
   assert.equal(calls.at(-1)?.path, '/playlists/pl1');
 });
 
@@ -379,7 +392,7 @@ test('a URI read bare and with ?format=json is answered by the same renderer (#6
     }
     if (raw) {
       try {
-        JSON.parse(raw.contents[0]?.text ?? '');
+        JSON.parse(textOf(raw));
       } catch {
         problems.push(`${base}?format=json is not JSON`);
       }
@@ -417,12 +430,12 @@ test('registration order changes nothing about routing (#685)', async () => {
     let forwardError: string | null = null;
     let reverseError: string | null = null;
     try {
-      forwardText = (await forward.readResource({ uri })).contents[0]?.text ?? '';
+      forwardText = textOf(await forward.readResource({ uri }));
     } catch (error) {
       forwardError = (error as Error).message;
     }
     try {
-      reverseText = (await reverseClient.readResource({ uri })).contents[0]?.text ?? '';
+      reverseText = textOf(await reverseClient.readResource({ uri }));
     } catch (error) {
       reverseError = (error as Error).message;
     }
