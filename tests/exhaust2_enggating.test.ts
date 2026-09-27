@@ -704,15 +704,28 @@ test('SPOTIFY_MCP_DISABLE_TOOLS is honoured on the production path (#791 vacuity
 // why the honest per-tool outcome is a disclosure and not a deletion. Nothing
 // here asserts a live HTTP status — these are fakes, and no probe was run.
 
-/** Registers the three live callers against a client driven by `respond`. */
-function browseCallers(respond: (path: string) => unknown) {
+/**
+ * Registers the three live callers against a client driven by `respond`, keyed
+ * BY NAME. Returning a bare array was a trap actually taken while writing
+ * these tests: `const [resolver] = browseCallers(...)` destructures the FIRST
+ * element (`get_category`), not `category_resolver`, and the test then passed
+ * against the wrong tool. A keyed lookup makes that unrepresentable.
+ */
+function browseCallers(respond: (path: string) => unknown): Map<string, RegisteredTool> {
   const client = makeFakeClient((path) => respond(path));
   installGatedPathContract(client);
   const registered: RegisteredTool[] = [];
   registerCatalogTools(makeServer(registered) as never, client as never);
   registerExhaust2CatalogTools(makeServer(registered) as never, client as never);
-  return ['get_category', 'browse_category_deepdive', 'category_resolver']
-    .map((name) => find(registered, name));
+  const names = ['get_category', 'browse_category_deepdive', 'category_resolver'];
+  return new Map(names.map((name) => [name, find(registered, name)]));
+}
+
+/** The one tool that reads the category LIST, for the list-shaped failures. */
+function resolverOf(respond: (path: string) => unknown): RegisteredTool {
+  const tool = browseCallers(respond).get('category_resolver');
+  assert.ok(tool, 'category_resolver is not registered; the tests below cannot be trusted');
+  return tool;
 }
 
 test('#1359 all three browse-categories callers disclose a gated 403', async () => {
@@ -723,7 +736,10 @@ test('#1359 all three browse-categories callers disclose a gated 403', async () 
   const tools = browseCallers((path) =>
     path.startsWith('/browse/categories') ? new SpotifyApiError(403, 'Forbidden') : null,
   );
-  for (const tool of tools) {
+  // Every declared caller is exercised: if the family grows a tool, the
+  // Set comparison below fails rather than silently testing three of four.
+  assert.deepEqual([...tools.keys()].sort(), ['browse_category_deepdive', 'category_resolver', 'get_category']);
+  for (const tool of tools.values()) {
     if (tool.name === 'category_resolver') {
       const out = await tool.handler({ text: 'chill' });
       assert.equal(out.structuredContent?.gated, true, `${tool.name} must disclose gated: true on a 403`);
@@ -750,7 +766,7 @@ test('#1359 category_resolver names the removal on 404 and 410 (#803 class)', as
   // from a bad query. A removed endpoint answering is exactly the case the
   // never-call discussion is about, and it must not surface as raw status.
   for (const status of [404, 410]) {
-    const [resolver] = browseCallers((path) =>
+    const resolver = resolverOf((path) =>
       path.startsWith('/browse/categories') ? new SpotifyApiError(status as 404, 'Forbidden') : null,
     );
     await assert.rejects(
@@ -758,8 +774,9 @@ test('#1359 category_resolver names the removal on 404 and 410 (#803 class)', as
       (err: Error & { cause?: unknown }) => {
         assert.match(err.message, new RegExp(`Spotify answered ${status}`), `status ${status} must be reported`);
         assert.match(err.message, /browse-category lookup/);
+        assert.match(err.message, /not a missing category/);
         assert.match(err.message, /February 2026/);
-        assert.match(err.message, /no replacement endpoint/);
+        assert.match(err.message, /No endpoint serves the browse category tree/);
         assert.ok(err.cause instanceof SpotifyApiError, `status ${status} must keep the Spotify error as the cause`);
         return true;
       },
@@ -780,7 +797,7 @@ test('#1359 category_resolver never reports an unreadable page as an empty catal
     ['200 with a non-array items', { categories: { items: 'not-an-array' } }],
   ];
   for (const [label, body] of shapes) {
-    const [resolver] = browseCallers(() => body);
+    const resolver = resolverOf(() => body);
     await assert.rejects(
       resolver.handler({ text: 'chill' }),
       (err: Error) => {
@@ -794,6 +811,14 @@ test('#1359 category_resolver never reports an unreadable page as an empty catal
           !/empty catalog for this market/.test(err.message),
           `${label}: must not claim the market's catalog is empty when nothing was read`,
         );
+        // The message must not turn the observation into a verdict. The runtime
+        // status of this path is genuinely unestablished (changelog [REMOVED],
+        // schema deprecated), so claiming the endpoint IS removed here would
+        // assert a cause the response does not show.
+        assert.ok(
+          !/was removed by Spotify/.test(err.message),
+          `${label}: must not assert the removal as the cause; only the status was observed`,
+        );
         return true;
       },
       `${label} must fail loudly rather than report a soft empty answer`,
@@ -805,7 +830,7 @@ test('#1359 a genuine empty page still reports an empty catalog', async () => {
   // The guard above must not swallow the one case the old message was right
   // about: a well-formed 200 whose categories.items really is empty. Proved by
   // running it, so a fix that simply rejected every empty result would fail.
-  const [resolver] = browseCallers(() => ({ categories: { items: [], total: 0 } }));
+  const resolver = resolverOf(() => ({ categories: { items: [], total: 0 } }));
   await assert.rejects(
     resolver.handler({ text: 'chill' }),
     /No browse categories returned \(empty catalog for this market\)/,
@@ -816,7 +841,7 @@ test('#1359 a genuine empty page still reports an empty catalog', async () => {
 test('#1359 a healthy page still resolves the best match', async () => {
   // The vacuity guard for the whole file: if the fix made the happy path
   // unreachable, the four tests above would pass while the tool was broken.
-  const [resolver] = browseCallers((path) =>
+  const resolver = resolverOf((path) =>
     path.startsWith('/browse/categories')
       ? { categories: { items: [{ id: 'chill', name: 'Chill' }, { id: 'mood', name: 'Mood' }], total: 2 } }
       : null,
