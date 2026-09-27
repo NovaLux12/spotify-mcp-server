@@ -82,10 +82,10 @@ command rather than a tool so no MCP host can trigger it on your behalf.
 
 **Erasing local data.** Each Spotify-side store this build can write is resolved
 through the module that owns it, then removed. Each removed path is printed, so
-you can check the report against your disk. One store is not covered: the local
-taste verdicts at `~/.spotify-mcp/taste-feedback.json`, which hold no Spotify
-credentials and no account identity. Delete that file by hand if you want the
-verdicts gone.
+you can check the report against your disk. The stats.fm taste verdicts at
+`~/.spotify-mcp/taste-feedback.json` are covered like any other store: they hold
+no credentials and no account identity, so they are moved aside recoverably
+rather than shredded, and there is nothing left to delete by hand.
 
 Stores are moved rather than deleted: to the freedesktop trash where the
 filesystem allows it, otherwise into a `.spotify-mcp-logout-quarantine-<stamp>`
