@@ -102,6 +102,46 @@ const handleCount = (kind: string): number =>
 
 const wait = (ms: number): Promise<void> => new Promise((r) => { setTimeout(r, ms); });
 
+/** How long {@link settledHandleCount} waits for the global count to stop moving. */
+const SETTLE_BUDGET_MS = 10_000;
+/** Consecutive equal samples that count as "stopped moving". */
+const SETTLE_STABLE_SAMPLES = 3;
+const SETTLE_POLL_MS = 25;
+
+/**
+ * `handleCount`, sampled until it stops moving.
+ *
+ * `process.getActiveResourcesInfo()` is **process-global**: it reports handles
+ * belonging to every concurrent thing in this process, not to the child a test
+ * spawned. A baseline captured at T0 and an assertion at T0+250ms are two
+ * samples of a moving quantity, and the interval between them contains the
+ * warm-up child's own asynchronous release — so the count could rise for
+ * reasons that have nothing to do with the code under test. That is not
+ * hypothetical: it produced `2 !== 3` on Node 22 in CI while Node 24 passed on
+ * the same commit, and it is the reason this file must not assert a raw global
+ * count across a fixed sleep (#1413).
+ *
+ * "Stopped moving" is two consecutive equal samples rather than one, so a
+ * single unlucky read cannot satisfy the poll. The deadline is a real bound:
+ * this returns the last reading when it expires rather than spinning forever,
+ * because a poll that cannot terminate is the very hang this file exists to
+ * prevent (#1365). An unsettled reading still fails the caller's comparison,
+ * so a timeout degrades to a red rather than to a false green.
+ */
+async function settledHandleCount(kind: string): Promise<number> {
+  const deadline = Date.now() + SETTLE_BUDGET_MS;
+  let previous = handleCount(kind);
+  let stable = 0;
+  while (Date.now() < deadline) {
+    await wait(SETTLE_POLL_MS);
+    const current = handleCount(kind);
+    stable = current === previous ? stable + 1 : 0;
+    previous = current;
+    if (stable >= SETTLE_STABLE_SAMPLES) return current;
+  }
+  return previous;
+}
+
 /**
  * A child that leaves a **grandchild** holding the inherited stdout pipe, then
  * exits 0 immediately.
@@ -291,20 +331,29 @@ describe('a reaped child must not leave its handles behind (#1365)', () => {
     // that, a pass could come from an unrelated handle appearing or vanishing.
     const warmup = spawnIdleChild('warmup-probe');
     await warmup.dispose();
-    const baselinePipes = handleCount('PipeWrap');
-    const baselineProcs = handleCount('ProcessWrap');
+    // Both baselines are settled, not sampled. The warm-up child's own streams
+    // are released asynchronously, so a raw reading here can be taken before
+    // that release lands — which is exactly how this assertion produced
+    // `2 !== 3` on Node 22 while Node 24 passed (#1413). Settling the baseline
+    // *and* the measurement the same way is what makes the comparison mean
+    // "this child's contribution" rather than "what the runner was holding when
+    // the clock happened to read".
+    const baselinePipes = await settledHandleCount('PipeWrap');
+    const baselineProcs = await settledHandleCount('ProcessWrap');
 
     const child = spawnGrandchildHolder('inherited-pipe-probe');
     const pid = child.pid;
     await child.dispose();
 
-    // Give the grandchild's inherited write end a moment to be the only thing
-    // that could still be holding the read end open, so a leak cannot hide
-    // behind "it had not got there yet".
-    await wait(250);
+    // Settle rather than sleep a fixed 250ms: the grandchild's inherited write
+    // end has to be the only thing that could still be holding the read end
+    // open, and a fixed sleep cannot establish that. Three consecutive equal
+    // samples can.
+    const afterPipes = await settledHandleCount('PipeWrap');
+    const afterProcs = await settledHandleCount('ProcessWrap');
 
     assert.equal(
-      handleCount('PipeWrap'),
+      afterPipes,
       baselinePipes,
       'dispose() must release every stdio pipe it opened: a grandchild holding the '
       + 'inherited write end keeps the read end from reaching EOF, and the file then '
@@ -317,8 +366,8 @@ describe('a reaped child must not leave its handles behind (#1365)', () => {
     // still fail: a `dispose()` that returned without reaping would leave this
     // child running and the count strictly above the baseline.
     assert.ok(
-      handleCount('ProcessWrap') <= baselineProcs,
-      `the child itself must be reaped: ${handleCount('ProcessWrap')} ProcessWraps against a baseline of ${baselineProcs}`,
+      afterProcs <= baselineProcs,
+      `the child itself must be reaped: ${afterProcs} ProcessWraps against a baseline of ${baselineProcs}`,
     );
 
     // And the child is genuinely gone, not merely unreferenced.
@@ -334,15 +383,15 @@ describe('a reaped child must not leave its handles behind (#1365)', () => {
     // on "the child is gone" would most plausibly skip its cleanup.
     const warmup = spawnIdleChild('warmup-probe-2');
     await warmup.dispose();
-    const baselinePipes = handleCount('PipeWrap');
+    const baselinePipes = await settledHandleCount('PipeWrap');
 
     const child = spawnIdleChild('killed-probe');
     await child.dispose();
-    await wait(150);
+    const afterPipes = await settledHandleCount('PipeWrap');
 
     assert.equal(child.child.signalCode, 'SIGKILL', 'this child must have been reaped by signal');
     assert.equal(
-      handleCount('PipeWrap'),
+      afterPipes,
       baselinePipes,
       'a signalled child must release its pipes too, not only a politely closed one',
     );
@@ -354,9 +403,13 @@ describe('a reaped child must not leave its handles behind (#1365)', () => {
     // makes that safe, so it is asserted rather than assumed.
     const child = spawnIdleChild('idempotent-probe');
     await child.dispose();
-    const after = handleCount('PipeWrap');
+    const after = await settledHandleCount('PipeWrap');
     await child.dispose();
-    assert.equal(handleCount('PipeWrap'), after, 'a repeated dispose() must not change the handle count');
+    assert.equal(
+      await settledHandleCount('PipeWrap'),
+      after,
+      'a repeated dispose() must not change the handle count',
+    );
     assert.equal(child.isRunning(), false, 'a disposed child is not running');
   });
 });
