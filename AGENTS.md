@@ -709,6 +709,42 @@ tests could only exercise the shipped message — replacing the check body with
 *argument* is what let a test aim it at a section that does not exist. If you
 cannot write the failing case, the check is not wired to anything.
 
+**A cast at the structuredContent boundary is a decision to stop checking.**
+`payload as unknown as SomeResult` does not tell the compiler the payload is
+`SomeResult`; it tells the compiler to stop asking, and the value is then
+confidently wrong at runtime with no compile error to explain why. That is the
+same failure as the two bugs above, wearing a type instead of a default. Two
+shipped instances of the same mistake: `library_hygiene` and `saved_dedupe`
+declared `ok: true` as a *literal* type and then cast a quota-cooldown payload
+saying `ok: false` into it, so the contradiction was invisible until someone read
+the wire; and `get_playlist_added_dates` laundered each row's `added_at` through
+a cast and defaulted it to `''`, which sorts *before* every real date — a show
+of undated rows as the oldest.
+
+So this boundary **fails closed**, in the same spirit as
+`classifyToolAnnotations` and `requiredConfirmationRefusal()`: untrusted data is
+*marked*, not defaulted. `src/shaping.ts` exports the readers —
+`readString`, `readNumber` and `asRecord` all check the runtime type and return
+`undefined` when it does not hold, and `structuredContent()` is the one way a
+shaped payload enters the wire. An absent or wrongly-typed field is
+*unanswered*, which is not `false` and not `0`; a value that could not be read
+gets a `null` or an `undefined` the caller can disclose, and a row that cannot
+be addressed at all gets skipped rather than turned into a URL that names
+nothing. Where the type itself was the lie, fix the type: declare the payload as
+a `type` union with the refusal as its own member (an `interface` has no
+implicit index signature, which is the whole reason several of these casts
+existed in the first place). Where `Record<string, unknown>` really is the
+honest type, the cast is fine and should be left alone — `tests/structuredcontent-boundary.test.ts`
+gates only the specific-shape class, because flagging the idiomatic widening
+would be a gate nobody could keep green.
+
+**A helper that names `T` once is not a check.** The issue this came from
+suggested a `toStructuredContent<T>()` that coerces at the boundary and names the
+target type one time. That is the same unverified assertion behind a friendlier
+name, and it makes the trust decision *harder* to find, not easier. The value has
+to earn its type at runtime; when it cannot, the honest representation is
+`T | undefined`.
+
 ---
 
 ## 7. Before you open a PR

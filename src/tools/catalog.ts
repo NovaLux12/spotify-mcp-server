@@ -582,7 +582,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       // reached the paged branch and silently missed the walk.
       const market = await resolveRequestMarket(client, args.market);
       let result: SpotifyArtistAlbumsResponse | null;
-      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
+      if (args.fetch_all) {
         const items = await client.getAllPages<SpotifyArtistAlbumsResponse['items'][number]>(
           `/artists/${encodeURIComponent(args.id)}/albums`,
           {
@@ -592,7 +592,12 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           },
           { maxItems: args.max_results },
         );
-        result = { items, total: items.length, limit: items.length, offset: 0, href: '', previous: null, next: null } as unknown as SpotifyArtistAlbumsResponse;
+        // #1343: this synthesized a `href: ''` and a `previous` the paged
+        // wrapper does not have, then cast the whole thing. `total` is the
+        // number of rows the walk actually returned — not a count Spotify
+        // stated for the collection — so it is derived from what was read
+        // rather than asserted to be a page.
+        result = { items, total: items.length, limit: items.length, offset: 0, next: null };
       } else {
         result = (await getWithMarketFallback<SpotifyArtistAlbumsResponse>(
           client,
@@ -701,7 +706,10 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       // configured default reaches it instead of only the paged branch.
       const market = await resolveRequestMarket(client, args.market);
       let result: SpotifyPaged<SpotifyTrackSimple> | null;
-      if ((args as unknown as { fetch_all?: boolean }).fetch_all) {
+      // #1343: `fetch_all` is declared by the schema directly above; the cast
+      // that used to read it was laundering a known field into an `unknown`
+      // for no gain.
+      if (args.fetch_all) {
         const items = await client.getAllPages<SpotifyTrackSimple>(
           `/albums/${encodeURIComponent(args.id)}/tracks`,
           market.market ? { market: market.market } : undefined,

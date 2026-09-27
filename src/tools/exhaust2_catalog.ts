@@ -49,6 +49,8 @@ import {
   paginationInfo,
   nextPageLine,
   listStructuredContent,
+  asRecord,
+  readNumber,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -168,13 +170,21 @@ async function runTypedSearch<T>(
 ): Promise<{ items: T[]; total: number | null; page: SearchPage }> {
   const params = searchRequestParams(q ?? args.query, type, args);
   const data = await client.get<CatalogSearchResponse>('/search', params);
-  const section = (
-    data as unknown as Record<string, { items?: unknown[]; total?: number } | undefined> | null
-  )?.[sectionKey];
-  const items = (section?.items ?? []).filter((x) => x != null);
+  // #1343: the section was read by casting the whole response to a record of
+  // ad-hoc shapes. `asRecord` reaches the section by key without inventing a
+  // second, undeclared description of `/search`, and admits only a real
+  // object. A section Spotify omitted — or one that is not a page at all —
+  // reads as absent rather than as an empty result wearing a declared type.
+  const section = asRecord(asRecord(data)?.[sectionKey]);
+  const rawItems = section?.items;
+  const items = (Array.isArray(rawItems) ? rawItems : []).filter((x) => x != null);
   return {
+    // `T` is the caller's declared row type for the `type` this search asked
+    // for; the rows themselves are not validated, which is this helper's
+    // pre-existing contract and is now stated rather than left to look like a
+    // cast that checked something.
     items: items as T[],
-    total: typeof section?.total === 'number' ? section.total : null,
+    total: readNumber(section, 'total') ?? null,
     // #781: read the page back off the params object that went on the wire, so
     // the reported page is the one that produced these rows rather than a
     // re-derivation of the caller's arguments that could drift from them.

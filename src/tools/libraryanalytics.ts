@@ -400,7 +400,11 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
 
       // Walk recently-played cursor pages until the cutoff, the cursor ends, or
       // the page budget runs out.
-      const allItems: Array<{ played_at: string; track: { name: string; uri: string } }> = [];
+      // #1343: the element type claimed a `track: {name, uri}` and each row
+      // was pushed through a cast to match. Nothing downstream reads `track` —
+      // the only field consumed is `played_at` — so the type now says what is
+      // actually used, and `RecentlyPlayedItem` satisfies it on its own.
+      const allItems: Array<{ played_at: string }> = [];
       let after: string | undefined;
       let pagesWalked = 0;
       let oldestSeen: string | null = null;
@@ -418,7 +422,7 @@ export function registerLibraryAnalyticsTools(server: McpServer, client: Spotify
           if (!Number.isFinite(ts)) continue;
           if (oldestSeen === null || ts < Date.parse(oldestSeen)) oldestSeen = it.played_at;
           if (ts < cutoff) { hitCutoff = true; continue; }
-          allItems.push(it as unknown as typeof allItems[number]);
+          allItems.push(it);
         }
         // next cursor
         after = res.cursors?.after ? String(res.cursors.after) : undefined;

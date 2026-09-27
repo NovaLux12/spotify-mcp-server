@@ -567,6 +567,18 @@
         "label": "A guard that only ever sees the correct input has never …"
       },
       {
+        "hash": "8fe1ee9d06fb7698",
+        "label": "A cast at the structuredContent boundary is a decision t…"
+      },
+      {
+        "hash": "eecf3015dbe102be",
+        "label": "So this boundary fails closed, in the same spirit as cla…"
+      },
+      {
+        "hash": "c2706b2518fb9496",
+        "label": "A helper that names T once is not a check. The issue thi…"
+      },
+      {
         "hash": "77f20653a6cfb278",
         "label": "7. Before you open a PR"
       },

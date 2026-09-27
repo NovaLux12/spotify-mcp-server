@@ -26,6 +26,7 @@ import {
   resolveMaxResults,
   completenessFooter,
   truncateItems,
+  structuredContent,
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -70,7 +71,15 @@ interface DuplicateGroup {
   suggestion: string;
 }
 
-interface AnalysisResult {
+/**
+ * What a completed run publishes.
+ *
+ * A `type`, not an `interface`: an `interface` has no implicit index
+ * signature and so is not assignable to the wire's `Record<string, unknown>`,
+ * which is the whole reason this payload used to be cast on the way out
+ * (#1343). The cast was covering a declaration choice, not a checked shape.
+ */
+type AnalysisResult = {
   ok: true;
   scanned: {
     saved_tracks: number;
@@ -95,17 +104,38 @@ interface AnalysisResult {
     groups_with_playlist_overlap: number;
   };
   groups: DuplicateGroup[];
-}
+};
+
+/**
+ * The quota-cooldown refusal (#1343).
+ *
+ * Previously cast to `AnalysisResult`, whose `ok` is the literal type `true` —
+ * so the cast is exactly what stopped the compiler from objecting to an
+ * `ok: false` payload. Declaring it as its own variant makes `ok: false`
+ * something the type admits, which is the truth: a host that reads
+ * `ok === true` as "the scan completed" has to be able to observe the
+ * difference.
+ */
+type CooldownResult = {
+  ok: false;
+  cooldown: true;
+  wait_sec: number;
+  requests_made: 0;
+  requests_planned: number;
+};
+
+/** Every payload `saved_dedupe` can put on the wire. */
+type SavedDedupeResult = AnalysisResult | CooldownResult;
 
 type ToolOut = {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
 };
 
-function shapeResult(rf: ResponseFormatValue, prose: string, payload: AnalysisResult): ToolOut {
+function shapeResult(rf: ResponseFormatValue, prose: string, payload: SavedDedupeResult): ToolOut {
   return {
     content: [{ type: 'text', text: rf === 'json' ? JSON.stringify(payload, null, 2) : prose }],
-    structuredContent: payload as unknown as Record<string, unknown>,
+    structuredContent: structuredContent(payload),
   };
 }
 
@@ -514,7 +544,7 @@ export function registerSavedDedupeTools(server: McpServer, client: SpotifyClien
           wait_sec: gate.waitSec,
           requests_made: 0,
           requests_planned: getConfig().fetchAllCap,
-        } as unknown as AnalysisResult);
+        });
       }
       const result = await analyze(client, args.include_near_duplicates, args.playlist_id);
       const maxResults = resolveMaxResults(args.max_results, getConfig().maxItems);

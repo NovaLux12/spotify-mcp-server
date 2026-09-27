@@ -20,9 +20,20 @@ export function receiptsLines(receipts: readonly Receipt[]): string {
   return receipts.map((r) => formatReceipt(r)).join('\n');
 }
 
-/** The same receipts as structuredContent records. A Receipt is plain JSON. */
+/**
+ * The same receipts as structuredContent records. A Receipt is plain JSON.
+ *
+ * #1343: this used to be `receipts as unknown as Array<Record<string, unknown>>`
+ * — a widening at the payload boundary that told the compiler the receipts had
+ * been checked when nothing had checked them. `Receipt` is an `interface`, so
+ * it has no implicit index signature and is not assignable to the wire's
+ * `Record<string, unknown>`; the cast papered over that. Spreading each
+ * receipt into a fresh object produces a plain value the wire accepts on its
+ * own terms, and it keeps the boundary a place a reader can look rather than a
+ * step hidden behind an assertion.
+ */
 export function receiptRecords(receipts: readonly Receipt[]): Array<Record<string, unknown>> {
-  return receipts as unknown as Array<Record<string, unknown>>;
+  return receipts.map((r) => ({ ...r }));
 }
 
 export interface WriteVerdict {
