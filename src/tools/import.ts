@@ -22,7 +22,13 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
 import { getConfig } from '../config.js';
-import { exportRootDir, maxDocumentBytes, readInputFile, resolveInputPath } from '../paths.js';
+import {
+  READ_ROOTS_ENV_HINT,
+  maxDocumentBytes,
+  readInputFile,
+  readRoots,
+  resolveInputPath,
+} from '../paths.js';
 import { homedir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { backupDir } from './backup.js';
@@ -205,24 +211,14 @@ export function detectFormat(content: string): 'm3u' | 'csv' | null {
 }
 
 /**
- * Directories `input_path` may be read from. These are the roots the
- * portability/backup/export tools already own, so a document the server itself
- * wrote is always readable. The portability default is spelled out because
- * `portabilityDir()` in ./portability.ts is module-private — keep the two in
- * step. SPOTIFY_MCP_ALLOW_PATHS adds further roots, separated by the platform
- * path delimiter.
+ * Directories `input_path` may be read from. The definition moved to
+ * `readRoots()` in ../paths.js (#623) so that every caller-supplied read in
+ * the server — this one, `import_profile_state`, `import_from_sidecar`,
+ * `library_snapshot_diff`, `restore_library_snapshot` — is confined by the
+ * same list. A second copy here is what let four of those five go unguarded.
  */
 function allowedReadRoots(env: NodeJS.ProcessEnv = process.env): string[] {
-  const extra = (env.SPOTIFY_MCP_ALLOW_PATHS ?? '')
-    .split(delimiter)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
-  return [
-    env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability'),
-    backupDir(env),
-    exportRootDir(env),
-    ...extra,
-  ];
+  return readRoots(env);
 }
 
 /**
@@ -236,8 +232,7 @@ async function loadDocument(args: { content?: string; input_path?: string }): Pr
     roots: allowedReadRoots(),
     tool: TOOL,
     target: args.input_path as string,
-    envHint:
-      'Set SPOTIFY_MCP_PORTABILITY_DIR / SPOTIFY_MCP_BACKUP_DIR / SPOTIFY_MCP_EXPORT_DIR, or add the directory to SPOTIFY_MCP_ALLOW_PATHS.',
+    envHint: READ_ROOTS_ENV_HINT,
   });
   return { body: await readInputFile(resolved, TOOL), source: resolved.path };
 }

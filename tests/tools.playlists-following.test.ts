@@ -15,7 +15,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { delimiter, join, relative } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError } from '../src/client.js';
 import type { SpotifyClient } from '../src/client.js';
@@ -2663,9 +2663,17 @@ describe('destructive confirmation parity across remove/unpin/restore', () => {
     const dir = await mkdtemp(join(tmpdir(), 'spotify-confirm-parity-'));
     const path = join(dir, 'snapshot.json');
     await writeFile(path, JSON.stringify(snapshot), 'utf8');
+    // #623: `backup_path` is a caller-supplied read confined to the allowed
+    // read roots, so the fixture directory is opted in for the duration.
+    const prevAllow = process.env.SPOTIFY_MCP_ALLOW_PATHS;
+    process.env.SPOTIFY_MCP_ALLOW_PATHS = prevAllow
+      ? `${prevAllow}${delimiter}${dir}`
+      : dir;
     try {
       await run(path);
     } finally {
+      if (prevAllow === undefined) delete process.env.SPOTIFY_MCP_ALLOW_PATHS;
+      else process.env.SPOTIFY_MCP_ALLOW_PATHS = prevAllow;
       await rm(dir, { recursive: true, force: true });
     }
   }

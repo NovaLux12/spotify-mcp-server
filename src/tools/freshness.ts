@@ -41,6 +41,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 // ---------------------------------------------------------------------------
 // Date + watermark helpers (pure local I/O; no network)
@@ -160,8 +161,16 @@ export function watermarkFilePath(env: NodeJS.ProcessEnv = process.env): string 
  */
 async function readWatermark(): Promise<string | null> {
   let raw: string;
+  const file = watermarkFilePath();
   try {
-    const parsed: unknown = JSON.parse(await readFile(watermarkFilePath(), 'utf8'));
+    // #623: a server-owned store, so the root is its own directory. The
+    // regular-file check is the one that earns its keep — a FIFO planted at
+    // freshness.json would otherwise hang this read forever — and the size cap
+    // stops an oversized file being buffered. The catch below already means
+    // "no usable watermark", so a refusal falls into it unchanged.
+    const parsed: unknown = JSON.parse(
+      await readLocalFile({ roots: ownStoreRoots(file), tool: 'freshness', target: file }),
+    );
     if (
       parsed &&
       typeof parsed === 'object' &&

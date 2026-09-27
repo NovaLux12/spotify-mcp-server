@@ -53,6 +53,7 @@ import {
   appendFileSync,
   chmodSync,
   closeSync,
+  constants,
   mkdirSync,
   openSync,
   readSync,
@@ -64,6 +65,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { truthyEnv } from './config.js';
+import { ownStoreRoots, resolveInputPathSync } from './paths.js';
 import type { PlaylistItemsResponse } from './types/spotify.js';
 
 /** Minimal client surface needed here — satisfied by SpotifyClient and test stubs. */
@@ -315,9 +317,22 @@ export function receiptMissMessage(
 
 /** Tail of a text file, bounded by maxBytes, skipping a partial leading line. */
 function readTailText(file: string, maxBytes: number): string | null {
-  const { size } = statSync(file);
+  // #623: the tail window already bounds how much is buffered, so the cap is
+  // satisfied by construction — but the file is still validated first. A FIFO
+  // where the receipt log belongs would block in openSync indefinitely, and
+  // a symlink out of the receipts directory would read something else, so
+  // both are refused by the same guard every other local read uses. The
+  // ceiling passed here is the tail window, not the document cap: this read
+  // never materialises more than maxBytes.
+  const input = resolveInputPathSync({
+    roots: ownStoreRoots(file),
+    tool: 'receipts',
+    target: file,
+    maxBytes,
+  });
+  const { size } = statSync(input.path);
   const start = size > maxBytes ? size - maxBytes : 0;
-  const fd = openSync(file, 'r');
+  const fd = openSync(input.path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const buf = Buffer.allocUnsafe(size - start);
     readSync(fd, buf, 0, buf.length, start);

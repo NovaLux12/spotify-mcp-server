@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'http';
-import { chmod, mkdir, open as openFile, readFile, rename, stat, unlink } from 'fs/promises';
+import { chmod, mkdir, open as openFile, rename, stat, unlink } from 'fs/promises';
+import { ownStoreRoots, readLocalFile } from './paths.js';
 import { homedir } from 'os';
 import { basename, join, dirname } from 'path';
 import { createInterface } from 'readline/promises';
@@ -432,7 +433,13 @@ function corruptedTokensError(tokenFile: string): Error {
 export async function loadTokens(): Promise<TokenData> {
   const tokenFile = getTokenFile(parseAuthArgs().profile);
   try {
-    const data = JSON.parse(await readFile(tokenFile, 'utf8')) as unknown;
+    // The token file is a server-owned store, so the root is its own
+    // directory. The checks that earn their keep here are the regular-file
+    // one — a FIFO planted at tokens.json would otherwise block the load
+    // forever — and the size cap. A refusal falls through to the bare
+    // `throw err` below, so its reason reaches the caller intact (#623).
+    const raw = await readLocalFile({ roots: ownStoreRoots(tokenFile), tool: 'loadTokens', target: tokenFile });
+    const data = JSON.parse(raw) as unknown;
     if (!isTokenData(data)) throw corruptedTokensError(tokenFile);
     return data;
   } catch (err) {

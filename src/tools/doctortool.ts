@@ -17,9 +17,9 @@
  * row; the report is "ok" when no row failed. Network is best-effort for
  * account info — local checks never require it.
  */
-import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
 import {
@@ -173,7 +173,11 @@ async function tokenRows(): Promise<{ rows: DoctorRow[]; tokens: ParsedTokens | 
   const tokenFile = getConfig().tokenFile;
   let raw: string;
   try {
-    raw = await readFile(tokenFile, 'utf8');
+    // #623: the token file is a server-owned store — confined to its own
+    // directory, regular files only, size-capped. A refusal lands in the
+    // catch below and is reported with its own reason, so `doctor` never
+    // blocks on a FIFO planted where the token file belongs.
+    raw = await readLocalFile({ roots: ownStoreRoots(tokenFile), tool: 'doctor', target: tokenFile });
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     return {

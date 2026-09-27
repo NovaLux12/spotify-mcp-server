@@ -32,6 +32,7 @@ import {
   type ResponseFormatValue,
 } from '../shaping.js';
 import { loadSidecarSync, SidecarUnreadableError } from '../sidecar.js';
+import { ownStoreRoots, readLocalFileSync } from '../paths.js';
 
 // ---------------------------------------------------------------------------
 // Library genre auto-tags + smart filters (issue #112 idea 1)
@@ -132,7 +133,13 @@ type QuarantineOutcome =
 function quarantineCorruptSidecar(path: string): QuarantineOutcome | undefined {
   let original: Buffer;
   try {
-    original = readFileSync(path);
+    // #623: quarantine copies the sidecar's bytes, so it must not open a FIFO
+    // or device node standing where the genre-tag file should be. Guarded
+    // sync read; a refusal falls to the catch, leaving the original in place.
+    original = Buffer.from(
+      readLocalFileSync({ roots: ownStoreRoots(path), tool: 'library_genre_report', target: path }),
+      'utf8',
+    );
   } catch {
     return undefined; // the original still names the file the user must repair
   }
@@ -141,7 +148,17 @@ function quarantineCorruptSidecar(path: string): QuarantineOutcome | undefined {
   for (const slot of slots) {
     if (!existsSync(slot)) continue;
     try {
-      if (readFileSync(slot).equals(original)) return { kind: 'reused', backup: slot };
+      // The quarantine slot is a file this server wrote, but it is read
+      // through the same guard as every other local read (#623) so a FIFO
+      // planted at a slot name is refused rather than opened.
+      if (
+        Buffer.from(
+          readLocalFileSync({ roots: ownStoreRoots(slot), tool: 'library_genre_report', target: slot }),
+          'utf8',
+        ).equals(original)
+      ) {
+        return { kind: 'reused', backup: slot };
+      }
     } catch {
       // unreadable; fall through and try the next slot
     }
@@ -226,7 +243,10 @@ export function loadGenreTags(path: string = genreTagsPath()): GenreTagStore {
   // for the cap-bound assertion.
   let raw: string;
   try {
-    raw = readFileSync(path, 'utf8');
+    // #623: server-owned store, confined to its own directory, regular files
+    // only, size-capped. A refusal is reported with its own reason in the
+    // error below, so it is never mistaken for ordinary corruption.
+    raw = readLocalFileSync({ roots: ownStoreRoots(path), tool: 'library_genre_report', target: path });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, tags: {} };
     const outcome = quarantineCorruptSidecar(path);

@@ -11,7 +11,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 
@@ -221,10 +221,29 @@ const writesOf = (client: { calls: Call[] }) =>
 // Snapshot fixtures
 // ---------------------------------------------------------------------------
 
+/**
+ * `backup_path` is a caller-supplied read, so the fixture directory has to be
+ * an ALLOWED READ ROOT (#623) — exactly the opt-in an operator performs to let
+ * a tool read a document from somewhere other than the server's own stores.
+ * Fixtures stay under mkdtemp; nothing here touches a real data dir.
+ */
+function allowReadRoot(dir: string): void {
+  const prev = process.env.SPOTIFY_MCP_ALLOW_PATHS;
+  const next = prev ? `${prev}${delimiter}${dir}` : dir;
+  process.env.SPOTIFY_MCP_ALLOW_PATHS = next;
+  ALLOWED_ROOTS.push(() => {
+    if (prev === undefined) delete process.env.SPOTIFY_MCP_ALLOW_PATHS;
+    else process.env.SPOTIFY_MCP_ALLOW_PATHS = prev;
+  });
+}
+
+const ALLOWED_ROOTS: Array<() => void> = [];
+
 async function snapshotFile(snapshot: unknown): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'spotify-restore-test-'));
   const path = join(dir, 'snapshot.json');
   await writeFile(path, JSON.stringify(snapshot), 'utf8');
+  allowReadRoot(dir);
   return path;
 }
 
@@ -232,6 +251,7 @@ async function rawFile(contents: string): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'spotify-restore-test-'));
   const path = join(dir, 'snapshot.json');
   await writeFile(path, contents, 'utf8');
+  allowReadRoot(dir);
   return path;
 }
 

@@ -38,6 +38,7 @@ import type {
   SpotifyTrack,
   SpotifyVolumeTarget,
 } from '../types/spotify.js';
+import { ownStoreRoots, readLocalFile } from '../paths.js';
 
 type TextContent = { type: 'text'; text: string };
 type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -258,7 +259,11 @@ async function listBookmarkIds(dir: string): Promise<string[]> {
 
 async function readBookmark(dir: string, id: string): Promise<PlaybackBookmark | null> {
   try {
-    const raw = await readFile(`${dir}/${bookmarkPath(id)}`, 'utf8');
+    // #623: confined to the bookmark directory, regular files only,
+    // size-capped. A refusal is "no such bookmark", the same as the ENOENT
+    // this catch has always meant.
+    const file = `${dir}/${bookmarkPath(id)}`;
+    const raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'playback bookmark', target: file });
     return JSON.parse(raw) as PlaybackBookmark;
   } catch {
     return null;
@@ -306,7 +311,9 @@ async function listSessionIds(dir: string): Promise<string[]> {
 
 async function readSession(dir: string, id: string): Promise<ListeningSession | null> {
   try {
-    const raw = await readFile(`${dir}/${sessionPath(id)}`, 'utf8');
+    // #623: same guard as the bookmark read above.
+    const file = `${dir}/${sessionPath(id)}`;
+    const raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'listening session', target: file });
     return JSON.parse(raw) as ListeningSession;
   } catch {
     return null;

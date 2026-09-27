@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { loadTokens, saveTokens, TOKEN_FILE } from './auth.js';
 import {
   LruTtlCache,
@@ -23,6 +22,7 @@ import {
   type PersistedEntry,
 } from './cachepersist.js';
 import { getConfig } from './config.js';
+import { ownStoreRoots, readLocalFile } from './paths.js';
 import { appendHistory, currentToolName } from './history.js';
 import type { MutationRecord } from './history.js';
 
@@ -1432,7 +1432,15 @@ export class SpotifyClient {
     // refreshed since we loaded our copy. If the on-disk token is fresher
     // than ours, adopt it and skip the network round-trip entirely.
     try {
-      const stored = JSON.parse(await readFile(TOKEN_FILE, 'utf8')) as TokenData;
+      // Read through the local-read guard (#623): the token file is a
+      // server-owned store, so the root is its own directory. A FIFO planted
+      // there must not block this refresh forever, and an oversized file must
+      // not be buffered. A refusal is simply "no fresher token" — the same
+      // outcome as an unreadable file, which is what this catch has always
+      // meant, so a guard refusal falls through to a normal refresh.
+      const stored = JSON.parse(
+        await readLocalFile({ roots: ownStoreRoots(TOKEN_FILE), tool: 'token refresh', target: TOKEN_FILE }),
+      ) as TokenData;
       if (Number.isFinite(stored.expires_at) && stored.expires_at > tokens.expires_at) {
         this.loadPromise = Promise.resolve(stored);
         this.tokens = stored;

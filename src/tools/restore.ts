@@ -16,7 +16,6 @@
  *    entirely. SPOTIFY_MCP_CONFIRM=never is the explicit automation bypass.
  */
 import { z } from 'zod';
-import { readFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import {
@@ -30,6 +29,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
+import { READ_ROOTS_ENV_HINT, readLocalFile, readRoots } from '../paths.js';
 import { confirmViaElicitation, requiredConfirmationRefusal } from './confirm.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
@@ -205,14 +205,18 @@ function unrestorableSnapshotReason(
  * naming the path and what exactly is wrong — never a raw parse trace.
  */
 async function loadSnapshot(path: string): Promise<LibrarySnapshot> {
-  let raw: string;
-  try {
-    raw = await readFile(path, 'utf8');
-  } catch (err) {
-    throw new Error(
-      `Could not read snapshot at ${path}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
+  // `backup_path` is caller-supplied, so the read is validated before any
+  // bytes are read: confined to the allowed roots, regular files only, and
+  // size-capped. The guard runs OUTSIDE the parse try/catch below so its
+  // refusal ("outside the allowed read roots" / "not a regular file" / "over
+  // the … document limit") reaches the caller instead of being rewritten as a
+  // bare "Could not read snapshot" (#623).
+  const raw = await readLocalFile({
+    roots: readRoots(),
+    tool: 'restore_library_snapshot',
+    target: path,
+    envHint: READ_ROOTS_ENV_HINT,
+  });
 
   let parsed: unknown;
   try {

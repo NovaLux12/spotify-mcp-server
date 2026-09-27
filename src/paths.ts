@@ -12,10 +12,11 @@
  * The final write additionally uses O_NOFOLLOW so a symlink swapped in after
  * the check fails with ELOOP instead of receiving the export.
  */
-import { constants } from 'node:fs';
+import { closeSync, constants, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { lstat, mkdir, open, realpath } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 /**
  * Output root for tools that have no directory of their own
@@ -68,6 +69,40 @@ export async function realpathAllowingMissing(target: string): Promise<string> {
       const parent = dirname(current);
       // Reached the filesystem root: realpath() always succeeds there.
       if (parent === current) return join(await realpath(current), ...missing);
+      missing.unshift(basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Backup store root (library snapshots, playlist snapshots, bookmarks).
+ * NEW ENV VAR SPOTIFY_MCP_BACKUP_DIR — default ~/.spotify-mcp/backups.
+ *
+ * This lives here, beside `exportRootDir`, so the READ roots below and the
+ * backup WRITER agree on one definition of the directory. It used to be
+ * defined in src/tools/backup.ts, which imports this module — so the read
+ * side could not reach it without a cycle, and the alternative was a second,
+ * subtly different root list (the drift this issue is about). backup.ts
+ * re-exports it, so every existing `from './backup.js'` import is unchanged.
+ */
+export function backupRootDir(env: NodeJS.ProcessEnv = process.env): string {
+  return env.SPOTIFY_MCP_BACKUP_DIR ?? join(homedir(), '.spotify-mcp', 'backups');
+}
+
+/** Synchronous twin of `realpathAllowingMissing`; same ENOENT/ENOTDIR rule. */
+function realpathAllowingMissingSync(target: string): string {
+  const missing: string[] = [];
+  let current = resolve(target);
+  for (;;) {
+    try {
+      return join(realpathSync(current), ...missing);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+      const parent = dirname(current);
+      // Reached the filesystem root: realpath() always succeeds there.
+      if (parent === current) return join(realpathSync(current), ...missing);
       missing.unshift(basename(current));
       current = parent;
     }
@@ -197,8 +232,26 @@ export function isInsideRoot(root: string, target: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Read side (#623) — added by V5Import. Everything below is additive: the
-// write-side helpers above are untouched.
+// Read side (#623). Everything below is additive: the write-side helpers above
+// are untouched.
+//
+// THE guard, and the only one in the repo. Three hazards, three refusals, each
+// naming its own actual reason:
+//
+//   1. outside the allowed read roots  (a `..` segment, an absolute path, or
+//      a symlink at any component resolves out of the root)
+//   2. not a regular file               (a directory, FIFO, socket, or device
+//      — a FIFO blocks the serialized request queue forever and /dev/zero
+//      never ends)
+//   3. over the document size cap       (an unbounded read of a huge or
+//      endless file exhausts memory)
+//
+// The DECISIONS live in `decideInputPath` below and in the `refuse*` builders.
+// The sync and async entry points are the same function over the same
+// decisions with different fs calls, so the two can never disagree about a
+// borderline path — the drift that left seven read sites with an ad-hoc check
+// at three of them is what this replaces. `readLocalFile` / `readLocalFileSync`
+// are the form every call site should use.
 // ---------------------------------------------------------------------------
 
 /** Default ceiling on a document a tool will pull into memory: 32 MB. */
@@ -217,7 +270,13 @@ export function maxDocumentBytes(env: NodeJS.ProcessEnv = process.env): number {
 }
 
 interface ResolveInputOptions {
-  /** Every directory a read may come from; anything else is refused. */
+  /**
+   * Every directory a read may come from; anything else is refused. Callers
+   * build this from the path resolver they ALREADY use (their own
+   * `*Dir()` / `*Path()`), never from a second, separately-maintained root
+   * list — a parallel root scheme that drifts from the writer's is the same
+   * bug wearing a different hat.
+   */
   roots: readonly string[];
   /** Tool name, quoted in every refusal so the caller knows who refused. */
   tool: string;
@@ -257,63 +316,55 @@ function describeFileType(stats: {
 }
 
 /**
- * Resolve a caller-supplied read path and refuse anything that leaves the
- * allowed roots, is not a regular file, or is over the size cap — all three
- * decided before a byte is read.
+ * Stat shape both the sync and async paths need. `lstatSync` and
+ * `fs/promises.lstat` both return `Stats` here — neither is called with
+ * `{ bigint: true }`, so the non-bigint shape is the whole story.
+ */
+type StatLike = Stats;
+
+/** Context the three refusals are built from, so each names its own reason. */
+interface RefusalContext {
+  tool: string;
+  target: string;
+  /** Pre-formatted "Allowed read roots: …" plus the optional env hint. */
+  allowed: string;
+  suffix: string;
+}
+
+/**
+ * THE three decisions, in the order they are made, with no fs access of their
+ * own. Both `resolveInputPath` and `resolveInputPathSync` end here, so the two
+ * entry points cannot drift apart about what counts as safe to read.
  *
  * Containment is decided on the REAL path, exactly as on the write side:
  * realpath() follows every symlink and collapses `..` first, so neither a
- * `..` segment nor a symlink planted at any component can widen the roots.
- * A FIFO, /proc entry or device node is refused by name rather than opened —
+ * `..` segment nor a symlink planted at any component can widen the roots. A
+ * FIFO, /proc entry or device node is refused by name rather than opened —
  * reading one blocks the serialized request queue forever.
  */
-export async function resolveInputPath(options: ResolveInputOptions): Promise<ResolvedInput> {
-  const { roots, tool, target, maxBytes = maxDocumentBytes(), envHint } = options;
-  if (roots.length === 0) {
-    throw new Error(`${tool}: no allowed read roots are configured, so "${target}" cannot be read.`);
-  }
-  const rootReals: string[] = [];
-  for (const root of roots) {
-    rootReals.push(await realpathAllowingMissing(resolve(root)));
-  }
-  const allowed = rootReals.join(', ');
-  const suffix = envHint ? ` ${envHint}` : '';
-
-  const expanded = target === '~'
-    ? homedir()
-    : target.startsWith('~/')
-      ? join(homedir(), target.slice(2))
-      : target;
-  const requested = isAbsolute(expanded) ? resolve(expanded) : resolve(process.cwd(), expanded);
-
-  let real: string;
-  try {
-    real = await realpath(requested);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT' || code === 'ENOTDIR') {
-      throw new Error(`${tool}: no readable file at "${target}" (${requested}). Allowed read roots: ${allowed}.${suffix}`);
-    }
-    throw new Error(`${tool}: cannot read "${target}" (${code ?? 'unknown error'}). Allowed read roots: ${allowed}.${suffix}`);
-  }
+function decideInputPath(
+  real: string,
+  rootReals: readonly string[],
+  stats: StatLike,
+  maxBytes: number,
+  ctx: RefusalContext,
+): ResolvedInput {
   // Any one root admits the path — same containment rule as the write side.
   if (!rootReals.some((root) => isInsideRoot(root, real))) {
     throw new Error(
-      `${tool}: refusing to read outside the allowed read roots — "${target}" resolves to ${real}. `
-        + `Allowed read roots: ${allowed}.${suffix}`,
+      `${ctx.tool}: refusing to read outside the allowed read roots — "${ctx.target}" resolves to ${real}. `
+        + `Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
     );
   }
-
-  const stats = await lstat(real);
   if (!stats.isFile()) {
     throw new Error(
-      `${tool}: refusing to read "${target}" — ${real} is a ${describeFileType(stats)}, not a regular file. `
-        + `Allowed read roots: ${allowed}.${suffix}`,
+      `${ctx.tool}: refusing to read "${ctx.target}" — ${real} is a ${describeFileType(stats)}, not a regular file. `
+        + `Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
     );
   }
   if (stats.size > maxBytes) {
     throw new Error(
-      `${tool}: refusing to read ${stats.size} bytes from "${target}" — over the ${maxBytes}-byte `
+      `${ctx.tool}: refusing to read ${stats.size} bytes from "${ctx.target}" — over the ${maxBytes}-byte `
         + `document limit (${Math.round(maxBytes / (1024 * 1024))} MB). Split the document and read it `
         + 'in pieces, or raise SPOTIFY_MCP_MAX_DOCUMENT_MB.',
     );
@@ -321,26 +372,217 @@ export async function resolveInputPath(options: ResolveInputOptions): Promise<Re
   return { path: real, bytes: stats.size, maxBytes };
 }
 
+/** `~` expansion + absolutising, shared so both entry points agree. */
+function absolutizeTarget(target: string): string {
+  const expanded = target === '~'
+    ? homedir()
+    : target.startsWith('~/')
+      ? join(homedir(), target.slice(2))
+      : target;
+  return isAbsolute(expanded) ? resolve(expanded) : resolve(process.cwd(), expanded);
+}
+
+/** The "here are your roots" tail every refusal carries. */
+function refusalContext(options: ResolveInputOptions, rootReals: readonly string[]): RefusalContext {
+  return {
+    tool: options.tool,
+    target: options.target,
+    allowed: rootReals.join(', '),
+    suffix: options.envHint ? ` ${options.envHint}` : '',
+  };
+}
+
+function requireRoots(options: ResolveInputOptions): void {
+  if (options.roots.length === 0) {
+    throw new Error(
+      `${options.tool}: no allowed read roots are configured, so "${options.target}" cannot be read.`,
+    );
+  }
+}
+
+/**
+ * A refusal that KEEPS the errno it replaced.
+ *
+ * The guard turns "no such file" into a sentence that also names the allowed
+ * roots, and a caller that branched on `err.code === 'ENOENT'` would stop
+ * being able to tell a first run from a corruption — which is exactly the
+ * distinction `loadSidecar` and the #839 work turn on. Carrying `code`
+ * through preserves both: the errno for anyone branching on it, the sentence
+ * for whoever reads the message.
+ */
+function refusal(message: string, code?: string): Error {
+  const err = new Error(message) as NodeJS.ErrnoException;
+  if (code) err.code = code;
+  return err;
+}
+
+/**
+ * Resolve a caller-supplied read path and refuse anything that leaves the
+ * allowed roots, is not a regular file, or is over the size cap — all three
+ * decided before a byte is read.
+ */
+export async function resolveInputPath(options: ResolveInputOptions): Promise<ResolvedInput> {
+  const maxBytes = options.maxBytes ?? maxDocumentBytes();
+  requireRoots(options);
+  const rootReals: string[] = [];
+  for (const root of options.roots) {
+    rootReals.push(await realpathAllowingMissing(resolve(root)));
+  }
+  const ctx = refusalContext(options, rootReals);
+  const requested = absolutizeTarget(options.target);
+
+  let real: string;
+  try {
+    real = await realpath(requested);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw refusal(
+        `${ctx.tool}: no readable file at "${options.target}" (${requested}). Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
+        code,
+      );
+    }
+    throw refusal(
+      `${ctx.tool}: cannot read "${options.target}" (${code ?? 'unknown error'}). Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
+      code,
+    );
+  }
+  return decideInputPath(real, rootReals, await lstat(real), maxBytes, ctx);
+}
+
+/**
+ * Synchronous twin of `resolveInputPath`, for the sidecar loaders that are on
+ * a sync read path. Same three decisions (`decideInputPath`), same messages;
+ * only the fs calls differ.
+ */
+export function resolveInputPathSync(options: ResolveInputOptions): ResolvedInput {
+  const maxBytes = options.maxBytes ?? maxDocumentBytes();
+  requireRoots(options);
+  const rootReals = options.roots.map((root) => realpathAllowingMissingSync(resolve(root)));
+  const ctx = refusalContext(options, rootReals);
+  const requested = absolutizeTarget(options.target);
+
+  let real: string;
+  try {
+    real = realpathSync(requested);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') {
+      throw refusal(
+        `${ctx.tool}: no readable file at "${options.target}" (${requested}). Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
+        code,
+      );
+    }
+    throw refusal(
+      `${ctx.tool}: cannot read "${options.target}" (${code ?? 'unknown error'}). Allowed read roots: ${ctx.allowed}.${ctx.suffix}`,
+      code,
+    );
+  }
+  return decideInputPath(real, rootReals, lstatSync(real), maxBytes, ctx);
+}
+
 /**
  * Read a resolved document. O_NOFOLLOW closes the gap between the realpath
  * check and the open (a symlink swapped in after the check fails with ELOOP
  * instead of receiving the read), and the size is re-checked against the bytes
  * actually received so a file that grew after stat() cannot slip past the cap.
+ *
+ * A file over the cap is REFUSED — never truncated and handed back. A
+ * truncated body that reads as a complete document is the read-side twin of
+ * the "failed lookup coerced to a plausible number" bug (#803).
  */
 export async function readInputFile(input: ResolvedInput, tool = 'read'): Promise<string> {
   const handle = await open(input.path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
-    const data = await handle.readFile({ encoding: 'utf8' });
-    const bytes = Buffer.byteLength(data, 'utf8');
-    if (bytes > input.maxBytes) {
-      throw new Error(
-        `${tool}: refused to parse ${bytes} bytes read from "${input.path}" — over the `
-          + `${input.maxBytes}-byte document limit (${Math.round(input.maxBytes / (1024 * 1024))} MB). `
-          + 'Split the document and read it in pieces, or raise SPOTIFY_MCP_MAX_DOCUMENT_MB.',
-      );
-    }
-    return data;
+    return assertWithinCap(await handle.readFile({ encoding: 'utf8' }), input, tool);
   } finally {
     await handle.close();
   }
+}
+
+/** Synchronous twin of `readInputFile`; same O_NOFOLLOW, same cap re-check. */
+export function readInputFileSync(input: ResolvedInput, tool = 'read'): string {
+  const fd = openSync(input.path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    return assertWithinCap(readFileSync(fd, 'utf8'), input, tool);
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function assertWithinCap(data: string, input: ResolvedInput, tool: string): string {
+  const bytes = Buffer.byteLength(data, 'utf8');
+  if (bytes > input.maxBytes) {
+    throw new Error(
+      `${tool}: refused to parse ${bytes} bytes read from "${input.path}" — over the `
+        + `${input.maxBytes}-byte document limit (${Math.round(input.maxBytes / (1024 * 1024))} MB). `
+        + 'Split the document and read it in pieces, or raise SPOTIFY_MCP_MAX_DOCUMENT_MB.',
+    );
+  }
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// The one call every read site should make: validate, then read.
+// ---------------------------------------------------------------------------
+
+interface ReadLocalFileOptions extends Omit<ResolveInputOptions, 'maxBytes'> {
+  /** Byte ceiling; defaults to maxDocumentBytes(). */
+  maxBytes?: number;
+}
+
+/**
+ * Validate then read, in one call. This is the function every local read in
+ * the repo goes through; `resolveInputPath` + `readInputFile` remain exported
+ * for the sites that need the resolved path for their own bookkeeping.
+ */
+export async function readLocalFile(options: ReadLocalFileOptions): Promise<string> {
+  const input = await resolveInputPath(options);
+  return readInputFile(input, options.tool);
+}
+
+/** Synchronous twin of `readLocalFile`. */
+export function readLocalFileSync(options: ReadLocalFileOptions): string {
+  return readInputFileSync(resolveInputPathSync(options), options.tool);
+}
+
+/**
+ * The default allowed READ roots: the directories this server itself writes
+ * documents into, plus anything the operator opts into via
+ * `SPOTIFY_MCP_ALLOW_PATHS` (colon-separated, like PATH).
+ *
+ * NEW ENV VAR SPOTIFY_MCP_ALLOW_PATHS — extra directories a caller-supplied
+ * read path may resolve inside.
+ */
+export function readRoots(env: NodeJS.ProcessEnv = process.env): string[] {
+  const extra = (env.SPOTIFY_MCP_ALLOW_PATHS ?? '')
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return [
+    env.SPOTIFY_MCP_PORTABILITY_DIR ?? join(homedir(), '.spotify-mcp', 'portability'),
+    backupRootDir(env),
+    exportRootDir(env),
+    ...extra,
+  ];
+}
+
+/** The hint every caller-supplied-read refusal carries, naming what to set. */
+export const READ_ROOTS_ENV_HINT =
+  'Set SPOTIFY_MCP_PORTABILITY_DIR / SPOTIFY_MCP_BACKUP_DIR / SPOTIFY_MCP_EXPORT_DIR, '
+  + 'or add the directory to SPOTIFY_MCP_ALLOW_PATHS.';
+
+/**
+ * The roots for a SERVER-OWNED store: the directory holding the file the
+ * caller never named. Confinement still earns its place here — a store path
+ * that a caller-influenced id (a playlist id, a snapshot id) helped build can
+ * otherwise walk out of its own directory — and the regular-file and size-cap
+ * checks are the ones that stop a FIFO planted in the data dir from hanging
+ * the server.
+ *
+ * Built from the caller's EXISTING path resolver so there is exactly one
+ * definition of where each store lives.
+ */
+export function ownStoreRoots(path: string): string[] {
+  return [dirname(resolve(path))];
 }
