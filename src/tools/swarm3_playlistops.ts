@@ -43,7 +43,7 @@ import {
   ResponseFormat,
   capRowSections,
   describeDryRun,
-  emitOnce,
+  readNumber,
   parseSpotifyUri,
   resolveMaxResults,
   resolvePlaylistInput,
@@ -60,7 +60,7 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
-import { emit, textResult, type ToolResult } from '../result.js';
+import { emit, type EmitOptions } from '../result.js';
 
 type TextContent = { type: 'text'; text: string };
 ;
@@ -72,18 +72,17 @@ type TextContent = { type: 'text'; text: string };
 /**
  * #51/#52 shaping: the payload rides as `structuredContent` in every mode.
  *
- * #895: json mode used to stringify the SAME object into the text block, so
- * every call in this slice charged the host twice for one payload. The text
- * block is now a bounded summary of the capped sections beside it. The prose
- * modes are untouched — their text is already prose, so there is no second
- * copy to remove.
+ * #895: in `json` mode this module prints a bounded summary of the payload
+ * rather than the payload — the host already has the whole object as
+ * `structuredContent`, so mirroring it charged the host twice, and these
+ * payloads carry capped section sets.
+ *
+ * This is the shared `emit`'s `jsonSummary` option rather than a module-local
+ * `shape`: a local wrapper re-implements the prose/json dispatch, which is the
+ * drift #582 exists to prevent, and `shape` is one of the names the
+ * consolidation gate counts copies of.
  */
-function shape(rf: ResponseFormatValue, prose: string, payload: Record<string, unknown>): ToolResult {
-  if (rf === 'json') return emitOnce(payload, summarizeSections);
-  // The prose arm is `textResult`, not a hand-built object (#582/#1477): one
-  // place decides when `structuredContent` rides along.
-  return textResult(prose, payload);
-}
+const SUMMARISE_JSON: EmitOptions = { jsonSummary: summarizeSections };
 
 /**
  * One-line text for a json-mode call whose payload sits in
@@ -97,6 +96,25 @@ function summarizeSections(payload: Record<string, unknown>): string {
       ? `${key} (unreadable)`
       : `${key}: ${section.returned}/${section.total}`);
   return `Full payload in structuredContent:\nSections: ${parts.join(', ')}.`;
+}
+
+/**
+ * One-line text for a json-mode call whose payload is a move plan (#895).
+ *
+ * Bounded by construction: counts and the metric name, never a move. The
+ * capped path already discloses withheld moves in the payload, so the summary
+ * restates the count rather than re-deriving it.
+ */
+function summarizeMoves(payload: Record<string, unknown>): string {
+  const total = readNumber(payload, 'moves_total');
+  const returned = readNumber(payload, 'moves_returned');
+  const by = typeof payload.balance_by === 'string' ? payload.balance_by : 'count';
+  const withheld = readNumber(payload, 'moves_withheld') ?? 0;
+  const plan =
+    total == null || returned == null
+      ? 'plan'
+      : `${returned}/${total} move(s) by ${by}${withheld > 0 ? `, ${withheld} withheld` : ''}`;
+  return `Full payload in structuredContent: ${plan}.`;
 }
 
 /** Field aliases used throughout this slice (same fragments, local names). */
@@ -994,12 +1012,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         common_tracks: common,
       }, ['common_tracks'], cap);
       const view = truncateItems(payload.common_tracks as typeof common, cap);
-      return shape(rf, withPlaylistInputNote([
+      return emit(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
         ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
         ...(common.length > 0 ? ['', 'Common:', ...view.items.map((c, i) => `  ${i + 1}. ${c.name} (${c.uri}) — present in ${c.in_playlists.length}/${loaded.length} sources`)] : []),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input), SUMMARISE_JSON);
     },
   );
 
@@ -1035,13 +1053,13 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         union_uris: union,
       }, ['union_uris'], cap);
       const view = truncateItems(payload.union_uris as string[], cap);
-      return shape(rf, withPlaylistInputNote([
+      return emit(rf, withPlaylistInputNote([
         `Union preview of ${loaded.length} playlists: ${union.length} distinct track(s) (read-only).`,
         ...loaded.map((p, i) => `  • ${p.name ?? p.id}: ${seqs[i].length} track(s), ${uniquePer[i]} unique to this playlist`),
         '',
         ...view.items.map((u, i) => `  ${i + 1}. ${u}`),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input));
+      ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input), SUMMARISE_JSON);
     },
   );
 
@@ -1218,11 +1236,11 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         keep_last_plan: groups.map((g) => ({ uri: g.uri, remove_positions: g.positions.slice(0, -1) })),
       }, ['keep_first_plan', 'keep_last_plan'], cap);
       const view = truncateItems(groups, cap);
-      return shape(rf, [
+      return emit(rf, [
         `"${p.name ?? p.id}" duplicates: ${groups.length} group(s), ${excess} excess cop(ies).`,
         ...view.items.map((g, i) => `  ${i + 1}. ${g.uri} at positions ${g.positions.map((p) => p + 1).join(', ')}`),
         view.footer ? `(${view.footer})` : '',
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1746,12 +1764,12 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
         verdict,
       }, ['batches'], cap);
       const batchView = truncateItems(payload.batches as typeof batches, cap);
-      return shape(rf, [
+      return emit(rf, [
         `Edit journal for "${p.name ?? p.id}" — ${batches.length} add-batch(es), ${rows.length} item(s). Verdict: ${verdict}.`,
         ...batchView.items.map((b, i) => `  ${i + 1}. ${b.date}: +${b.added} (positions ${b.first_position}+) by ${b.by.join(', ')}`),
         batchView.footer ? `  (${batchView.footer})` : '',
         `  Contributors: ${[...contributors.entries()].sort((a, b) => b[1] - a[1]).map(([who, n]) => `${who} (${n})`).join(', ')}`,
-      ].filter(Boolean).join('\n'), payload);
+      ].filter(Boolean).join('\n'), payload, SUMMARISE_JSON);
     },
   );
 
@@ -1941,7 +1959,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           `${moves.length} move(s) planned:`,
           ...moveView.items.map((m, i) => `  ${i + 1}. "${m.name}" ${m.from_name} → ${m.to_name}`),
           moveView.footer ? `(${moveView.footer})` : '',
-        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves: movesPayload, ...moveDisclosure }, input));
+        ]), input), withPlaylistInputMetadata({ ok: true, dry_run: true, balance_by: metric, total, target, moves: movesPayload, ...moveDisclosure }, input), { jsonSummary: summarizeMoves });
       }
       // BACKUP-FIRST per donating playlist, then delete positions DESCENDING so each
       // chunk's positions stay valid, then append to receivers.
@@ -2029,6 +2047,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
           backup_files: backupFiles,
           receipts: receiptRecords(allReceipts),
         }, input),
+        { jsonSummary: summarizeMoves },
       );
     },
   );
