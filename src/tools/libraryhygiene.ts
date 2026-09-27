@@ -28,6 +28,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { fetchAlbumsPerId, PER_ID_FANOUT_WIDTH } from './catalog.js';
+import type { PerIdRead } from './catalog.js';
 import { getConfig } from '../config.js';
 
 /** Hard cap on distinct GET /albums/{id} lookups per analysis run (#112 idea 5). */
@@ -38,6 +39,21 @@ const TRACK_PAGE_LIMIT = 50;
 
 /** Coverage ratio at which an album counts as near-complete (inclusive). */
 const NEAR_COMPLETE_THRESHOLD = 0.7;
+
+/**
+ * #897: the fan-in result for a run that needed no album read at all.
+ *
+ * Written as a constant rather than an inline literal so the "nothing to read"
+ * path is the same shape as a real read — `album_lookups.unresolved` stays an
+ * array and `rate_limited` stays `false` rather than becoming `undefined` and
+ * having a reader guess which of those it got.
+ */
+const EMPTY_ALBUM_READ: PerIdRead<SpotifyAlbumFull> = {
+  byId: new Map(),
+  unresolved: [],
+  throttled: null,
+  requests: 0,
+};
 
 // ---------------------------------------------------------------------------
 // Shapes
@@ -118,6 +134,13 @@ type AnalysisResult = {
   album_lookups: {
     /** Distinct albums whose per-id read was attempted. */
     made: number;
+    /**
+     * Album groups whose `total_tracks`/`album_type` were read off the
+     * `/me/tracks` walk rather than a per-id `GET /albums/{id}` (#897). A run
+     * reporting `requests: 0` is complete, not empty: this is the number that
+     * says so. It is `0` only when every group needed the fallback read.
+     */
+    shared_from_walk: number;
     cap: number;
     truncated_by_cap: boolean;
     /**
@@ -320,13 +343,29 @@ async function analyze(
     }
     group.liked_count++;
     group.liked_tracks.push({ id: track.id, name: track.name, uri: track.uri });
+    // #897: the walk already delivered these two, on this row. `album_type`
+    // and `total_tracks` are required members of Spotify's `AlbumBase`, and
+    // `TrackObject.album` is a `SimplifiedAlbumObject` — so the per-id
+    // `GET /albums/{id}` below was re-reading what the grouping loop was
+    // already holding, once per album in the library. Share it instead.
+    //
+    // Checked per row rather than only at group creation, because the first
+    // row of a group is not necessarily the one that carries the fields, and
+    // `> 0` rather than `typeof === 'number'` alone, so a nonsensical zero
+    // falls through to the read below and is named there instead of silently
+    // excluding the album from the findings.
+    if (group.album_type == null && typeof track.album.album_type === 'string') {
+      group.album_type = track.album.album_type;
+    }
+    if (group.total_tracks == null && typeof track.album.total_tracks === 'number' && track.album.total_tracks > 0) {
+      group.total_tracks = track.album.total_tracks;
+    }
   }
 
   // Deterministic processing order: busiest album first, id as tiebreaker.
   const groups = [...groupsById.values()].sort(
     (a, b) => b.liked_count - a.liked_count || a.album_id.localeCompare(b.album_id),
   );
-
   // ---- Per-id GET /albums/{id} fan-in (cached, capped) --------------------
   // #1224: the fan-in used to be `GET /albums?ids=`, which #763 took to
   // ceil(albums / 20) requests. That route is one of the batch endpoints the
@@ -334,12 +373,33 @@ async function analyze(
   // a registration without the grant this tool rethrew — the one error that
   // endpoint is most likely to produce, on the analysis that degrades
   // gracefully everywhere else. The per-id route is the documented
-  // replacement, so the read goes straight there and the request count goes
-  // back up: the honest number is published in `album_lookups.requests`, the
-  // dry run budgets for it, and the 200-album cap is what bounds it. What is
-  // NOT repeated is the old serial loop: the fan-out is width-bounded.
-  const budgeted = groups.slice(0, lookupCap);
-  const lookupTruncated = groups.length > budgeted.length;
+  // replacement, and the fan-out is width-bounded rather than serial.
+  //
+  // #897: that replacement answered for EVERY album in the library, and for
+  // the near-complete rollup the only two fields it was read for are
+  // `total_tracks` and `album_type` — both carried by the
+  // `SimplifiedAlbumObject` already on every `/me/tracks` row the grouping
+  // loop above consumed. Migrating off the batch route was therefore never
+  // what would make this cheap; the request that made it expensive was a
+  // re-read of data the walk held.
+  //
+  // The orphaned-singles rollup is the one consumer that is NOT satisfied by
+  // the walk: it compares a release's full `tracks.items` listing against the
+  // liked set, and a `SimplifiedAlbumObject` carries no track list at all. So
+  // an album is still read when either (a) the walk could not answer its
+  // total, or (b) it is a single-candidate — which is exactly the population
+  // the orphan check can ever examine, because a group that is neither a
+  // single nor three tracks or shorter is skipped by that check before it
+  // ever looks at a track list. Reading the rest was the waste.
+  //
+  // Everything about the read itself is unchanged: per-id, width-bounded,
+  // capped, 429 degrading to a partial, and every failure named.
+  const needsAlbumRead = groups.filter(
+    (g) => g.total_tracks == null || g.album_type === 'single' || (g.total_tracks != null && g.total_tracks <= 3),
+  );
+  const sharedFromWalk = groups.length - needsAlbumRead.length;
+  const budgeted = needsAlbumRead.slice(0, lookupCap);
+  const lookupTruncated = needsAlbumRead.length > budgeted.length;
   const lookups = budgeted.length;
 
   // #763 point 4 survives: a 429 degrades the run to a partial with
@@ -347,7 +407,9 @@ async function analyze(
   // per-id fan-out records the first throttle rather than throwing, so the
   // albums that did read are still reported and the rest are named as
   // unresolved rather than looking like albums with no track total.
-  const albumRead = await fetchAlbumsPerId<SpotifyAlbumFull>(client, budgeted.map((g) => g.album_id));
+  const albumRead = budgeted.length > 0
+    ? await fetchAlbumsPerId<SpotifyAlbumFull>(client, budgeted.map((g) => g.album_id))
+    : EMPTY_ALBUM_READ;
   const albumCache = albumRead.byId;
   const throttled = albumRead.throttled;
   const unresolvedAlbums = albumRead.unresolved;
@@ -355,8 +417,11 @@ async function analyze(
   for (const group of groups) {
     const full = albumCache.get(group.album_id) ?? null;
     if (full) {
-      group.total_tracks =
-        typeof full.total_tracks === 'number' ? full.total_tracks : null;
+      // Guarded rather than assigned: a read that comes back without a total
+      // must not blank a value the walk already supplied.
+      if (group.total_tracks == null && typeof full.total_tracks === 'number') {
+        group.total_tracks = full.total_tracks;
+      }
       group.album_type = full.album_type ?? group.album_type;
     }
   }
@@ -440,6 +505,7 @@ async function analyze(
     },
     album_lookups: {
       made: lookups,
+      shared_from_walk: sharedFromWalk,
       cap: lookupCap,
       truncated_by_cap: lookupTruncated,
       // #1224: one request per album id, and that is the number the caller
@@ -498,7 +564,10 @@ function renderProse(result: AnalysisResult, maxResults: number): string {
       + `${album_lookups.requests === 1 ? '' : 's'} for ${album_lookups.made} album`
       + `${album_lookups.made === 1 ? '' : 's'} (per-id, since Feb 2026 removed the ?ids= batch; `
       + `fanned out ${album_lookups.fanout_width} at a time; cap ${album_lookups.cap} `
-      + `${album_lookups.truncated_by_cap ? 'REACHED — some albums were not checked' : 'not reached'}).`,
+      + `${album_lookups.truncated_by_cap ? 'REACHED — some albums were not checked' : 'not reached'}). `
+      + `${album_lookups.shared_from_walk} of ${scanned.album_groups} album`
+      + `${scanned.album_groups === 1 ? '' : 's'} took their track total from the /me/tracks walk itself `
+      + 'and needed no lookup at all.',
   );
   if (album_lookups.rate_limited) {
     lines.push(
@@ -578,7 +647,12 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunRe
   const lookupCap = Math.min(ALBUM_LOOKUP_CAP, quotaWindowRemaining(client));
   const walkPages = Math.max(1, Math.ceil(fetchAllCap / TRACK_PAGE_LIMIT));
   // #1224: one request per album again, since the `?ids=` batch route is gone.
-  // The upper bound is the cap, not a per-chunk count.
+  // The upper bound is the cap, not a per-chunk count. #897 keeps that as an
+  // UPPER bound rather than the expectation: the `/me/tracks` rows carry
+  // `total_tracks` and `album_type` themselves, so the fan-in is a fallback
+  // for albums the walk could not answer, and on a current registration it
+  // issues nothing. Budgeting for the worst case is the honest direction to
+  // err in; claiming the common case would need the walk to have run.
   const albumLookups = lookupCap;
   const estimatedRequests = walkPages + albumLookups;
   const prose =
@@ -586,8 +660,10 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunRe
     + `for ${fetchAllCap} liked tracks) and fan in up to ${lookupCap} album`
     + `${lookupCap === 1 ? '' : 's'} via per-id GET /albums/{id} request`
     + `${albumLookups === 1 ? '' : 's'} (fanned out ${PER_ID_FANOUT_WIDTH} at a time; Feb 2026 removed the ?ids= batch). `
-    + `Cost: ~${estimatedRequests} requests, 0 made. Album totals for every liked album in the library `
-    + 'are not known without the walk, so the album-lookup figure is the budgeted upper bound.';
+    + `Cost: at most ~${estimatedRequests} requests, 0 made. That is the worst case: each /me/tracks row `
+    + 'already carries its album\'s track total, so #897 reads an album only when the walk could not answer, '
+    + 'and a current registration is expected to issue none. How many fall back is not known before the walk runs, '
+    + 'so the album-lookup figure stays the budgeted upper bound.';
   return {
     prose,
     payload: {
@@ -612,9 +688,10 @@ function renderDryRun(client: SpotifyClient): { prose: string; payload: DryRunRe
 export function registerLibraryHygieneTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'library_hygiene',
-    'Read-only album hygiene analysis over your liked tracks: flags near-complete albums '
-      + 'worth saving in full and lone singles with nothing else liked from their artist '
-      + '(low confidence). Per-id album fan-in, width-bounded; never mutates. dry_run previews cost.',
+    'Read-only album hygiene over your liked tracks: flags near-complete albums worth saving and '
+      + 'lone singles with nothing else liked from their artist (low confidence). Album totals come '
+      + 'from the /me/tracks walk; a width-bounded per-id GET /albums/{id} fills in the rest. '
+      + 'Never mutates. dry_run previews cost.',
     {
       response_format: ResponseFormat,
       max_results: MaxResults,

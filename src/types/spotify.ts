@@ -36,12 +36,31 @@ export interface SpotifyImage {
   width: number | null;
 }
 
-// Album (simplified for playback)
+/**
+ * Album (simplified for playback).
+ *
+ * `album_type` and `total_tracks` are **required** members of Spotify's
+ * `AlbumBase`, and `SimplifiedAlbumObject` — the shape carried by
+ * `TrackObject.album`, which is what every `GET /me/tracks` row actually
+ * carries — is `AlbumBase` plus artists. Verified against the published
+ * OpenAPI schema (`components/schemas/AlbumBase`, `.SimplifiedAlbumObject`),
+ * not from memory: for three releases this interface claimed an album had no
+ * track total, and #897 spent one `GET /albums/{id}` per album to re-read a
+ * field the walk had already delivered.
+ *
+ * They stay OPTIONAL here because this interface is also applied to rows
+ * assembled elsewhere in the server, where nothing promises a Spotify payload
+ * was ever behind them. Optional means every reader checks before relying on a
+ * value, so a row that lacks one falls back to a per-id read — it never
+ * becomes a guessed zero.
+ */
 export interface SpotifyAlbumSimple {
   id: string;
   name: string;
   uri: string;
   images: SpotifyImage[];
+  album_type?: string;
+  total_tracks?: number;
 }
 
 // Track (as returned in playback state)

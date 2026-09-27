@@ -517,6 +517,16 @@ const documentedMetadata = new Set([
   // not a parameter — `saved_vs_playlist_coverage` has returned it since #732
   // and `playlist_staleness_report` now does too.
   'quota_hit_at_playlist',
+  // #897: the two Spotify album fields the §5.3 `library_hygiene` contract has
+  // to name, because the whole point of the change is WHERE they come from —
+  // `album_type` and `total_tracks` are required members of the API's
+  // `AlbumBase`, so every `/me/tracks` row already carries them and the
+  // contract says the walk supplies them rather than a per-id read. They are
+  // response fields, not parameters. `shared_from_walk` is the
+  // `album_lookups` key that says how many groups the walk answered, so a
+  // caller can tell a complete zero-request run from a scan that found
+  // nothing — same category as `quota_hit_at_playlist` above.
+  'album_type', 'total_tracks', 'shared_from_walk',
   // #604: the `spotify://me/genre-heatmap` coverage contract. The heatmap
   // reports the source it read and how much of that source it could actually
   // read, so these are the JSON keys a doc must name to describe the payload:

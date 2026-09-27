@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 594,150B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 594,200B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 64,959B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 17,850B | 2.9% of the enforced limit |
+| Headroom | 17,800B | 2.9% of the enforced limit |
 
-Headroom is **17,850B** of the 612,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
+Headroom is **17,800B** of the 612,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -189,7 +189,7 @@ than maintained.
 | libraryanalytics | 3 | 2,498 | 3 | 2,498 | 5 | 3,687 |
 | portability | 11 | 10,453 | 11 | 10,453 | 12 | 11,499 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
-| libraryhygiene | 1 | 754 | 1 | 754 | 2 | 830 |
+| libraryhygiene | 1 | 804 | 1 | 804 | 2 | 885 |
 | showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
 | saveddedupe | 1 | 1,438 | 1 | 1,438 | 2 | 1,582 |
 | podcastsession | 2 | 3,427 | 2 | 3,427 | 3 | 3,770 |
