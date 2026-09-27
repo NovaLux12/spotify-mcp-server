@@ -101,11 +101,11 @@ per-module table excludes. Size a raise against the aggregate number.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 599,090B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 599,241B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 68,407B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 21,910B | 3.5% of the enforced limit |
+| Headroom | 21,759B | 3.5% of the enforced limit |
 
-Headroom is **21,910B** of the 621,000B enforced limit — 3.5% — so the aggregate budget is **tight**.
+Headroom is **21,759B** of the 621,000B enforced limit — 3.5% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -163,7 +163,7 @@ than maintained.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
 | libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
-| portability | 11 | 10,036 | 11 | 10,036 | 12 | 11,040 |
+| portability | 11 | 10,187 | 11 | 10,187 | 12 | 11,206 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 754 | 1 | 754 | 2 | 830 |
 | showradar | 1 | 2,125 | 1 | 2,125 | 2 | 2,338 |
