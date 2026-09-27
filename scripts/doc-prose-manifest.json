@@ -1,0 +1,4694 @@
+{
+  "note": "HAND-MAINTAINED. Not generated, and `npm run count:tools -- --write` does not touch it.\n\nEach entry is one paragraph of hand-written prose that sits OUTSIDE a BEGIN:generated/END:generated\nblock, keyed by a content hash so that adding prose is free and only a paragraph that disappeared can\nfail. Regenerate with `npm run count:tools -- --prose-sync`; that command refuses to drop a pinned\nentry and will tell you so, which is the entire point — see scripts/prose-manifest.mjs for why this pin\ncannot live in a generated block.",
+  "files": {
+    "AGENTS.md": [
+      {
+        "hash": "7c06d171ee725373",
+        "label": "AGENTS.md — working on SpotifyMCP"
+      },
+      {
+        "hash": "a7d7b10e3f4ccb89",
+        "label": "This repository wraps the Spotify Web API as an MCP serv…"
+      },
+      {
+        "hash": "ba5515fbd991e523",
+        "label": "Contribution and release process for humans: CONTRIBUTIN…"
+      },
+      {
+        "hash": "1f9da5e926da4da5",
+        "label": "Tool contracts: SPEC.md"
+      },
+      {
+        "hash": "ba20901fa7ebd55c",
+        "label": "Architecture and module map: ARCHITECTURE.md"
+      },
+      {
+        "hash": "9c7094558165775c",
+        "label": "Env vars: docs/configuration.md"
+      },
+      {
+        "hash": "269fa498c58fe13b",
+        "label": "Schema budgets: docs/schema-budgets.md"
+      },
+      {
+        "hash": "cb3f91d54eee30e5",
+        "label": ""
+      },
+      {
+        "hash": "02ff8747297be71b",
+        "label": "1. Spotify facts you must not guess"
+      },
+      {
+        "hash": "555af8ba74ba64a0",
+        "label": "The authoritative source is the official OpenAPI schema,…"
+      },
+      {
+        "hash": "3d56baae6a711de3",
+        "label": "OpenAPI schema: https://developer.spotify.com/reference/…"
+      },
+      {
+        "hash": "33e188a9576a3fb0",
+        "label": "API reference: https://developer.spotify.com/documentati…"
+      },
+      {
+        "hash": "86f571d6b2dc9f59",
+        "label": "Do not guess endpoint paths, query parameter names, or r…"
+      },
+      {
+        "hash": "5ca796adcfc8fc3b",
+        "label": "Do not reach for as any to read a payload. It is the cas…"
+      },
+      {
+        "hash": "7fbdd2ccbbc062cd",
+        "label": "Authorization"
+      },
+      {
+        "hash": "a7f0238674f20309",
+        "label": "Use Authorization Code with PKCE for all user-specific d…"
+      },
+      {
+        "hash": "8e1e867d3574253b",
+        "label": "The Authorization Code flow with a client secret on a se…"
+      },
+      {
+        "hash": "15a7473caec47b62",
+        "label": "Use Client Credentials only for non-user, public catalog…"
+      },
+      {
+        "hash": "41bfee8dbfdfe7b2",
+        "label": "Never use the Implicit Grant flow. It is deprecated by S…"
+      },
+      {
+        "hash": "474d9827d77b49c9",
+        "label": "Redirect URIs"
+      },
+      {
+        "hash": "5f37d1b4f9877117",
+        "label": "Always use https:// redirect URIs in production."
+      },
+      {
+        "hash": "5b4bac71edf4a724",
+        "label": "For local development, use http://127.0.0.1 — not http:/…"
+      },
+      {
+        "hash": "759cf0fb528f686d",
+        "label": "Never use wildcard URIs."
+      },
+      {
+        "hash": "ae17132f7ef977ab",
+        "label": "https://developer.spotify.com/documentation/web-api/conc…"
+      },
+      {
+        "hash": "bf3172e181fdbe57",
+        "label": "OAuth scopes"
+      },
+      {
+        "hash": "4ab8fbd137b3b7c9",
+        "label": "Request only the minimum scopes required for the feature…"
+      },
+      {
+        "hash": "f3f0850ca452196a",
+        "label": "Do not request broad scopes preemptively \"just in case.\""
+      },
+      {
+        "hash": "ac0e342ae5ebf764",
+        "label": "https://developer.spotify.com/documentation/web-api/conc…"
+      },
+      {
+        "hash": "c35ad364241d2d02",
+        "label": "Token management"
+      },
+      {
+        "hash": "6521d798522b2985",
+        "label": "Store tokens in a local file with restricted permissions…"
+      },
+      {
+        "hash": "2b76dcc3277f8170",
+        "label": "Never expose the Client Secret in client-side or committ…"
+      },
+      {
+        "hash": "bc7d7699f13a3b5d",
+        "label": "Always implement token refresh. Access tokens expire aft…"
+      },
+      {
+        "hash": "bb3e98a17e62b645",
+        "label": "https://developer.spotify.com/documentation/web-api/tuto…"
+      },
+      {
+        "hash": "533ee06100ac52a2",
+        "label": "Rate limiting"
+      },
+      {
+        "hash": "7ee91e66e3949302",
+        "label": "On HTTP 429, read the Retry-After header and wait that m…"
+      },
+      {
+        "hash": "2aa2bdb7bd49b3c1",
+        "label": "Use exponential backoff for repeated failures."
+      },
+      {
+        "hash": "2c82902b5eb256fa",
+        "label": "Never retry immediately in a tight loop."
+      },
+      {
+        "hash": "f313757f891e86bd",
+        "label": "Error handling"
+      },
+      {
+        "hash": "5103f36fdc9280c1",
+        "label": "Handle the codes documented in the OpenAPI schema. Read …"
+      },
+      {
+        "hash": "df9f5ee0f6aab19c",
+        "label": "Developer Terms of Service"
+      },
+      {
+        "hash": "742871f9142f820e",
+        "label": "Do not cache Spotify content beyond what is needed for i…"
+      },
+      {
+        "hash": "03643d40194a5a5c",
+        "label": "Always attribute content to Spotify where displayed."
+      },
+      {
+        "hash": "b65a2deae1c9d906",
+        "label": "Do not use the API to train machine learning models on S…"
+      },
+      {
+        "hash": "27d0102ce3bcd628",
+        "label": "https://developer.spotify.com/terms"
+      },
+      {
+        "hash": "0169fd7f18890a27",
+        "label": "2. Endpoints that are blocked or deprecated"
+      },
+      {
+        "hash": "d072df99e5ba35f9",
+        "label": "Check this list before you wrap anything new. The schema…"
+      },
+      {
+        "hash": "55b6f32b00f77e86",
+        "label": "Playlist item management targets /playlists/{id}/items. …"
+      },
+      {
+        "hash": "72190b9d8c6684b7",
+        "label": "Blocked for post-Nov-2024 apps — deliberately not wrappe…"
+      },
+      {
+        "hash": "ccc0d97c7fa28b4e",
+        "label": "These fail at runtime on app registrations created after…"
+      },
+      {
+        "hash": "60536e3074f7fc34",
+        "label": "| Endpoint | Status | |---|---| | GET /recommendations, …"
+      },
+      {
+        "hash": "540b0347909c2431",
+        "label": "February 2026: two different states, and the label is no…"
+      },
+      {
+        "hash": "c6297c784b78a3e1",
+        "label": "Spotify's [February 2026 changelog](https://developer.sp…"
+      },
+      {
+        "hash": "7134808cbc02e281",
+        "label": "Registration-dependent — keep calling these, and do not …"
+      },
+      {
+        "hash": "e9875597f72ef7fd",
+        "label": "Unverified — do not build on it. Whether a grandfathered…"
+      },
+      {
+        "hash": "275dff07c71d921c",
+        "label": "The authoritative list is GATEDFAMILIES in src/gating.ts…"
+      },
+      {
+        "hash": "74acedcd8c3e7385",
+        "label": "/users/{id} and /users/{id}/playlists are the family wor…"
+      },
+      {
+        "hash": "50068140e1caff75",
+        "label": "/browse/categories is the second family worth naming her…"
+      },
+      {
+        "hash": "68e9e263c372df05",
+        "label": "Do not read that as \"the endpoint is live\". The changelo…"
+      },
+      {
+        "hash": "1f1beb12660968cb",
+        "label": "Never call these — no replacement, or superseded with no…"
+      },
+      {
+        "hash": "d0071c854ae8a735",
+        "label": "| Endpoint | Status | |---|---| | PUT/DELETE /me/followi…"
+      },
+      {
+        "hash": "6688a0bbc2d7c62c",
+        "label": "A tool in this bucket is broken, not merely degraded — a…"
+      },
+      {
+        "hash": "3ee9e2c8a191e6ee",
+        "label": "| Removed tool | Replacement | |---|---| | followartists…"
+      },
+      {
+        "hash": "ab78c9af4cc7e80b",
+        "label": "A caller that reaches for a retired name now gets an unk…"
+      },
+      {
+        "hash": "494be60dc576d859",
+        "label": "Following an artist is no longer expressible, and there …"
+      },
+      {
+        "hash": "a3a118124cbdcc2c",
+        "label": "/me/library authorises three alternative scopes — user-l…"
+      },
+      {
+        "hash": "32b0273b598662ba",
+        "label": "GET /me/following (the cursor-paged followed-artists lis…"
+      },
+      {
+        "hash": "3b2620b88e9fbdf0",
+        "label": "When you touch a tool that calls any endpoint above, che…"
+      },
+      {
+        "hash": "4aea0dc227dcac67",
+        "label": "3. Commands"
+      },
+      {
+        "hash": "1d592fc01b13a615",
+        "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
+      },
+      {
+        "hash": "f4b0ad8d467ac713",
+        "label": "Both doc gates accept --census-file <path> so CI generat…"
+      },
+      {
+        "hash": "12962b756ff975cb",
+        "label": "A tool count belongs in a generated block, or nowhere. T…"
+      },
+      {
+        "hash": "8de7025a0cfd91e2",
+        "label": "Generated blocks vs hand-maintained baselines"
+      },
+      {
+        "hash": "f279651382d8ad21",
+        "label": "--write only rewrites content between <!-- BEGIN:generat…"
+      },
+      {
+        "hash": "ec6dad13897a8b8d",
+        "label": "That list is itself one of the generated blocks. Its bod…"
+      },
+      {
+        "hash": "2b4ce3b005a4849f",
+        "label": "The [toolCount, schemaBytes] baselines in src/tools/anno…"
+      },
+      {
+        "hash": "f850d45cbbbd5012",
+        "label": "Resolving a conflict in a file that mixes both (#1384)"
+      },
+      {
+        "hash": "1407bf1e3ee7f2f4",
+        "label": "Every file in the generated list above is a mixed file: …"
+      },
+      {
+        "hash": "91a9d69af8927b7c",
+        "label": "This is not hypothetical. During the #1350 work, a rebas…"
+      },
+      {
+        "hash": "51c825c5d4da20b8",
+        "label": "In a file that mixes generated and hand-written regions,…"
+      },
+      {
+        "hash": "8dee38688d31fc51",
+        "label": "Recover the correct way. Take the merge base of the file…"
+      },
+      {
+        "hash": "bcdcf13ed135d33e",
+        "label": "git checkout --ours ARCHITECTURE.md # during a rebase, \"…"
+      },
+      {
+        "hash": "8b049ed815b08ef7",
+        "label": "That is enough when the only thing that differs is insid…"
+      },
+      {
+        "hash": "110bd8f6cf26c25d",
+        "label": "The gate (#1384). scripts/doc-prose-manifest.json pins e…"
+      },
+      {
+        "hash": "e4af2718994b82ca",
+        "label": "Adding prose is free. A new tool adds a contract paragra…"
+      },
+      {
+        "hash": "c28b86d583b5ead2",
+        "label": "Changing or deleting prose needs --prose-sync. That comm…"
+      },
+      {
+        "hash": "6f294e33c8fc822a",
+        "label": "The pin is hand-maintained on purpose. It is not in a ge…"
+      },
+      {
+        "hash": "86acb87400987380",
+        "label": "The reasoning, and the alternative that was rejected, ar…"
+      },
+      {
+        "hash": "a205cd1845ab01ae",
+        "label": "4. The registrar manifest and schema budgets"
+      },
+      {
+        "hash": "5b26b45795f4128f",
+        "label": "src/tools/annotations.ts owns REGISTRARMANIFEST — the si…"
+      },
+      {
+        "hash": "8ebcb93deac7877c",
+        "label": "src/index.ts iterates the manifest and then runs, in ord…"
+      },
+      {
+        "hash": "1551a76a827618e9",
+        "label": "Per module the budget is measured as tool count plus UTF…"
+      },
+      {
+        "hash": "13ce9d779e79f49f",
+        "label": "Registration order is core-first and deterministic: the …"
+      },
+      {
+        "hash": "2c77300436cb52e7",
+        "label": "Adding a tool therefore means: the module's registrar in…"
+      },
+      {
+        "hash": "736291c0062e3640",
+        "label": "Annotations are fail-closed"
+      },
+      {
+        "hash": "01f633caaeac89df",
+        "label": "Classification is name-driven and fail-closed: a tool is…"
+      },
+      {
+        "hash": "9a486a6bb425827b",
+        "label": "5. Confirmation, deprecation, releases"
+      },
+      {
+        "hash": "af0069bbffebb19f",
+        "label": "Confirmation is elicitation, not an input flag"
+      },
+      {
+        "hash": "bd41d6f710d8ae6f",
+        "label": "Destructive bulk mutations ask a human through MCP elici…"
+      },
+      {
+        "hash": "2c574de2a6e849bb",
+        "label": "Most gates are threshold-based, and the thresholds are s…"
+      },
+      {
+        "hash": "e7974a3a373ad559",
+        "label": "SPOTIFYMCPCONFIRM=never is the only automation bypass, a…"
+      },
+      {
+        "hash": "d8a2806add0e701b",
+        "label": "Annotations (readOnlyHint, destructiveHint, idempotentHi…"
+      },
+      {
+        "hash": "5ebe05f962cee333",
+        "label": "SPOTIFYMCPREADONLY hides write-capable tools from the re…"
+      },
+      {
+        "hash": "92f66205910f03ed",
+        "label": "Deprecating a tool input"
+      },
+      {
+        "hash": "754463c1264640ee",
+        "label": "Keep the legacy name callable for one release, then remo…"
+      },
+      {
+        "hash": "1731d900b273d57b",
+        "label": "Accept both only when they normalize to the same values;…"
+      },
+      {
+        "hash": "f16fc1aaac3135d6",
+        "label": "When a legacy name was used, the result carries deprecat…"
+      },
+      {
+        "hash": "edf3f2ca113cdaa9",
+        "label": "Each tool declares exactly one alias pair or list. Send …"
+      },
+      {
+        "hash": "3058ab54b677de5a",
+        "label": "Retiring a tool name is different: delete it, pin its ab…"
+      },
+      {
+        "hash": "a57f39ddb9273ef5",
+        "label": "The doc-name gate"
+      },
+      {
+        "hash": "bf24fbe1da30a9fe",
+        "label": "npm run check:doc-tool-names fails when a doc backticks …"
+      },
+      {
+        "hash": "0eb39d3121c74056",
+        "label": "Releases"
+      },
+      {
+        "hash": "19071ee84ef2b4d3",
+        "label": "Conventional Commits, type(scope): description. release-…"
+      },
+      {
+        "hash": "911439c8a4c2a649",
+        "label": "feat: → minor, fix: and other patch-level changes → patc…"
+      },
+      {
+        "hash": "905b1b72303e64c5",
+        "label": "A breaking change is a ! after the type/scope plus a BRE…"
+      },
+      {
+        "hash": "269978a816a6fcef",
+        "label": "Merging the release PR with CI green creates the vX.Y.Z …"
+      },
+      {
+        "hash": "9c408126bc92e8ff",
+        "label": "publish-mcp-registry runs after publish-npm and validate…"
+      },
+      {
+        "hash": "b90348cb070ab678",
+        "label": "gh run rerun <run-id> -R NovaLux12/spotify-mcp-server --…"
+      },
+      {
+        "hash": "68524aa9a5d9ada1",
+        "label": "Then verify. Do not trust a local npm view for this — it…"
+      },
+      {
+        "hash": "586eafc3b94e1f99",
+        "label": "curl -sS \"https://registry.npmjs.org/<pkg>?cb=$(date +%s…"
+      },
+      {
+        "hash": "e50148a19728b420",
+        "label": "Check the npm version, the tagged server.json, and the M…"
+      },
+      {
+        "hash": "7d0a0592dcfabcd6",
+        "label": "…/versions/latest is that check. Do not substitute /v0/s…"
+      },
+      {
+        "hash": "e5eeb56cb7ad4bbe",
+        "label": "Closing the issue is a separate step from landing the fi…"
+      },
+      {
+        "hash": "a0cf9e00ab0ddaec",
+        "label": "Only Closes #N / Fixes #N / Resolves #N close an issue. …"
+      },
+      {
+        "hash": "9aa1cbb980dec4b4",
+        "label": "The failure is silent in the worst way. gh pr merge prin…"
+      },
+      {
+        "hash": "933b28c54ef6d7f5",
+        "label": "So after the merge:"
+      },
+      {
+        "hash": "51e03de370a32cf8",
+        "label": "scripts/close-issues-from-pr.sh <pr-number> [issue ...]"
+      },
+      {
+        "hash": "f8ef8c0a26fffce6",
+        "label": "It re-reads the body, closes what is still open, and exi…"
+      },
+      {
+        "hash": "32057e77c7968a6b",
+        "label": "Closing on the merge signal alone is not enough. Verify …"
+      },
+      {
+        "hash": "9fae3e1437321187",
+        "label": "6. Lessons that cost us a bug"
+      },
+      {
+        "hash": "cf1b28c3bfd71823",
+        "label": "Each of these is a real fix in this repository's history…"
+      },
+      {
+        "hash": "983a6b5fdf1cb2a3",
+        "label": "Every documented count is generated and gated, so a hand…"
+      },
+      {
+        "hash": "7756568b1ecf5186",
+        "label": "--check reads the working tree, so a green run cannot me…"
+      },
+      {
+        "hash": "433c88f81893db86",
+        "label": "A correctly named payload field can still lie about its …"
+      },
+      {
+        "hash": "303b48bb7c082a81",
+        "label": "A test that cannot fail is worse than no test. A schema-…"
+      },
+      {
+        "hash": "6e2c08f2c4e3d371",
+        "label": "A failing test tells you the truth — read the assertion,…"
+      },
+      {
+        "hash": "c6a8ea07c3c08781",
+        "label": "The summary is not the contract. A delta comment once as…"
+      },
+      {
+        "hash": "9dd75c574f4b116a",
+        "label": "Two documents that must agree are not gated by checking …"
+      },
+      {
+        "hash": "f856213ba7de6c5f",
+        "label": "A guard that only ever sees the correct input has never …"
+      },
+      {
+        "hash": "77f20653a6cfb278",
+        "label": "7. Before you open a PR"
+      },
+      {
+        "hash": "2ad0397526355873",
+        "label": "npm run build and npm test pass."
+      },
+      {
+        "hash": "0f90395bcfd9b5da",
+        "label": "npm run check:doc-tool-names passes."
+      },
+      {
+        "hash": "3efe42ebe84d7c41",
+        "label": "If you changed what a tool accepts or returns, SPEC.md m…"
+      },
+      {
+        "hash": "b808e1aab895e966",
+        "label": "If you changed the registry, the manifest baselines are …"
+      },
+      {
+        "hash": "159af9505f0e8efb",
+        "label": "Behavior changes have a regression test that fails witho…"
+      },
+      {
+        "hash": "f0e3fd6e33806a95",
+        "label": "Conventional Commit title; a Closes #NNN footer per issu…"
+      },
+      {
+        "hash": "f364d79543ac27a8",
+        "label": "After merging, scripts/close-issues-from-pr.sh <pr> has …"
+      }
+    ],
+    "ARCHITECTURE.md": [
+      {
+        "hash": "a38f7bc6aff8e649",
+        "label": "Architecture"
+      },
+      {
+        "hash": "88a91fb3553e4143",
+        "label": "How SpotifyMCP actually works, distilled from the source…"
+      },
+      {
+        "hash": "ba0d64840f3bcfc5",
+        "label": "Component map"
+      },
+      {
+        "hash": "213d591ede53e378",
+        "label": "flowchart TD CLI[\"CLI dispatch (src/index.ts)<br/>auth /…"
+      },
+      {
+        "hash": "80a7256fe8d4d745",
+        "label": "index.ts wires everything at startup: it creates one Spo…"
+      },
+      {
+        "hash": "836f50e2ab18a4c4",
+        "label": "Tool modules load behind that gate (#906). The manifest …"
+      },
+      {
+        "hash": "ff8594c658a94b09",
+        "label": "Authentication flows"
+      },
+      {
+        "hash": "119f3ea54b7119f0",
+        "label": "Both flows share the same PKCE primitives (codeverifier …"
+      },
+      {
+        "hash": "7f3a4bdf090a1363",
+        "label": "sequenceDiagram autonumber participant U as User partici…"
+      },
+      {
+        "hash": "b1358592aefaf193",
+        "label": "The headless branch exists because the callback listener…"
+      },
+      {
+        "hash": "c7d1f88fae0075c9",
+        "label": "Tokens live in /.spotify-mcp/tokens.json by default (SPO…"
+      },
+      {
+        "hash": "f2671e62af25d2a0",
+        "label": "Request pipeline"
+      },
+      {
+        "hash": "806894a7b3b56788",
+        "label": "Every HTTP call funnels through one private path inside …"
+      },
+      {
+        "hash": "fb6f14435547de4c",
+        "label": "1. Serialization (two-lane) — get/post/put/putRaw/delete…"
+      },
+      {
+        "hash": "88b152749022d554",
+        "label": "2. Inter-request gap — before each request fires, the wo…"
+      },
+      {
+        "hash": "37245002dcc54178",
+        "label": "3. Rate-limit hold — after any 429, rateLimitUntil is se…"
+      },
+      {
+        "hash": "61d980c3b55cc2a0",
+        "label": "4. Token freshness — the token file is read once per cli…"
+      },
+      {
+        "hash": "6297dc172b65e8ef",
+        "label": "5. Fetch timeout — every outbound call (API requests and…"
+      },
+      {
+        "hash": "364cda8c12830917",
+        "label": "6. Bounded 5xx and transport retry (#675) — statuses 502…"
+      },
+      {
+        "hash": "e4210c34f052f5e2",
+        "label": "7. Error model — non-OK responses throw SpotifyApiError(…"
+      },
+      {
+        "hash": "013fe3cfc16f56c5",
+        "label": "8. Pagination — getAllPages<T>() walks offset-paginated …"
+      },
+      {
+        "hash": "4986c94253580db1",
+        "label": "9. Read cache (#54) — src/cache.ts provides an LruTtlCac…"
+      },
+      {
+        "hash": "e966c141807a287f",
+        "label": "10. Request/quota usage tracking (#904) — the drain path…"
+      },
+      {
+        "hash": "534e55f20b7f837a",
+        "label": "11. Conditional reads (#601) — src/cache.ts also provide…"
+      },
+      {
+        "hash": "4814e1b5c5285053",
+        "label": "Second upstream: stats.fm (v2 — implemented)"
+      },
+      {
+        "hash": "ae273d59193c6c6f",
+        "label": "Spotify is the system of record for playback, library, a…"
+      },
+      {
+        "hash": "c32a0998673d5a12",
+        "label": "flowchart LR T[\"statsfm.ts tools (read-only)\"] --> SC[\"S…"
+      },
+      {
+        "hash": "a068b885e67293ac",
+        "label": "Tool and response layer"
+      },
+      {
+        "hash": "1fd2e3035e283309",
+        "label": "Each registerTools(server, client) function calls server…"
+      },
+      {
+        "hash": "69024ea68afca2f9",
+        "label": "Input validation — per-tool zod schemas (strings, enums …"
+      },
+      {
+        "hash": "e5a051292d102ad5",
+        "label": "Handlers — thin orchestration: one or more client.get/po…"
+      },
+      {
+        "hash": "4532543735f1d775",
+        "label": "Mutation conformance guard (#920) — tests/mutations.conf…"
+      },
+      {
+        "hash": "89c5a9e6c8720890",
+        "label": "Output formatting — a tool takes a responseformat parame…"
+      },
+      {
+        "hash": "2f20ff2bd4f13abb",
+        "label": "Transport — the MCP SDK's StdioServerTransport carries J…"
+      },
+      {
+        "hash": "d449b6ccf915d6fc",
+        "label": "Resources are registered through server.resource(...) as…"
+      },
+      {
+        "hash": "7d7cad697645d1c3",
+        "label": "Module map"
+      },
+      {
+        "hash": "2e6987c183a71f1c",
+        "label": "The table is generated from every TypeScript file recurs…"
+      },
+      {
+        "hash": "360697d299fea756",
+        "label": "Request scheduling"
+      },
+      {
+        "hash": "6e22ff8e778b392b",
+        "label": "Inside SpotifyClient, the old single FIFO queue is now a…"
+      },
+      {
+        "hash": "82ae20404b034f52",
+        "label": "<details><summary>Resolved design tensions (historical)<…"
+      },
+      {
+        "hash": "13e26b8db93f8b63",
+        "label": "All previously listed tensions are resolved — kept here …"
+      },
+      {
+        "hash": "591eb81ce983ea3b",
+        "label": "Non-atomic token writes — resolved (#109): saveTokens wr…"
+      },
+      {
+        "hash": "eabe35fcaadd5077",
+        "label": "Single-process refresh race — mitigated (#109): doRefres…"
+      },
+      {
+        "hash": "f2aee31e835b8cd9",
+        "label": "Retry budget is per-request, fixed at one — changed (#13…"
+      },
+      {
+        "hash": "5d3dd3d169734230",
+        "label": "5xx and transport errors are thrown straight back to the…"
+      },
+      {
+        "hash": "ca19ccf360775308",
+        "label": "Interactive starvation is addressed by the two-lane sche…"
+      },
+      {
+        "hash": "88ac44c1aa8fc3c2",
+        "label": "</details>"
+      }
+    ],
+    "README.md": [
+      {
+        "hash": "8970f33720f753ce",
+        "label": "SpotifyMCP"
+      },
+      {
+        "hash": "bc53199da3730561",
+        "label": "[![CI](https://github.com/NovaLux12/spotify-mcp-server/a…"
+      },
+      {
+        "hash": "e527560c4d2cc672",
+        "label": "Spotify Web API MCP: playback, library, playlists, searc…"
+      },
+      {
+        "hash": "d376755fb8f7a799",
+        "label": "A broad Spotify Web API tool surface, plus extras most s…"
+      },
+      {
+        "hash": "cb3f91d54eee30e5",
+        "label": ""
+      },
+      {
+        "hash": "9ea4c413119af4d9",
+        "label": "### 🤖 Paste this to your agent Copy the block below int…"
+      },
+      {
+        "hash": "8e29ce7376675b46",
+        "label": "Why this one"
+      },
+      {
+        "hash": "1d649120bf39fea9",
+        "label": "| | | |---|---| | Complete | Playback, search, catalog, …"
+      },
+      {
+        "hash": "9535b10be9abb7a8",
+        "label": "Quick start"
+      },
+      {
+        "hash": "50d1510133dc9265",
+        "label": "1. Create a Spotify app"
+      },
+      {
+        "hash": "8d1b4de04adb67de",
+        "label": "[Spotify Developer Dashboard](https://developer.spotify.…"
+      },
+      {
+        "hash": "f9d1e1953ed5877d",
+        "label": "http://127.0.0.1:8888/callback"
+      },
+      {
+        "hash": "884f6acaf3b3077b",
+        "label": "Copy the Client ID."
+      },
+      {
+        "hash": "2984a8d191ee542c",
+        "label": "2. Authenticate"
+      },
+      {
+        "hash": "587859da9d52ec37",
+        "label": "SPOTIFYCLIENTID=yourclientidhere npx -y @novalux12/spoti…"
+      },
+      {
+        "hash": "6958aae3323ecde3",
+        "label": "Opens a browser, saves tokens to /.spotify-mcp/tokens.js…"
+      },
+      {
+        "hash": "066824c284ae2471",
+        "label": "<details><summary>Windows & headless</summary>"
+      },
+      {
+        "hash": "8d158054a54e2b6a",
+        "label": "Windows (Command Prompt): set SPOTIFYCLIENTID=yourclient…"
+      },
+      {
+        "hash": "7cbbe9c13a627d37",
+        "label": "Windows (PowerShell): $env:SPOTIFYCLIENTID=\"yourclientid…"
+      },
+      {
+        "hash": "87eca7720eb3235f",
+        "label": "Headless / remote host: SPOTIFYHEADLESS=1 SPOTIFYCLIENTI…"
+      },
+      {
+        "hash": "40a39a86fc81f5ac",
+        "label": "Check: npx -y @novalux12/spotify-mcp@latest doctor — exi…"
+      },
+      {
+        "hash": "88ac44c1aa8fc3c2",
+        "label": "</details>"
+      },
+      {
+        "hash": "3ce70bb50aba0b05",
+        "label": "3. Add to your MCP host"
+      },
+      {
+        "hash": "15311d7534763a76",
+        "label": "{ \"mcpServers\": { \"spotify\": { \"command\": \"npx\", \"args\":…"
+      },
+      {
+        "hash": "8f101d6a0ef8683e",
+        "label": "Restart the host. A hammer icon in the chat input means …"
+      },
+      {
+        "hash": "60af5e6e4a488dfa",
+        "label": "<details><summary>Claude Code · OpenClaw · other hosts</…"
+      },
+      {
+        "hash": "b0196389ec729c3e",
+        "label": "Claude Code (no JSON editing): claude mcp add spotify --…"
+      },
+      {
+        "hash": "2ab5a7b4a598add3",
+        "label": "OpenClaw — /.openclaw/openclaw.json → mcp.servers: \"spot…"
+      },
+      {
+        "hash": "a52e7364acd6e5d5",
+        "label": "Any spec-compliant host works — same command/args/env sh…"
+      },
+      {
+        "hash": "d38eef02b6584281",
+        "label": "What you can ask"
+      },
+      {
+        "hash": "aac475f780290a2b",
+        "label": "\"What are my top tracks this month?\""
+      },
+      {
+        "hash": "31b03fb95936be44",
+        "label": "\"Make a late-night driving playlist\""
+      },
+      {
+        "hash": "8c551d594427b37b",
+        "label": "\"Add Blinding Lights to my workout playlist\""
+      },
+      {
+        "hash": "28dfce415058d808",
+        "label": "\"What podcasts have new episodes?\""
+      },
+      {
+        "hash": "7fc2aa81d2bad599",
+        "label": "\"Clean duplicates across all my playlists\""
+      },
+      {
+        "hash": "4b2232050809ff66",
+        "label": "\"What does my taste look like? Build a playlist from it\""
+      },
+      {
+        "hash": "3ce55c6d021e1f80",
+        "label": "\"Do my stats.fm lifetime genres match what I've played t…"
+      },
+      {
+        "hash": "37f210b46aa90130",
+        "label": "Configuration"
+      },
+      {
+        "hash": "3699b455453aae40",
+        "label": "All via env vars — no config file. Only SPOTIFYCLIENTID …"
+      },
+      {
+        "hash": "e29b2c3d2727ae67",
+        "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…"
+      },
+      {
+        "hash": "d208687710ffa501",
+        "label": "Full reference: [docs/configuration.md](docs/configurati…"
+      },
+      {
+        "hash": "5122ffa414a73cce",
+        "label": "spotifydoctor (CLI + in-server tool) diagnoses token sta…"
+      },
+      {
+        "hash": "0aceb0ccd44bd2f4",
+        "label": "Upgrading to 2.0"
+      },
+      {
+        "hash": "1b0a329944306257",
+        "label": "2.0 is a contract release. One tool name is gone, four t…"
+      },
+      {
+        "hash": "0b936078087d6836",
+        "label": "0. getshowepisodes is removed. Use listshowepisodes (sam…"
+      },
+      {
+        "hash": "3424b3ce9b14df7b",
+        "label": "1. Destructive writes fail closed. Any confirmation-gate…"
+      },
+      {
+        "hash": "ce05f32e74aed631",
+        "label": "2. Playlist set-operation inputs are canonical. A/B pair…"
+      },
+      {
+        "hash": "1a0670bd059d308a",
+        "label": "| family | canonical | the spelling that tool used to de…"
+      },
+      {
+        "hash": "9626b11f9c33a9db",
+        "label": "baseplaylistid is required again: with the positional fo…"
+      },
+      {
+        "hash": "a0a5d3e570213b60",
+        "label": "3. Numeric caps have canonical names. maxresults caps wh…"
+      },
+      {
+        "hash": "b41158e071245b7a",
+        "label": "4. Unknown arguments are rejected with a typed unknownpa…"
+      },
+      {
+        "hash": "516e519f3e1e296d",
+        "label": "Run spotifydoctor after upgrading: it reports the regist…"
+      },
+      {
+        "hash": "3ec20248158477aa",
+        "label": "Docs"
+      },
+      {
+        "hash": "1882df2a6a0df193",
+        "label": "[SPEC.md](SPEC.md) — every tool, resource & prompt"
+      },
+      {
+        "hash": "c5dd04999883ec45",
+        "label": "[ARCHITECTURE.md](ARCHITECTURE.md) — how it's built"
+      },
+      {
+        "hash": "504a2f7d04bab2d0",
+        "label": "[docs/configuration.md](docs/configuration.md) — all env…"
+      },
+      {
+        "hash": "2c12a7d44c04489c",
+        "label": "[docs/schema-budgets.md](docs/schema-budgets.md) — per-m…"
+      },
+      {
+        "hash": "583676668dcc4de0",
+        "label": "[docs/statsfm.md](docs/statsfm.md) — stats.fm second sou…"
+      },
+      {
+        "hash": "2774090838cc7999",
+        "label": "[docs/cookbook.md](docs/cookbook.md) — copy-paste agent …"
+      },
+      {
+        "hash": "2c3aa48b46d70e9c",
+        "label": "[docs/non-goals.md](docs/non-goals.md) — what v2 will no…"
+      },
+      {
+        "hash": "aa6894d2da4a24a7",
+        "label": "[docs/taste.md](docs/taste.md) — anonymized taste showca…"
+      },
+      {
+        "hash": "bb5344ce83a574d4",
+        "label": "[docs/wave2-composites.md](docs/wave2-composites.md) — r…"
+      },
+      {
+        "hash": "0d27959bd1287c3c",
+        "label": "[docs/distribution.md](docs/distribution.md) — distribut…"
+      },
+      {
+        "hash": "cc70d7b106196aac",
+        "label": "[docs/faq.md](docs/faq.md) — auth, Premium, 403s, headle…"
+      },
+      {
+        "hash": "396faf9e67033293",
+        "label": "[docs/compliance.md](docs/compliance.md) — brand marks, …"
+      },
+      {
+        "hash": "3e9787058d4ee38a",
+        "label": "[CONTRIBUTING.md](CONTRIBUTING.md) — dev setup & convent…"
+      },
+      {
+        "hash": "458d5792425929b1",
+        "label": "[CHANGELOG.md](CHANGELOG.md) — release history"
+      },
+      {
+        "hash": "98c33b0a0714844b",
+        "label": "Requirements"
+      },
+      {
+        "hash": "b60606465b005c4b",
+        "label": "Premium for playback control (play/pause/skip/seek/volum…"
+      },
+      {
+        "hash": "f97043b7d6376556",
+        "label": "Node 22.9+, Spotify app in dev mode (5 users until exten…"
+      },
+      {
+        "hash": "3b6f02c213ed9ba5",
+        "label": "Audiobooks gated by Spotify to US/UK/CA/IE/NZ/AU."
+      },
+      {
+        "hash": "4a9630e4d87159d8",
+        "label": "A subset of endpoints is registration-gated — 403 on cur…"
+      },
+      {
+        "hash": "08868df35fb5db13",
+        "label": "Registration-gated endpoints"
+      },
+      {
+        "hash": "5dc2014fa516ce4f",
+        "label": "Some Web API endpoints are denied at the app-registratio…"
+      },
+      {
+        "hash": "d8eb50c1aea55ac2",
+        "label": "Nothing here is simply \"removed\". Three sources describe…"
+      },
+      {
+        "hash": "d5a4c426c2814495",
+        "label": "Spotify's [February 2026 changelog](https://developer.sp…"
+      },
+      {
+        "hash": "8be25960dc4cac35",
+        "label": "The [live OpenAPI schema](https://developer.spotify.com/…"
+      },
+      {
+        "hash": "8fdd0fe7ed2a823c",
+        "label": "The runtime truth is neither document: it is what your a…"
+      },
+      {
+        "hash": "67602d5dcd9e50a8",
+        "label": "So a 403 here is a property of the registration, not of …"
+      },
+      {
+        "hash": "ab90a2ad68ee623d",
+        "label": "Confirm the list yourself against the source of truth:"
+      },
+      {
+        "hash": "d2ac63bbe59df6a2",
+        "label": "grep -n \"id: '\" src/gating.ts # the families, with tools…"
+      },
+      {
+        "hash": "da4f7ea58d963b1a",
+        "label": "Notes:"
+      },
+      {
+        "hash": "0776f6c87dd7f3ad",
+        "label": "A family in that list is a runtime classifier, not a pro…"
+      },
+      {
+        "hash": "e20cf8a2f2fb5a02",
+        "label": "GET /me/library/contains is not gated (it returned 200 o…"
+      },
+      {
+        "hash": "799799a0bbba98de",
+        "label": "Batch fallback ([#725](https://github.com/NovaLux12/spot…"
+      },
+      {
+        "hash": "07fa45cab4c695c8",
+        "label": "Endpoints Spotify lists as removed that this server does…"
+      },
+      {
+        "hash": "20f2cce740e71dbd",
+        "label": "<details><summary>Troubleshooting</summary>"
+      },
+      {
+        "hash": "5d536f6fbd9e18c8",
+        "label": "\"Not authenticated\" → re-run auth; check /.spotify-mcp/t…"
+      },
+      {
+        "hash": "631b04dbf6e088f6",
+        "label": "Auth loop / S256 error → open a private window, log into…"
+      },
+      {
+        "hash": "affd96b176ad5103",
+        "label": "Port in use (8888) → free the port, set SPOTIFYREDIRECTU…"
+      },
+      {
+        "hash": "177990bac34ad2a6",
+        "label": "Timed out waiting for the browser callback → not a port …"
+      },
+      {
+        "hash": "f2b309eec43c8ff4",
+        "label": "\"Premium required\" on playback → expected on Free accoun…"
+      },
+      {
+        "hash": "a5117240c2e9429c",
+        "label": "Forbidden on lookup tools (categories, markets, top-trac…"
+      },
+      {
+        "hash": "33ba608695ea0a19",
+        "label": "Still stuck? npx -y @novalux12/spotify-mcp@latest doctor…"
+      },
+      {
+        "hash": "0e3b191f21ed42a2",
+        "label": "What this server is not"
+      },
+      {
+        "hash": "b8f56b71f42614b3",
+        "label": "v2 has a written non-goals list, so a request for someth…"
+      },
+      {
+        "hash": "0338b7761ecf40e0",
+        "label": "Audio streaming, audio analysis, and offline playback"
+      },
+      {
+        "hash": "60ff27a1badabb4e",
+        "label": "A web UI, a dashboard, or an MCP UI surface"
+      },
+      {
+        "hash": "4ff3cbe86b5618c6",
+        "label": "Multi-tenant or hosted operation"
+      },
+      {
+        "hash": "05a046dba8daabec",
+        "label": "Sharing one user's credentials across users"
+      },
+      {
+        "hash": "3cde7b0a8cc43b71",
+        "label": "Lyrics"
+      },
+      {
+        "hash": "5a43f60659284e5a",
+        "label": "The Spotify Connect SDK and native client integration"
+      },
+      {
+        "hash": "1a290fed3cc25c3f",
+        "label": "Voice control"
+      },
+      {
+        "hash": "dbb83a2b3384b4af",
+        "label": "Training a model on Spotify data, or exporting derived p…"
+      },
+      {
+        "hash": "005b80d3c454974c",
+        "label": "A second third-party upstream, ad-tech, or monetization …"
+      },
+      {
+        "hash": "15ca93d3fdd64605",
+        "label": "Working around Spotify's own controls"
+      },
+      {
+        "hash": "08b48c3d0b1898f2",
+        "label": "Development"
+      },
+      {
+        "hash": "6bc63f7bca221125",
+        "label": "git clone https://github.com/NovaLux12/spotify-mcp-serve…"
+      },
+      {
+        "hash": "322e37e86b8e3b6b",
+        "label": "Not affiliated with Spotify. Use per the [Spotify Develo…"
+      },
+      {
+        "hash": "534bbb964e678eb4",
+        "label": "[MIT](LICENSE) © Carme99 and NovaLux12 contributors · Ac…"
+      }
+    ],
+    "SPEC.md": [
+      {
+        "hash": "dd96f206a198d3c0",
+        "label": "SpotifyMCP — Specification"
+      },
+      {
+        "hash": "49cae90462380192",
+        "label": "A Model Context Protocol (MCP) server that gives Claude …"
+      },
+      {
+        "hash": "cb3f91d54eee30e5",
+        "label": ""
+      },
+      {
+        "hash": "8f69bcfd17f83a13",
+        "label": "Table of Contents"
+      },
+      {
+        "hash": "335b2b7f06e268ce",
+        "label": "1. [Goals & Non-Goals](#1-goals--non-goals)"
+      },
+      {
+        "hash": "f28634427b726557",
+        "label": "2. [Architecture](#2-architecture)"
+      },
+      {
+        "hash": "498ee4c4beb92c57",
+        "label": "3. [Authentication](#3-authentication)"
+      },
+      {
+        "hash": "620f990a10941616",
+        "label": "4. [Implementation Contracts](#4-implementation-contract…"
+      },
+      {
+        "hash": "47a2ac3df90d6b8c",
+        "label": "5. [Tools](#5-tools)"
+      },
+      {
+        "hash": "85c0a56c567cbe30",
+        "label": "6. [Resources](#6-resources)"
+      },
+      {
+        "hash": "5d61d0547cdf886e",
+        "label": "7. [Prompts](#7-prompts)"
+      },
+      {
+        "hash": "a17f2906e8792666",
+        "label": "8. [Error Handling](#8-error-handling)"
+      },
+      {
+        "hash": "2112466ca6de5d27",
+        "label": "9. [Rate Limiting](#9-rate-limiting)"
+      },
+      {
+        "hash": "5e8eb7d84cd67bf9",
+        "label": "10. [Spotify API Constraints](#10-spotify-api-constraint…"
+      },
+      {
+        "hash": "0753c6933b1c5d6d",
+        "label": "11. [Project Structure](#11-project-structure)"
+      },
+      {
+        "hash": "14b150821ee04c32",
+        "label": "12. [Configuration](#12-configuration)"
+      },
+      {
+        "hash": "9555297425c40a43",
+        "label": "13. [Claude Desktop Integration](#13-claude-desktop-inte…"
+      },
+      {
+        "hash": "7ca9bcdab7a0b130",
+        "label": "1. Goals & Non-Goals"
+      },
+      {
+        "hash": "37f633c848b8772b",
+        "label": "Goals"
+      },
+      {
+        "hash": "4966ae8bd1fb9afe",
+        "label": "Let Claude control playback on any active Spotify device"
+      },
+      {
+        "hash": "9fb15f4a3e0f2824",
+        "label": "Let Claude search, discover, and recommend music via nat…"
+      },
+      {
+        "hash": "892cba773c787f56",
+        "label": "Let Claude read and manage the user's library and playli…"
+      },
+      {
+        "hash": "4a4670af6e3042e4",
+        "label": "Provide personalization context (top tracks, top artists…"
+      },
+      {
+        "hash": "39bf8637fb15e307",
+        "label": "Work with Claude Desktop via stdio transport"
+      },
+      {
+        "hash": "1e4d3e8d152d64d3",
+        "label": "Simple one-time OAuth setup; silent token refresh therea…"
+      },
+      {
+        "hash": "58f4d704c61c6a6c",
+        "label": "Non-Goals"
+      },
+      {
+        "hash": "698f099cb0fb42d9",
+        "label": "What v2 will deliberately not do. Each line is a decisio…"
+      },
+      {
+        "hash": "ad5fe2f3163d84bf",
+        "label": "Audio streaming, audio analysis, and offline playback — …"
+      },
+      {
+        "hash": "436fc3bc3ce031fa",
+        "label": "A web UI, a dashboard, or an MCP UI surface — the server…"
+      },
+      {
+        "hash": "ea28a2a0d9275f19",
+        "label": "Multi-tenant or hosted operation — one process serves on…"
+      },
+      {
+        "hash": "2d3566f416a2e21d",
+        "label": "Sharing one user's credentials across users — no token p…"
+      },
+      {
+        "hash": "46af3c1963414bf1",
+        "label": "Lyrics — the public API has no lyrics endpoint, so lyric…"
+      },
+      {
+        "hash": "68a7a2a7e4be9530",
+        "label": "The Spotify Connect SDK and native client integration — …"
+      },
+      {
+        "hash": "6f33b7c5b6ae9603",
+        "label": "Voice control — capturing audio is a different product w…"
+      },
+      {
+        "hash": "8761c19726a7a330",
+        "label": "Training a model on Spotify data, or exporting derived p…"
+      },
+      {
+        "hash": "988e4424b847ae17",
+        "label": "A second third-party upstream, ad-tech, or monetization …"
+      },
+      {
+        "hash": "3d260b5a43b1e73b",
+        "label": "Working around Spotify's own controls — no stream rippin…"
+      },
+      {
+        "hash": "0cc3a538694210a4",
+        "label": "2. Architecture"
+      },
+      {
+        "hash": "83c285c470f06034",
+        "label": "Transport stdio — the server runs as a local child proce…"
+      },
+      {
+        "hash": "73cca19725679061",
+        "label": "Stack | Layer | Choice | Reason | |---|---|---| | Langua…"
+      },
+      {
+        "hash": "700f48e26e0c2c31",
+        "label": "Dependencies"
+      },
+      {
+        "hash": "0637b450ef61cbce",
+        "label": "The package contract is generated directly from package.…"
+      },
+      {
+        "hash": "15d202d5a99d2717",
+        "label": "zod is used for MCP tool input schema definitions. tsx i…"
+      },
+      {
+        "hash": "b29d4a8366773dcf",
+        "label": "scripts/add-shebang.js is a small ESM helper run after t…"
+      },
+      {
+        "hash": "eb7984377b2b6b0d",
+        "label": "Data flow Claude Desktop │ stdio (JSON-RPC) ▼ SpotifyMCP…"
+      },
+      {
+        "hash": "41c9ec3c69e4aa91",
+        "label": "3. Authentication"
+      },
+      {
+        "hash": "9fab059ec30121fc",
+        "label": "Flow"
+      },
+      {
+        "hash": "d2baaa40738de61b",
+        "label": "1. User runs npm run auth locally (or SPOTIFYCLIENTID=… …"
+      },
+      {
+        "hash": "95059f7bf15a052a",
+        "label": "2. Server starts a temporary HTTP listener on 127.0.0.1:…"
+      },
+      {
+        "hash": "da583653006799c5",
+        "label": "3. Opens https://accounts.spotify.com/authorize in the b…"
+      },
+      {
+        "hash": "2077baed96e68039",
+        "label": "4. User approves; Spotify redirects to 127.0.0.1:8888/ca…"
+      },
+      {
+        "hash": "e166b759166e7f10",
+        "label": "5. Server exchanges code for access + refresh tokens"
+      },
+      {
+        "hash": "2fa47189d9e84e3a",
+        "label": "6. Tokens saved to /.spotify-mcp/tokens.json (mode 600)"
+      },
+      {
+        "hash": "614488506167722b",
+        "label": "7. On each API call: if access token is expired, silentl…"
+      },
+      {
+        "hash": "f4da6ad80d8fce4c",
+        "label": "Steps 2–4 are bounded by SPOTIFYAUTHTIMEOUTMS (default 3…"
+      },
+      {
+        "hash": "daeeaf8db8f43c39",
+        "label": "OAuth scopes requested"
+      },
+      {
+        "hash": "03ca64d232110207",
+        "label": "user-read-private user-read-email user-read-playback-sta…"
+      },
+      {
+        "hash": "fe5c9a358f83aced",
+        "label": "Note: streaming is not included — that scope is for the …"
+      },
+      {
+        "hash": "db13e35dc0ccf19f",
+        "label": "PKCE implementation notes"
+      },
+      {
+        "hash": "473dfc218abeaf22",
+        "label": "Generate a codeverifier: 32 random bytes, base64url-enco…"
+      },
+      {
+        "hash": "e8084796949604eb",
+        "label": "Derive codechallenge: SHA-256 hash of codeverifier, base…"
+      },
+      {
+        "hash": "06e29d901a6b8cb1",
+        "label": "Generate a state: 16 random bytes, base64url-encoded — v…"
+      },
+      {
+        "hash": "4c47cbd3fa27de12",
+        "label": "Authorization URL params: responsetype=code, clientid, r…"
+      },
+      {
+        "hash": "c3d6072b79c69947",
+        "label": "Token exchange: POST to https://accounts.spotify.com/api…"
+      },
+      {
+        "hash": "9efe91c09fc923a8",
+        "label": "Token refresh: POST to https://accounts.spotify.com/api/…"
+      },
+      {
+        "hash": "f6bf035f076bbffa",
+        "label": "Compute expiresat from the response: expiresat = Date.no…"
+      },
+      {
+        "hash": "8c88d5f3d940d167",
+        "label": "After receiving the OAuth callback, send an HTTP 200 res…"
+      },
+      {
+        "hash": "588daed2100ea4b4",
+        "label": "Use Node.js built-in http module for the callback server…"
+      },
+      {
+        "hash": "1a2a710d95c39c26",
+        "label": "Use the open package to launch the authorization URL in …"
+      },
+      {
+        "hash": "a2744943135e9791",
+        "label": "Token file schema { \"accesstoken\": \"...\", \"refreshtoken\"…"
+      },
+      {
+        "hash": "cb1d4575bacde891",
+        "label": "Environment variables (required) SPOTIFYCLIENTID — from …"
+      },
+      {
+        "hash": "736edaad9d59f073",
+        "label": "Note: SPOTIFYCLIENTSECRET is not used with the PKCE flow…"
+      },
+      {
+        "hash": "6c6abe619c6db346",
+        "label": "4. Implementation Contracts"
+      },
+      {
+        "hash": "b6b2fab16162e6ea",
+        "label": "4.0.1 Entry point / CLI structure"
+      },
+      {
+        "hash": "94476d163629c76a",
+        "label": "src/index.ts is the MCP server plus a small command-line…"
+      },
+      {
+        "hash": "3ddb6aa790c8b8d9",
+        "label": "const command = process.argv[2]; if (command === 'auth')…"
+      },
+      {
+        "hash": "7ff870dd1100ab39",
+        "label": "The doctor is one report, rendered twice (#581)"
+      },
+      {
+        "hash": "9b93416434ad6367",
+        "label": "spotify-mcp doctor and the spotifydoctor tool are two en…"
+      },
+      {
+        "hash": "e78cbcdf52c4b58a",
+        "label": "What the CLI adds on top is a Configuration block: a dum…"
+      },
+      {
+        "hash": "45124319b72ee5af",
+        "label": "The CLI exits 0 when report.ok and 1 otherwise — the sha…"
+      },
+      {
+        "hash": "1c9547fcd46af095",
+        "label": "Three rows cannot be byte-identical between the surfaces…"
+      },
+      {
+        "hash": "47215fc1ea396c59",
+        "label": "| Row | Why it differs | |---|---| | surface | The regis…"
+      },
+      {
+        "hash": "286fda385eb64d27",
+        "label": "A fourth pair of rows, account / accountprobe / accountp…"
+      },
+      {
+        "hash": "7e1accfc20a1a1f5",
+        "label": "package.json bin field: { \"bin\": { \"spotify-mcp\": \"dist/…"
+      },
+      {
+        "hash": "323d2f541fa48bcd",
+        "label": "tsconfig.json essentials: { \"compilerOptions\": { \"target…"
+      },
+      {
+        "hash": "1929d20c699a27db",
+        "label": "The compiled output must have #!/usr/bin/env node as the…"
+      },
+      {
+        "hash": "25109cdf3824f4d8",
+        "label": "4.0.2 MCP server wiring"
+      },
+      {
+        "hash": "da37cf06db93e211",
+        "label": "import { McpServer } from '@modelcontextprotocol/sdk/ser…"
+      },
+      {
+        "hash": "54ae312d874ae332",
+        "label": "Tool module pattern — each tool file exports a single re…"
+      },
+      {
+        "hash": "05f1c3b27e3d62a3",
+        "label": "src/tools/annotations.ts owns the REGISTRARMANIFEST, the…"
+      },
+      {
+        "hash": "254df0bb47b1840d",
+        "label": "Tool result format — every tool handler must return: { c…"
+      },
+      {
+        "hash": "44a883d4c2483a17",
+        "label": "Local sidecar corruption (#839). The JSON sidecars under…"
+      },
+      {
+        "hash": "16c260f81fc9523e",
+        "label": "The write path refuses. A writer loads the existing stor…"
+      },
+      {
+        "hash": "9fb59c1aca018df2",
+        "label": "4.0.3 SpotifyClient contract"
+      },
+      {
+        "hash": "bc8c56124469c432",
+        "label": "All Spotify API calls go through a single SpotifyClient …"
+      },
+      {
+        "hash": "47c46a22cd447cef",
+        "label": "Base URL: https://api.spotify.com/v1"
+      },
+      {
+        "hash": "3eafbc148fbcd59d",
+        "label": "Token injection: attach Authorization: Bearer <accesstok…"
+      },
+      {
+        "hash": "0c2b8f99716c6492",
+        "label": "Pre-request token check: if Date.now() >= expiresat - 60…"
+      },
+      {
+        "hash": "04d3147ad14dc8ea",
+        "label": "Request funnel: a two-lane (normal/low) queue behind ONE…"
+      },
+      {
+        "hash": "2dba880d38d6776b",
+        "label": "Bounded retry: 502/503/504 responses and idempotent-verb…"
+      },
+      {
+        "hash": "9d3f333437589d4b",
+        "label": "Response parsing: throw a typed SpotifyApiError on non-2…"
+      },
+      {
+        "hash": "b46aaa57544d458d",
+        "label": "Mutation body parsing (#674): a 2xx write whose body can…"
+      },
+      {
+        "hash": "7df2c06cdf5eb0ba",
+        "label": "Token memory management: The SpotifyClient holds the tok…"
+      },
+      {
+        "hash": "8451ac5b0b02f09f",
+        "label": "Acting-account switch (#602): switchAccount(tokenFile) r…"
+      },
+      {
+        "hash": "692642edbc824e45",
+        "label": "Request timeouts: every outbound HTTP call (API requests…"
+      },
+      {
+        "hash": "b3006decf0d878c3",
+        "label": "Read cache: immutable catalog reads go through an LRU TT…"
+      },
+      {
+        "hash": "d0a0b0581f28531a",
+        "label": "Scoped cache invalidation (#893): a mutation drops only …"
+      },
+      {
+        "hash": "8f95c64a1e8c98b0",
+        "label": "Reads that race a write are not cached (#893): the reque…"
+      },
+      {
+        "hash": "ffeb309cdddc28af",
+        "label": "Optional cache persistence (#893): SPOTIFYMCPCACHEPERSIS…"
+      },
+      {
+        "hash": "2baa4a5c03e17649",
+        "label": "Rate-limit visibility: the most recent 429 (Retry-After …"
+      },
+      {
+        "hash": "6b5b8d0804f80fc7",
+        "label": "One canonical artist-release probe (#900): five tools wa…"
+      },
+      {
+        "hash": "c895ed955a0a347e",
+        "label": "Request/quota usage tracking (#904): the drain path main…"
+      },
+      {
+        "hash": "7e582fef1ab92a09",
+        "label": "Mutation history: when SPOTIFYMCPHISTORY=1, successful m…"
+      },
+      {
+        "hash": "7fe4e66a430c16b0",
+        "label": "Pagination walks: getAllPages walks offset-paginated end…"
+      },
+      {
+        "hash": "9156527dd211e301",
+        "label": "Minimal interface: class SpotifyClient { async get<T>(pa…"
+      },
+      {
+        "hash": "f5bf44043adcbce4",
+        "label": "get appends params as query string; all methods prepend …"
+      },
+      {
+        "hash": "446134a45d4335e6",
+        "label": "4.0.4 Spotify API endpoint reference"
+      },
+      {
+        "hash": "f093ad5c759f1051",
+        "label": "Quick reference for all endpoints used. All paths are re…"
+      },
+      {
+        "hash": "11f5d7749cbb5adf",
+        "label": "| Tool | Method | Path | |---|---|---| | getnowplaying |…"
+      },
+      {
+        "hash": "8d91e983df3b8c08",
+        "label": "/artists/{id}/top-tracks status (#901). The two platform…"
+      },
+      {
+        "hash": "b964ac04f2e6f6d8",
+        "label": "5. Tools"
+      },
+      {
+        "hash": "7278de6436c10f12",
+        "label": "Shared tool contract"
+      },
+      {
+        "hash": "7768161104ff7bf2",
+        "label": "Beyond their endpoint-specific arguments, every tool sha…"
+      },
+      {
+        "hash": "68292ba69e45e62b",
+        "label": "Argument contract (#689) — every advertised input object…"
+      },
+      {
+        "hash": "ee5ead5d624e3c9e",
+        "label": "Strict rejection, not stripping: a call carrying an unde…"
+      },
+      {
+        "hash": "d31c370da5da0cbe",
+        "label": "responseformat ('concile' | 'detailed' | 'json', default…"
+      },
+      {
+        "hash": "e19989a52a9d8c0d",
+        "label": "structuredContent — every result attaches its machine-re…"
+      },
+      {
+        "hash": "5129c1bae8a33354",
+        "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
+      },
+      {
+        "hash": "46c5ce02d1cbde05",
+        "label": "Response byte cap (#895) — responseformat: 'json' and st…"
+      },
+      {
+        "hash": "470609f52057944b",
+        "label": "Paging signal (any tool that reads one offset page of a …"
+      },
+      {
+        "hash": "2649f1e3e8e99071",
+        "label": "fetchall (paged reads) — walk every page via client.getA…"
+      },
+      {
+        "hash": "bb87e423bbd4d413",
+        "label": "dryrun (destructive operations) — validate inputs and de…"
+      },
+      {
+        "hash": "2005078a4dda45ba",
+        "label": "dryrun default on mutating tools (v2, #827) — a mutating…"
+      },
+      {
+        "hash": "1fe8e57ff768b53f",
+        "label": "dryrun default in the playback family (v2, #836) — BREAK…"
+      },
+      {
+        "hash": "4eda7c0e9340583a",
+        "label": "dryrun on read-only SCAN tools (v2, #896) — a preview is…"
+      },
+      {
+        "hash": "8f02b2556ea4682a",
+        "label": "Members: savedvsplaylistcoverage, deadlibraryfinder, pla…"
+      },
+      {
+        "hash": "88e1937f6775dd67",
+        "label": "Batch summaries — mutations echo a \"{n} items affected: …"
+      },
+      {
+        "hash": "a9e73090d61fea62",
+        "label": "Partial-write state on chunked playlist writes (#865) — …"
+      },
+      {
+        "hash": "d1b78c5fac477f15",
+        "label": "5.1 Playback"
+      },
+      {
+        "hash": "52148b77b944d84d",
+        "label": "getnowplaying Get the currently playing track or episode…"
+      },
+      {
+        "hash": "ab3a0d394930cdd5",
+        "label": "Returns: track/episode name, artists, album, album art U…"
+      },
+      {
+        "hash": "5669627e6187c9c1",
+        "label": "getcurrentlyplaying Lightweight poll of what is playing …"
+      },
+      {
+        "hash": "cd4722b196041440",
+        "label": "Returns: track/episode name, artists/show, progress ms, …"
+      },
+      {
+        "hash": "70e643529608356a",
+        "label": "play Start or resume playback. Optionally target specifi…"
+      },
+      {
+        "hash": "bce10d1bfa3f3846",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "19eb52649b5d5ab4",
+        "label": "pause Pause playback on the active device."
+      },
+      {
+        "hash": "71fc3dca2052c0b9",
+        "label": "Inputs: deviceid (optional)"
+      },
+      {
+        "hash": "2c58c5d3b878e0d4",
+        "label": "skipnext Skip to the next track in the queue or context."
+      },
+      {
+        "hash": "9a1de42e36477731",
+        "label": "skipprevious Skip to the previous track. If >3 seconds i…"
+      },
+      {
+        "hash": "4a4a136030cab288",
+        "label": "seek Seek to a position in the current track."
+      },
+      {
+        "hash": "edd03e8bbe8ef8dd",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "2faa3b67da2098a6",
+        "label": "setvolume Set playback volume."
+      },
+      {
+        "hash": "6768c82e14144549",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "a2acf049cde25ef3",
+        "label": "setshuffle Enable or disable shuffle mode."
+      },
+      {
+        "hash": "36b2b7b5425a9889",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "0e8638777bb58108",
+        "label": "setrepeat Set repeat mode."
+      },
+      {
+        "hash": "91e3ef2b0b572c1c",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "f893bbcb5997f4c8",
+        "label": "getqueue Get the current playback queue."
+      },
+      {
+        "hash": "fd7e8cfa2ec64fa8",
+        "label": "Returns: currently playing item, plus the up-next list (…"
+      },
+      {
+        "hash": "b74cd36a3aecdf2c",
+        "label": "addtoqueue Add a track or episode to the end of the queu…"
+      },
+      {
+        "hash": "090b810994ada035",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "8263d684045b2add",
+        "label": "queueplaylist Queue every track behind a playlist, album…"
+      },
+      {
+        "hash": "be5501cfe5fbca7d",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "26189493ad13431b",
+        "label": "Returns: queued / failed counts with a per-URI reason, p…"
+      },
+      {
+        "hash": "6ef16c4fd97724cc",
+        "label": "getdevices List available Spotify Connect devices."
+      },
+      {
+        "hash": "f88695d119d77625",
+        "label": "Returns: array of devices with id, name, type (computer/…"
+      },
+      {
+        "hash": "2135657c32d98771",
+        "label": "transferplayback Move playback to a different device."
+      },
+      {
+        "hash": "b4bd14dafa27f92a",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "8b520f842dcc888b",
+        "label": "playfromsearch Search for a track or episode by name and…"
+      },
+      {
+        "hash": "bb04046d4ec6f723",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "c6ffbe90ec40326e",
+        "label": "marketavailability Check whether a track, episode, or al…"
+      },
+      {
+        "hash": "e3af4076ecc823b3",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "63e317049a9019a4",
+        "label": "Returns: permarket[] with one row per probed market, eac…"
+      },
+      {
+        "hash": "9116a700cb0c836f",
+        "label": "isplayable is true, false, or null, and the null case is…"
+      },
+      {
+        "hash": "0091ec9318eefb8e",
+        "label": "This tool no longer reads availablemarkets, which the sc…"
+      },
+      {
+        "hash": "db84d8bb9489dc23",
+        "label": "A 404 means \"not available in this market\"; a 429 or tra…"
+      },
+      {
+        "hash": "c22fd82314f73994",
+        "label": "5.2 Search"
+      },
+      {
+        "hash": "6d5811c2a3047cf8",
+        "label": "search Search Spotify's catalog."
+      },
+      {
+        "hash": "c9afa44827721e88",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "d9a5857680c4802a",
+        "label": "Returns: grouped results by type. Each item includes URI…"
+      },
+      {
+        "hash": "5497bb931b3e7139",
+        "label": "playlistfillfromsearch also sends at most 10 track resul…"
+      },
+      {
+        "hash": "ec8ea02cb5ab8db4",
+        "label": "exhaust2 playlist-item walk contract (#898)"
+      },
+      {
+        "hash": "7d2c8f2a233f5d34",
+        "label": "playlistexpressionalgebra and playlistfillfromsearch bot…"
+      },
+      {
+        "hash": "da168652d231c549",
+        "label": "| Field | Meaning | |---|---| | truncated | true when at…"
+      },
+      {
+        "hash": "7e375f4aca9f7a5a",
+        "label": "truncated and truncatedbycap are different questions and…"
+      },
+      {
+        "hash": "55a77da1cd15d6e3",
+        "label": "Item pages request fields=items(item(uri)),total,limit. …"
+      },
+      {
+        "hash": "e3451b76bfac4688",
+        "label": "5.3 Catalog Lookup"
+      },
+      {
+        "hash": "0a23ea773ac74058",
+        "label": "gettrack Get full details for a track by URI or ID."
+      },
+      {
+        "hash": "abfa8082a7fd377b",
+        "label": "Inputs: id (string, required)"
+      },
+      {
+        "hash": "0d0db9a5fd8bba5f",
+        "label": "Returns: name, artists, album, durationms, explicit, URI…"
+      },
+      {
+        "hash": "f2451b956e3883a1",
+        "label": "getartist Get artist info."
+      },
+      {
+        "hash": "64526772233d3bb3",
+        "label": "Returns: name, genres, URI. (Note: popularity and follow…"
+      },
+      {
+        "hash": "ddd1ed9fe54cb695",
+        "label": "getartistalbums List an artist's albums and singles."
+      },
+      {
+        "hash": "a2d578845306ce26",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "6a915ad759bf7355",
+        "label": "GET /artists/{id}/albums hard-caps limit at 10 and answe…"
+      },
+      {
+        "hash": "73f05f58bc0ddab4",
+        "label": "getalbum Get album details and track list."
+      },
+      {
+        "hash": "9cce1bdf085bc8cb",
+        "label": "Returns: name, artists, releasedate, totaltracks, tracks…"
+      },
+      {
+        "hash": "4ff7165a0c440261",
+        "label": "getalbumtracks List an album's tracks with pagination."
+      },
+      {
+        "hash": "e992294b1a95c8a0",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "ec9c4b88169d09fe",
+        "label": "Returns: track name, artists, durationms, URI; plus tota…"
+      },
+      {
+        "hash": "0646489662c09a32",
+        "label": "getme Get the current user's Spotify profile."
+      },
+      {
+        "hash": "158f1fe1b9e10b8e",
+        "label": "Returns: display name, user ID, URI. Spotify removed ema…"
+      },
+      {
+        "hash": "df9b33e9334fcd7f",
+        "label": "getshow Get full details for a podcast show."
+      },
+      {
+        "hash": "06ed98cfdb62a6d9",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "d94e644fc274da42",
+        "label": "Returns: name, description, explicit, totalepisodes, lan…"
+      },
+      {
+        "hash": "c9dc014203297639",
+        "label": "getepisode Get full details for a podcast episode."
+      },
+      {
+        "hash": "21d1a089d5c4bb73",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "3fc2b1d6c2e9600d",
+        "label": "Returns: name, description, durationms, releasedate, exp…"
+      },
+      {
+        "hash": "a9267e7ad31259eb",
+        "label": "listshowepisodes List one podcast show's episodes newest…"
+      },
+      {
+        "hash": "eef6d85b37ea9fe6",
+        "label": "Inputs: showid (string, required), offset (number, optio…"
+      },
+      {
+        "hash": "d863a4e63427be04",
+        "label": "Returns: episode name, release date, duration, URI, and …"
+      },
+      {
+        "hash": "435c3f43b943b398",
+        "label": "getartisttoptracks Get an artist's ten most-played track…"
+      },
+      {
+        "hash": "780e6df2ebc86cf9",
+        "label": "Inputs: id (string, required), market (string, optional …"
+      },
+      {
+        "hash": "9d0c2a48dc1f3a97",
+        "label": "A 403 here usually means the endpoint isn't enabled for …"
+      },
+      {
+        "hash": "2d5e03ccd77d70cd",
+        "label": "getavailablemarkets List the country codes of every mark…"
+      },
+      {
+        "hash": "36ed4db1f620598c",
+        "label": "Inputs: shared response fields only (responseformat, max…"
+      },
+      {
+        "hash": "b851ed02ea5d9660",
+        "label": "Returns: list of market entries from GET /markets."
+      },
+      {
+        "hash": "93f3eacf77686ab2",
+        "label": "The getseveral batch family Seven batch lookup tools fet…"
+      },
+      {
+        "hash": "6b0c3ade06a30d8c",
+        "label": "| Tool | Endpoint | Max IDs per request | |---|---|---| …"
+      },
+      {
+        "hash": "284ffd16b30cdad6",
+        "label": "These limits, the 100-uri playlist item writes, the 40-u…"
+      },
+      {
+        "hash": "e004fa94a719e8be",
+        "label": "Inputs: ids (string[], required — longer lists are fetch…"
+      },
+      {
+        "hash": "8dbc12fe56d866cc",
+        "label": "Returns: full objects per resolved ID plus a counts bloc…"
+      },
+      {
+        "hash": "ed58f5dcb012b73c",
+        "label": "Why these seven keep the batch route (#1224). Every othe…"
+      },
+      {
+        "hash": "3502d471b59cfad0",
+        "label": "Per-id fan-in reporting (#1224)"
+      },
+      {
+        "hash": "26d4744325e939f5",
+        "label": "Six tools read a list of catalog ids and now do it one G…"
+      },
+      {
+        "hash": "6b0520989f551b67",
+        "label": "Requests are disclosed, not summarised. Each fan-in publ…"
+      },
+      {
+        "hash": "20917b660811d4e5",
+        "label": "A failed read is named, never absorbed. Every unresolved…"
+      },
+      {
+        "hash": "18a765b6c5e44c03",
+        "label": "A field Spotify removed is never a bucket (#639). A fail…"
+      },
+      {
+        "hash": "f19cf68efedcf46c",
+        "label": "A removed facet that is searched is not \"no results\" (#6…"
+      },
+      {
+        "hash": "e169a0a6fbb534e4",
+        "label": "#1093 accounting is unchanged. counts.requested == count…"
+      },
+      {
+        "hash": "4a90caf30509314f",
+        "label": "Rate limiting still degrades, it does not abort. The fan…"
+      },
+      {
+        "hash": "35a0ae57e7d49edf",
+        "label": "5.4 Personalization"
+      },
+      {
+        "hash": "a451ccc3abdc197f",
+        "label": "gettoptracks Get the user's most-played tracks."
+      },
+      {
+        "hash": "211de518ae433318",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "c967407e7f232580",
+        "label": "gettopartists Get the user's most-played artists."
+      },
+      {
+        "hash": "efe6774681af5c9e",
+        "label": "Inputs: same as gettoptracks."
+      },
+      {
+        "hash": "02be36fd1ffe585b",
+        "label": "getrecentlyplayed Get recently played tracks with timest…"
+      },
+      {
+        "hash": "e8c35f0c0eb27674",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "b0fabeb4b2bf31d7",
+        "label": "tasteshiftreport Compare the shortterm and longterm top-…"
+      },
+      {
+        "hash": "285f96f54d3f054c",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "88b4a2b0c3c9c4d9",
+        "label": "Returns (structuredContent): windowsizes — shortterm / l…"
+      },
+      {
+        "hash": "b8f9020107d4be5a",
+        "label": "jaccard is null when both windows of that domain are emp…"
+      },
+      {
+        "hash": "f9ef930220413d67",
+        "label": "5.5 Library"
+      },
+      {
+        "hash": "f097d1fe4c655021",
+        "label": "Feb 2026 note: Save, remove, and check operations accept…"
+      },
+      {
+        "hash": "2f0e8082f2148cb4",
+        "label": "getsavedtracks Get tracks saved in the user's Liked Song…"
+      },
+      {
+        "hash": "3ebf0398dd286bd6",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "ee647e06e1651364",
+        "label": "getsavedalbums Get albums saved in the user's library."
+      },
+      {
+        "hash": "5e400a68adf5541a",
+        "label": "Inputs: limit, offset, market, fetchall (all optional — …"
+      },
+      {
+        "hash": "6e562f304d1582a4",
+        "label": "getsavedshows Get podcast shows saved in the user's libr…"
+      },
+      {
+        "hash": "dbe8f520d94a1a46",
+        "label": "Inputs: limit, offset, fetchall (all optional — fetchall…"
+      },
+      {
+        "hash": "a8b099d2cf542413",
+        "label": "getsavedepisodes Get podcast episodes saved in the user'…"
+      },
+      {
+        "hash": "dd55007df5d2aa6e",
+        "label": "Returns: list of episodes with name, show name, duration…"
+      },
+      {
+        "hash": "b2bb20b0ce18b789",
+        "label": "Retired: the per-type library trio"
+      },
+      {
+        "hash": "7834573d6e25c7bd",
+        "label": "saveitems, removesaveditems and checksaveditems are remo…"
+      },
+      {
+        "hash": "ea25b9f232b6b4d9",
+        "label": "| Retired tool | Use instead | Behaviour change | |---|-…"
+      },
+      {
+        "hash": "144ecd9071125028",
+        "label": "All three also had a second defect that the replacement …"
+      },
+      {
+        "hash": "f00c56873e50f688",
+        "label": "savetolibrary Save one or more items to the user's libra…"
+      },
+      {
+        "hash": "93b096dc1d471adb",
+        "label": "Inputs: uris (string[], required, max 40 — track, album,…"
+      },
+      {
+        "hash": "2c801524934fbf03",
+        "label": "Sends PUT /me/library?uris=…."
+      },
+      {
+        "hash": "f7c2ad7a97a7f9ab",
+        "label": "removefromlibrary Remove one or more items from the user…"
+      },
+      {
+        "hash": "8c7a8fd03ae7c27b",
+        "label": "For a single playlist there is also the always-gated unf…"
+      },
+      {
+        "hash": "6a3adde9d86fe740",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "a7dba085b4b2f1ab",
+        "label": "Sends DELETE /me/library?uris=…."
+      },
+      {
+        "hash": "f19d39def71199a5",
+        "label": "checkinlibrary Check whether items are saved in or follo…"
+      },
+      {
+        "hash": "783694f7db7bddff",
+        "label": "Inputs: uris (string[], required, max 40 — track, album,…"
+      },
+      {
+        "hash": "0616bd9a3dca1b56",
+        "label": "Sends GET /me/library/contains?uris=…. Returns: array of…"
+      },
+      {
+        "hash": "27ac0a2b8592af9c",
+        "label": "The response is positionally matched to the request, so …"
+      },
+      {
+        "hash": "b21fed23da922f1b",
+        "label": "The read half accepts more URI types than the write half…"
+      },
+      {
+        "hash": "f3f715efac0531cc",
+        "label": "Note on following an artist: this tool reads follow stat…"
+      },
+      {
+        "hash": "d1b72671578d6539",
+        "label": "5.6 Playlists"
+      },
+      {
+        "hash": "4319fc7b05aae758",
+        "label": "getuserplaylists List the current user's playlists."
+      },
+      {
+        "hash": "188e88c52e475be5",
+        "label": "Inputs: limit (1–50, default 20), offset, fetchall (all …"
+      },
+      {
+        "hash": "6d7107f92d05e3df",
+        "label": "Returns: id, name, description, track count, ispublic, i…"
+      },
+      {
+        "hash": "d16f6ccf9a8c9d68",
+        "label": "Feb 2026 note: Playlist item endpoints use /items (not /…"
+      },
+      {
+        "hash": "41e2b4c772d13d67",
+        "label": "Playlist write receipts (#879)"
+      },
+      {
+        "hash": "4176dd5454acd6b6",
+        "label": "Every tool that commits playlist items issues a mutation…"
+      },
+      {
+        "hash": "941410437bcff681",
+        "label": "structuredContent additions (prose gains one formatRecei…"
+      },
+      {
+        "hash": "0d36386f786deb3a",
+        "label": "| Field | Meaning | |---|---| | ok | false as soon as on…"
+      },
+      {
+        "hash": "eba925a72addac33",
+        "label": "What each receipt checks, by write shape — a receipt tha…"
+      },
+      {
+        "hash": "5e5bf80c7492e9c9",
+        "label": "Add / append — every written uri is present. A no-op lea…"
+      },
+      {
+        "hash": "35804f5fbf48f187",
+        "label": "Remove — every removed uri is absent, with the row count…"
+      },
+      {
+        "hash": "10303c486762ab0c",
+        "label": "Replace (PUT /playlists/{id}/items) — presence, PLUS the…"
+      },
+      {
+        "hash": "189eb21325739522",
+        "label": "A response carrying no total leaves the row-count check …"
+      },
+      {
+        "hash": "950e14278c23944d",
+        "label": "An empty result set is not evidence of success (#1252). …"
+      },
+      {
+        "hash": "7193bbc06bf5ef26",
+        "label": "| Check | Requires | Without it | |---|---|---| | Bare-u…"
+      },
+      {
+        "hash": "734538cbf9f2d9b9",
+        "label": "missing is left empty on an unread read because it is a …"
+      },
+      {
+        "hash": "23e13b258182071a",
+        "label": "Tools carrying the contract: applysnapshotchanges, balan…"
+      },
+      {
+        "hash": "008e7fbb815552f7",
+        "label": "dryrun results are unchanged: no request is sent, nothin…"
+      },
+      {
+        "hash": "b4290ab42783ad01",
+        "label": "Confirmation-refusal payload contract (#1100)"
+      },
+      {
+        "hash": "cf61c2ad8a50cfa7",
+        "label": "A confirmation-gated write that is refused returns a res…"
+      },
+      {
+        "hash": "90f4e5f370800999",
+        "label": "| Verdict | reason | Meaning | |---|---|---| | declined …"
+      },
+      {
+        "hash": "86e92a4cbcfddb51",
+        "label": "This is the contract for every tool that gates on confir…"
+      },
+      {
+        "hash": "8c21f63ea436e20e",
+        "label": "Two properties are worth stating because they are the on…"
+      },
+      {
+        "hash": "bf9dcfff1ee4c280",
+        "label": "The verdict is machine-readable, not prose. A caller dis…"
+      },
+      {
+        "hash": "91b75d8f5db32110",
+        "label": "A refusal is a result, not a crash. An unpromptable host…"
+      },
+      {
+        "hash": "a531601987c76457",
+        "label": "1237 closed the same gap in the last six writes that sti…"
+      },
+      {
+        "hash": "d8a2ab17e9d94491",
+        "label": "restorelibrarysnapshot is the one site whose responsefor…"
+      },
+      {
+        "hash": "959ebe39096d7019",
+        "label": "The conditions under which any of these six prompts are …"
+      },
+      {
+        "hash": "72aaa3ee7148f007",
+        "label": "Annotations are orthogonal to this gate and do not subst…"
+      },
+      {
+        "hash": "03f519abf7d643cf",
+        "label": "Playlist follow family (#1099)"
+      },
+      {
+        "hash": "83e134a355beddc1",
+        "label": "followplaylist and unfollowplaylist save and remove a pl…"
+      },
+      {
+        "hash": "424039efb9c842ec",
+        "label": "| Tool | Sends | dryrun default | Notes | |---|---|---|-…"
+      },
+      {
+        "hash": "94cd5e6e77a9b65f",
+        "label": "These tools do not pin, and never have. The endpoint Spo…"
+      },
+      {
+        "hash": "96b934f9019b5a52",
+        "label": "What a follow now does, exactly. It saves the playlist U…"
+      },
+      {
+        "hash": "8b90a103ee2c15a2",
+        "label": "Why playlists and not artists. GET /me/library/contains …"
+      },
+      {
+        "hash": "d3af0005eff3e501",
+        "label": "Returns (canonical calls): { ok: true, playlistid, follo…"
+      },
+      {
+        "hash": "da0d6c24359ea82f",
+        "label": "Deprecated tool names — one release, then removed"
+      },
+      {
+        "hash": "4a2c235db78b69d7",
+        "label": "pinplaylist and unpinplaylist remain registered as depre…"
+      },
+      {
+        "hash": "8ddb58dea0d376c5",
+        "label": "| Deprecated | Use instead | |---|---| | pinplaylist | f…"
+      },
+      {
+        "hash": "a88ac67f81643c92",
+        "label": "Each alias is registered against the same handler as its…"
+      },
+      {
+        "hash": "bd0cb1718ffcc6ae",
+        "label": "{ \"ok\": true, \"playlistid\": \"pl1\", \"followed\": true, \"de…"
+      },
+      {
+        "hash": "d7990e9b201a56f2",
+        "label": "deprecatedinputs carries the legacy spelling the caller …"
+      },
+      {
+        "hash": "ef6ce051907875dd",
+        "label": "Migration: replace the tool name in any prompt, saved re…"
+      },
+      {
+        "hash": "a4a00c44ab3ee45b",
+        "label": "Playlist set/diff input contract (#912)"
+      },
+      {
+        "hash": "247885adb516c9d5",
+        "label": "All playlist set-operation, diff, overlap, intersection,…"
+      },
+      {
+        "hash": "8890cd77cded319b",
+        "label": "| Tool family | Tools | Canonical input | Retired spelli…"
+      },
+      {
+        "hash": "d8d231f2feffa134",
+        "label": "The single-identifier family is a different shape from t…"
+      },
+      {
+        "hash": "059fdc4a703f6464",
+        "label": "Both spellings resolve through the one exported helper r…"
+      },
+      {
+        "hash": "a7e6c8e2db834fde",
+        "label": "Supplying both is allowed only when they agree. Conflict…"
+      },
+      {
+        "hash": "f4bd8cf6236072e2",
+        "label": "Supplying neither is a handler-level error, not a schema…"
+      },
+      {
+        "hash": "9aa7e25e26069e39",
+        "label": "Returned versus total counts. Where a set operation retu…"
+      },
+      {
+        "hash": "9b2a935316de2069",
+        "label": "Planned-move arrays. balanceplaylistpairs plans one move…"
+      },
+      {
+        "hash": "9143da0a7fd99cb7",
+        "label": "Bounded playlist lists and the read cost they imply (#89…"
+      },
+      {
+        "hash": "be106d80214ea769",
+        "label": "A comma-separated string is accepted wherever one of the…"
+      },
+      {
+        "hash": "b4e8d4ff1aa52584",
+        "label": "Over-limit rejections name the limit and the reason. The…"
+      },
+      {
+        "hash": "81863b177d030541",
+        "label": "The read cost is reported. mergeplaylists, diffplaylists…"
+      },
+      {
+        "hash": "b6b7b66de9a59fe4",
+        "label": "The count is of paged reads, one per page. A 401-refresh…"
+      },
+      {
+        "hash": "5c48d2acaeaaf28e",
+        "label": "Migration note (v2.0 → v3.0, #1287): the retired names a…"
+      },
+      {
+        "hash": "51571f882346e828",
+        "label": "The contract that replaced the old one:"
+      },
+      {
+        "hash": "a80674a306c41ae1",
+        "label": "No retired spelling appears in any tool's inputSchema. T…"
+      },
+      {
+        "hash": "ff4ce9cce1555e4b",
+        "label": "A call carrying one is refused before any Spotify reques…"
+      },
+      {
+        "hash": "65f04981b1cc4452",
+        "label": "playlistsubtract requires baseplaylistid again. The posi…"
+      },
+      {
+        "hash": "d16b0e2d7ede6e6c",
+        "label": "The deprecatedinputs / deprecationnote mechanism is unch…"
+      },
+      {
+        "hash": "523ffce82597d01d",
+        "label": "The per-tool retirement record is RETIREDPLAYLISTINPUTS …"
+      },
+      {
+        "hash": "0fb829ae3c121271",
+        "label": "Full-sequence rewrite contract (#860)"
+      },
+      {
+        "hash": "3084ef20dc0b6c03",
+        "label": "playlistsort, playlistshuffle, playlistreverse, playlist…"
+      },
+      {
+        "hash": "95ff1c8f96bffc77",
+        "label": "Each of these tools therefore refuses before the first P…"
+      },
+      {
+        "hash": "90a243e62243491f",
+        "label": "Two consequences callers can observe:"
+      },
+      {
+        "hash": "db3549bb587df6e3",
+        "label": "dryrun: true still renders its plan, and appends the ref…"
+      },
+      {
+        "hash": "ccc3c400aeb3e34e",
+        "label": "playlistunion and playlistsubtract dry-run payloads gain…"
+      },
+      {
+        "hash": "c98a4246ff246a56",
+        "label": "A union that creates a new playlist (targetname) is not …"
+      },
+      {
+        "hash": "032bee0565c8930b",
+        "label": "Migration note (breaking, v2.0): a call that previously …"
+      },
+      {
+        "hash": "ddb9dcc27a4829d1",
+        "label": "The overwrite gate on the set-algebra family (#872)"
+      },
+      {
+        "hash": "75651034c61692bd",
+        "label": "playlistunion (into an existing targetplaylistid), playl…"
+      },
+      {
+        "hash": "ff318d5d02961f8a",
+        "label": "playlisttrim was the one that gated on nothing. Its desc…"
+      },
+      {
+        "hash": "7eb13f6936cb28bd",
+        "label": "What #872 found already working, and left alone: playlis…"
+      },
+      {
+        "hash": "21a69b83364295d5",
+        "label": "A refusal here is a result, not a write, and carries the…"
+      },
+      {
+        "hash": "f83186a84eec6b6e",
+        "label": "Migration note (breaking, v2.0): playlisttrim now asks b…"
+      },
+      {
+        "hash": "7e39d457ffc72237",
+        "label": "Truncated-read refusal on the single-playlist rewrites (…"
+      },
+      {
+        "hash": "6c244910397abea5",
+        "label": "playlistsort, playlistshuffle, playlistreverse and playl…"
+      },
+      {
+        "hash": "2d220a27b0c1b039",
+        "label": "Those tools therefore refuse before the first PUT when t…"
+      },
+      {
+        "hash": "8a1aa1dc6fa76c20",
+        "label": "playlisttrim is refused for keepwhich last and random on…"
+      },
+      {
+        "hash": "d27edfeb386f795b",
+        "label": "The walk is bounded, not complete-or-not, so the refusal…"
+      },
+      {
+        "hash": "61b61afd1c52f786",
+        "label": "What did not change, deliberately:"
+      },
+      {
+        "hash": "c1c92a1321c0eec2",
+        "label": "playlistunion and playlistsubtract still disclose an inc…"
+      },
+      {
+        "hash": "923bb1ce12431478",
+        "label": "The #860 unavailable-row guard is unchanged and still fi…"
+      },
+      {
+        "hash": "f134d8e75e4c2377",
+        "label": "No confirmation gate was added, removed or relaxed. #872…"
+      },
+      {
+        "hash": "0a386317f2a999ba",
+        "label": "Migration note (breaking): a call that previously commit…"
+      },
+      {
+        "hash": "7f0db437be78f6ba",
+        "label": "Known gap, closed in #1362 — the swarm4 slice. This para…"
+      },
+      {
+        "hash": "a59b4e298dd04f92",
+        "label": "The refusal is enforced at atomicReplace, the single wri…"
+      },
+      {
+        "hash": "6109fb809e4c3689",
+        "label": "The affected tools are playlistfliporder, playlistresequ…"
+      },
+      {
+        "hash": "d258c35254c97b18",
+        "label": "Bounded verdicts in removeunavailableplaylistitems (#131…"
+      },
+      {
+        "hash": "779891be6d9b3c6c",
+        "label": "The tool this contract names as its remedy walked to the…"
+      },
+      {
+        "hash": "964ae3ad495ac19c",
+        "label": "verification is now a three-valued verdict, and the walk…"
+      },
+      {
+        "hash": "8727c9e0ed40735c",
+        "label": "| Value | Meaning | ok | |---|---|---| | verified | The …"
+      },
+      {
+        "hash": "441ba8eada8c1903",
+        "label": "partial is deliberately not failed: the re-read did not …"
+      },
+      {
+        "hash": "974019d7778bb44c",
+        "label": "Truncated-read refusal on the swarm4 rewrites (#1362)"
+      },
+      {
+        "hash": "64e24f8250bae567",
+        "label": "The ten swarm4 tools that commit through one atomic full…"
+      },
+      {
+        "hash": "fdca8bc06fa78b0c",
+        "label": "They now behave as the playlists.ts rewrites do, with th…"
+      },
+      {
+        "hash": "18fdfcb0ab29e89b",
+        "label": "Two enforcement points, deliberately, and they are not t…"
+      },
+      {
+        "hash": "9e334263850a1a33",
+        "label": "atomicReplace — the single write choke point — now takes…"
+      },
+      {
+        "hash": "ecc96eed519d5271",
+        "label": "The same predicate also runs per tool ahead of the dryru…"
+      },
+      {
+        "hash": "5a1a0046c8f24dc4",
+        "label": "playlistbalance is deliberately excluded: it creates new…"
+      },
+      {
+        "hash": "c40be6394d1762cd",
+        "label": "Migration note (breaking): a swarm4 rewrite of a playlis…"
+      },
+      {
+        "hash": "6bf9ff5de25ccd8c",
+        "label": "mergeplaylists Merge several source playlists into one. …"
+      },
+      {
+        "hash": "62e8b3077b32f15d",
+        "label": "Inputs: playlists (source references, 1–10; the sources …"
+      },
+      {
+        "hash": "7fc8959efecf3182",
+        "label": "Source read phase (#902). Every source is walked concurr…"
+      },
+      {
+        "hash": "c29b0fbbf675d1af",
+        "label": "The cap is per source, so the combined total is a sum (#…"
+      },
+      {
+        "hash": "4d854098360b3882",
+        "label": "Returns: targetplaylist, creatednewplaylist, playlists (…"
+      },
+      {
+        "hash": "3e8eb28c764cf751",
+        "label": "getplaylist Get a playlist's metadata and its items. Mak…"
+      },
+      {
+        "hash": "623db658c27aa3a8",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "cec806a6fb5ed7e1",
+        "label": "Returns: name, description, owner, ispublic, iscollabora…"
+      },
+      {
+        "hash": "5dba27d707b9cbb1",
+        "label": "Fetch-all paging. The walk after the first page runs thr…"
+      },
+      {
+        "hash": "1181463f97c75d21",
+        "label": "Unavailable items. An item with no playable track is enu…"
+      },
+      {
+        "hash": "9e28223a1ad61797",
+        "label": "Note on fields with json. json mode returns the raw Spot…"
+      },
+      {
+        "hash": "2e0d63a05053d965",
+        "label": "getplaylistitems List a playlist's items on a single pag…"
+      },
+      {
+        "hash": "b913f0f9d26c7065",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "07f5e83c0787c793",
+        "label": "Returns: items (track/episode name, artists/show, durati…"
+      },
+      {
+        "hash": "99ca9ba3eb74e72a",
+        "label": "createplaylist Create a new playlist for the current use…"
+      },
+      {
+        "hash": "a89b21e2b71aa0c1",
+        "label": "Uses a single call to POST /me/playlists for the current…"
+      },
+      {
+        "hash": "70075abbe9469eef",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "de13dc104881740c",
+        "label": "Returns: playlist id, URI, external URL."
+      },
+      {
+        "hash": "474d4cbf794d764b",
+        "label": "addtoplaylist Add tracks or episodes to a playlist. Uses…"
+      },
+      {
+        "hash": "9ae2eb511511dd8b",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "57d405431cbf51fd",
+        "label": "removefromplaylist Remove tracks or episodes from a play…"
+      },
+      {
+        "hash": "23aceb34d185025b",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "9f54008d28ef344f",
+        "label": "updateplaylist Update a playlist's name, description, or…"
+      },
+      {
+        "hash": "9b80520ba18837b7",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "a9da6c1832016c02",
+        "label": "reorderplaylistitems Move a range of items within a play…"
+      },
+      {
+        "hash": "b16b23bb6a8d2450",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "4f004f2c2a920e08",
+        "label": "replaceplaylistitems Replace ALL items in a playlist wit…"
+      },
+      {
+        "hash": "5a014e0d76638376",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "bcc9618e6ac1dd4d",
+        "label": "Returns: confirmation with the total replaced count, req…"
+      },
+      {
+        "hash": "e67f208a8aa8fa17",
+        "label": "findduplicatesinplaylist Find duplicate tracks in a play…"
+      },
+      {
+        "hash": "1d0730021d0c4a24",
+        "label": "Inputs: playlistid (string, required), shared response f…"
+      },
+      {
+        "hash": "e3ad71b5cfba881d",
+        "label": "Returns: per group: track label, occurrence count and ki…"
+      },
+      {
+        "hash": "c3f4977a96a501f6",
+        "label": "searchwithinplaylist (#731) Text search inside one playl…"
+      },
+      {
+        "hash": "01fa883a0f77ccba",
+        "label": "The walk uses getplaylistitems' cap and its truncation v…"
+      },
+      {
+        "hash": "554d1dc9eadad207",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "8fca042e50662721",
+        "label": "Returns: the matching rows (name, artist or show, URI, a…"
+      },
+      {
+        "hash": "de955c02b963f837",
+        "label": "getplaylistcover Get a playlist's cover image URLs."
+      },
+      {
+        "hash": "f55af4868d3e936e",
+        "label": "Inputs: playlistid (string, required at runtime) — the c…"
+      },
+      {
+        "hash": "a6f8c7ba8e83d699",
+        "label": "Returns: array of image objects (url, width, height)."
+      },
+      {
+        "hash": "735af053557f0a9e",
+        "label": "uploadplaylistcover Replace a playlist's cover image wit…"
+      },
+      {
+        "hash": "6e1bcf4bfb0f82d9",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "7576077206abbd74",
+        "label": "moveitemsbetweenplaylists Bulk rehome items between play…"
+      },
+      {
+        "hash": "b79dc1e761cd759d",
+        "label": "A move addresses the source by playlist position ({ uri,…"
+      },
+      {
+        "hash": "b6e5ffee93f0616c",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "39c13ded0cc1be81",
+        "label": "Returns: transferred (items copied to the target), remov…"
+      },
+      {
+        "hash": "1b839a6c6073fa74",
+        "label": "5.7 Following"
+      },
+      {
+        "hash": "83d6bedcc3dc9dbb",
+        "label": "getfollowedartists Get all artists the user follows."
+      },
+      {
+        "hash": "ee7b015013196ce1",
+        "label": "Inputs: limit (1–50, default 20), after (cursor for pagi…"
+      },
+      {
+        "hash": "73129c4d6d4d2dcb",
+        "label": "checkfollowingartists Check if the user follows specific…"
+      },
+      {
+        "hash": "215ab0909c8cdf2d",
+        "label": "Inputs: ids (string[], required, max 50 — bare artist ID…"
+      },
+      {
+        "hash": "109bda13873dc328",
+        "label": "Returns: array of booleans matching input order. Uses GE…"
+      },
+      {
+        "hash": "7bbe99b739946bd4",
+        "label": "Retired: followartists, unfollowartists"
+      },
+      {
+        "hash": "54ba9055697e1357",
+        "label": "Removed (breaking, #638). Both targeted PUT/DELETE /me/f…"
+      },
+      {
+        "hash": "31ab2d32114449cf",
+        "label": "There is no migration for the write. checkfollowingartis…"
+      },
+      {
+        "hash": "1da2beb68c08afcc",
+        "label": "5.8 Audiobooks"
+      },
+      {
+        "hash": "f83d3632a6242e08",
+        "label": "Audiobook content is market-gated: it is only available …"
+      },
+      {
+        "hash": "478fe5cd4f798d28",
+        "label": "getaudiobook Get full details for an audiobook."
+      },
+      {
+        "hash": "03c129e2805345d3",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "ae947cffc7f5d102",
+        "label": "Returns: name, authors, narrators, description, edition,…"
+      },
+      {
+        "hash": "9b60c885013f4a26",
+        "label": "getaudiobookchapters List an audiobook's chapters with p…"
+      },
+      {
+        "hash": "439f41a6c2c43c65",
+        "label": "Inputs: id (string, required), limit (1–50, default 20),…"
+      },
+      {
+        "hash": "d3ff2011a195d677",
+        "label": "Returns: chapter name, description, durationms, released…"
+      },
+      {
+        "hash": "02e07bd4b8b04026",
+        "label": "getchapter Get full details for a single audiobook chapt…"
+      },
+      {
+        "hash": "caca8ad859add31c",
+        "label": "Inputs: id (string, required), market (optional)"
+      },
+      {
+        "hash": "26bcb651f000a7fc",
+        "label": "Returns: name, description, durationms, releasedate, exp…"
+      },
+      {
+        "hash": "1d6ba623981bf18c",
+        "label": "getsavedaudiobooks Get audiobooks saved in the user's li…"
+      },
+      {
+        "hash": "1964beb76a130e3e",
+        "label": "Inputs: limit (1–50, default 20), offset (optional)"
+      },
+      {
+        "hash": "cb4ed06b8d78f3ed",
+        "label": "5.9 Users"
+      },
+      {
+        "hash": "2696f73042b09bf6",
+        "label": "getuserprofile Get any Spotify user's public profile."
+      },
+      {
+        "hash": "e413df4403e25f9b",
+        "label": "Inputs: userid (string, required)"
+      },
+      {
+        "hash": "1be10212b9eb890c",
+        "label": "Returns: display name, user ID, URI, profile image URL, …"
+      },
+      {
+        "hash": "8a03b87e7871313f",
+        "label": "getuserplaylistsbyid List another Spotify user's public …"
+      },
+      {
+        "hash": "d5ad83c7ec7c7a65",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
+      },
+      {
+        "hash": "dc10a1f069466aef",
+        "label": "Returns: playlist name, owner, track count, ID, URI; plu…"
+      },
+      {
+        "hash": "dcfac0164d11cdef",
+        "label": "5.10 stats.fm (v2 — implemented)"
+      },
+      {
+        "hash": "d13ed19a0c7a644c",
+        "label": "Second upstream: long-range listening history, cross-ran…"
+      },
+      {
+        "hash": "19fcf320a679a642",
+        "label": "Identity. stats.fm has no OAuth: a user-scoped read need…"
+      },
+      {
+        "hash": "bd9c280ab78254de",
+        "label": "Three registration keys are default ON: statsfm (endpoin…"
+      },
+      {
+        "hash": "ebd62049ade63333",
+        "label": "Endpoint tools (statsfm)"
+      },
+      {
+        "hash": "f377b6fbbba34445",
+        "label": "statsfmresolveuser — customId/display name → canonical u…"
+      },
+      {
+        "hash": "f4eff18eb5de7783",
+        "label": "Taste-intelligence tools (statsfm canonical names; taste…"
+      },
+      {
+        "hash": "b1e3950f484ccc49",
+        "label": "Canonical tools are statsfmtasteprofile, statsfmartistaf…"
+      },
+      {
+        "hash": "b21d50b6f8290c51",
+        "label": "It is bounded three ways, because no one bound is suffic…"
+      },
+      {
+        "hash": "9165075debf0c39c",
+        "label": "Wave-2 composite tools (taste; tastecomposites key)"
+      },
+      {
+        "hash": "a3aca5e2c16632c4",
+        "label": "Ten composites register in src/tools/tastecomposites.ts …"
+      },
+      {
+        "hash": "455ba684a6f018a0",
+        "label": "statsfmuser is the identity argument on all eleven, and …"
+      },
+      {
+        "hash": "b93538a37634327f",
+        "label": "| Tool | What it returns | |---|---| | tastedailybrief |…"
+      },
+      {
+        "hash": "c1d26611547af75d",
+        "label": "action=list takes an optional limit (default 20, max 500…"
+      },
+      {
+        "hash": "28b962c0b0edd48d",
+        "label": "5.11 Mutation receipts (verifyreceipt, undomutation, und…"
+      },
+      {
+        "hash": "705a2fa098c44a21",
+        "label": "A mutation that can be reverted issues a receipt; the th…"
+      },
+      {
+        "hash": "450d63836759c65d",
+        "label": "verifyreceipt takes receiptid, validated against rcpt<bo…"
+      },
+      {
+        "hash": "e021daec08256c9c",
+        "label": "Both outcomes carry structuredContent.found, so a caller…"
+      },
+      {
+        "hash": "88c71c3ebcd8922a",
+        "label": "| Outcome | isError | structuredContent | |---|---|---| …"
+      },
+      {
+        "hash": "dc7bc2470b73e284",
+        "label": "The miss is an error because it is a failed lookup. Repo…"
+      },
+      {
+        "hash": "32c21e96e3fea4a7",
+        "label": "Scope of the store. The store keeps the 100 most recent …"
+      },
+      {
+        "hash": "0d1b120770384017",
+        "label": "Scope of the store, per account (#1364). The store is al…"
+      },
+      {
+        "hash": "de93dbc84f07ec07",
+        "label": "The account key is the token file, not Spotify's account…"
+      },
+      {
+        "hash": "92d624c536b853d7",
+        "label": "undomutation / undolastmutation"
+      },
+      {
+        "hash": "1dd130bb0b3e1345",
+        "label": "undomutation takes receiptid and inverts that receipt. u…"
+      },
+      {
+        "hash": "3d150422670dc856",
+        "label": "Direction is read from the receipt, never assumed. An ad…"
+      },
+      {
+        "hash": "f51b7e44d4a8b4cc",
+        "label": "Executing is a write and says so: both tools carry destr…"
+      },
+      {
+        "hash": "1f54b3efcd3db216",
+        "label": "Refusals decided before the prompt, so a rollback that c…"
+      },
+      {
+        "hash": "9712529212f56c8c",
+        "label": "| reason | Meaning | |---|---| | unknownreceipt | The id…"
+      },
+      {
+        "hash": "9c79b056aa7bd68b",
+        "label": "A successful execute returns ok, undonereceipt, directio…"
+      },
+      {
+        "hash": "8677a849637a903f",
+        "label": "A failed undo says so, and certifies nothing. A rollback…"
+      },
+      {
+        "hash": "4613c6663ab6f8ba",
+        "label": "Known gap (#658). Both tools declare responseformat but …"
+      },
+      {
+        "hash": "f7f2d58460dea8bf",
+        "label": "Three pure-introspection tools register outside toolset …"
+      },
+      {
+        "hash": "0e06c6a12116b09c",
+        "label": "| responseformat | findtool / inspecttool / toolsetrepor…"
+      },
+      {
+        "hash": "aa043f1fd562c0a6",
+        "label": "All three emit through one helper, shapeDiscoveryResult …"
+      },
+      {
+        "hash": "2dfa660d15cdaeea",
+        "label": "findtool Inputs: query (string, required, ≥2 chars — cas…"
+      },
+      {
+        "hash": "8825db7037edff4b",
+        "label": "Returns: structuredContent carries query, totalregistere…"
+      },
+      {
+        "hash": "5a4780ff1c600776",
+        "label": "inspecttool Inputs: toolname (string, required — exact r…"
+      },
+      {
+        "hash": "9751e289da9a8b78",
+        "label": "Returns: structuredContent carries found, and on a hit n…"
+      },
+      {
+        "hash": "6834c56aa4fbdf78",
+        "label": "toolsetreport Inputs: responseformat (see the table abov…"
+      },
+      {
+        "hash": "f06f072ee87c2ab4",
+        "label": "Returns: structuredContent carries registeredtools, acti…"
+      },
+      {
+        "hash": "44fec48a11db3610",
+        "label": "5.13 Accounts and the acting account (#602)"
+      },
+      {
+        "hash": "37a91d20e741a138",
+        "label": "Two tools in the accounts module (registration key accou…"
+      },
+      {
+        "hash": "90849289966b36f1",
+        "label": "The registry"
+      },
+      {
+        "hash": "043ff5d3168ef8de",
+        "label": "/.spotify-mcp/accounts.json (override with SPOTIFYMCPACC…"
+      },
+      {
+        "hash": "9a349302e0e8f233",
+        "label": "It is a file rather than a /me sweep on purpose: an acco…"
+      },
+      {
+        "hash": "12ed18012da6046d",
+        "label": "tokenFile is a path, and a path is not a credential. The…"
+      },
+      {
+        "hash": "53ce088c17f407b3",
+        "label": "A registry file that is not valid JSON is REFUSED, never…"
+      },
+      {
+        "hash": "df17cff8f28844d6",
+        "label": "listaccounts Inputs: responseformat (the shared contract…"
+      },
+      {
+        "hash": "3778da56fd8a5aab",
+        "label": "Returns: structuredContent carries accounts (one Account…"
+      },
+      {
+        "hash": "69650bbb39ce5746",
+        "label": "Reads the local registry and issues at most one GET /me …"
+      },
+      {
+        "hash": "3246211791663ffe",
+        "label": "switchaccount Inputs: profile (string, required — the va…"
+      },
+      {
+        "hash": "9777a07ea0cb37e8",
+        "label": "A registered entry resolves through its stored tokenFile…"
+      },
+      {
+        "hash": "0ea2c97729779ba3",
+        "label": "This is a write and it is confirmed. Changing the acting…"
+      },
+      {
+        "hash": "f1b5ec1d742c8687",
+        "label": "Returns: structuredContent carries ok, changed (false wh…"
+      },
+      {
+        "hash": "ded2ea28e7c1faa9",
+        "label": "The acting-account echo"
+      },
+      {
+        "hash": "ba3ae5872edf2006",
+        "label": "Every tool result with a structuredContent carries accou…"
+      },
+      {
+        "hash": "e16090094f2c842f",
+        "label": "When the identity cannot be read, nothing is added — not…"
+      },
+      {
+        "hash": "3843051aa494f8d6",
+        "label": "The audit trail is per account"
+      },
+      {
+        "hash": "e9d8338ccf14653d",
+        "label": "The issue's fourth suggestion asks for the history and r…"
+      },
+      {
+        "hash": "914453cd3ec5be70",
+        "label": "The key is the token file, not accountid, which is a del…"
+      },
+      {
+        "hash": "8152dda38232ebbe",
+        "label": "The acting-account echo is not a substitute for any of t…"
+      },
+      {
+        "hash": "da0b6e7b37696d24",
+        "label": "Existing files. The default account's two stores keep th…"
+      },
+      {
+        "hash": "d564cef48cfdc19e",
+        "label": "spotifydoctor The account row names the acting account's…"
+      },
+      {
+        "hash": "7e49b5bb8f764f94",
+        "label": "The scopes row asks about the tools this run registers, …"
+      },
+      {
+        "hash": "c1b1954710f6689b",
+        "label": "Requirements are either-of where the scope gate is eithe…"
+      },
+      {
+        "hash": "f3e70de12e2dc0f1",
+        "label": "6. Resources"
+      },
+      {
+        "hash": "4c4f171e5c4f95a1",
+        "label": "MCP Resources expose read-only data as URIs Claude can r…"
+      },
+      {
+        "hash": "a8b5306ba0c74fdf",
+        "label": "6.1 Query parameters on paged resources"
+      },
+      {
+        "hash": "3e08000cc5aa90e9",
+        "label": "A fixed resource that reads a paged endpoint accepts its…"
+      },
+      {
+        "hash": "ee57237e3d75af26",
+        "label": "Each parameterised resource registers three entries, not…"
+      },
+      {
+        "hash": "db38a05132a6a5e3",
+        "label": "The {+qs} catch-all is what routes the read; the {?…} te…"
+      },
+      {
+        "hash": "2afbbe36e8c64f1d",
+        "label": "spotify://me/top/tracks{?format,timerange,limit,offset} …"
+      },
+      {
+        "hash": "86de2eeed5d4b2aa",
+        "label": "Every named parameter must be present, and in declaratio…"
+      },
+      {
+        "hash": "f6c48865c9488f32",
+        "label": "The {?…} template is still registered and still earns it…"
+      },
+      {
+        "hash": "d2eaf7ac231c23e4",
+        "label": "Pre-existing, not introduced here. spotify://me/saved/tr…"
+      },
+      {
+        "hash": "882adcaf3fea8221",
+        "label": "| Resource | Parameters | Upstream endpoint | |---|---|-…"
+      },
+      {
+        "hash": "0d13fa970498081f",
+        "label": "spotify://me/recently-played has no offset, and advertis…"
+      },
+      {
+        "hash": "a11bce0aa23a1690",
+        "label": "timerange is validated, not forwarded. The schema carrie…"
+      },
+      {
+        "hash": "1bfafd6b479ecc21",
+        "label": "A window is not a truncated walk, and does not borrow it…"
+      },
+      {
+        "hash": "ced3f2008553f4d9",
+        "label": "limit is bounded to 1–50 and offset to ≥0 before forward…"
+      },
+      {
+        "hash": "f4ada5ba1d8690a5",
+        "label": "Normalising silently is a reason to publish the bound, s…"
+      },
+      {
+        "hash": "3efd3366ec0aa828",
+        "label": "6.2 Audiobook and chapter templates"
+      },
+      {
+        "hash": "a53a6936d32bcd1f",
+        "label": "spotify://audiobook/{id}, spotify://audiobook/{id}/chapt…"
+      },
+      {
+        "hash": "8f1dbd0a9ff3c108",
+        "label": "| Template | Endpoint | Parameters | |---|---|---| | spo…"
+      },
+      {
+        "hash": "7a1d95f8d80f8908",
+        "label": "The chapters pair registers before the bare audiobook pa…"
+      },
+      {
+        "hash": "d7ba81d3e4062a7f",
+        "label": "{id} completions come from /me/audiobooks for the audiob…"
+      },
+      {
+        "hash": "5464d612fe678e31",
+        "label": "The cards are the tool's cards. The prose comes from src…"
+      },
+      {
+        "hash": "bdc1abff623c32f7",
+        "label": "spotify://audiobook/{id}/chapters reads one page, bounde…"
+      },
+      {
+        "hash": "6d953dcd97f7b978",
+        "label": "6.3 spotify://player/devices"
+      },
+      {
+        "hash": "3e6cdaf289874cf0",
+        "label": "spotify://player/devices lists the Spotify Connect devic…"
+      },
+      {
+        "hash": "1e747a9c3e02eae3",
+        "label": "It renders id, name, type, isactive and volumepercent th…"
+      },
+      {
+        "hash": "f0bf0983efcc2748",
+        "label": "The endpoint takes no query parameters (the OpenAPI sche…"
+      },
+      {
+        "hash": "932456d3f20dd1fd",
+        "label": "6.4 spotify://me/genre-heatmap coverage contract (#604)"
+      },
+      {
+        "hash": "53f2e13a6636599a",
+        "label": "The heatmap counts genres over a live sample of your top…"
+      },
+      {
+        "hash": "fca8752b59738941",
+        "label": "?format=json returns the counts together with the covera…"
+      },
+      {
+        "hash": "972262c5fcd849e1",
+        "label": "| Field | Meaning | |---|---| | source | Always topartis…"
+      },
+      {
+        "hash": "759094762007212b",
+        "label": "An unreadable row is never a zero. ArtistObject declares…"
+      },
+      {
+        "hash": "d3c970d7e4adbb3c",
+        "label": "truncated distinguishes a cap that bound from a walk tha…"
+      },
+      {
+        "hash": "82bb95496388c09c",
+        "label": "7. Prompts"
+      },
+      {
+        "hash": "9c504d4f71442426",
+        "label": "Pre-built prompt templates exposed via MCP for common us…"
+      },
+      {
+        "hash": "c1628bdf9954592f",
+        "label": "Prompt argument contract (#689)"
+      },
+      {
+        "hash": "c869385f64646645",
+        "label": "prompts/get carries the argument contract §5 states for …"
+      },
+      {
+        "hash": "d86cafccf7d9d5c5",
+        "label": "A prompt is strict about argument names. server.prompt()…"
+      },
+      {
+        "hash": "cdd8b0d155c57c2c",
+        "label": "A refusal is JSON-RPC -32602 (Invalid params) with a one…"
+      },
+      {
+        "hash": "bb3cbfaa56776f8f",
+        "label": "| Call | Message | |---|---| | musictastesummary {timera…"
+      },
+      {
+        "hash": "776cda8d7f8bb5b3",
+        "label": "Three properties hold for every one of them, and each is…"
+      },
+      {
+        "hash": "e73b6e25409f2514",
+        "label": "It names the prompt and the argument. A caller can act o…"
+      },
+      {
+        "hash": "e44a8b32637ed21b",
+        "label": "It says what was expected, read off the schema's own fai…"
+      },
+      {
+        "hash": "98b4a931aca363b0",
+        "label": "It carries no SDK or zod wording. No MCP error -32602: p…"
+      },
+      {
+        "hash": "64f4c4be41f69fea",
+        "label": "Strictness is about argument names, not encodings. A dec…"
+      },
+      {
+        "hash": "af30d436c887c0b0",
+        "label": "Resource hints degrade with the resources module (#715)"
+      },
+      {
+        "hash": "a225ccc23c5dac52",
+        "label": "A prompt may name a spotify:// resource only when this s…"
+      },
+      {
+        "hash": "f2f9374f7cfdebf4",
+        "label": "The degraded form keeps the guidance and drops the URI:"
+      },
+      {
+        "hash": "711ae02db0a44a19",
+        "label": "| | Resources registered | Resources trimmed | |---|---|…"
+      },
+      {
+        "hash": "7f949c625ace8095",
+        "label": "The fallback is the failure the agent is already holding…"
+      },
+      {
+        "hash": "5e4d48dc70a96e97",
+        "label": "registerPrompts(server, options) takes a required resour…"
+      },
+      {
+        "hash": "df5310a56a2448f1",
+        "label": "A trimmed deployment is also reported by spotifydoctor: …"
+      },
+      {
+        "hash": "a06760583017a4a3",
+        "label": "8. Error Handling"
+      },
+      {
+        "hash": "f4598d1c777f3292",
+        "label": "Spotify API errors → MCP tool errors"
+      },
+      {
+        "hash": "4d13e6ab713a8b3a",
+        "label": "| HTTP Status | Cause | MCP response | |---|---|---| | 4…"
+      },
+      {
+        "hash": "b62f3d2bd582754c",
+        "label": "Cancellation"
+      },
+      {
+        "hash": "3cb5ac99f5ab2285",
+        "label": "Every tools/call carries a cancellation signal, and it r…"
+      },
+      {
+        "hash": "8003868cfba2f660",
+        "label": "The seam. The MCP SDK hands each handler an extra whose …"
+      },
+      {
+        "hash": "f5d87b11dcf0fd16",
+        "label": "The client. get() and getAllPages() take an optional sig…"
+      },
+      {
+        "hash": "b6953d3b12985bdd",
+        "label": "The walk. A cancelled getAllPages stops at a page bounda…"
+      },
+      {
+        "hash": "24aecf04d46c6c47",
+        "label": "The queue. A task whose signal fired is dropped at deque…"
+      },
+      {
+        "hash": "1411262f599e6583",
+        "label": "No backoff hold. A cancelled request never enters the re…"
+      },
+      {
+        "hash": "e61a223d54d350fd",
+        "label": "Not confusable with a timeout. Every other error kind te…"
+      },
+      {
+        "hash": "7411defd86b554ba",
+        "label": "Two AbortSignal.any details are load-bearing: the caller…"
+      },
+      {
+        "hash": "3b361b4cb08734a4",
+        "label": "No active device When playback commands fail because no …"
+      },
+      {
+        "hash": "f31a2bee60b96c59",
+        "label": "Token-endpoint failures (https://accounts.spotify.com/ap…"
+      },
+      {
+        "hash": "e698c03374346b1c",
+        "label": "A refresh can fail for genuinely different reasons, and …"
+      },
+      {
+        "hash": "8afdf5c86955aa89",
+        "label": "| Evidence | Class | reason | Surfaced as | Retried? | |…"
+      },
+      {
+        "hash": "358382bb21c9ddef",
+        "label": "Rules that hold for every row:"
+      },
+      {
+        "hash": "b3efc65c26b8a58e",
+        "label": "An unclassifiable failure is reported as unclassified. I…"
+      },
+      {
+        "hash": "c16dae1297aff4cb",
+        "label": "A 4xx body's error is read only as a string. The Web API…"
+      },
+      {
+        "hash": "560546ef8653aae8",
+        "label": "No token failure is described as a service outage unless…"
+      },
+      {
+        "hash": "6a46379b61d75909",
+        "label": "A transport failure is never conflated with a response-b…"
+      },
+      {
+        "hash": "6212a49518aef937",
+        "label": "Every token-failure message names the resolved token fil…"
+      },
+      {
+        "hash": "0991c1d0a11b3f39",
+        "label": "A transient failure (servererror, networkunreachable) is…"
+      },
+      {
+        "hash": "7f774038444df948",
+        "label": "9. Rate Limiting"
+      },
+      {
+        "hash": "c2ed161f2fd24d50",
+        "label": "All API calls go through a central SpotifyClient class w…"
+      },
+      {
+        "hash": "16f522605c1cbf50",
+        "label": "One shared start gate. Every launch reserves a start slo…"
+      },
+      {
+        "hash": "f8da468c6ce38813",
+        "label": "Bounded concurrency. At most SPOTIFYMCPMAXCONCURRENCY (d…"
+      },
+      {
+        "hash": "9edba7ff0e879ac9",
+        "label": "Tool-side fan-out width is not a second knob (#783). A t…"
+      },
+      {
+        "hash": "b8a6529745bfe3dd",
+        "label": "On 429: the gate parks all callers for Retry-After secon…"
+      },
+      {
+        "hash": "167631d971bf06e7",
+        "label": "One shared attempt budget (MAXATTEMPTS = 3) covers the 4…"
+      },
+      {
+        "hash": "732bbb55f1f00210",
+        "label": "Throttle visibility: the most recent event is exposed vi…"
+      },
+      {
+        "hash": "3bea4855aa125a87",
+        "label": "Batch operations issue one API call per batch, not one c…"
+      },
+      {
+        "hash": "d48901d5b5636c11",
+        "label": "10. Spotify API Constraints"
+      },
+      {
+        "hash": "274992c60a4d2191",
+        "label": "Known limitations to document and handle:"
+      },
+      {
+        "hash": "be3b14f2e81c3658",
+        "label": "| Constraint | Detail | |---|---| | Premium required | A…"
+      },
+      {
+        "hash": "ec0dd5df5d20a839",
+        "label": "11. Project Structure"
+      },
+      {
+        "hash": "7b610616c97ccf11",
+        "label": "spotify-mcp/ ├── src/ │ ├── index.ts # MCP server entry …"
+      },
+      {
+        "hash": "f81c113991f597bc",
+        "label": "12. Configuration"
+      },
+      {
+        "hash": "d3c12f1f3068b798",
+        "label": "Environment variables SPOTIFYCLIENTID= # required — from…"
+      },
+      {
+        "hash": "9019e8b9bef6ffe2",
+        "label": "Token storage /.spotify-mcp/tokens.json by default (path…"
+      },
+      {
+        "hash": "48425f7859494d39",
+        "label": "13. Claude Desktop Integration"
+      },
+      {
+        "hash": "12fa700d5ec7d8d4",
+        "label": "claudedesktopconfig.json entry { \"mcpServers\": { \"spotif…"
+      },
+      {
+        "hash": "12f70cf53c940944",
+        "label": "First-time setup 1. Create a Spotify app at developer.sp…"
+      },
+      {
+        "hash": "f1ceb224d6c3645c",
+        "label": "Implementation phases (build history)"
+      },
+      {
+        "hash": "3d1416292962f44b",
+        "label": "This table is a record of build waves, not a statement a…"
+      },
+      {
+        "hash": "c3085b71c1e2f117",
+        "label": "| Phase | Scope | |---|---| | Phase 1 | Auth flow + Spot…"
+      }
+    ],
+    "docs/cookbook.md": [
+      {
+        "hash": "a21a80aa7cdb3b3f",
+        "label": "Cookbook — copy-paste agent recipes"
+      },
+      {
+        "hash": "77c086349fb258ca",
+        "label": "Conventions: JSON tool args are shown inline; replace PL…"
+      },
+      {
+        "hash": "d7d72b00570bd1a5",
+        "label": "1. Taste profile → playlist (flagship)"
+      },
+      {
+        "hash": "7fea93d15536cb1a",
+        "label": "Build a playlist that sounds like you, from stats.fm evi…"
+      },
+      {
+        "hash": "4aa2496faba62546",
+        "label": "Risk: creates a new playlist and bulk-adds tracks to it;…"
+      },
+      {
+        "hash": "e0ddf0845a25e87a",
+        "label": "1. Call statsfmstreamsstats with userid: \"<your-statsfm-…"
+      },
+      {
+        "hash": "c95b8f005a75b6e5",
+        "label": "Why it works: lifetime gives identity, the current month…"
+      },
+      {
+        "hash": "3b6e1b8ed89bf91e",
+        "label": "2. Morning briefing"
+      },
+      {
+        "hash": "e32771f3263d99cd",
+        "label": "Risk: queues a track to your active device; preview firs…"
+      },
+      {
+        "hash": "a5ed32ad2f77ff55",
+        "label": "1. Call whatsnew with since: \"last-check\" and dryrun: tr…"
+      },
+      {
+        "hash": "21b6b48acaf35fc1",
+        "label": "3. Duplicate cleanup sweep"
+      },
+      {
+        "hash": "322cf6d0d39642f0",
+        "label": "Risk: bulk-deletes duplicate occurrences from a playlist…"
+      },
+      {
+        "hash": "3b229c5ed4078e95",
+        "label": "1. Call findduplicatesinplaylist with playlistid: \"PLAYL…"
+      },
+      {
+        "hash": "93021de32dcb6fae",
+        "label": "4. Library hygiene pass"
+      },
+      {
+        "hash": "b4291b14b027f1c0",
+        "label": "Risk: bulk-saves missing album tracks to your library an…"
+      },
+      {
+        "hash": "f53aa41512aab591",
+        "label": "1. Call libraryhygiene and librarygenrereport. When a sp…"
+      },
+      {
+        "hash": "66b8308a3a676473",
+        "label": "5. Podcast catch-up session"
+      },
+      {
+        "hash": "06221294163b9fd2",
+        "label": "Risk: starts a podcast session on the chosen device; pre…"
+      },
+      {
+        "hash": "0b5e155f1fda7fa2",
+        "label": "1. Call whatsnew with kinds: [\"podcasts\"], since: \"last-…"
+      },
+      {
+        "hash": "5171f9f700d5c84d",
+        "label": "6. Playlist merge without tears"
+      },
+      {
+        "hash": "ecf19ab1e8cc7e91",
+        "label": "Risk: merges sources into a destination playlist, append…"
+      },
+      {
+        "hash": "f9e73640545be0a4",
+        "label": "1. Call diffplaylists with playlista set to SOURCEA, pla…"
+      },
+      {
+        "hash": "cea87cc4670f2f27",
+        "label": "whatsnew accepts since only as YYYY-MM-DD or the literal…"
+      },
+      {
+        "hash": "4ea7c2331d92e8d4",
+        "label": "7. Discovery injection (no recommendations endpoint)"
+      },
+      {
+        "hash": "b418d8ab256b5c15",
+        "label": "/recommendations is blocked on app registrations created…"
+      },
+      {
+        "hash": "d227b2df2bb9a8bd",
+        "label": "Risk: bulk-adds candidate tracks to a playlist; preview …"
+      },
+      {
+        "hash": "08de96a450dd44dc",
+        "label": "1. Call growplaylist with playlistid: \"PLAYLISTID\"; it f…"
+      },
+      {
+        "hash": "c0f8d4630c6e243b",
+        "label": "8. Taste compatibility check"
+      },
+      {
+        "hash": "d2f13ba852320c5e",
+        "label": "There is no cross-user taste-comparison tool. Use the re…"
+      },
+      {
+        "hash": "98eff449361ad1cb",
+        "label": "Risk: read-only — no Spotify or sidecar writes."
+      },
+      {
+        "hash": "b804055146e34e8b",
+        "label": "1. Call statsfmfriends for each explicit public userid, …"
+      },
+      {
+        "hash": "bec49c778579b214",
+        "label": "9. When-listening audit"
+      },
+      {
+        "hash": "8431e206c8d497fa",
+        "label": "Risk: savescene writes to the local sidecar at /.spotify…"
+      },
+      {
+        "hash": "06d58c6b9c65cbe8",
+        "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…"
+      },
+      {
+        "hash": "5578c4128847c15d",
+        "label": "10. Read-only demo for a guest"
+      },
+      {
+        "hash": "cf502a7debf9002a",
+        "label": "Safe to run on someone else's account or a shared screen…"
+      },
+      {
+        "hash": "a35a23c2fef78264",
+        "label": "Risk: read-only — set SPOTIFYMCPREADONLY=1 so write-capa…"
+      },
+      {
+        "hash": "bc40b051aa9710e4",
+        "label": "1. Set SPOTIFYMCPREADONLY=1 (or use a host config with i…"
+      },
+      {
+        "hash": "a1305237c7a146cd",
+        "label": "11. Poll near-real-time state cheaply (ETag watch loop)"
+      },
+      {
+        "hash": "de60f213b686b87e",
+        "label": "Live playback state changes constantly but usually not a…"
+      },
+      {
+        "hash": "97fa432decef44ce",
+        "label": "Risk: read-only — pure ETag poll, no writes."
+      },
+      {
+        "hash": "51c48b9aa0f26826",
+        "label": "1. Every 5 seconds, call getnowplaying with responseform…"
+      },
+      {
+        "hash": "fcccdef2c7595f35",
+        "label": "The same applies to getcurrentlyplaying (lightweight pol…"
+      },
+      {
+        "hash": "bc2baab388fd583f",
+        "label": "Undo tools"
+      },
+      {
+        "hash": "9131bcd6c45d4ee6",
+        "label": "Receipt-bearing mutations of items — playlist adds and r…"
+      },
+      {
+        "hash": "fd5a2513f47d9935",
+        "label": "verifyreceipt — looks up a receipt by ID and reports its…"
+      },
+      {
+        "hash": "396b3593a6675268",
+        "label": "undomutation — inverts a specific mutation by receipt ID…"
+      },
+      {
+        "hash": "0f6a89985130af23",
+        "label": "undolastmutation — same inversion semantics as undomutat…"
+      },
+      {
+        "hash": "d9a9e35ef5193a35",
+        "label": "undopreview — dry-run for undomutation: the before/after…"
+      },
+      {
+        "hash": "bc5ef22408997a64",
+        "label": "receiptlookup — find receipts by id, by an issue date (s…"
+      },
+      {
+        "hash": "1db67cb5d27cef1f",
+        "label": "Prefer undolastmutation after a single speculative write…"
+      },
+      {
+        "hash": "f86dacdbf296df32",
+        "label": "See also"
+      },
+      {
+        "hash": "39898be6cfb89ebd",
+        "label": "[stats.fm second source](statsfm.md) — setup, cheat shee…"
+      },
+      {
+        "hash": "d6306500393ded1a",
+        "label": "[Taste showcase](taste.md) — recipe 1 worked end to end"
+      },
+      {
+        "hash": "4ef9ab77be254db8",
+        "label": "[FAQ](faq.md) — when a recipe step errors"
+      }
+    ],
+    "docs/distribution.md": [
+      {
+        "hash": "52bc93efd54bc2f1",
+        "label": "Distribution kit — submission-ready copy"
+      },
+      {
+        "hash": "54f1a26fc8ac082e",
+        "label": "One-stop copy for claiming/listing the server in directo…"
+      },
+      {
+        "hash": "ddbc19ca4e68034e",
+        "label": "Canonical facts"
+      },
+      {
+        "hash": "b8b78a1d1cdeb59e",
+        "label": "Three things this page used to carry are gone, because e…"
+      },
+      {
+        "hash": "1e8d74997e9bcbbd",
+        "label": "The version. A header naming a release reads as the curr…"
+      },
+      {
+        "hash": "f5edec2d7dbda183",
+        "label": "A \"last verified\" date. Nothing re-checked it, so it cou…"
+      },
+      {
+        "hash": "c0ea55129e5b2603",
+        "label": "A test count. The census does not run the suite, so wiri…"
+      },
+      {
+        "hash": "789b522026bc4bfc",
+        "label": "The surface line below is the one figure that is kept, b…"
+      },
+      {
+        "hash": "7f87c67f9b33403d",
+        "label": "npm: @novalux12/spotify-mcp — https://www.npmjs.com/pack…"
+      },
+      {
+        "hash": "ac0c2276d6450e2e",
+        "label": "Repo: https://github.com/NovaLux12/spotify-mcp-server"
+      },
+      {
+        "hash": "aa8a6835c5828edb",
+        "label": "MCP Registry name: io.github.NovaLux12/spotify-mcp-serve…"
+      },
+      {
+        "hash": "2db4676010dc1e11",
+        "label": "Transport: stdio (npx @novalux12/spotify-mcp after npm i…"
+      },
+      {
+        "hash": "ee4b207d5f15edf2",
+        "label": "Auth: OAuth PKCE (S256) browser flow or headless mode; t…"
+      },
+      {
+        "hash": "6b10a4ecf9346042",
+        "label": "Tests: node:test suite with CI on Node 22 and Node 24; t…"
+      },
+      {
+        "hash": "e87079ec4f4bd3f3",
+        "label": "Safety: dryrun + responseformat on every mutating tool e…"
+      },
+      {
+        "hash": "3bce5781247c4f50",
+        "label": "Provenance: npm publishes carry SLSA provenance; listed …"
+      },
+      {
+        "hash": "9c8216cf4417e364",
+        "label": "Canonical copy (single source of truth)"
+      },
+      {
+        "hash": "7728d4a0aafe80da",
+        "label": "The short description is authored once, as the CANONICAL…"
+      },
+      {
+        "hash": "c2348dba85e7eaf9",
+        "label": "package.json.description (npm)"
+      },
+      {
+        "hash": "c7bf3e08993c27f8",
+        "label": "server.json.description (MCP Registry)"
+      },
+      {
+        "hash": "38627cd0ea07da60",
+        "label": "the README one-liner"
+      },
+      {
+        "hash": "111d082f274bd5e1",
+        "label": "the short blurb below"
+      },
+      {
+        "hash": "953718ead52025ee",
+        "label": "the opening sentence of the long description below"
+      },
+      {
+        "hash": "aade228da7bb38c9",
+        "label": "To change the copy, edit the constant, re-run node --imp…"
+      },
+      {
+        "hash": "cd17160e1b77794a",
+        "label": "The short description is capped at 100 characters by the…"
+      },
+      {
+        "hash": "6dde2de5e51bbff2",
+        "label": "Short blurb (directories)"
+      },
+      {
+        "hash": "fc2a98e44f742f36",
+        "label": "Spotify Web API MCP: playback, library, playlists, searc…"
+      },
+      {
+        "hash": "3ffe7723ee0f6061",
+        "label": "Long description (Glama / PulseMCP style)"
+      },
+      {
+        "hash": "14e07d6cbf9eda41",
+        "label": "Spotify Web API MCP: playback, library, playlists, searc…"
+      },
+      {
+        "hash": "a8c7adc39de6b6e0",
+        "label": "One-command install lines"
+      },
+      {
+        "hash": "a4b283daf9457579",
+        "label": "Claude Code claude mcp add spotify -- npx -y @novalux12/…"
+      },
+      {
+        "hash": "05b9901f43320bee",
+        "label": "First run performs the PKCE browser auth (npm run auth h…"
+      },
+      {
+        "hash": "3e5233452075664a",
+        "label": "Release and publish runbook"
+      },
+      {
+        "hash": "984c2bd5ad3e4860",
+        "label": "Distribution is a two-stage release. The Release Please …"
+      },
+      {
+        "hash": "f48a5bda5e9607aa",
+        "label": "Merging the release PR is the last human step. The tag i…"
+      },
+      {
+        "hash": "fcbc5a106568ed8d",
+        "label": "To watch the run the tag started:"
+      },
+      {
+        "hash": "64dafb35a37369a3",
+        "label": "VERSION=\"X.Y.Z\" # replace with the release PR version TA…"
+      },
+      {
+        "hash": "41d6ddf4aad3b20a",
+        "label": "Verify every distribution surface before announcing the …"
+      },
+      {
+        "hash": "d046521aa70f3045",
+        "label": "git fetch --tags origin npm view \"@novalux12/spotify-mcp…"
+      },
+      {
+        "hash": "63f5ad3f985f2249",
+        "label": "A 404 from that npm view right after a publish is npm pr…"
+      },
+      {
+        "hash": "d3e1a912eba2588f",
+        "label": "The same lag makes publish-mcp-registry fail with versio…"
+      },
+      {
+        "hash": "0cb37b5bb7494898",
+        "label": "gh run rerun \"$RUNID\" -R NovaLux12/spotify-mcp-server --…"
+      },
+      {
+        "hash": "d8c499c0917f41fe",
+        "label": "The npm command must print the exact version without the…"
+      },
+      {
+        "hash": "70687450986a1568",
+        "label": "Verify against …/versions/latest. …/versions is equally …"
+      },
+      {
+        "hash": "3c8e404d3765037c",
+        "label": "Claim checklist"
+      },
+      {
+        "hash": "546d96fa55deb956",
+        "label": "[ ] Smithery: not pursuing a hosted listing — decided #7…"
+      },
+      {
+        "hash": "28375de154e43e5f",
+        "label": "[ ] Name re-check, before any new channel goes live (#70…"
+      },
+      {
+        "hash": "31bebff9ce0bad05",
+        "label": "[ ] Glama: submit via glama.ai/mcp/servers → verify tool…"
+      },
+      {
+        "hash": "fc2569a253b00d4c",
+        "label": "[ ] mcp.so / PulseMCP / Cursor directory: use short blur…"
+      },
+      {
+        "hash": "b5f3b364f8f1da0e",
+        "label": "[ ] GitHub topic hygiene: mcp, mcp-server, spotify, mode…"
+      }
+    ],
+    "docs/schema-budgets.md": [
+      {
+        "hash": "d64bdd5dd35e994a",
+        "label": "Tool schema budgets"
+      },
+      {
+        "hash": "3bf1b6367590ce93",
+        "label": "src/tools/annotations.ts owns the shared REGISTRARMANIFE…"
+      },
+      {
+        "hash": "6701612863649dc3",
+        "label": "Measurement"
+      },
+      {
+        "hash": "72d6a3e86d6f559f",
+        "label": "The deterministic audit starts the real production entry…"
+      },
+      {
+        "hash": "e3989e5cfa5212d4",
+        "label": "tool count;"
+      },
+      {
+        "hash": "7c45d6a7259d33c5",
+        "label": "UTF-8 bytes of compact JSON containing the tool descript…"
+      },
+      {
+        "hash": "e66ba5f22bdd91df",
+        "label": "The production tools/list boundary, module measurements,…"
+      },
+      {
+        "hash": "db6fff8a592b5d9d",
+        "label": "Annotations, tool names, resources, and prompts are inte…"
+      },
+      {
+        "hash": "8f9c254d1036e75e",
+        "label": "Registration order"
+      },
+      {
+        "hash": "6fc2c889a2588f5a",
+        "label": "Registration is core-first and deterministic:"
+      },
+      {
+        "hash": "d0ab813762f98d0a",
+        "label": "1. search"
+      },
+      {
+        "hash": "9e150069e91e5b15",
+        "label": "2. catalog"
+      },
+      {
+        "hash": "9163f2510d2e08d8",
+        "label": "3. library"
+      },
+      {
+        "hash": "43ee7ec0fa6b9b18",
+        "label": "4. playback"
+      },
+      {
+        "hash": "cf0d51d111343707",
+        "label": "5. following, users, audiobooks, and common playlist wor…"
+      },
+      {
+        "hash": "3a5cfd71c1f8eff2",
+        "label": "6. discovery, library operations, portability, analytics…"
+      },
+      {
+        "hash": "78e5e8cfea705445",
+        "label": "7. swarm/specialised modules"
+      },
+      {
+        "hash": "d121ff8896a923f0",
+        "label": "The stable core prefix asserted by tests/tool.surface.te…"
+      },
+      {
+        "hash": "1c3f5c3160e7e739",
+        "label": "Baseline raises"
+      },
+      {
+        "hash": "be18ffce1599e210",
+        "label": "Baselines are hand-maintained in src/tools/annotations.t…"
+      },
+      {
+        "hash": "f819ee73a9277d93",
+        "label": "#900 — freshness 2,043 → 2,235 and swarm3discovery 21,82…"
+      },
+      {
+        "hash": "78c31c93b03d039d",
+        "label": "These figures describe the tree this branch sits on. mai…"
+      },
+      {
+        "hash": "6b5e4b266bf01077",
+        "label": "Checked-in baseline and ceilings"
+      },
+      {
+        "hash": "75471cb496dcd170",
+        "label": "The generated table below is produced from the shared ma…"
+      },
+      {
+        "hash": "e50d9775cf350d64",
+        "label": "Aggregate ceiling and the payload it guards"
+      },
+      {
+        "hash": "7d2d9eae557fbde1",
+        "label": "The per-module ceilings above bound one module each. A s…"
+      },
+      {
+        "hash": "18ef7aa127ec5407",
+        "label": "What that field list is, and the one field in it that is…"
+      },
+      {
+        "hash": "4cb70038f0720322",
+        "label": "That is a statement about the gate's reach, not about th…"
+      },
+      {
+        "hash": "52a7d3d52d27e2e6",
+        "label": "Nothing in that block is hand-typed, and that is the who…"
+      },
+      {
+        "hash": "a81b9204fb2afe4d",
+        "label": "A raise is argued for, never spent. The history of raise…"
+      },
+      {
+        "hash": "1f4a42deb706f9a7",
+        "label": "Re-measure before trusting a recorded figure. Recorded b…"
+      },
+      {
+        "hash": "f1343f599c133701",
+        "label": "To change a baseline, measure the real tools/list output…"
+      },
+      {
+        "hash": "fcc8257452e3ee59",
+        "label": "Response payload cap — a different budget from this one …"
+      },
+      {
+        "hash": "bbc48951f73336c1",
+        "label": "This page budgets one-time bytes: what a host reads once…"
+      },
+      {
+        "hash": "4f90a652bfdebb93",
+        "label": "They are sized against each other, and the relationship …"
+      },
+      {
+        "hash": "e93f33950dd93857",
+        "label": "That ratio holds because an unbounded result was measure…"
+      },
+      {
+        "hash": "084a750bc99c5b5b",
+        "label": "Three consequences worth keeping straight:"
+      },
+      {
+        "hash": "1538903156e53d48",
+        "label": "The response cap is not part of any budget measured here…"
+      },
+      {
+        "hash": "308f5d788183bf4c",
+        "label": "It is a backstop, not the primary control. A tool declar…"
+      },
+      {
+        "hash": "a0ca62f00631ddbf",
+        "label": "A cap that truncates silently is worse than no cap. A ca…"
+      }
+    ],
+    "docs/wave2-composites.md": [
+      {
+        "hash": "2c6e8ecc8c64eda7",
+        "label": "Wave 2 composites — shipped taste tools (read-only excep…"
+      },
+      {
+        "hash": "f5ac8035fc371f29",
+        "label": "Eleven of the tools behind the taste toolset come from t…"
+      },
+      {
+        "hash": "6d60a85fd72a8930",
+        "label": "Data-source and write guarantees"
+      },
+      {
+        "hash": "c299c8bf74975adf",
+        "label": "Every composite in src/tools/tastecomposites.ts and src/…"
+      },
+      {
+        "hash": "1280af2eac74b06b",
+        "label": "Reads the stats.fm public API v1 (https://api.stats.fm/a…"
+      },
+      {
+        "hash": "2a5e10f8a9ee88bb",
+        "label": "The ten read-only composites never call any Spotify writ…"
+      },
+      {
+        "hash": "e7230207c3586bf2",
+        "label": "tastetoplaylist is the single writer. It calls NO Spotif…"
+      },
+      {
+        "hash": "dc66e6c418841c7d",
+        "label": "Some stats.fm externalIds.spotify[] entries do not resol…"
+      },
+      {
+        "hash": "da4f7ffaa5f734fa",
+        "label": "On a dryrun: false commit, tracks whose stats.fm id is u…"
+      },
+      {
+        "hash": "07592c20a329f90a",
+        "label": "Pure shaping on top of the lenient normalizers in statsf…"
+      },
+      {
+        "hash": "42b7fa76325645a2",
+        "label": "The 11 composites"
+      },
+      {
+        "hash": "e533ce20cdc5890a",
+        "label": "| # | Tool | Inputs | Output | |---|------|--------|----…"
+      },
+      {
+        "hash": "4121cddb64167ed0",
+        "label": "Spotify-search fallback guidance (emitted in playlist-sh…"
+      },
+      {
+        "hash": "639a089909db1723",
+        "label": "Some stats.fm externalIds.spotify[] entries do not resol…"
+      },
+      {
+        "hash": "f86638a38954ceea",
+        "label": "Registration"
+      },
+      {
+        "hash": "55562a8189831110",
+        "label": "registerTasteCompositeTools(server, client) in src/tools…"
+      },
+      {
+        "hash": "9dcffcd4f086c593",
+        "label": "Wired through the REGISTRARMANIFEST in src/tools/annotat…"
+      },
+      {
+        "hash": "1e0abbc302b8234d",
+        "label": "src/toolsets.ts: taste: ['taste', 'tastecomposites']. Pe…"
+      },
+      {
+        "hash": "9c63c280b284ef67",
+        "label": "Tests: tests/taste-composites.test.ts, fixture-backed fe…"
+      }
+    ],
+    "skills/spotify-exhaustive-feature-sweep/SKILL.md": [
+      {
+        "hash": "b77d2c81a1704065",
+        "label": "name: \"spotify-exhaustive-feature-sweep\" description: \"E…"
+      },
+      {
+        "hash": "a9d187acf1a66fa8",
+        "label": "Spotify Exhaustive Feature Sweep"
+      },
+      {
+        "hash": "07933d588e413e73",
+        "label": "When to Use"
+      },
+      {
+        "hash": "bea6e0157e1f5b33",
+        "label": "Use this workflow for an exhaustive or quantity-first fe…"
+      },
+      {
+        "hash": "03a75d819bf548b5",
+        "label": "Ground every inventory and candidate in the current chec…"
+      },
+      {
+        "hash": "a4543e6e89d1ed35",
+        "label": "Steps 1-7 are read-only and may be run without asking. S…"
+      },
+      {
+        "hash": "31f6f271029189d9",
+        "label": "Outbound approval gate"
+      },
+      {
+        "hash": "752f9f03c3ec1762",
+        "label": "This workflow reaches outside the machine. Steps 8-12 fi…"
+      },
+      {
+        "hash": "a11d61994b6184cc",
+        "label": "A Completion: line describes what an approved step produ…"
+      },
+      {
+        "hash": "00cc2e996603ba12",
+        "label": "The gated actions"
+      },
+      {
+        "hash": "0e17184fa5df3475",
+        "label": "| Gate | Action | Step | |---|---|---| | G1 | gh issue c…"
+      },
+      {
+        "hash": "7ad33343ceaa4fc6",
+        "label": "A gate is satisfied only by an explicit human answer, in…"
+      },
+      {
+        "hash": "a60ab89c9f8c9f81",
+        "label": "What to ask, one question per topic"
+      },
+      {
+        "hash": "085686f59d81c9fb",
+        "label": "Ask before the first gated action, never after it. Do no…"
+      },
+      {
+        "hash": "bd808b6bb1601bba",
+        "label": "1. Channel. Which surface, on which repository? Name it …"
+      },
+      {
+        "hash": "680aea774c8c08b0",
+        "label": "2. Identity. Whose account acts? Run gh auth status and …"
+      },
+      {
+        "hash": "1e0268dcb94cd7a7",
+        "label": "3. Scope. How many, to which repository, from which base…"
+      },
+      {
+        "hash": "2755f0485e0c8565",
+        "label": "4. Quota and lifetime. How many API calls, over what wal…"
+      },
+      {
+        "hash": "aee550d0cd407b3f",
+        "label": "Preview first, perform second"
+      },
+      {
+        "hash": "fe78e161f330347b",
+        "label": "Every gated action defaults to a preview. Show the human…"
+      },
+      {
+        "hash": "5d2b9290f3bb3ec7",
+        "label": "Issues: write every proposed title and body to /tmp/exha…"
+      },
+      {
+        "hash": "fe2dfe6d4465b44a",
+        "label": "Branches: git push --dry-run (equivalently git push -n) …"
+      },
+      {
+        "hash": "0f7aa71f46908c0d",
+        "label": "Worktrees: git worktree list plus the intended base, sli…"
+      },
+      {
+        "hash": "93e44efa1ef8dab7",
+        "label": "Detached loops: the exact command, the pid it runs under…"
+      },
+      {
+        "hash": "d67f7a1be07b5559",
+        "label": "Probes and sweep artifacts: write under /tmp/, not into …"
+      },
+      {
+        "hash": "5ebcf3033130e7d2",
+        "label": "Attribution and scrubbing"
+      },
+      {
+        "hash": "71cad0239268435c",
+        "label": "A gated send made with the owner's identity says so in t…"
+      },
+      {
+        "hash": "fff83b6eedf8a6d2",
+        "label": "What approval does not carry to"
+      },
+      {
+        "hash": "e73d5ad2f2433f6a",
+        "label": "Approval is per action, per scope, and per session. It l…"
+      },
+      {
+        "hash": "449536a85eb2e4fb",
+        "label": "the session ends, restarts, is compacted, or is resumed …"
+      },
+      {
+        "hash": "dca3216a69aae45f",
+        "label": "the human changes the channel, identity, count, base bra…"
+      },
+      {
+        "hash": "82b4833cc40fa75d",
+        "label": "a loop, retry, or resumed batch re-enters a gated step. …"
+      },
+      {
+        "hash": "1b4770c6fa30a9dc",
+        "label": "a worker other than the one the human answered is dispat…"
+      },
+      {
+        "hash": "a6a9b2bb05179802",
+        "label": "Stop at the gate and ask again whenever one of these hap…"
+      },
+      {
+        "hash": "5da93bd3e25731d2",
+        "label": "Procedure"
+      },
+      {
+        "hash": "b2218e67279caa18",
+        "label": "1. Inventory current coverage per domain. Connect to the…"
+      },
+      {
+        "hash": "4d6bfc19590f8d97",
+        "label": "2. Inventory open work to avoid duplicates. Use gh pr li…"
+      },
+      {
+        "hash": "7a56c843ba99ed4d",
+        "label": "3. Enumerate Spotify endpoints by domain, quantity-first…"
+      },
+      {
+        "hash": "9da2cb4ebd4a25f5",
+        "label": "4. Expand each real gap into ergonomic wrappers. Conside…"
+      },
+      {
+        "hash": "2cd8097acb1d37fe",
+        "label": "5. Flag quota cost and phantom-endpoint risk. Tag single…"
+      },
+      {
+        "hash": "11dfd893a0bad2ad",
+        "label": "6. Write the per-domain deliverable. Write /tmp/exhaust-…"
+      },
+      {
+        "hash": "ef45fd6428c04d2a",
+        "label": "7. Audit and dedupe across domains before logging. Merge…"
+      },
+      {
+        "hash": "44f9a5091ea02c2b",
+        "label": "8. Log approved issues in rate-limited batches. [Gated: …"
+      },
+      {
+        "hash": "fa4e8e892c0de31a",
+        "label": "9. Dispatch partitioned implementation slices in isolate…"
+      },
+      {
+        "hash": "e870494accea2df0",
+        "label": "10. Run independent review and fix findings without merg…"
+      },
+      {
+        "hash": "894212878cd72629",
+        "label": "11. Ground-truth uncertain endpoints with real credentia…"
+      },
+      {
+        "hash": "f98c4cdf785bd511",
+        "label": "12. Run the live sweep with the current package scripts.…"
+      },
+      {
+        "hash": "912452e7a8d72e14",
+        "label": "Guardrails"
+      },
+      {
+        "hash": "7700e243461df0ad",
+        "label": "Never file an issue, open or comment on a pull request, …"
+      },
+      {
+        "hash": "64d0a5d4728cff32",
+        "label": "Never propose a phantom endpoint or a removed API as if …"
+      },
+      {
+        "hash": "3dbf1b05c7681a12",
+        "label": "Respect Spotify batch limits, SPOTIFYMCPFETCHALLCAP, req…"
+      },
+      {
+        "hash": "da2c95aae8f05163",
+        "label": "Preserve the live registered-tool baseline unless the us…"
+      },
+      {
+        "hash": "751bfd36f1db4649",
+        "label": "Keep mutation tools read-only/dry-run safe where require…"
+      },
+      {
+        "hash": "4e3d27f8367996ad",
+        "label": "Do not leave the repository working tree dirty as a side…"
+      },
+      {
+        "hash": "b6733c7fe471385a",
+        "label": "Verify a workflow or script path exists on the target re…"
+      },
+      {
+        "hash": "6015d325c5d3dbc3",
+        "label": "Do not present a proposal, historical issue, or document…"
+      },
+      {
+        "hash": "65b72d86eeeb214a",
+        "label": "References"
+      },
+      {
+        "hash": "ca1b6c6406ef269b",
+        "label": "package.json — package scripts and MCP SDK dependency."
+      },
+      {
+        "hash": "b53ccdbc8a9b702d",
+        "label": "src/index.ts — live registration gates and stdio entry."
+      },
+      {
+        "hash": "81278ed33d4b4667",
+        "label": "src/toolsets.ts — active-set and per-module override sem…"
+      },
+      {
+        "hash": "acc863a69befe941",
+        "label": "src/tools/.ts — tool implementations and graceful endpoi…"
+      },
+      {
+        "hash": "5a579702f7c296ae",
+        "label": "src/resources/index.ts and src/resources/templates.ts — …"
+      },
+      {
+        "hash": "5a697dfd1652d881",
+        "label": "src/prompts/index.ts — prompt registrations."
+      },
+      {
+        "hash": "1bf6fe9c174a05b3",
+        "label": "src/client.ts, src/config.ts, and src/shaping.ts — pagin…"
+      },
+      {
+        "hash": "acf75a4b8816957b",
+        "label": "scripts/live-gauntlet.mjs and scripts/sweep-loop.sh — li…"
+      },
+      {
+        "hash": "1ec73adb450808af",
+        "label": "docs/configuration.md, docs/faq.md, docs/cookbook.md, an…"
+      },
+      {
+        "hash": "e3e4ba550b0df9f6",
+        "label": "memory/live-sweep-report.json — latest persisted sweep e…"
+      },
+      {
+        "hash": "d21a2d407d3a0cef",
+        "label": "Official Spotify OpenAPI schema: https://developer.spoti…"
+      }
+    ],
+    "skills/spotify-mcp-competitor-comparison/SKILL.md": [
+      {
+        "hash": "fd92202c40c00b96",
+        "label": "name: \"spotify-mcp-competitor-comparison\" description: \"…"
+      },
+      {
+        "hash": "f099971074ea17d1",
+        "label": "Spotify MCP Competitor Comparison"
+      },
+      {
+        "hash": "64d3e3a760a59e75",
+        "label": "Answer \"is our MCP really standard / do others offer mor…"
+      },
+      {
+        "hash": "04e379c6932bff1c",
+        "label": "Steps"
+      },
+      {
+        "hash": "8743847e7f5cbf00",
+        "label": "1. Establish the current protocol surface. Read package.…"
+      },
+      {
+        "hash": "7c0de39dbb553dfc",
+        "label": "2. Re-audit optional or unsupported protocol features fr…"
+      },
+      {
+        "hash": "90679dcab5080457",
+        "label": "| Claim | Current proof to inspect | |---|---| | stdio t…"
+      },
+      {
+        "hash": "13d64793a2713b77",
+        "label": "For completion, verify the protocol path rather than inf…"
+      },
+      {
+        "hash": "52bda1af37737889",
+        "label": "Criterion: absent optional features are labeled optional…"
+      },
+      {
+        "hash": "bfa1b35192afd83d",
+        "label": "3. Survey the landscape with websearch. Query patterns: …"
+      },
+      {
+        "hash": "91221dd6929dacd1",
+        "label": "4. Answer with evidence separated by capability and deli…"
+      }
+    ]
+  },
+  "retired": [
+    {
+      "file": "AGENTS.md",
+      "hash": "2baa4ae7670cf60a",
+      "label": "Hand-written prose from both sides survives, because you…",
+      "date": "2026-09-27",
+      "reason": "rewrote the #1384 recovery recipe to cover the hand-merge case, which is not a choice of side"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "4d1196f8daf9205a",
+      "label": "git checkout --ours ARCHITECTURE.md # or --theirs, for t…",
+      "date": "2026-09-27",
+      "reason": "rewrote the #1384 recovery recipe to cover the hand-merge case, which is not a choice of side"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "690103b2713d4bb0",
+      "label": "Recover the correct way — take the merge base of the fil…",
+      "date": "2026-09-27",
+      "reason": "rewrote the #1384 recovery recipe to cover the hand-merge case, which is not a choice of side"
+    },
+    {
+      "file": "README.md",
+      "hash": "178a37f764107949",
+      "label": "| | | |---|---| | Complete | Playback, search, catalog, …",
+      "date": "2026-09-27",
+      "reason": "reworded by upstream #1402 (two README claims the tree contradicted)"
+    },
+    {
+      "file": "README.md",
+      "hash": "79e3a5cef3c000e9",
+      "label": "### 🤖 Paste this to your agent Copy the block below int…",
+      "date": "2026-09-27",
+      "reason": "reworded by upstream #1402 (two README claims the tree contradicted)"
+    }
+  ]
+}

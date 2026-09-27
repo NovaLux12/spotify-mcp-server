@@ -18,6 +18,8 @@ import { tmpdir } from 'node:os';
 import { dirname, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { proseDrift, syncProseManifest } from './prose-manifest.mjs';
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const requireFromRoot = createRequire(join(ROOT, 'package.json'));
 let localModules;
@@ -251,6 +253,72 @@ if (markerTreeFixtureIndex >= 0) {
   console.log(JSON.stringify({ errors: report.errors, markerCount: report.markerCount, claimedCount: report.claimedCount, files: report.files }));
   process.exit(report.errors.length > 0 ? 1 : 0);
 }
+
+/**
+ * The hand-maintained prose pin (#1384).
+ *
+ * It lives beside the checker rather than inside a generated block on purpose.
+ * `scripts/doc-prose-manifest.json` is the file `--prose-sync` owns and
+ * `--write` must never touch; see `scripts/prose-manifest.mjs` for why a
+ * generated pin would have been defeated by the documented recovery for a
+ * conflicted document.
+ */
+const PROSE_MANIFEST = proseManifestPath();
+
+function proseManifestPath() {
+  // `--prose-manifest <path>` exists so a test can drive the gate over a copy
+  // of the pin instead of the real one. That is not a convenience: `--prose-sync`
+  // *writes* this file, so a test that pointed it at the repository's own
+  // manifest would rewrite a checked-in artifact — and would rewrite it
+  // precisely when the gate is broken and the write is not refused, which is
+  // the one moment the pin must not move. The same reason `--census-file` exists.
+  const index = args.indexOf('--prose-manifest');
+  if (index < 0) return join(ROOT, 'scripts', 'doc-prose-manifest.json');
+  if (!args[index + 1]) throw new Error('--prose-manifest requires a JSON file');
+  return resolve(args[index + 1]);
+}
+
+/** The `--retire "<reason>"` argument, or undefined when the flag is absent. */
+function proseRetireReason() {
+  const index = args.indexOf('--retire');
+  if (index < 0) return undefined;
+  const reason = args[index + 1];
+  // A value starting with `-` is the next flag, not a reason — which is what
+  // `--retire --prose-manifest x` hands over, and a shell that ate the quotes
+  // hands over `undefined`. Both used to be accepted, and a retirement record
+  // with no reason is the one artefact the whole mechanism exists to prevent.
+  if (!reason || reason.startsWith('-')) {
+    throw new Error(
+      '--retire requires a reason, e.g. --retire "removed the stale batch-receipt paragraph". '
+      + 'A retirement without one is indistinguishable from prose quietly disappearing.',
+    );
+  }
+  return reason;
+}
+
+function readProseManifest({ required = true } = {}) {
+  try {
+    return JSON.parse(readFileSync(PROSE_MANIFEST, 'utf8'));
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    // `--prose-sync` is how the pin is created, so an absent file is the one
+    // case where starting from nothing is the correct answer rather than a
+    // hole: there is nothing pinned yet, so nothing can have gone missing.
+    if (!required) return { files: {} };
+    // Everywhere else, a missing pin is a gate that has never run, not a gate
+    // that has nothing to say. Reporting "clean" would let the first `--check`
+    // after a fresh clone pass on prose nobody has ever pinned.
+    throw new Error(
+      `${relative(ROOT, PROSE_MANIFEST)}: the prose-integrity pin is missing, so hand-written prose in mixed files is ungated.\n`
+      + 'Recreate it with `npm run count:tools -- --prose-sync` and commit the result.',
+    );
+  }
+}
+
+function reportUnitCount(manifest) {
+  return Object.values(manifest.files ?? {}).reduce((total, entries) => total + entries.length, 0);
+}
+
 /**
  * Extra roots merged into the marker tree scan, so a test can plant a marker
  * pair in a scratch directory and drive the *real* `--check` over it (#1238).
@@ -267,6 +335,138 @@ if (markerTreeExtraIndex >= 0 && !args[markerTreeExtraIndex + 1]) {
 const markerScanRoots = markerTreeExtraIndex >= 0
   ? [ROOT, resolve(args[markerTreeExtraIndex + 1])]
   : [ROOT];
+
+/**
+ * Serve one repository document from a different file on disk (#1384).
+ *
+ * The prose gate reads `ARCHITECTURE.md` from the working tree, which is
+ * correct, so the only way to observe it reject anything is to hand it a
+ * document that is actually wrong. `--marker-tree-extra` does the equivalent
+ * job for marker structure by planting new files; prose loss is the opposite
+ * shape — the file stays, its contents shrink — so this substitutes a
+ * document's body instead. The format is `<repo-relative-path>=<file>`, and
+ * the gate still runs the real comparison against the real manifest, which is
+ * the wiring proof that `checkDocumentation` reaches it at all.
+ */
+const proseOverrideIndex = args.indexOf('--prose-override');
+if (proseOverrideIndex >= 0 && !args[proseOverrideIndex + 1]) {
+  throw new Error('--prose-override requires <repo-path>=<file>');
+}
+const proseOverrides = new Map();
+if (proseOverrideIndex >= 0) {
+  const [target, from] = args[proseOverrideIndex + 1].split('=');
+  if (!target || !from) throw new Error('--prose-override requires <repo-path>=<file>');
+  proseOverrides.set(normalizeRepoPath(target), resolve(from));
+}
+
+/**
+ * Every repository document that mixes hand-written prose with generated
+ * blocks, as a `{ path: source }` map (#1384).
+ *
+ * Derived by walking the tree for generated blocks rather than by reading a
+ * hand-listed array of files, for the reason #1238 established: a file on a
+ * list is a file somebody remembered, and a file nobody remembered is exactly
+ * the one whose prose can be lost with nothing noticing. Only Markdown is in
+ * scope — `src/toolsets.ts` carries a `// BEGIN:generated` block, but pinning
+ * source code as though it were documentation is not the same hazard and would
+ * make the pin unkeepable.
+ */
+function proseDocuments(roots = markerScanRoots) {
+  const files = [...new Set(scanGeneratedMarkers(roots)
+    .filter((marker) => marker.file.endsWith('.md'))
+    .map((marker) => marker.file))]
+    .sort();
+  const documents = {};
+  for (const file of files) {
+    // `markerPathLabel` returns a repository-relative path for files inside the
+    // tree and the *absolute* path for anything outside it — which is how a
+    // `--marker-tree-extra` scratch directory ends up in the scan at all.
+    // `resolve` resets on an absolute segment where `join` would concatenate,
+    // so it is the only one of the two that reads both correctly.
+    documents[file] = readFileSync(resolve(ROOT, file), 'utf8');
+  }
+  return documents;
+}
+
+/**
+ * The same documents, with any `--prose-override` substitutions applied.
+ *
+ * One function for all three callers, because the override has to mean the
+ * same thing to `--check`, `--prose-report` and `--prose-sync`. A hook that
+ * only the gate honours would let a test prove the gate rejects a truncated
+ * document while the command that rewrites the pin went on reading the intact
+ * one — which is precisely the pairing that has to agree for this gate to be
+ * worth anything.
+ */
+function proseDocumentsUnderTest() {
+  const documents = proseDocuments();
+  for (const [file, from] of proseOverrides) documents[file] = readFileSync(from, 'utf8');
+  return documents;
+}
+
+/**
+ * Print the prose-integrity verdict without writing anything (#1384).
+ *
+ * Exists for the same reason as `--marker-tree-report`: a test that only
+ * asserted "the gate passed" would pass just as happily against a comparison
+ * that read no documents at all. The unit count and the file list are what
+ * make "covered the repository" distinguishable from "found nothing", and a
+ * scan that quietly stopped covering a file loses an entry here and goes red.
+ */
+const proseReportIndex = args.indexOf('--prose-report');
+if (proseReportIndex >= 0) {
+  const documents = proseDocumentsUnderTest();
+  const manifest = readProseManifest();
+  const report = proseDrift(manifest, documents);
+  console.log(JSON.stringify({
+    errors: report.errors,
+    currentCount: report.currentCount,
+    pinnedCount: report.pinnedCount,
+    files: report.files,
+  }, null, 2));
+  process.exit(report.errors.length > 0 ? 1 : 0);
+}
+
+/**
+ * Rebuild the prose manifest, refusing to drop anything that disappeared
+ * unless the run says why (#1384).
+ *
+ * This is the only thing in the repository that rewrites the pin, and it is
+ * deliberately not reachable from `--write`. A generated pin would have been
+ * refreshed by the documented recovery for a conflicted file, so the gate
+ * would have gone green one command after the prose was lost.
+ */
+if (args.includes('--prose-sync')) {
+  const documents = proseDocumentsUnderTest();
+  // `retire` and `reason` are the same string by construction here, and both are
+  // forwarded: `retire` is the mode flag and `reason` is what lands in the
+  // manifest. Passing only the flag produced retirement records with no reason
+  // on them, which is the one field the record exists to carry.
+  const reason = proseRetireReason();
+  const result = syncProseManifest(readProseManifest({ required: false }), documents, {
+    retire: reason,
+    reason,
+    date: new Date().toISOString().slice(0, 10),
+  });
+  if (result.refused) {
+    console.error(
+      `Refusing to rewrite the prose manifest: ${result.dropped.length} pinned prose block(s) are no longer in their file.\n`
+      + result.dropped.map((entry) => `- ${entry.file}: "${entry.label}"`).join('\n')
+      + '\n\nA reword or a deliberate deletion is legitimate — re-run with --retire "<reason>" to record it.'
+      + '\nProse that vanished because a conflict in a mixed file was resolved with --ours or --theirs is not:'
+      + ' the generator only owns the text between the markers and cannot restore it.'
+      + '\nRecover with the merge base of the file, then `npm run count:tools -- --write`.',
+    );
+    process.exit(1);
+  }
+  writeFileSync(PROSE_MANIFEST, `${JSON.stringify(result.manifest, null, 2)}\n`);
+  console.error(
+    `Wrote ${PROSE_MANIFEST}: ${Object.keys(result.manifest.files).length} file(s), `
+    + `${reportUnitCount(result.manifest)} pinned unit(s)`
+    + (result.retired.length > 0 ? `, ${result.retired.length} retired with a recorded reason` : ''),
+  );
+  process.exit(0);
+}
 const censusFileIndex = args.indexOf('--census-file');
 if (censusFileIndex >= 0 && !args[censusFileIndex + 1]) {
   throw new Error('--census-file requires a JSON file');
@@ -1664,6 +1864,12 @@ function checkDocumentation(blocks) {
   // loop below stay quiet about a block the tree pass has already named.
   const tree = markerTreeReport(scanGeneratedMarkers(markerScanRoots), blocks);
   errors.push(...tree.errors);
+  // #1384: the generated blocks above are the half of a mixed document the
+  // generator owns. This is the other half — the prose it has no copy of, so a
+  // whole-file conflict resolution deletes it with nothing downstream able to
+  // restore or report it. Runs next to the tree pass for the same reason: it is
+  // a reconciliation against a checked-in expectation, not a formatting rule.
+  errors.push(...proseDrift(readProseManifest(), proseDocumentsUnderTest()).errors);
   for (const [file, name, body] of blocks) {
     if (tree.phantoms.has(`${file}:${name}`)) continue;
     const error = inspectGeneratedBlock(readFileSync(join(ROOT, file), 'utf8'), file, name, body);
