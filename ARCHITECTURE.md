@@ -109,7 +109,9 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 A server started with no `SPOTIFY_MCP_TOOLSETS` registers **129 tools** (142,737 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **571 tools**, along with **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
-The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories), and LOC is the repository line count, not an estimate.
+The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
+
+That column replaced a per-file line count (#1398), and why is worth keeping: a line count is invalidated by *any* edit that changes a file's length — a comment, a blank line, a reformat — while the block's subject matter is what a file registers. So the block went red for edits that changed nothing it documents. It put `main` red twice (#1360, #1380) and cost three agents two `--write` cycles each. Schema bytes move exactly when the documented surface moves, and they answer the question a module map is read for: which module costs a host context. Line counts ranked that backwards — `src/client.ts` is the largest module in this table and registers nothing, while several of the largest schema contributors are mid-sized files.
 
 <!-- BEGIN:generated module-map -->
 | File | Responsibility | Schema bytes |
