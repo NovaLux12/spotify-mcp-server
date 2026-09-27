@@ -384,16 +384,29 @@ Quick reference for all endpoints used. All paths are relative to `https://api.s
 > **`/artists/{id}/top-tracks` status (#901).** The two platform sources disagree, so
 > neither is used as a single claim of fact. The current OpenAPI schema
 > (<https://developer.spotify.com/reference/web-api/open-api-schema.yaml>) still
-> publishes the path, flagged `deprecated: true`; Spotify's February 2026 Web API
-> changelog lists the same path as `[REMOVED]` with **no replacement named**. What
-> is observable is therefore registration-dependent rather than artist-dependent:
-> a registration without the grant answers 403 or 404/410, and the answer is
-> identical for every artist in a fan-out. Tools that call it
-> (`artist_collab_network`, `artist_completeness_score`) probe once and fail fast
-> on the first gated or removed answer via the shared contract in `src/gating.ts`
-> (`isGatedError` / `graceful403Message`), which annotates and rethrows the original
-> `SpotifyApiError`; they never substitute a fabricated `0%` or `0` tracks for a
-> read that did not happen.
+> publishes the path, flagged `deprecated: true`, and documents a `403` among its
+> responses; Spotify's February 2026 Web API changelog lists the same path as
+> `[REMOVED]` with **no replacement named**. What is observable is therefore
+> registration-dependent rather than artist-dependent: a registration without the
+> grant answers 403 or 404/410, and the answer is identical for every artist in a
+> fan-out. Every tool that calls it routes the answer through the shared contract
+> in `src/gating.ts` (`isGatedError` / `isRemovedEndpointFailure` /
+> `graceful403Message`), which annotates and rethrows the original
+> `SpotifyApiError`; none of them substitutes a fabricated `0%` or `0` tracks for a
+> read that did not happen. What they do with a gated or removed answer differs by
+> what the tool can still do without it, so this list is not a single shared
+> behaviour:
+>
+> - `get_artist_top_tracks` (#901) — the tool *is* the read; a 403 becomes an
+>   explanatory error and there is nothing to fall back to.
+> - `artist_collab_network`, `artist_completeness_score` (#901) — probe once and
+>   fail fast on the first gated or removed answer, because the answer is a
+>   property of the registration and repeating it per artist changes nothing.
+> - `batch_add_to_playlist` (#867) — records the artist source under `failed`
+>   with reason `gated` / `not_found` and keeps the rest of the batch.
+> - `queue_playlist` (#1225) — falls back to the artist's most recent albums,
+>   which sit in the module already, and discloses it: `resolved_via: "albums"`
+>   plus a `note` naming the failed read.
 | `get_show` | GET | `/shows/{id}` |
 | `list_show_episodes` | GET | `/shows/{id}/episodes` |
 | `show_new_episodes` | GET | `/me/shows` then `/shows/{id}/episodes` per show — the per-show reads are market-gated and default `market` (§10) |
@@ -572,6 +585,29 @@ Add a track or episode to the end of the queue.
 |---|---|---|---|
 | `uri` | string | yes | Spotify track or episode URI |
 | `device_id` | string | no | |
+
+---
+
+#### `queue_playlist`
+Queue every track behind a playlist, album, artist, track or episode URI, in order.
+
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `source_uri` | string | yes | `spotify:playlist:`, `:album:`, `:artist:`, `:track:` or `:episode:` |
+| `mode` | `"append"` | no | `"replace"` is not supported — Spotify has no queue-clear endpoint, so it is refused with `ok: false` rather than silently appended |
+| `limit` | number | no | Cap on queued tracks (1–200, default 100) |
+| `device_id` | string | no | Target device id |
+
+**Returns:** `queued` / `failed` counts with a per-URI reason, plus `resolved_via` —
+which read produced the list. For an artist source that is `top_tracks`, or
+`albums` when the top-tracks read could not answer and the artist's recent albums
+supplied the list instead. In that second case `note` carries the disclosure
+(naming the endpoint, the status, and that the tracks are **not** a top-tracks
+selection), because a gated `/artists/{id}/top-tracks` is a property of the app
+registration, not of the artist — see the `/artists/{id}/top-tracks` status note
+in §4.0.4. A successful-but-empty top-tracks read walks the albums too and
+carries **no** `note`: the read happened and genuinely returned nothing.
 
 ---
 
