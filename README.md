@@ -228,6 +228,7 @@ gates that hid modules, and the granted scopes in one call.
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
+- [docs/cli.md](docs/cli.md) — `tools`, `call`, `watch`, `export`, `init`: the CLI as an MCP client
 - [docs/schema-budgets.md](docs/schema-budgets.md) — per-module schema budgets and registration order
 - [docs/statsfm.md](docs/statsfm.md) — stats.fm second source: setup, tool cheat sheet, gotchas
 - [docs/cookbook.md](docs/cookbook.md) — copy-paste agent recipes

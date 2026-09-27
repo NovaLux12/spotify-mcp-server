@@ -2104,7 +2104,16 @@ function serverMetadata(server: McpServer): ServerModuleMetadata {
   return created;
 }
 
-function registeredToolNames(server: McpServer): string[] {
+/**
+ * The names of every tool this server has registered, right now.
+ *
+ * Exported because the naming-policy check in `src/server.ts` needs the same
+ * list, and the alternative was for that call site to repeat the private-field
+ * cast this module already owns. One reader of `_registeredTools`, used by
+ * everyone: a second cast is a second claim about the SDK's internals, and the
+ * `tests/payload-casts.test.ts` ratchet counts claims.
+ */
+export function registeredToolNames(server: McpServer): string[] {
   const registry = schemaRegistryEntries(server);
   return Object.keys(registry);
 }

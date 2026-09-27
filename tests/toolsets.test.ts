@@ -21,11 +21,30 @@ import {
 import { REGISTRAR_MANIFEST, type RegistrarManifestEntry } from '../src/tools/annotations.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const INDEX_TS = readFileSync(join(ROOT, 'src/index.ts'), 'utf8');
 
 /**
- * Registration keys `src/index.ts` gates with a string literal (#669). The
- * registrar-manifest loop hands `isModuleActive` a *variable*
+ * The source this suite scans for hand-gated registration entry points.
+ *
+ * TWO files, not one. #606 moved the registry factory and the scope derivation
+ * out of `src/index.ts` into `src/server.ts` so the CLI subcommands could build
+ * the same server in-process; the hand-gated `isModuleActive('resources', …)`
+ * and `isModuleActive('prompts', …)` calls went with them. Scanning only
+ * `src/index.ts` would leave this suite reporting the two keys as TOOLSETS
+ * entries that gate nothing — which is the defect the parity check exists to
+ * catch, produced BY the check rather than caught by it.
+ *
+ * Concatenated rather than read separately so the scanner below, its
+ * comment-stripping and its single-string signature all stay as they were: the
+ * question is "which file(s) hold the hand-gated calls", and answering it here
+ * keeps the answer next to the code that made the question necessary.
+ */
+const INDEX_TS = ['src/index.ts', 'src/server.ts']
+  .map((file) => readFileSync(join(ROOT, file), 'utf8'))
+  .join('\n');
+
+/**
+ * Registration keys the registration entry points gate with a string literal
+ * (#669). The registrar-manifest loop hands `isModuleActive` a *variable*
  * (`isModuleActive: (key) => isModuleActive(key, ...)`), so it is deliberately
  * not matched here: REGISTRAR_MANIFEST is the source of truth for that half,
  * and this scan is its complement for the hand-gated surfaces
@@ -128,7 +147,7 @@ describe('toolset parity is derived, not hand-listed (#669)', () => {
     );
     assert.ok(
       indexEntryPointKeys(INDEX_TS).length > 0,
-      'src/index.ts gates resources/prompts by literal; a zero result means the scan broke',
+      'the registration entry points gate resources/prompts by literal; a zero result means the scan broke',
     );
   });
 
