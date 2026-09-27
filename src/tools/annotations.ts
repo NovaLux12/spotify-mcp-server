@@ -304,16 +304,54 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // the CORRECTIONS note above happening again, so: measure through the real
   // registry, never by re-summing a tool that was meant to be a convenience.
   //
-  // Sized against the queue, not against ambition: ~130 open issues remain, and
+  // Sized against the queue, not against ambition: work is still queued, and
   // the ones that add prose do so because they add *disclosure* — a sentence
   // telling a host that a walk was truncated, or that a receipt was unreadable.
   // 13,000B is roughly 30 warrants at the observed median delta.
   //
+  // NO TALLY, and that is a decision rather than an omission (#1350). This
+  // sentence used to carry an approximate count of open issues, which was
+  // already wrong by the time it was written and could only rot further: the
+  // count is a property of the tracker, not of this tree, so nothing here
+  // re-derives it and no gate can. The argument it supported — queued work
+  // lands as *disclosure*, and disclosure is what the aggregate ceiling is
+  // sized for — survives the deletion intact, and a tally was the one part
+  // that could not be kept true.
+  //
   // This does not weaken the gate. `perToolMaxBytes` and every
-  // per-module ceiling are unchanged and do the fine-grained work; the surface
-  // would have to grow 2.1% to breach. The alternative is startups failing for
-  // reasons unrelated to the change that caused them, which is the failure mode
-  // a startup tripwire exists to prevent.
+  // per-module ceiling are unchanged and do the fine-grained work, and the
+  // aggregate ceiling has a small surplus over the surface rather than a wide
+  // one — measured headroom is the surplus, not a percentage of it, because a
+  // percentage is the derived figure that decays (#1350). The alternative is
+  // startups failing for reasons unrelated to the change that caused them,
+  // which is the failure mode a startup tripwire exists to prevent.
+  //
+  // WHY THE % DETECTOR WAS NOT ADDED, because the two sentences above are
+  // exactly what a wider net would have been for (#1350). `live-constant-comment
+  // .test.ts` matches a byte figure beside a constant name, and a byte unit is
+  // required, so no percentage can match — the defect is real and the fix above
+  // is not optional. But widening `BYTE_FIGURE` with a `%` arm was measured on
+  // this tree before being declined, and it fails on both counts:
+  //
+  //   1. IT STILL MISSES THE DEFECT IT WAS ADDED FOR. A % arm only matches
+  //      `FIGURE_FLOOR` (1,000) and above, and a percentage is structurally
+  //      below that floor — there is no percentage in common use that reaches
+  //      it. Re-run with the floor removed, it still misses: the arm fires on a
+  //      percentage only when the *numerator* equals a live constant, and the
+  //      numerator of the figure that motivated the change is not one. The
+  //      defect it was added for is the one defect it would never have caught.
+  //   2. WHAT IT CATCHES INSTEAD IS ARITHMETIC COINCIDENCE. With the floor
+  //      removed it adds eight hits, every one a small integer colliding with an
+  //      unrelated constant: `0%` against `Math.max(0, …)`, `60%` against a
+  //      `seconds < 60` bound, `10%` and `1%` against roundings and a
+  //      `127.0.0.1` literal. Each would need an ALLOWED entry, which is the
+  //      allowlist-growth trap the gate's own docs warn about.
+  //
+  // So the gate keeps its scope and the prose stops quoting what the gate cannot
+  // police. If someone still wants the wider net, the burden is to show it
+  // catches a real defect without an allowlist that swallows the class — the
+  // measurement above says a `FIGURE_FLOOR`-respecting arm cannot, because
+  // percentages are structurally below the floor.
   //
   // Two queued changes will move this the other way and should be re-measured
   // rather than assumed: #908 drops eight `taste_*` alias registrations, and
