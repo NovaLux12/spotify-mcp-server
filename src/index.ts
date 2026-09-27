@@ -16,6 +16,7 @@ import {
 } from './tools/annotations.js';
 import { TOOLSETS, resolveToolsets, assertToolsetsUsable, isModuleActive, resolveToolOverrides, toolsetEnvHelp } from './toolsets.js';
 import { moduleBlockedByScopes, scopesFor } from './scopefilter.js';
+import { DERIVED_ANALYTICS_TOOLS, derivedAnalyticsEnabled } from './derivedanalytics.js';
 import { createRequire } from 'node:module';
 import { installTruncationBoundary } from './shaping.js';
 import { installGatedPathContract } from './gating.js';
@@ -121,6 +122,21 @@ async function startMcpServer(): Promise<void> {
   const readOnly = readOnlyModeEnabled();
   if (readOnly) {
     console.error('[spotify-mcp] SPOTIFY_MCP_READONLY is set — write-capable modules are hidden');
+  }
+
+  // #695: the derived-listening-analytics opt-in, disclosed on every start in
+  // the direction that matters. Saying nothing when the flag is OFF would let
+  // an operator believe the analytics are there and find eleven tools missing
+  // with no explanation — so the OFF case prints, and it names the flag rather
+  // than a bare count. The ON case prints too, because a host that opted in
+  // should be able to see in a log that the extra surface is what it asked for.
+  // This is a separate mechanism from SPOTIFY_MCP_READONLY and the two lines
+  // are independent: read-only mode says nothing about analytics, and a
+  // read-only host can still hold derived metrics.
+  if (derivedAnalyticsEnabled()) {
+    console.error(`[spotify-mcp] SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set — ${DERIVED_ANALYTICS_TOOLS.size} derived listening-analytics tools are registered (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')})`);
+  } else {
+    console.error(`[spotify-mcp] derived listening analytics are OFF — ${DERIVED_ANALYTICS_TOOLS.size} tools (${[...DERIVED_ANALYTICS_TOOLS].sort().join(', ')}) are not registered. Set SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1 to register them.`);
   }
 
   // Forward long-walk pagination progress (#65) as MCP progress
@@ -247,6 +263,10 @@ async function runDoctor(): Promise<void> {
   // report must not depend on that pin holding at runtime. The shared report's
   // `surface` row reads the same gate, so the two cannot disagree either.
   console.log(`  readonly          ${readOnlyModeEnabled() ? 'yes' : 'no'}`);
+  // Read from the GATE, not from `cfg.experimentalAnalytics`, for the same
+  // reason as the row above: this line is a disclosure, so it must state what
+  // module registration actually acted on. Independent of the readonly row.
+  console.log(`  derived analytics ${derivedAnalyticsEnabled() ? 'enabled' : 'disabled (opt-in via SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS)'}`);
   if (cfg.market) console.log(`  market            ${cfg.market}`);
   if (cfg.scopes) console.log(`  scopes            ${cfg.scopes.join(', ')}`);
 

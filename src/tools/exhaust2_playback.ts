@@ -1049,7 +1049,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 14. most_replayed (#371) — plays-per-track in the recent window
   server.tool(
     'most_replayed',
-    'Most-replayed tracks in the recent window: play counts per track from recently-played, deduped — "on repeat" computed locally (complements window-based listening_report). Quota: 1-2 reads, local compute.',
+    'Most-replayed tracks in the recent window: play counts per track from recently-played, deduped — "on repeat" computed locally (complements the window-based top-tracks tools). Quota: 1-2 reads, local compute.',
     {
       limit: z.number().int().min(1).max(50).optional().default(10).describe('Top N tracks to return (default 10)'),
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2)'),
@@ -1126,7 +1126,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 16. weekday_heatmap (#373) — weekday × daypart buckets
   server.tool(
     'weekday_heatmap',
-    'Plays bucketed by weekday × daypart (morning/afternoon/evening/night) — listening_heatmap is hour-of-day; this adds the weekly dimension. Quota: 1-2 reads, local compute.',
+    'Plays bucketed by weekday × daypart (morning/afternoon/evening/night) — the hour-of-day histogram counterpart, when derived analytics are enabled; this adds the weekly dimension. Quota: 1-2 reads, local compute.',
     {
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2)'),
       response_format: ResponseFormat,

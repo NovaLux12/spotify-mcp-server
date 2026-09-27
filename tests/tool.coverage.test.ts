@@ -144,11 +144,11 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm3analytics',
     reason:
-      'The entire analytics family is untested (epic #575) — every name in this module is on the list, which is the clearest single signal of the gap this gate exists to hold visible.',
+      'The remaining analytics family is untested (epic #575) — every name in this module is on the list, which is the clearest single signal of the gap this gate exists to hold visible. The derived listening metrics this module used to carry (`discovery_ratio`, `listening_clock`, `listening_clock_heatmap`, `artist_listening_clock`, `mood_bucket_report`, `weekday_listening_report`, `weekly_rotation_report`, `binge_detector_report`, `listening_recap_brief`) left this list with #695, which stopped serving them from the default registry — the gate itself fails on an entry the registry no longer serves.',
     tools: [
-      'artist_listening_clock', 'artist_velocity_report', 'binge_detector_report',
+      'artist_velocity_report',
       'era_preference_report', 'listening_gaps_report', 'listening_history_export',
-      'listening_recap_brief', 'listening_streak_report', 'mood_bucket_report',
+      'listening_streak_report',
       'repeat_listener_report', 'session_length_report', 'top_artist_leaderboard',
       'top_artist_ranking_delta', 'top_track_leaderboard', 'top_track_ranking_delta',
     ],

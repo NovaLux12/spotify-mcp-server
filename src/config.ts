@@ -86,6 +86,16 @@ export interface SpotifyMcpConfig {
    * value, two readers. See `readOnlyModeEnabled` in src/tools/annotations.ts.
    */
   readonly: boolean;
+  /**
+   * Whether the derived listening-analytics tools register (#695).
+   *
+   * Lives on the snapshot for the same reason `readonly` does, but the gate
+   * reads the env directly at registration time — one flag now withholds a
+   * single tool inside a module that is otherwise registered, so a registrar
+   * cannot consult the snapshot it is being built inside. See
+   * `src/derivedanalytics.ts`.
+   */
+  experimentalAnalytics: boolean;
 }
 
 export const DEFAULT_MAX_ITEMS = 50;
@@ -727,6 +737,41 @@ export function parseReadOnly(raw: string | undefined): boolean {
 }
 
 /**
+ * Whether `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` reads as on (#695).
+ *
+ * The raw read, for the registrar: the gate is consulted while modules are
+ * being registered, and reading the snapshot would mean the answer depended on
+ * a config object the caller has not finished building.
+ */
+export function experimentalAnalyticsEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+  return truthyEnv(env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS);
+}
+
+/**
+ * The same decision, plus the loud half (#695).
+ *
+ * `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=banana` must not read as on. Unlike
+ * SPOTIFY_MCP_READONLY, whose failure direction is a server that writes when
+ * the operator expected it not to, this one fails OPEN in the safe direction —
+ * an unreadable value leaves the analytics OFF, which is the default anyway.
+ * The line is still worth printing: the operator who set the flag asked for
+ * eleven tools that are silently absent, and "I set it and nothing happened"
+ * is a support question this server can answer itself. It names the value, the
+ * accepted spellings, and the direction, so the message distinguishes a typo
+ * from a deliberate `off`.
+ */
+export function parseExperimentalAnalytics(raw: string | undefined): boolean {
+  if (unrecognisedBooleanEnv(raw)) {
+    console.error(
+      `[spotify-mcp] SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS "${raw?.trim()}" names no boolean; derived listening analytics stay OFF. `
+        + `Accepted: ${TRUTHY_ENV_VALUES.join(', ')}. `
+        + 'If you meant to enable them, the value above is not one this server reads as true.',
+    );
+  }
+  return truthyEnv(raw);
+}
+
+/**
  * Validate SPOTIFY_MCP_MARKET: ISO 3166-1 alpha-2, case-insensitive.
  * Returns uppercase code or null if unset. Warns and returns null if invalid.
  */
@@ -800,6 +845,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
     market: parseMarket(env.SPOTIFY_MCP_MARKET),
     statsfmUserId: parseStatsfmUserId(env.STATSFM_USER_ID),
     readonly: parseReadOnly(env.SPOTIFY_MCP_READONLY),
+    experimentalAnalytics: parseExperimentalAnalytics(env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS),
   };
 }
 

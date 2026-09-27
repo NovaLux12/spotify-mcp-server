@@ -235,10 +235,18 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // the account registry's two tools, both of which the issue asked for by
     // name, and neither of which replaces an existing tool.
     //
+    // #695 took the default surface 589 -> 578 by withholding eleven derived
+    // listening-analytics tools unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is
+    // set. A DELIBERATE reduction, not surface loss: the opted-in surface is
+    // byte-identical to the 589 this tripwire used to pin, which
+    // tests/analytics-optin-registry.test.ts asserts over a real server. A
+    // silent drop from here would mean the gate took something it was not
+    // supposed to take.
+    //
     // Measured from the live registry on the post-rebase tree, not derived by
     // subtracting: main moved underneath this branch twice, and the removals
     // did not compose with the other changes to the plain arithmetic.
-    assert.equal(full.toolCount, 589, 'the default surface must be unchanged');
+    assert.equal(full.toolCount, 578, 'the default surface must be unchanged');
     // `annotations.ts` registers verify_receipt itself, so it is in the
     // manifest's file list without being imported through a thunk.
     const missing = REGISTRAR_MANIFEST

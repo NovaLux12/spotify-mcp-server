@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
+import { derivedAnalyticsToolServer } from '../derivedanalytics.js';
 import type {
   SpotifyPaged,
   RecentlyPlayedResponse,
@@ -272,6 +273,14 @@ function shapeResult(rf: ResponseFormatValue, prose: string, payload: ListeningR
 }
 
 export function registerAnalyticsTools(server: McpServer, client: SpotifyClient): void {
+  // #695: `listening_report` reports an era histogram, a discovery ratio and
+  // hour-of-day buckets in one payload, so it is withheld unless
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set. The other three tools here are
+  // re-presentations of the account's own data and register either way — and
+  // `taste_shift_report` still serves the track/artist rank comparison that the
+  // withheld aggregate used to be the only way to get. See src/derivedanalytics.ts.
+  server = derivedAnalyticsToolServer(server);
+
   // listening_streaks — consecutive-day streaks from recently-played
   server.tool(
     'listening_streaks',

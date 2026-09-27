@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { installPromptErrorBoundary } from '../tools/annotations.js';
+import { derivedAnalyticsEnabled } from '../derivedanalytics.js';
 
 /**
  * Shared optional time-range argument (#60): defaults preserve old behaviour.
@@ -345,9 +346,20 @@ export function registerPrompts(server: McpServer, options: PromptRegistrationOp
   server.prompt('morning_briefing', 'Morning briefing: new releases + listening streak + top track.', async () => ({
     messages: [{ role: 'user', content: { type: 'text', text: `Give me a morning briefing: call listening_streaks, get_top_tracks (short_term, limit 5), and get_recently_played (limit 10). Summarize streak, top track, and 3 “play next” suggestions with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly rather than inventing content. ${footer}` } }],
   }));
-  server.prompt('weekly_digest', 'Weekly digest: taste shift + streaks + recommendations.', async () => ({
-    messages: [{ role: 'user', content: { type: 'text', text: `Weekly digest: call taste_shift_report, listening_streaks, and listening_report (medium_term). Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly. ${footer}` } }],
-  }));
+  server.prompt('weekly_digest', 'Weekly digest: taste shift + streaks + recommendations.', async () => {
+    // #695: `listening_report` is a derived listening metric and registers only
+    // under SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS, so a prompt that names it
+    // unconditionally instructs the agent to call a tool this server does not
+    // serve. The prompt text is therefore built from the same gate the registry
+    // acted on rather than hardcoded — a prompt that advertised a missing tool
+    // would be the same defect as a tool description pointing at one.
+    const rollup = derivedAnalyticsEnabled()
+      ? 'listening_report (medium_term)'
+      : 'top_artists_by_range (long_term) — the window-based roll-up; derived listening metrics are not registered on this server (see SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS)';
+    return {
+      messages: [{ role: 'user', content: { type: 'text', text: `Weekly digest: call taste_shift_report, listening_streaks, and ${rollup}. Write a 7-day roll-up: rising artist, streak summary, library vibe, and one crate-digging pick with URIs. If a tool is unavailable (toolset-trimmed), skip that section with a one-line note and continue — never fail the whole briefing for one missing tool. If a data call returns 0 items, note it explicitly. ${footer}` } }],
+    };
+  });
   server.prompt('crate_digging', 'Crate dig deep cuts for your top artists.', { depth: z.coerce.number().int().positive().max(5).optional().describe('Deep cuts per artist (default 3)') }, async (rawArgs) => ({
     messages: [{ role: 'user', content: { type: 'text', text: `Crate digging: for up to 5 artists from get_top_artists (short_term) — if fewer than 5, dig only the ones available and note the shortfall — find ${(rawArgs as { depth?: number }).depth ?? 3} non-hit deep cuts per artist. Use get_artist_top_tracks to identify hits to skip in one call per artist, then use 1–2 broad search_deep queries (types=["track"], pages 2 — two 10-result pages per call) covering multiple artists/genres rather than one per deep cut, plus get_artist_albums and get_album_tracks (limit 50, paginate if needed) to surface deep cuts. Propose a playlist with URIs. If I want to keep it, create it with create_playlist and add_to_playlist — preview with dry_run=true before committing. If per-artist searches return 0 deep cuts, report it and suggest broadening. NOTE: get_artist_top_tracks may 403 on app registrations created after November 2024 — Spotify removed GET /artists/{id}/top-tracks in the February 2026 Web API changes. If it 403s for an artist, skip just that artist's hit-skip step and rely on get_artist_albums + get_album_tracks ordering for the same signal; do not abort the whole dig. ${footer}` } }],
   }));

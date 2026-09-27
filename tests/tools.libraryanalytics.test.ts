@@ -1,6 +1,16 @@
 import './helpers/hermetic.js';
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
+
+// #695: this file exercises `listening_heatmap`, which is withheld from the
+// default registry unless SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set. The
+// opted-in surface is what is under test here, and it is the surface that ships
+// unchanged. The default — that the tool is NOT registered at all — is pinned in
+// tests/derived-analytics-gate.test.ts (in-process) and
+// tests/analytics-optin-registry.test.ts (real server over stdio), so opting in
+// here does not leave the gate itself unverified.
+process.env.SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS = '1';
+
 import { z } from 'zod';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';

@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 620,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 621,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 602,722B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 68,690B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 18,278B | 2.9% of the enforced limit |
+| Measured `tools/list` payload | 592,779B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 67,385B | 11.4% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 28,221B | 4.5% of the enforced limit |
 
-Headroom is **18,278B** of the 621,000B enforced limit — 2.9% — so the aggregate budget is **tight**.
+Headroom is **28,221B** of the 621,000B enforced limit — 4.5% — so the aggregate budget is **tight**.
 
 Regenerate with `npm run count:tools -- --write`. `--check` fails when any
 figure above stops matching the constants or the live measurement, so a
@@ -177,7 +177,7 @@ than maintained.
 | playlistfollow | 4 | 3,027 | 4 | 3,027 | 5 | 3,330 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
-| analytics | 4 | 2,817 | 4 | 2,817 | 5 | 3,099 |
+| analytics | 3 | 1,908 | 3 | 1,908 | 5 | 3,099 |
 | statsfm | 30 | 24,073 | 30 | 24,073 | 31 | 26,481 |
 | taste | 16 | 14,717 | 16 | 14,717 | 17 | 16,189 |
 | tastecomposites | 10 | 7,990 | 10 | 7,990 | 11 | 8,789 |
@@ -185,7 +185,7 @@ than maintained.
 | doctor | 1 | 750 | 1 | 750 | 2 | 826 |
 | accounts | 2 | 1,644 | 2 | 1,644 | 3 | 1,809 |
 | swarm3meta | 3 | 2,023 | 3 | 2,023 | 4 | 2,226 |
-| libraryanalytics | 4 | 3,351 | 4 | 3,351 | 5 | 3,687 |
+| libraryanalytics | 3 | 2,498 | 3 | 2,498 | 5 | 3,687 |
 | portability | 11 | 10,187 | 11 | 10,187 | 12 | 11,206 |
 | libraryinsights | 3 | 2,751 | 3 | 2,751 | 4 | 3,027 |
 | libraryhygiene | 1 | 754 | 1 | 754 | 2 | 830 |
@@ -216,7 +216,7 @@ than maintained.
 | exhaustmisc | 10 | 7,876 | 10 | 7,876 | 11 | 8,664 |
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 23 | 17,473 | 23 | 17,473 | 24 | 19,221 |
+| exhaust2playback | 23 | 17,518 | 23 | 17,518 | 24 | 19,270 |
 | exhaust2playlists | 18 | 22,547 | 18 | 22,547 | 19 | 24,802 |
 | exhaust2misc | 27 | 24,316 | 27 | 24,316 | 28 | 26,748 |
 | exhaust2extra | 3 | 4,092 | 3 | 4,092 | 4 | 4,502 |
@@ -224,7 +224,7 @@ than maintained.
 | swarm3bdiscovery | 24 | 20,147 | 24 | 20,147 | 25 | 22,162 |
 | swarm3shows | 24 | 22,103 | 24 | 22,103 | 25 | 24,314 |
 | swarm3refs | 6 | 4,331 | 6 | 4,331 | 7 | 4,765 |
-| swarm3analytics | 24 | 18,951 | 24 | 18,951 | 25 | 20,847 |
+| swarm3analytics | 15 | 12,030 | 15 | 12,030 | 25 | 20,847 |
 | swarm3library | 24 | 18,283 | 24 | 18,283 | 25 | 20,112 |
 | swarm3playback | 24 | 14,043 | 24 | 14,043 | 25 | 15,448 |
 | swarm3playlistops | 24 | 29,163 | 24 | 29,163 | 25 | 32,080 |

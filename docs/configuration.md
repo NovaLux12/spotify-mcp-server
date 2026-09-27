@@ -29,6 +29,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
 | `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
 | `SPOTIFY_MCP_CONFIRM` | unset | `never` is the only explicit bypass for confirmation-gated destructive operations; callers that require confirmation otherwise fail closed when the client cannot elicit. |
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` | unset (off) | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) registers the eleven **derived listening-analytics tools**; unset or any other value does not, and an unrecognised value also prints a stderr line naming the accepted spellings. Independent of `SPOTIFY_MCP_READONLY`: that one hides write-capable *modules*, this one hides individual read-only *tools* inside modules that stay active. See [Derived listening analytics](#derived-listening-analytics). |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Per-kind watermark file powering `whats_new` with `since: "last-check"`. Written by that tool, mode 0600. |
 | `SPOTIFY_MCP_FRESHNESS_BUDGET` | `25` | Per-call budget for `whats_new` artist and show lookups. |
 | `SPOTIFY_MCP_MAX_CONCURRENCY` | `3` | **The one concurrency knob**: the ceiling on Spotify requests in flight at once for the whole process. Every request passes through the funnel, including those a single tool fans out, so this is the width that applies everywhere. Starts are still paced a minimum 100 ms apart and still stop entirely during a `Retry-After` cooldown; `1` restores the strictly serial funnel. Clamped to 32 — a larger value is not honoured, so unbounded concurrency cannot be configured by accident. |
@@ -44,7 +45,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports; also the output root for the five `export_*` family tools. |
 | `SPOTIFY_MCP_ALLOW_PATHS` | unset | Extra directories `import_playlist` may read from, `:`-separated. The default read roots are `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_EXPORT_DIR`. |
 | `SPOTIFY_MCP_MAX_DOCUMENT_MB` | `32` | Per-document read cap. A larger `input_path` or inline `content` is refused before it is read. |
-| `SPOTIFY_MCP_TIMEZONE` | `UTC` | IANA zone for `listening_heatmap` day/hour buckets. Host time is never used implicitly; the same payload is produced in every host zone. |
+| `SPOTIFY_MCP_TIMEZONE` | `UTC` | IANA zone for the `listening_heatmap` day/hour buckets, which registers only under `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS`. Host time is never used implicitly; the same payload is produced in every host zone. |
 | `SPOTIFY_MCP_SNAPSHOT_DIR` | `~/.spotify-mcp/playlist-snapshots` | Playlist snapshot sidecar directory. |
 | `SPOTIFY_MCP_SEARCH_HISTORY_FILE` | `~/.spotify-mcp/search-history.json` | Local search-history sidecar. |
 | `SPOTIFY_MCP_SEARCH_HISTORY` | unset (enabled) | `0`, `false`, `no`, or `off` (case-insensitive, trimmed) stops the search-history tools from recording or replaying queries. Any other value, including unset, keeps history on. |
@@ -238,6 +239,18 @@ An unknown-only toolset spec fails startup with the valid set names. A mixed kno
 `SPOTIFY_MCP_READONLY=1` (also `true`, `yes` or `on`; case-insensitive, surrounding whitespace ignored) prevents registration of Spotify-mutating modules such as playback and scenes, playlist and library mutations, following, users, audiobooks, and destructive helpers. It does **not** imply that every remaining tool is side-effect-free: local-only tools such as the taste feedback store remain available. It also does not bypass the independent toolset, registration-key, or scope gates. Read-only resources and prompts remain available when their own gates permit.
 
 For confirmation-gated destructive operations, a missing MCP elicitation capability produces an `unsupported` result. Callers that require confirmation must treat that result as refusal; they proceed without prompting only when `SPOTIFY_MCP_CONFIRM=never` explicitly selects the automation bypass. A declined prompt or elicitation failure also fails closed.
+
+### Derived listening analytics
+
+`SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` (also `true`, `yes` or `on`; case-insensitive, surrounding whitespace ignored) registers eleven tools that turn the account's own `/me/top/*` and `/me/player/recently-played` responses into **derived** listening metrics: hour-of-day and daypart histograms, weekday profiles, discovery ratios, era histograms, and binge or listening-consistency scores. Spotify's Developer Policy Sec. III.13 prohibits analysing Spotify Content to create "new or derived listenership metrics … or building profiles of users", and those outputs are the shape it names.
+
+**Unset is the non-analytics path, and that is the default for everyone.** The eleven tools are then absent from `tools/list` — not registered and returning an empty result — so no caller can read "you did not listen at 3am" out of a gate that is actually switched off. The startup log names them, and so does the `surface` row of `spotify_doctor` (`derived_analytics=false`).
+
+The withheld set is `listening_report`, `listening_heatmap`, `discovery_ratio`, `listening_clock`, `listening_clock_heatmap`, `artist_listening_clock`, `mood_bucket_report`, `weekday_listening_report`, `weekly_rotation_report`, `binge_detector_report` and `listening_recap_brief`. With the flag set, the registry is exactly what it was before the gate and each tool returns the payload it always did.
+
+An unrecognised value — `enabled`, `2`, `y` — leaves the analytics **off** and prints a stderr line naming the accepted spellings. It is not a startup failure: the default is already the safe path, so refusing to start would take a working host offline over a cosmetic mistake. The value is parsed by the same `truthyEnv` convention as `SPOTIFY_MCP_READONLY`, so the two switches cannot drift into disagreeing about what counts as a boolean.
+
+This gate is independent of `SPOTIFY_MCP_READONLY` in both directions. A read-only host may still hold derived analytics; an analytics-opted-in host is still fully writable. Tools that re-present the account's own data — `get_top_artists`, `get_top_tracks`, `get_recently_played`, `top_artists_by_range`, `taste_shift_report`, `listening_history_export` and the leaderboard and rank-delta tools — are never gated. The policy reading behind the gate is written out in [`docs/compliance.md`](compliance.md#derived-listening-analytics-the-policy-and-the-interpretation).
 
 ### Freshness and local sidecars
 

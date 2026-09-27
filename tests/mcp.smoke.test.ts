@@ -44,12 +44,22 @@ const REQUIRED_TOOLS = [
   'play',
   // Post-v1.4 differentiators (highest-severity failure class: silent
   // wiring loss). See the wiring-regression note above.
-  'grow_playlist', 'verify_receipt', 'listening_report', 'spotify_doctor',
+  'grow_playlist', 'verify_receipt', 'spotify_doctor',
   'whats_new', 'search_deep', 'handoff', 'merge_playlists',
   'library_hygiene', 'plan_podcast_session', 'where_was_i', 'apply_scene',
 ];
 
 const FORBIDDEN_TOOLS = [
+  // #695: derived listening analytics are withheld unless
+  // SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS is set, and this server starts with no
+  // SPOTIFY_* set — so the default surface must NOT serve them. This list was
+  // where `listening_report` belonged once #695 landed; it was previously in
+  // REQUIRED_TOOLS above, which is the assertion that would have caught the
+  // gate being wired in the wrong direction.
+  'listening_report', 'listening_heatmap', 'discovery_ratio', 'listening_clock',
+  'listening_clock_heatmap', 'artist_listening_clock', 'mood_bucket_report',
+  'weekday_listening_report', 'weekly_rotation_report', 'binge_detector_report',
+  'listening_recap_brief',
   'get_recommendations',
   'get_related_artists',
   'get_available_genres',
