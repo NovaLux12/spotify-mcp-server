@@ -47,6 +47,8 @@ const EXPECTED_FILES = [
   'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
+  // Added with the 3.0 roadmap, whose headline figures are measured by the census.
+  'docs/v3-roadmap.md',
   'docs/wave2-composites.md',
   'skills/spotify-exhaustive-feature-sweep/SKILL.md',
   'skills/spotify-mcp-competitor-comparison/SKILL.md',

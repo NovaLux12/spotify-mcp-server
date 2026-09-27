@@ -65,6 +65,7 @@ const EXPECTED_FILES = [
   'docs/cookbook.md',
   'docs/distribution.md',
   'docs/schema-budgets.md',
+  'docs/v3-roadmap.md',
   'docs/wave2-composites.md',
   'skills/spotify-exhaustive-feature-sweep/SKILL.md',
   'skills/spotify-mcp-competitor-comparison/SKILL.md',
