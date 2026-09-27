@@ -18,7 +18,30 @@ import {
   truthyEnv,
 } from './config.js';
 
-const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? 'http://127.0.0.1:8888/callback';
+/**
+ * The default loopback redirect, exported so a failure message can name the
+ * value the operator has to match in the Spotify Developer Dashboard instead of
+ * restating it in prose (AGENTS.md §1: registered exactly, `127.0.0.1`, never
+ * `localhost`).
+ */
+export const DEFAULT_REDIRECT_URI = 'http://127.0.0.1:8888/callback';
+
+/**
+ * Upper bound on how long the browser flow waits for the OAuth callback.
+ *
+ * Trade-off: the wait must be bounded, because an unbounded one holds the
+ * callback port and turns every later run into a bare EADDRINUSE with no
+ * diagnosis — but the bound has to clear the time a human needs to read the
+ * auth URL, log in, click through the consent screen and wait for the
+ * redirect, including a slow mobile login. 5 minutes is roughly 2-3x that;
+ * materially below ~2 minutes starts failing people who are mid-approval, and
+ * re-running is cheap precisely because the port is released on both the
+ * success and the failure path. Override with SPOTIFY_AUTH_TIMEOUT_MS for CI
+ * and for hosts where nobody will be standing by a browser (#614).
+ */
+export const DEFAULT_AUTH_CALLBACK_TIMEOUT_MS = 300_000;
+
+const REDIRECT_URI = process.env.SPOTIFY_REDIRECT_URI ?? DEFAULT_REDIRECT_URI;
 // Derive bind port and route path from SPOTIFY_REDIRECT_URI so an overridden
 // redirect URI (e.g. http://127.0.0.1:9000/callback) is honored end-to-end.
 // Invalid values are reported by validateRedirectUri when auth starts rather
@@ -34,7 +57,6 @@ const CALLBACK_PORT = REDIRECT_URL.port
   : REDIRECT_URL.protocol === 'https:'
     ? 443
     : 80;
-const CALLBACK_PATH = REDIRECT_URL.pathname || '/';
 const REDIRECT_EXPECTED = `${REDIRECT_URL.origin}${REDIRECT_URL.pathname}`;
 
 /**
@@ -79,6 +101,111 @@ export function validateRedirectUri(raw: string): URL {
 export function getCallbackPort(raw: string): number {
   const parsed = validateRedirectUri(raw);
   return parsed.port ? Number(parsed.port) : 80;
+}
+
+/**
+ * Resolve the callback wait bound. A blank, non-numeric or non-positive value
+ * falls back to the default rather than disabling the bound: an operator who
+ * mistyped the knob should still get a bounded wait, because the unbounded case
+ * is the one that has no diagnosis.
+ */
+export function resolveAuthCallbackTimeoutMs(
+  raw: string | undefined = process.env.SPOTIFY_AUTH_TIMEOUT_MS,
+): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_AUTH_CALLBACK_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_AUTH_CALLBACK_TIMEOUT_MS;
+  return Math.floor(parsed);
+}
+
+/** Render a millisecond bound for a human (`300000 ms (5m)`). */
+function formatTimeout(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  const seconds = ms / 1000;
+  if (seconds < 60) return `${ms} ms (${seconds}s)`;
+  const minutes = seconds / 60;
+  const rounded = Number.isInteger(minutes) ? minutes : Math.round(minutes * 10) / 10;
+  return `${ms} ms (${rounded}m)`;
+}
+
+/**
+ * The callback listener bound and nothing ever arrived. Deliberately a
+ * different message from the port-busy one: here the port was free and is free
+ * again, so pointing the operator at a port conflict would send them to the
+ * wrong check. What is left is the redirect itself — an abandoned browser, or a
+ * browser that never got as far as the callback (wrong registered URI, an
+ * error page, a cancelled consent screen).
+ */
+export function authCallbackTimeoutMessage(
+  timeoutMs: number,
+  redirectUri: string,
+  port: number,
+): string {
+  const host = new URL(redirectUri).hostname;
+  return (
+    `Timed out after ${formatTimeout(timeoutMs)} waiting for the browser callback at ${redirectUri} ` +
+    `— no callback request arrived, and the listener on port ${port} has been closed. ` +
+    `That port is free again, so this is not a port conflict.\n` +
+    `The listener was up the whole time, so the redirect never reached it. Check that:\n` +
+    `  - the browser finished the Spotify approval page and the tab was not closed before the redirect;\n` +
+    `  - the browser did not stop on an error page instead (a captive portal, a TLS interception error, ` +
+    `or a wrong client id shows one, and the callback is never requested);\n` +
+    `  - ${redirectUri} is registered EXACTLY in the Spotify Developer Dashboard — host ${host}, ` +
+    `not localhost, and the same port and path.\n` +
+    `Then re-run spotify-mcp auth. To change the bound set SPOTIFY_AUTH_TIMEOUT_MS (currently ${timeoutMs}); ` +
+    `with no browser available, use SPOTIFY_HEADLESS=1 and paste the redirect URL instead.`
+  );
+}
+
+/**
+ * A listener that could not bind at all. EADDRINUSE gets its own message
+ * because it is the one start-up failure the operator can fix before retrying,
+ * and it is exactly what a previous `spotify-mcp auth` leaves behind — either
+ * one still running, or one that hung before this bound existed. The message
+ * therefore names the port, the default redirect URI, and both ways out. Any
+ * other listen error keeps the raw system text, which already names its cause.
+ */
+export function callbackListenError(err: unknown, port: number): Error {
+  const detail = err instanceof Error ? err.message : String(err);
+  if ((err as NodeJS.ErrnoException | null)?.code !== 'EADDRINUSE') {
+    return new Error(`Failed to start callback server: ${detail}`);
+  }
+  return new Error(
+    `Failed to start callback server: ${detail}\n` +
+      `Port ${port} is already in use (EADDRINUSE), so no callback listener could bind. ` +
+      `The usual owner is an earlier \`spotify-mcp auth\` still waiting for its browser redirect, ` +
+      `or another program that holds the port. ` +
+      `Find it with \`ss -lptn 'sport = :${port}'\` or \`lsof -i :${port}\`, and end it if it is a stale auth run.\n` +
+      `To use another port, set SPOTIFY_REDIRECT_URI to a free loopback URI such as ` +
+      `http://127.0.0.1:${port + 1}/callback and register that exact URI in the Spotify Developer Dashboard. ` +
+      `The default is ${DEFAULT_REDIRECT_URI} — host 127.0.0.1, not localhost.`,
+  );
+}
+
+/**
+ * Timer seam for the callback wait. The real implementation holds one handle
+ * and clears it on every settle; a test substitutes one whose expiry it can
+ * fire synchronously, so the bound is provable without spending real seconds.
+ */
+export interface AuthTimer {
+  set(fn: () => void, ms: number): void;
+  clear(): void;
+}
+
+/** The real timer: one handle, armed before the wait and cleared on settle. */
+function systemTimer(): AuthTimer {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  return {
+    set(fn, ms) {
+      handle = setTimeout(fn, ms);
+    },
+    clear() {
+      if (handle !== undefined) {
+        clearTimeout(handle);
+        handle = undefined;
+      }
+    },
+  };
 }
 
 /** Escape a value for safe interpolation into an HTML response body. */
@@ -479,6 +606,174 @@ export function parseCallbackUrl(
   return { code };
 }
 
+/** Inputs for one loopback callback wait. */
+export interface CallbackWaitOptions {
+  /** `state` issued in the authorization URL; a mismatch is refused. */
+  readonly state: string;
+  readonly codeVerifier: string;
+  readonly clientId: string;
+  /** The full redirect URI, used in failure messages only. */
+  readonly redirectUri: string;
+  /** Loopback hosts to bind. Never a wildcard. */
+  readonly hosts: readonly string[];
+  /** Port to bind on every host. */
+  readonly port: number;
+  /** Bound on the wait; see DEFAULT_AUTH_CALLBACK_TIMEOUT_MS. */
+  readonly timeoutMs: number;
+  /** Called once, when the first listener is up. */
+  readonly onListening?: () => void;
+  /** Timer seam; defaults to the real one. */
+  readonly timer?: AuthTimer;
+}
+
+/**
+ * Serve the OAuth callback until the browser redirect arrives, the redirect
+ * reports an error, the listener cannot bind, or the wait expires (#614).
+ *
+ * The wait used to settle only on an incoming request, so an abandoned flow
+ * held its port forever and the next attempt died on a bare EADDRINUSE that
+ * said nothing about the previous run. The bound is armed before the first
+ * `listen` and cleared on every settle, so a successful login never leaves a
+ * timer holding the process open.
+ *
+ * Extracted from `runAuthFlow` and parameterized (host, port, timer) so the
+ * expiry and the port-conflict paths are provable in a test: a fake timer fires
+ * synchronously, and the listener binds an OS-assigned loopback port rather
+ * than 8888.
+ */
+export function waitForCallback(options: CallbackWaitOptions): Promise<TokenData> {
+  const { state, codeVerifier, clientId, redirectUri, hosts, port, timeoutMs, onListening } = options;
+  const clock = options.timer ?? systemTimer();
+
+  return new Promise<TokenData>((resolve, reject) => {
+    const servers: ReturnType<typeof createServer>[] = [];
+    let settled = false;
+    let browserOpened = false;
+
+    const closeServers = (): void => {
+      for (const server of servers) {
+        try {
+          server.close();
+        } catch {
+          // A listener that failed during startup has no active handle.
+        }
+      }
+    };
+
+    /**
+     * Settle exactly once. The bound is cleared here rather than only on the
+     * timeout branch: a login that succeeded while a 5-minute timer was still
+     * armed would keep the CLI alive long after it printed its result.
+     */
+    const finish = (settle: () => void): void => {
+      clock.clear();
+      settle();
+    };
+
+    // Armed before the first listen so a bind that never completes is covered
+    // too, and so the two failure modes stay distinguishable: this timer only
+    // wins the race when the listener came up and nothing ever called it.
+    clock.set(() => {
+      if (settled) return;
+      settled = true;
+      closeServers();
+      finish(() => reject(new Error(authCallbackTimeoutMessage(timeoutMs, redirectUri, port))));
+    }, timeoutMs);
+
+    const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        res.writeHead(405, { Allow: 'GET, HEAD' });
+        res.end('Method not allowed');
+        return;
+      }
+
+      let url: URL;
+      try {
+        url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
+      } catch {
+        res.writeHead(400);
+        res.end('Bad request');
+        return;
+      }
+      const callbackPath = new URL(redirectUri).pathname || '/';
+      if (url.pathname !== callbackPath) {
+        res.writeHead(404);
+        res.end('Not found');
+        return;
+      }
+
+      // State is checked before error/code parameters. A forged request must
+      // not be able to terminate an in-flight authorization flow.
+      const returnedState = url.searchParams.get('state');
+      if (returnedState !== state) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end('<h1>State mismatch — possible CSRF. Try again.</h1>');
+        return;
+      }
+      if (settled) {
+        res.writeHead(409, { 'Content-Type': 'text/html' });
+        res.end('<h1>This authentication request was already handled.</h1>');
+        return;
+      }
+
+      const error = url.searchParams.get('error');
+      if (error) {
+        settled = true;
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end(`<h1>Authentication failed: ${escapeHtml(error)}</h1>`);
+        closeServers();
+        finish(() => reject(new Error(`Spotify auth error: ${error}`)));
+        return;
+      }
+
+      const code = url.searchParams.get('code');
+      if (!code) {
+        res.writeHead(400, { 'Content-Type': 'text/html' });
+        res.end('<h1>No authorization code received.</h1>');
+        return;
+      }
+
+      // Claim the callback before the async exchange so a replay cannot
+      // perform a second token exchange while the first one is in flight.
+      settled = true;
+      try {
+        const result = await exchangeCodeForTokens(code, codeVerifier, clientId);
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        res.end('<h1>Authentication successful. You can close this tab.</h1>');
+        closeServers();
+        finish(() => resolve(result));
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'text/html' });
+        res.end('<h1>Internal error during token exchange.</h1>');
+        closeServers();
+        finish(() => reject(err));
+      }
+    };
+
+    hosts.forEach((host, index) => {
+      const server = createServer(handler);
+      servers.push(server);
+      server.on('error', (err) => {
+        if (index > 0) {
+          // IPv6 is an optional companion for localhost; IPv4 remains the
+          // required loopback listener and keeps the flow usable on IPv4-only hosts.
+          console.warn(`IPv6 callback listener unavailable on ${host}: ${err.message}`);
+          return;
+        }
+        if (settled) return;
+        settled = true;
+        closeServers();
+        finish(() => reject(callbackListenError(err, port)));
+      });
+      server.listen(port, host, () => {
+        if (browserOpened) return;
+        browserOpened = true;
+        onListening?.();
+      });
+    });
+  });
+}
+
 export async function runAuthFlow(): Promise<void> {
   const clientId = process.env.SPOTIFY_CLIENT_ID;
   if (!clientId) {
@@ -558,119 +853,23 @@ export async function runAuthFlow(): Promise<void> {
     ? ['127.0.0.1', '::1']
     : [REDIRECT_URL.hostname.replace(/^\[|\]$/g, '')];
 
-  // Start local callback server
-  const tokens = await new Promise<TokenData>((resolve, reject) => {
-    const servers: ReturnType<typeof createServer>[] = [];
-    let settled = false;
-    let browserOpened = false;
-
-    const closeServers = (): void => {
-      for (const server of servers) {
-        try {
-          server.close();
-        } catch {
-          // A listener that failed during startup has no active handle.
-        }
-      }
-    };
-
-    const handler = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
-      if (req.method !== 'GET' && req.method !== 'HEAD') {
-        res.writeHead(405, { Allow: 'GET, HEAD' });
-        res.end('Method not allowed');
-        return;
-      }
-
-      let url: URL;
-      try {
-        url = new URL(req.url ?? '/', `http://127.0.0.1:${CALLBACK_PORT}`);
-      } catch {
-        res.writeHead(400);
-        res.end('Bad request');
-        return;
-      }
-      if (url.pathname !== CALLBACK_PATH) {
-        res.writeHead(404);
-        res.end('Not found');
-        return;
-      }
-
-      // State is checked before error/code parameters. A forged request must
-      // not be able to terminate an in-flight authorization flow.
-      const returnedState = url.searchParams.get('state');
-      if (returnedState !== state) {
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end('<h1>State mismatch — possible CSRF. Try again.</h1>');
-        return;
-      }
-      if (settled) {
-        res.writeHead(409, { 'Content-Type': 'text/html' });
-        res.end('<h1>This authentication request was already handled.</h1>');
-        return;
-      }
-
-      const error = url.searchParams.get('error');
-      if (error) {
-        settled = true;
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end(`<h1>Authentication failed: ${escapeHtml(error)}</h1>`);
-        closeServers();
-        reject(new Error(`Spotify auth error: ${error}`));
-        return;
-      }
-
-      const code = url.searchParams.get('code');
-      if (!code) {
-        res.writeHead(400, { 'Content-Type': 'text/html' });
-        res.end('<h1>No authorization code received.</h1>');
-        return;
-      }
-
-      // Claim the callback before the async exchange so a replay cannot
-      // perform a second token exchange while the first one is in flight.
-      settled = true;
-      try {
-        const result = await exchangeCodeForTokens(code, codeVerifier, clientId);
-        res.writeHead(200, { 'Content-Type': 'text/html' });
-        res.end('<h1>Authentication successful. You can close this tab.</h1>');
-        closeServers();
-        resolve(result);
-      } catch (err) {
-        res.writeHead(500, { 'Content-Type': 'text/html' });
-        res.end('<h1>Internal error during token exchange.</h1>');
-        closeServers();
-        reject(err);
-      }
-    };
-
-    const onListening = () => {
-      if (browserOpened) return;
-      browserOpened = true;
+  // Start local callback server and wait — bounded, see #614.
+  const tokens = await waitForCallback({
+    state,
+    codeVerifier,
+    clientId,
+    redirectUri: REDIRECT_URI,
+    hosts: bindHosts,
+    port: CALLBACK_PORT,
+    timeoutMs: resolveAuthCallbackTimeoutMs(),
+    onListening: () => {
       console.log(`Waiting for callback at ${REDIRECT_URI}...`);
       console.log(`Opening Spotify authorization page...`);
       console.log(`If your browser doesn't open, visit:\n${authUrl}`);
       open(authUrl).catch(() => {
         console.log(`Could not open browser automatically. Visit:\n${authUrl}`);
       });
-    };
-
-    bindHosts.forEach((host, index) => {
-      const server = createServer(handler);
-      servers.push(server);
-      server.on('error', (err) => {
-        if (index > 0) {
-          // IPv6 is an optional companion for localhost; IPv4 remains the
-          // required loopback listener and keeps the flow usable on IPv4-only hosts.
-          console.warn(`IPv6 callback listener unavailable on ${host}: ${err.message}`);
-          return;
-        }
-        if (settled) return;
-        settled = true;
-        closeServers();
-        reject(new Error(`Failed to start callback server: ${err.message}`));
-      });
-      server.listen(CALLBACK_PORT, host, onListening);
-    });
+    },
   });
 
   await saveTokens(tokens);

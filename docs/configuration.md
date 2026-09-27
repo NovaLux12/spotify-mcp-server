@@ -13,6 +13,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_SCOPES` | unset (17 default scopes) | Space- or comma-separated OAuth scopes to request; unknown scopes fail startup, and so does a value that is set but names no scope. |
 | `SPOTIFY_MCP_MARKET` | unset (no market applied) | Default ISO 3166-1 alpha-2 market for market-gated lookups. Precedence: the tool's `market` argument, then this variable, then the account country when `GET /me` still carries one. Spotify removed `country` from `GET /me` in its February 2026 changes, so on a current registration nothing supplies a default and the result reports `market_source: "none"`. |
 | `SPOTIFY_HEADLESS` | unset | `1`, `true`, `yes`, or `on` enables browserless paste-flow authentication. |
+| `SPOTIFY_AUTH_TIMEOUT_MS` | `300000` | How long the browser flow waits for the OAuth callback before giving up and closing the listener. |
 | `SPOTIFY_REQUEST_TIMEOUT_MS` | `30000` | Per-request timeout for Spotify API calls and token refresh. |
 | `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list tools; `max_results` overrides per call. |
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
@@ -57,6 +58,17 @@ The variables below are read at the documented call sites; set them in your MCP 
 `SPOTIFY_CLIENT_ID` is required for `auth` and normal server operation because the client refreshes expired tokens. Create an app in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard). The server uses PKCE, so a client secret is never required.
 
 `SPOTIFY_REDIRECT_URI` must match a redirect URI configured in the app character for character. The callback listener derives its loopback bind address, port, and route from this value. Use `http://127.0.0.1` for local development, not `http://localhost`.
+
+#### The callback wait is bounded, and its two failures read differently
+
+`SPOTIFY_AUTH_TIMEOUT_MS` (default `300000`) bounds how long the browser flow waits for the OAuth redirect. The wait used to end only when a callback request arrived, so an abandoned flow — closed tab, dismissed consent screen, a redirect URI that was never registered — held the callback port until the process was killed, and the next attempt failed on a bare `listen EADDRINUSE` that never mentioned the run that was holding it. The bound is chosen to clear the time a person needs to log in and approve (roughly 2–3× a slow mobile login); a blank, non-numeric or non-positive value falls back to the default rather than removing the bound, since the unbounded case is the one with no diagnosis. Lower it for CI or unattended hosts; the listener is closed and the port released on every path.
+
+The two ways the wait can fail produce different messages, because the operator's next action differs:
+
+| What you see | What happened | What to do |
+|---|---|---|
+| `Port <N> is already in use (EADDRINUSE)`, naming the port and the default `http://127.0.0.1:8888/callback` | The listener never started. Usually an earlier `spotify-mcp auth` still waiting on its redirect | End that process (`ss -lptn 'sport = :<N>'` or `lsof -i :<N>`), or set `SPOTIFY_REDIRECT_URI` to a free loopback port and register that exact URI in the dashboard |
+| `Timed out after … waiting for the browser callback`, naming the redirect, the port, and the elapsed bound | The listener bound and stayed up, but no redirect ever arrived. The port is free again | Retry; if it repeats, check the approval page completed, and that the exact URI (host `127.0.0.1`, not `localhost`, same port and path) is registered in the dashboard |
 
 `SPOTIFY_MCP_TOKEN_FILE` and `SPOTIFY_MCP_PROFILE` select the persistent token file. Explicit `SPOTIFY_MCP_TOKEN_FILE` wins; otherwise a profile uses `~/.spotify-mcp/tokens.<profile>.json`; the unprofiled default is `~/.spotify-mcp/tokens.json`. Token files are created with mode 600. The `auth` command's `--profile` flag must name a profile: `--profile=`, `--profile "$UNSET_VAR"`, and a dangling trailing `--profile` are errors, because the silent alternative was to write into the shared default file while the operator believed a named profile existed.
 

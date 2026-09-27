@@ -16,13 +16,24 @@ Still looping? Run `npx -y @novalux12/spotify-mcp@latest doctor` and read the `[
 
 ## Port 8888 already in use
 
-**Symptom:** auth's callback listener can't bind.
+**Symptom:** auth's callback listener can't bind. The message names `EADDRINUSE` and the port, because a bare one usually means a *previous* `spotify-mcp auth` is still holding the port — an auth run no longer waits forever, but a run in progress still does.
 
 **Fix (pick one):**
 
-- Free the port: stop the other listener (common culprits: a second auth attempt, dev servers).
+- Free the port: stop the other listener (common culprits: a second auth attempt, dev servers). `ss -lptn 'sport = :8888'` or `lsof -i :8888` finds it.
 - Move the callback: set `SPOTIFY_REDIRECT_URI=http://127.0.0.1:9000/callback` **and** add that exact URI to your Spotify app settings.
 - Skip the listener entirely: `SPOTIFY_HEADLESS=1` uses the paste flow (see [Headless](#headless--remote-hosts)).
+
+## Auth timed out waiting for the browser callback
+
+**Symptom:** `Timed out after … waiting for the browser callback at http://127.0.0.1:8888/callback`. This is *not* a port conflict — the listener bound, and it has been closed again, so the port is free. No redirect ever arrived.
+
+**Fix:**
+
+- Retry. The most common cause is a tab closed or a consent screen dismissed mid-redirect.
+- If the browser lands on an error page instead of the callback, nothing was ever requested — check the client id, and check for a captive portal or TLS interception.
+- Re-check the Redirect URI matches **character for character** (see [Auth loop](#auth-loop--s256-error) above).
+- On an unattended host, lower the bound with `SPOTIFY_AUTH_TIMEOUT_MS`, or use `SPOTIFY_HEADLESS=1`.
 
 ## Premium gating
 

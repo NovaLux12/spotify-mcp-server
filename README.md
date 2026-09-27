@@ -264,7 +264,8 @@ Notes:
 
 - **"Not authenticated"** → re-run `auth`; check `~/.spotify-mcp/tokens.json` exists and the redirect URI matches exactly (no trailing slash).
 - **Auth loop / S256 error** → open a private window, log into spotify.com first, then retry the auth URL there.
-- **Port in use (8888)** → free the port, set `SPOTIFY_REDIRECT_URI` to another port, or use `SPOTIFY_HEADLESS=1`.
+- **Port in use (8888)** → free the port, set `SPOTIFY_REDIRECT_URI` to another port, or use `SPOTIFY_HEADLESS=1`. The message names `EADDRINUSE` and the port because the usual cause is a previous `auth` still holding it.
+- **Timed out waiting for the browser callback** → not a port conflict; the listener bound and has been closed. Retry, and check the redirect URI is registered exactly. Bound it with `SPOTIFY_AUTH_TIMEOUT_MS` (default 5 min).
 - **"Premium required"** on playback → expected on Free accounts; no workaround.
 - **`Forbidden` on lookup tools** (categories, markets, top-tracks, user profiles, the per-type `contains` checks) → these endpoints are registration-gated by Spotify; see [Registration-gated endpoints](#registration-gated-endpoints). (`GET /me/library/contains` is *not* one of them, so a 403 there is a real problem, not a gated registration.)
 - **Still stuck?** `npx -y @novalux12/spotify-mcp@latest doctor` or ask your agent to run the [spotify-mcp-doctor skill](skills/spotify-mcp-doctor/SKILL.md).
