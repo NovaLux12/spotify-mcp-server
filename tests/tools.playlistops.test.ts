@@ -908,7 +908,10 @@ describe('diff_playlists', () => {
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }));
 
     const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, response_format: 'json' });
-    const data = JSON.parse(textOf(out)) as {
+    // #895: the payload rides in `structuredContent` and the text block is a
+    // bounded summary, so this reads the machine channel rather than re-parsing
+    // a second copy of the same object.
+    const data = out.structuredContent! as {
       a_total: number;
       b_total: number;
       only_in_a: string[];
@@ -959,7 +962,7 @@ describe('diff_playlists', () => {
     const h = harness(playlistResponder({ [PAIR_A]: a, [PAIR_B]: b }, () => null, 50));
 
     const out = await h.invoke('diff_playlists', { playlist_a: PAIR_A, playlist_b: PAIR_B, response_format: 'json' });
-    const data = JSON.parse(textOf(out)) as { a_total: number; b_total: number; only_in_b: string[] };
+    const data = out.structuredContent! as { a_total: number; b_total: number; only_in_b: string[] };
     assert.equal(data.a_total, 120);
     assert.equal(data.b_total, 100);
     assert.equal(data.only_in_b.length, 10);
@@ -1004,7 +1007,9 @@ describe('overlap_playlists', () => {
       min_overlap: 1,
       response_format: 'json',
     });
-    const data = JSON.parse(textOf(out)) as {
+    // #895: the payload rides in `structuredContent`; the text block beside it
+    // is a bounded summary, not a second copy.
+    const data = out.structuredContent! as {
       threshold: number;
       total_shared: number;
       shared: Array<{ id: string; count: number }>;

@@ -789,7 +789,7 @@
         "label": "Transport — the MCP SDK's StdioServerTransport carries J…"
       },
       {
-        "hash": "8582d5c0586b12f7",
+        "hash": "d449b6ccf915d6fc",
         "label": "Resources are registered through server.resource(...) as…"
       },
       {
@@ -1877,7 +1877,7 @@
         "label": "Strict rejection, not stripping: a call carrying an unde…"
       },
       {
-        "hash": "d31c370da5da0cbe",
+        "hash": "6a3623334baae931",
         "label": "responseformat ('concile' | 'detailed' | 'json', default…"
       },
       {
@@ -1889,8 +1889,12 @@
         "label": "maxresults (list-type tools; positive integer, ≤ 2000) —…"
       },
       {
-        "hash": "46c5ce02d1cbde05",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
+      },
+      {
+        "hash": "d6f6074447d29264",
+        "label": "Row cap and emit-once (#895) — capRowSections and emitOn…"
       },
       {
         "hash": "470609f52057944b",
@@ -3269,7 +3273,7 @@
         "label": "Inputs: userid (string, required)"
       },
       {
-        "hash": "1be10212b9eb890c",
+        "hash": "44d504557c677700",
         "label": "Returns: display name, user ID, URI, profile image URL, …"
       },
       {
@@ -3589,6 +3593,46 @@
         "label": "The other spotify:-shaped patterns in src/ are not a sec…"
       },
       {
+        "hash": "01c495efa531b454",
+        "label": "5.15 Mood expansion (expandmoodtoqueries, #598)"
+      },
+      {
+        "hash": "4d56cdccd07154a9",
+        "label": "One tool in the moodexpand module. It is alwaysActive (r…"
+      },
+      {
+        "hash": "f014981c3c143b6a",
+        "label": "Inputs: mood (string, required, ≥1 char — free text, e.g…"
+      },
+      {
+        "hash": "febc8be672c9ea3c",
+        "label": "Two paths, one output shape. The tool returns { mood, so…"
+      },
+      {
+        "hash": "1acdd257c113ca3d",
+        "label": "| source | When | model / attempts | |---|---|---| | \"sa…"
+      },
+      {
+        "hash": "4f1eba0856af7a2c",
+        "label": "Why the gate is this server's own. In SDK 1.30 Server.cr…"
+      },
+      {
+        "hash": "6931562532ce61fe",
+        "label": "The model contract. One createMessage per attempt, maxTo…"
+      },
+      {
+        "hash": "eada901b8aea5acd",
+        "label": "Failures are structured, and never a guess. An unreadabl…"
+      },
+      {
+        "hash": "c9c35701a78635ce",
+        "label": "The static map is a fallback, not a stand-in. MOODEXPANS…"
+      },
+      {
+        "hash": "58b6a5c1df2a3e34",
+        "label": "Prompt reuse. dj, playlistfrommood, discoverweeklyaltern…"
+      },
+      {
         "hash": "f3e70de12e2dc0f1",
         "label": "6. Resources"
       },
@@ -3605,8 +3649,8 @@
         "label": "A fixed resource that reads a paged endpoint accepts its…"
       },
       {
-        "hash": "88447ec01ecbe698",
-        "label": "Each parameterised resource registers two entries, not o…"
+        "hash": "ee57237e3d75af26",
+        "label": "Each parameterised resource registers three entries, not…"
       },
       {
         "hash": "0c44ce16df872864",
@@ -3625,12 +3669,12 @@
         "label": "Every named parameter must be present, and in declaratio…"
       },
       {
-        "hash": "571f5e33b7546f6a",
+        "hash": "32f6226ccd12e7a5",
         "label": "Before #1401 the server routed around this by depending …"
       },
       {
-        "hash": "ec9547275c52004a",
-        "label": "A catch-all twin was the wrong way to absorb a query str…"
+        "hash": "fd63592042568bb1",
+        "label": "The {+qs} twin is the catch-all for query strings this s…"
       },
       {
         "hash": "dba777829aa263b2",
@@ -3657,7 +3701,7 @@
         "label": "limit is bounded to 1–50 and offset to ≥0 before forward…"
       },
       {
-        "hash": "8338d74b1e7ef4f2",
+        "hash": "f4ada5ba1d8690a5",
         "label": "Normalising silently is a reason to publish the bound, s…"
       },
       {
@@ -3673,8 +3717,8 @@
         "label": "| Template | Endpoint | Parameters | |---|---|---| | spo…"
       },
       {
-        "hash": "e95b22038ccb22af",
-        "label": "These two shapes no longer compete, so their order carri…"
+        "hash": "7a1d95f8d80f8908",
+        "label": "The chapters pair registers before the bare audiobook pa…"
       },
       {
         "hash": "d7ba81d3e4062a7f",
@@ -3701,7 +3745,7 @@
         "label": "It renders id, name, type, isactive and volumepercent th…"
       },
       {
-        "hash": "87e02589ab499f7e",
+        "hash": "f0bf0983efcc2748",
         "label": "The endpoint takes no query parameters (the OpenAPI sche…"
       },
       {
@@ -5236,13 +5280,6 @@
       "reason": "reworded the module-map introduction for #1398: it described the removed LOC column, and the replacement explains what Schema bytes measures and why a line count was the wrong signal"
     },
     {
-      "file": "ARCHITECTURE.md",
-      "hash": "d449b6ccf915d6fc",
-      "label": "Resources are registered through server.resource(...) as…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
-    },
-    {
       "file": "docs/cookbook.md",
       "hash": "06d58c6b9c65cbe8",
       "label": "1. Call tastelisteningclock with statsfmuser: \"<your-sta…",
@@ -5349,6 +5386,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1be10212b9eb890c",
+      "label": "Returns: display name, user ID, URI, profile image URL, …",
+      "date": "2026-09-27",
+      "reason": "reworded by #1468: get_user_profile's Returns said a 403 'names the grandfathering requirement', which was the prescription #1468 removes; the replacement records the older-registration question as unverified and adds that no endpoint replaced /users/{id}"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "1d0730021d0c4a24",
       "label": "Inputs: playlistid (string, required), shared response f…",
       "date": "2026-09-27",
@@ -5363,17 +5407,17 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "32f6226ccd12e7a5",
-      "label": "Before #1401 the server routed around this by depending …",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
-    },
-    {
-      "file": "SPEC.md",
       "hash": "455ba684a6f018a0",
       "label": "statsfmuser is the identity argument on all eleven, and …",
       "date": "2026-09-27",
       "reason": "#1318 renamed the stats.fm identity argument to statsfm_user across the cookbook recipes, so every recipe that named user_id was reworded in the same change; user_id remains a deprecated alias until v2.2."
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "46c5ce02d1cbde05",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
     },
     {
       "file": "SPEC.md",
@@ -5388,13 +5432,6 @@
       "label": "The affected tools are playlistfliporder, playlistresequ…",
       "date": "2026-09-27",
       "reason": "rewritten by #1388 to disclose playlist_balance's bounded read; both paragraphs extended in place and a new disclosure section added"
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "7a1d95f8d80f8908",
-      "label": "The chapters pair registers before the bare audiobook pa…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
     },
     {
       "file": "SPEC.md",
@@ -5447,6 +5484,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "d31c370da5da0cbe",
+      "label": "responseformat ('concile' | 'detailed' | 'json', default…",
+      "date": "2026-09-27",
+      "reason": "reworded by #895: the two json-mode paragraphs gained the emitOnce/`jsonSummary` exception, which is a documented behaviour of the byte cap rather than a new claim; the substance of each paragraph is unchanged"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "d3c12f1f3068b798",
       "label": "Environment variables SPOTIFYCLIENTID= # required — from…",
       "date": "2026-09-27",
@@ -5482,38 +5526,10 @@
     },
     {
       "file": "SPEC.md",
-      "hash": "ee57237e3d75af26",
-      "label": "Each parameterised resource registers three entries, not…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "f0bf0983efcc2748",
-      "label": "The endpoint takes no query parameters (the OpenAPI sche…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "f4ada5ba1d8690a5",
-      "label": "Normalising silently is a reason to publish the bound, s…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
-    },
-    {
-      "file": "SPEC.md",
       "hash": "f6c48865c9488f32",
       "label": "The {?…} template is still registered and still earns it…",
       "date": "2026-09-27",
       "reason": "#1401 rewrote the resource-URI section of SPEC.md: Rfc6570UriTemplate makes the advertised {?...} entry actually match a concrete URI, so the {+qs}-routes-the-read workaround, the claim that {?...} was only ever decorative, and the pre-existing spotify://me/saved/tracks note are all superseded by the new text. The rebase onto main brought these four pins forward from the base, where the rewrite had not yet landed; the rewrite is what retired them."
-    },
-    {
-      "file": "SPEC.md",
-      "hash": "fd63592042568bb1",
-      "label": "The {+qs} twin is the catch-all for query strings this s…",
-      "date": "2026-09-27",
-      "reason": "#685 rewrote the resource-URI section of SPEC.md and the resource-registration paragraph of ARCHITECTURE.md: one template per URI shape is now the contract, the {+qs} catch-all twin no longer exists to be described, and the registration-order constraint the chapters/audiobook paragraph stated is gone because the two shapes are disjoint. These are deliberate rewordings of the pinned paragraphs, not prose lost to a conflict."
     },
     {
       "file": "SPEC.md",
@@ -5524,8 +5540,8 @@
     }
   ],
   "provenance": {
-    "head": "f841b8144900d73469d019d97ab58163650c3974",
-    "upstream": "70ba245bbe0a35562e6372be82be83e49543abb0",
+    "head": "2bae9375a058da20fa561fb7fe1658bb6152328d",
+    "upstream": "2bae9375a058da20fa561fb7fe1658bb6152328d",
     "behind": false
   }
 }

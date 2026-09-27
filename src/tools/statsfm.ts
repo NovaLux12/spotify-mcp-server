@@ -36,9 +36,30 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  // #895: json mode and structuredContent share one row cap.
+  capRowSections,
+  emitOnce,
+  // #1318/#1449: the one stats.fm user-identity argument.
   resolveStatsfmUserInput,
   StatsfmUserInputFields,
 } from '../shaping.js';
+
+/** The row array every stats.fm collection tool publishes (#895). */
+const STATSFM_ROW_ARRAYS = ['items'] as const;
+
+/**
+ * One-line text for a json-mode call whose payload sits in
+ * `structuredContent` (#895). Bounded by construction — it names the row count
+ * and never interpolates a row.
+ */
+function summarizeStatsfmCollection(title: string) {
+  return (payload: Record<string, unknown>): string => {
+    const sections = payload.sections as Record<string, { returned: number; total: number }> | undefined;
+    const items = sections?.items;
+    const count = items ? ` (items: ${items.returned}/${items.total})` : '';
+    return `${title}${count} — full payload in structuredContent.`;
+  };
+}
 
 type J = Record<string, any>;
 
@@ -444,24 +465,34 @@ function shapeCollection(
   // the upstream cardinality, not the page length.
   const shown = window ? window.items : rawItems;
   const total = window ? window.total : rawItems.length;
+  const cap = resolveMaxResults(args.max_results);
   if (args.response_format === 'json') {
+    // #895: json mode shipped `shown` whole while the prose path two lines
+    // below capped it, so the two channels of one call disagreed about how
+    // many rows there were. The cap is computed once and read by both.
+    const capped = capRowSections<Record<string, unknown>>({ items: shown }, STATSFM_ROW_ARRAYS, cap);
+    if (window) {
+      // The page is not the set, so the section's denominator is the upstream
+      // cardinality. Leaving the page length there would make a windowed read
+      // claim it returned every row of a ranking it never saw.
+      capped.sections.items.total = window.total ?? window.received;
+      capped.truncated = capped.sections.items.total > capped.sections.items.returned;
+    }
+    const rows = capped.items as J[];
     const body = window
-      ? { items: shown, pagination: paginationInfo({
+      ? { ...capped, pagination: paginationInfo({
           total: window.total,
           offset: args.offset ?? 0,
-          limit: args.limit ?? shown.length,
-          returned: shown.length,
-        }) }
-      : { items: shown };
-    return {
-      content: [{ type: 'text', text: JSON.stringify(body) }],
-      structuredContent: body,
-    };
+          limit: args.limit ?? rows.length,
+          returned: rows.length,
+        }), ...(window.total === null ? { total_unreadable: true, received: window.received } : {}) }
+      : capped;
+    return emitOnce(body, summarizeStatsfmCollection(title));
   }
   if (shown.length === 0) {
     return { content: [{ type: 'text', text: `${title}: no results.` }] };
   }
-  const shaped = truncateItems(shown, resolveMaxResults(args.max_results));
+  const shaped = truncateItems(shown, cap);
   const detailed = args.response_format === 'detailed';
   // "of 91" when the size is known; "of at least 100 (exact total unread)"
   // when it is not — never a bare page length presented as a whole.
@@ -778,6 +809,16 @@ function formatEntitySummary(label: string, read: EntityRead, filter: EntityFilt
   return `${lead}\n${origin}\n${what}`;
 }
 
+/**
+ * Sample rows the per-entity tools show in json mode (#895).
+ *
+ * Named rather than inlined so the cap and the prose row count are the same
+ * number by construction — a literal in one place and not the other is how the
+ * payload and the sentence beside it drifted in the first place. A caller that
+ * wants the whole sampled page raises `max_results`.
+ */
+const ENTITY_SAMPLE_ROWS = 10;
+
 /** Shared body of the six per-entity tools, so no one of them can drift. */
 async function runEntityStats(
   client: StatsfmClient,
@@ -794,12 +835,21 @@ async function runEntityStats(
   const label = `${filter} ${entityId}`;
   const payload = entityPayload(label, read);
   if (args.response_format === 'json') {
-    const body = { ...payload, streams: read.sample.streams };
-    return { content: [{ type: 'text', text: JSON.stringify(body) }], structuredContent: body };
+    // #895: the whole sampled page (up to 500 streams, ~124 KB measured) used
+    // to ship here while the prose path beside it showed ten. The sample rows
+    // are the answer, so they are capped like every other collection and the
+    // exact count is reported; a caller that wants the page asks for a bigger
+    // `max_results` or a narrower range.
+    const body = capRowSections(
+      { ...payload, streams: read.sample.streams },
+      ['streams'],
+      resolveMaxResults(args.max_results, ENTITY_SAMPLE_ROWS),
+    );
+    return emitOnce(body, summarizeStatsfmCollection(label));
   }
   return {
     content: [{ type: 'text', text: formatEntitySummary(label, read, filter) }],
-    structuredContent: { ...payload, streams: read.sample.streams.slice(0, 10) },
+    structuredContent: { ...payload, streams: read.sample.streams.slice(0, ENTITY_SAMPLE_ROWS) },
   };
 }
 
@@ -1322,8 +1372,16 @@ export function registerStatsfmTools(server: McpServer, client: StatsfmClient = 
         display: `${r.friend.displayName ?? r.friend.customId ?? '?'} — unreadable (${r.unreadableReason})`,
       }));
       if (args.response_format === 'json') {
-        const payload = { items: rows, unreadable: unreadableRows, unreadable_count: unreadableRows.length };
-        return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload };
+        // #895: same cap as the prose path below, computed once. `unreadable`
+        // is NOT capped — it is a per-friend failure list that the caller must
+        // see in full to know whose stream count it is missing, and each row
+        // is a short reason rather than a track.
+        const payload = capRowSections(
+          { items: rows, unreadable: unreadableRows, unreadable_count: unreadableRows.length },
+          STATSFM_ROW_ARRAYS,
+          resolveMaxResults(args.max_results),
+        );
+        return emitOnce(payload, summarizeStatsfmCollection('People chart'));
       }
       const shaped = truncateItems(rows, resolveMaxResults(args.max_results));
       const partial = unreadableRows.length > 0

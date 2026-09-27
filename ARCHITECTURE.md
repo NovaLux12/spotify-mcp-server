@@ -101,12 +101,12 @@ Each `register*Tools(server, client)` function calls `server.tool(...)` or, for 
 - **Output formatting** — a tool takes a `response_format` parameter (`'concise'` default, `'detailed'`, or `'json'`): concise renders human-readable lines via per-module helpers like `formatDuration(ms)` and `formatItem(item: RenderableItem)` — these are module-local, not shared from `src/shaping.ts`; detailed adds context; json returns a machine-readable payload. The parameter is not universal, and the surface is not meant to be read as uniform: `tests/mutations.conformance.test.ts` enforces it on every write-capable tool, the write tools still missing it are pinned in that file's `KNOWN_MISSING_RESPONSE_FORMAT` list, and `verify_receipt` takes only `receipt_id`. Read that list rather than assuming the contract holds everywhere. List tools take `max_results` (default `SPOTIFY_MCP_MAX_ITEMS`) and attach `structuredContent` plus pagination info; the walk-bounded scans return their whole `SPOTIFY_MCP_FETCH_ALL_CAP` walk instead and disclose `fetch_all_cap`/`truncated_by_cap` when the bound bites; destructive ops take `dry_run` and mutations emit batch summaries.
 - **Transport** — the MCP SDK's `StdioServerTransport` carries JSON-RPC between the host (e.g. Claude Desktop) and this process; nothing else listens on the network during normal operation.
 
-Resources are registered through `server.resource(...)` as fixed `spotify://` URIs and RFC-6570 templates, wired by `registerReadSurfaces` in `src/resources/register.ts` — the one place the two modules are called, so a test can register the same surface in the opposite order and require identical routing (#685). Every fixed URI has exactly one query-absorbing template, selected with `?format=json` or the parameters its description declares; each catalog entity likewise gets one template per URI shape. There are no `{+qs}` catch-all twins: a catch-all and its sibling both match the same URI, the SDK resolves reads in registration order, and the second entry becomes an advertised template no read can reach. The generated inventory below is derived from `resources/list` and `resources/templates/list`, so it includes saved tracks/audiobooks, following, history, and genre heatmap resources without a second hand-maintained list.
+Resources are registered through `server.resource(...)` as fixed `spotify://` URIs and RFC-6570 templates. Every fixed URI has a `{?format}` template twin, selected with `?format=json`; playlist tracks and catalog entities also have query-absorbing `{+qs}` twins where required. The generated inventory below is derived from `resources/list` and `resources/templates/list`, so it includes saved tracks/audiobooks, following, history, and genre heatmap resources without a second hand-maintained list.
 
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (141,637 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **570 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 67 files under `src/tools/`.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **129 tools** (142,737 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **571 tools**, along with **17 fixed resources**, **47 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
@@ -150,7 +150,6 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/refs.ts` | Shared Spotify reference parser and resolver. (0 registered tools) | — |
 | `src/removed.ts` | Spotify's February 2026 RESPONSE-FIELD removals (#639) — the one place this repository records which fields the Web API stopped returning. (0 registered tools) | — |
 | `src/resources/index.ts` | Runtime module for src/resources/index.ts. (0 registered tools) | — |
-| `src/resources/register.ts` | The one registration order for the read surface (#685). (0 registered tools) | — |
 | `src/resources/templates.ts` | RFC-6570 resource templates over single-get catalog endpoints (#111, pattern 2). (0 registered tools) | — |
 | `src/resources/uritemplate.ts` | RFC 6570-conformant matching for the URI templates this server advertises (#1401). (0 registered tools) | — |
 | `src/result.ts` | The one place a tool result is built (#582). (0 registered tools) | — |
@@ -187,6 +186,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (3 registered tools) | 2,498 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 754 |
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 2,751 |
+| `src/tools/moodexpand.ts` | `expand_mood_to_queries` — the one judgement step the mood prompts used to re-invent in prose, extracted into a testable tool (#598). (1 registered tool) | 987 |
 | `src/tools/personalization.ts` | Runtime module for src/tools/personalization.ts. (3 registered tools) | 2,532 |
 | `src/tools/playback.ts` | Runtime module for src/tools/playback.ts. (16 registered tools) | 12,210 |
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 8,178 |
@@ -225,7 +225,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/swarm3_snapshots.ts` | swarm3 snapshots slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 23,731 |
 | `src/tools/swarm3b_discovery.ts` | swarm3b discovery slice (second discovery builder) — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 20,147 |
 | `src/tools/swarm4_playlists.ts` | swarm4 playlists slice — feature swarm v1.25.0 (issues #420–#437). (18 registered tools) | 23,228 |
-| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 9,650 |
+| `src/tools/taste_composites.ts` | Wave-2 taste composites: 10 composite tools over the stats.fm PUBLIC API v1 (no auth), shaping taste data into playlist specs, briefs, and reports. (10 registered tools) | 10,242 |
 | `src/tools/taste_playlist.ts` | `taste_to_playlist` — the one writer in the taste composite family (#1009). (1 registered tool) | 1,884 |
 | `src/tools/undo.ts` | Undo for receipt-driven mutations (#217, #625). (2 registered tools) | 1,663 |
 | `src/tools/users.ts` | Runtime module for src/tools/users.ts. (2 registered tools) | 1,696 |
