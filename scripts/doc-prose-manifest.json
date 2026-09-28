@@ -1091,7 +1091,7 @@
         "label": "All via env vars — no config file. Only SPOTIFYCLIENTID …"
       },
       {
-        "hash": "6973c3744bebfcda",
+        "hash": "742fd50cae55cba1",
         "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…"
       },
       {
@@ -7377,9 +7377,9 @@
     }
   ],
   "provenance": {
-    "head": "0b8903d154ffddb9630485b4aaa9f47c3682fa5d",
-    "base": "36c20a9080e49dea471e73bf4953ff73148250ce",
-    "upstream": "36c20a9080e49dea471e73bf4953ff73148250ce",
+    "head": "e4533ec3d985926d36eabd2dceb092215f3bf616",
+    "base": "2c4a507e018f5cd9fba53710dddfeb41850f402c",
+    "upstream": "2c4a507e018f5cd9fba53710dddfeb41850f402c",
     "behind": false
   },
   "reanchored": [
@@ -7543,6 +7543,15 @@
       "to": "7fadc3618dfe8d18",
       "toLabel": "Merging the release PR is the last human step. The tag i…",
       "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "README.md",
+      "hash": "6973c3744bebfcda",
+      "label": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
+      "to": "742fd50cae55cba1",
+      "toLabel": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
+      "reason": "The stats.fm opt-in row hard-coded 49, a number nothing re-derives. The census measures 50 across the four keys in STATSFM_REGISTRATION_KEYS; the row now names tastejukebox and the two Spotify writers (taste_to_playlist, statsfm_jukebox)",
       "date": "2026-09-28"
     },
     {
