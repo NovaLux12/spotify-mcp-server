@@ -208,7 +208,7 @@ gate that failed.
 
 A green **PR Labeler** check on the same SHA is not one of the twelve: that is a separate
 `pull_request_target` workflow which typechecks nothing and runs no tests (see
-[Releasing](#2-publish-the-tag)).
+[Releasing](#2-watch-the-publish-run)).
 
 One further gate has neither a `ci.yml` step nor an npm script:
 `node scripts/check-doc-tool-counts.mjs` fails if a registry-scale tool count is hand-typed
