@@ -1,23 +1,26 @@
 /**
  * #848 — the collapse of the transfer and volume tool families onto
- * `transfer_playback` and `set_volume`.
+ * `transfer_playback` and `set_volume`. #1615 removed the last of it.
  *
  * ## What this file is for
  *
  * Ten tool names went away: three transfer tools (`handoff`, `switch_device`,
  * `transfer_playback_with_state`) and seven volume writers (`volume_step`,
  * `mute`, `unmute`, `room_level`, `apply_device_presets`, `apply_volume_plan`,
- * `plan_volume_level_across_devices`). Each still FORWARDS for one release with
- * its arguments translated, and the issue's acceptance criteria call for the
- * forwarding to be asserted by name.
+ * `plan_volume_level_across_devices`). Each forwarded to its survivor with its
+ * arguments translated for one release, and v3.0 is the release #848 named —
+ * so the names now refuse, naming the call that replaced them.
  *
  * The cases come in two kinds, and the split is deliberate:
  *
- * - **Forwarding** goes through the real `installToolErrorBoundary`, the path a
- *   host takes. Each case asserts the SURVIVOR's schema accepted the rewritten
- *   arguments and then that the wire calls are the ones the retired tool used to
- *   make — because a rewriter that mistranslated a flag would be caught by that
- *   schema, and one that dropped a flag would not.
+ * - **The retired names** go through the real `installToolErrorBoundary`, the
+ *   path a host takes. Each case asserts the refusal names the replacement
+ *   call — including the flags the forward used to supply, four of which the
+ *   survivor's schema cannot supply and which a caller therefore cannot
+ *   re-derive — and that the refusal spends no Spotify request. The
+ *   per-name cases are not decoration: a table row added without a test is a
+ *   row nothing knows about, which is how the four subtle facts stayed
+ *   correct for a release.
  * - **Behaviour** that moved modules (the mute memory, the room-level copy, the
  *   full-state transfer) is driven against the survivor directly. Those cases
  *   used to live in `tools.exhaust2playback.test.ts`,
@@ -56,6 +59,7 @@ import { StubSpotifyClient, type StubCall } from './helpers/stub-client.js';
 import { installToolErrorBoundary } from '../src/tools/annotations.js';
 import { registerPlaybackTools } from '../src/tools/playback.js';
 import { matchDevice, loadExhaust2Store, saveExhaust2Store } from '../src/playbackstores.js';
+import { RETIRED_TOOL_FORWARD_NAMES } from '../src/shaping.js';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -107,7 +111,7 @@ const open: Array<() => Promise<void>> = [];
 /**
  * Register ONLY the two survivors, behind the real boundary, and drive them
  * through a linked in-memory transport pair. The transport is the real MCP
- * client path, so argument validation, the retired-forward rewrite and the
+ * client path, so argument validation, the retired-name refusal and the
  * deprecation stamp all run exactly as they do in a session.
  */
 async function makeHarness(opts: { failPut?: string[]; devices?: unknown; player?: unknown } = {}): Promise<Harness> {
@@ -264,58 +268,57 @@ describe('#848 the one device resolver', () => {
 });
 
 // ===========================================================================
-// 2. The ten forwards
+// 2. The ten retired names (#1615)
 // ===========================================================================
 
-describe('#848 retired names forward with the flags that made them themselves', () => {
+describe('#848/#1615 the ten retired names refuse, naming the call that replaced them', () => {
   /**
    * The issue's acceptance criteria name `handoff` and `apply_device_presets`
-   * explicitly. Both are here, and so is the rest — a table is only worth having
-   * if a row added without a test fails, so every row drives a real call.
+   * explicitly. Both are here, and so is the rest — a table is only worth
+   * having if a row added without a test fails, so every row drives a real
+   * call.
+   *
+   * What these calls assert is the v3.0 contract: the names promised to stop
+   * being callable, and the release that named the promise is the release that
+   * kept it. The migration did not go with them — every refusal carries the
+   * replacement call in `fix` and in prose, which is the whole difference
+   * between a retirement and a dead end.
    */
-  it('handoff forwards to transfer_playback with preserve_position', async () => {
+  const SURVIVORS = ['transfer_playback', 'set_volume'];
+
+  /** The typed refusal payload, which `errorResult` nests under `error`. */
+  const err = (r: ToolResult): Record<string, unknown> =>
+    (r.structuredContent?.error ?? {}) as Record<string, unknown>;
+
+  it('handoff is refused with the preserve_position transfer that replaces it', async () => {
     const h = await makeHarness();
     const out = await h.call('handoff', { device_id: 'dev_phone', response_format: 'json' });
-    const sc = h.sc(out);
-    assert.deepEqual(sc.deprecated_inputs, ['handoff']);
-    assert.match(String(sc.deprecation_note), /transfer_playback/);
-    assert.match(String(sc.deprecation_note), /preserve_position/);
-    // The forwarding is the CLAIM: a resume at the captured offset is what
-    // `handoff` promised, and a preserve-less transfer would not make one.
-    assert.deepEqual(h.puts().map((p) => p.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_phone',
-    ]);
-    assert.equal((h.puts()[1]?.arg as { position_ms: number }).position_ms, 30_000);
-    // `handoff` was a preserve transfer, so the transfer body must NOT force
-    // play: forcing it restarts the track the resume is about to seek into.
-    assert.deepEqual(h.puts()[0]?.arg, { device_ids: ['dev_phone'] });
+    assert.equal(err(out).kind, 'unknown_tool');
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    // A preserve-less transfer is a different tool: `handoff`'s entire reason
+    // for existing was carrying the track and position over, so the note has to
+    // carry the flag or the caller gets the right tool and the wrong behaviour.
+    assert.match(String(err(out).fix), /transfer_playback/);
+    assert.match(String(err(out).fix), /preserve_position/);
+    assert.match(h.text(out), /preserve_position/);
+    assert.deepEqual(h.calls(), [], 'a retired name must spend no Spotify request');
   });
 
-  it('handoff NEVER lets `play` force a restart, in either direction', async () => {
-    // A perturbation of the forwarding table dropped `play` from `handoff`'s
-    // rewrite and NOTHING went red — which is correct, and worth pinning as
-    // fact rather than left as an accident. `handoff` forwards
-    // `preserve_position: true` unconditionally, and that flag makes the
-    // arrival clause "resume at the captured position" in every case, so an
-    // explicit `play` has no observable effect left to lose: the transfer body
-    // omits `play` (sending it would restart the track the resume seeks into),
-    // the resume is issued from the captured state either way, and the step
-    // text is the same. A caller passing `play` to `handoff` gets the handoff
-    // it asked for; the flag is inert, not dropped.
+  it('handoff refuses in both `play` directions, having changed the argument contract', async () => {
+    // `handoff` used to accept a `play` flag whose only observable effect was
+    // nil, because the forward always set `preserve_position`. Nothing
+    // forwards any more, so the flag is not read at all — the point of these
+    // two is that the REFUSAL does not depend on it. A caller migrating who
+    // passes `play: false` and one who does not must get the same answer.
     for (const play of [true, false] as const) {
       const h = await makeHarness();
       const out = await h.call('handoff', { device_id: 'dev_phone', play, response_format: 'json' });
-      const paths = h.puts().map((p) => p.path);
-      assert.deepEqual(h.puts()[0]?.arg, { device_ids: ['dev_phone'] },
-        `play=${play} must not reach the transfer body in preserve mode`);
-      assert.ok(paths.includes('/me/player/play?device_id=dev_phone'),
-        `play=${play} still resumes from the captured position`);
-      assert.equal(h.sc(out).device_id, 'dev_phone');
+      assert.equal(err(out).reason, 'retired_tool_alias', `play=${play} must be refused the same way`);
+      assert.deepEqual(h.calls(), [], `play=${play} must spend no Spotify request`);
     }
   });
 
-  it('apply_device_presets forwards to set_volume with op: preset', async () => {
+  it('apply_device_presets is refused with the op: preset write that replaces it', async () => {
     await writeStore('playback-ext.json', {
       states: {}, sessions: {}, smartRules: {},
       devicePresets: { dev_phone: { label: 'Phone', volume: 42 } },
@@ -323,59 +326,60 @@ describe('#848 retired names forward with the flags that made them themselves', 
 
     const h = await makeHarness();
     const out = await h.call('apply_device_presets', {});
-    const sc = h.sc(out);
-    assert.deepEqual(sc.deprecated_inputs, ['apply_device_presets']);
-    assert.match(String(sc.deprecation_note), /op: preset/);
-    assert.match(h.text(out), /Applied 1\/1 volume presets/);
-    // #830: the surviving write must send `volume_percent=`, not `volume=`. A
-    // forward that lost the parameter name would 400 at Spotify and the tool
-    // would still report success for a preset it never applied.
-    assert.deepEqual(h.puts().map((p) => p.path), ['/me/player/volume?volume_percent=42&device_id=dev_phone']);
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    assert.match(String(err(out).fix), /set_volume/);
+    assert.match(String(err(out).fix), /preset/);
+    // #830's lesson applies to the replacement, not to this call: a note that
+    // lost the parameter name would send the caller to a write that 400s.
+    assert.match(h.text(out), /op: 'preset'/);
+    assert.deepEqual(h.puts(), [], 'a retired name must not write');
   });
 
-  it('switch_device forwards to transfer_playback, defaulting play to true', async () => {
+  it('switch_device is refused, and its `play: true` default is named', async () => {
     const h = await makeHarness();
     const out = await h.call('switch_device', { device_name: 'desk', response_format: 'json' });
-    assert.deepEqual(h.sc(out).deprecated_inputs, ['switch_device']);
-    assert.deepEqual(h.puts()[0]?.arg, { device_ids: ['dev_desk'], play: true });
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    // The one fact the survivor's schema cannot supply: `switch_device`
+    // defaulted play to true and `transfer_playback` does not, so a caller who
+    // meant "transfer paused" would silently get "starts playing".
+    assert.match(String(err(out).fix), /play: false/);
+    assert.deepEqual(h.puts(), []);
   });
 
-  it('transfer_playback_with_state forwards to the full-state transfer', async () => {
+  it('transfer_playback_with_state is refused with the full-state transfer', async () => {
     const h = await makeHarness();
     const out = await h.call('transfer_playback_with_state', { target_device: 'dev_desk', response_format: 'json' });
-    assert.deepEqual(h.sc(out).deprecated_inputs, ['transfer_playback_with_state']);
-    // The full-state contract: transfer, resume, seek, then put the modes back.
-    assert.deepEqual(h.puts().map((p) => p.path), [
-      '/me/player',
-      '/me/player/play?device_id=dev_desk',
-      '/me/player/seek?position_ms=30000&device_id=dev_desk',
-      '/me/player/shuffle?state=true&device_id=dev_desk',
-      '/me/player/repeat?state=track&device_id=dev_desk',
-    ]);
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    assert.match(String(err(out).fix), /preserve_position/);
+    assert.match(String(err(out).fix), /restore_shuffle_repeat/);
+    assert.deepEqual(h.calls(), []);
   });
 
-  it('mute and unmute forward to the op that remembers the level', async () => {
-    const muted = await makeHarness();
-    const m = await muted.call('mute', {});
-    assert.match(muted.text(m), /Muted Desk Computer \(was 55% — remembered for unmute\)/);
-    // The level to restore is the level that was actually dropped, not a
-    // default: a mute that stored 0 would be an unmute that restored silence.
-    assert.equal((await loadExhaust2Store()).muteMemory.dev_desk?.volume, 55);
+  it('mute and unmute are refused, each naming the op that remembers the level', async () => {
+    const m = await makeHarness();
+    const mOut = await m.call('mute', {});
+    assert.equal(err(mOut).reason, 'retired_tool_alias');
+    assert.match(String(err(mOut).fix), /op: 'mute'/);
+    assert.deepEqual(m.calls(), []);
+    // Nothing wrote, so nothing was remembered — the note is the whole answer.
+    assert.equal((await loadExhaust2Store()).muteMemory.dev_desk, undefined);
 
-    const un = await makeHarness();
-    const u = await un.call('unmute', { device_id: 'dev_desk', response_format: 'json' });
-    assert.deepEqual(un.sc(u).deprecated_inputs, ['unmute']);
-    assert.deepEqual(un.puts().map((p) => p.path), ['/me/player/volume?volume_percent=55&device_id=dev_desk']);
+    const u = await makeHarness();
+    const uOut = await u.call('unmute', { device_id: 'dev_desk', response_format: 'json' });
+    assert.equal(err(uOut).reason, 'retired_tool_alias');
+    assert.match(String(err(uOut).fix), /op: 'unmute'/);
+    assert.deepEqual(u.calls(), []);
   });
 
-  it('volume_step forwards to delta_step and clamps at 0', async () => {
+  it('volume_step is refused, naming delta_step as the parameter that replaced `step`', async () => {
     const h = await makeHarness({ player: { ...PLAYER, device: { ...PLAYER.device, volume_percent: 10 } } });
     const out = await h.call('volume_step', { step: -80, response_format: 'json' });
-    assert.deepEqual(h.sc(out).deprecated_inputs, ['volume_step']);
-    assert.deepEqual(h.puts().map((p) => p.path), ['/me/player/volume?volume_percent=0&device_id=dev_desk']);
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    assert.match(String(err(out).fix), /delta_step/);
+    assert.deepEqual(h.puts(), []);
   });
 
-  it('room_level forwards to the copy-the-active-level variant, honouring the exclusion', async () => {
+  it('room_level is refused, naming the op that copies the active level', async () => {
     const h = await makeHarness({
       devices: {
         devices: [
@@ -385,43 +389,44 @@ describe('#848 retired names forward with the flags that made them themselves', 
       },
     });
     const out = await h.call('room_level', { exclude_device_id: 'dev_phone', response_format: 'json' });
-    assert.deepEqual(h.sc(out).deprecated_inputs, ['room_level']);
-    assert.deepEqual(h.puts(), [], 'the only other live device was excluded');
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    // The note has to say NO volume_percent: that omission is what makes
+    // `level` a copy of the active device's volume rather than a new one.
+    assert.match(String(err(out).fix), /no volume_percent/);
+    assert.deepEqual(h.puts(), []);
   });
 
-  it('apply_volume_plan forwards to a fan-out over every volume-capable device', async () => {
+  it('apply_volume_plan is refused, and its "omitted means every device" fan-out is named', async () => {
     const h = await makeHarness();
     const out = await h.call('apply_volume_plan', { volume: 25 });
-    assert.match(h.text(out), /apply_volume_plan is deprecated/);
-    // An omitted selection meant "every volume-capable device", so the forward
-    // must set `all_devices`. Without it the single-device branch would write
-    // the active device only and report success for the two it skipped.
-    assert.deepEqual(h.puts().map((p) => p.path).sort(), [
-      '/me/player/volume?volume_percent=25&device_id=dev_desk',
-      '/me/player/volume?volume_percent=25&device_id=dev_phone',
-    ]);
-    assert.match(h.text(out), /skipped 1 volume-capable device with no device id/);
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    // The second fact the survivor's schema cannot supply. `set_volume` reads
+    // an omitted device list as the ACTIVE device, where this planner read it
+    // as every volume-capable one — so a caller who relies on the fan-out and
+    // does not see this would get a one-speaker write reported as success.
+    assert.match(String(err(out).fix), /all_devices/);
+    assert.deepEqual(h.puts(), []);
   });
 
-  it('plan_volume_level_across_devices forwards to a dry run even when the caller asks to commit', async () => {
-    // The one forward that OVERRIDES an argument. A read-only planner must not
-    // become a writer on its way out, so `dry_run: true` is forced last.
+  it('plan_volume_level_across_devices is refused, and its dry-run contract is named', async () => {
+    // The planner that OVERRODE a caller's `dry_run: false` on its way out.
+    // The override is gone with the forward, so the note has to say the
+    // replacement still needs `dry_run: true` — a caller who assumed the
+    // override survived would turn a plan into a write.
     const h = await makeHarness();
     const out = await h.call('plan_volume_level_across_devices', { volume: 55, dry_run: false });
-    const sc = h.sc(out);
-    assert.deepEqual(sc.deprecated_inputs, ['plan_volume_level_across_devices']);
-    assert.equal(sc.dry_run, true);
-    assert.deepEqual(sc.devices, ['dev_desk', 'dev_phone']);
-    assert.deepEqual(h.puts(), [], 'a forwarded planner must not write');
+    assert.equal(err(out).reason, 'retired_tool_alias');
+    assert.match(String(err(out).fix), /dry_run: true/);
+    assert.deepEqual(h.puts(), []);
   });
 
-  it('every retired name names itself in deprecated_inputs and the survivor in prose', async () => {
+  it('every retired name refuses with the same shape, and names its survivor in prose', async () => {
     // The note has to be on the TEXT as well as the structured payload: a host
     // reading prose is the case a deprecation exists for, and both survivors
     // return MUTATION_EMIT, which drops structuredContent outside json mode.
-    // Each name is called with the argument that name used to take, so the
-    // forward has something to translate. `{}` would be a different test: it
-    // would prove the name resolves, not that its arguments survive.
+    // Each name is called with the argument that name used to take, so this
+    // proves the refusal does not depend on the caller's arguments — a
+    // well-formed call to a retired name and a malformed one get one answer.
     const argsFor: Record<string, Record<string, unknown>> = {
       mute: { device_id: 'dev_desk' },
       unmute: { device_id: 'dev_desk' },
@@ -438,12 +443,33 @@ describe('#848 retired names forward with the flags that made them themselves', 
       const h = await makeHarness();
       const out = await h.call(name, args);
       const text = h.text(out);
-      assert.match(text, new RegExp(`${name} is deprecated`), `${name} must disclose the deprecation in prose`);
-      assert.match(text, /transfer_playback|set_volume/, `${name} must name the survivor in prose`);
-      assert.match(text, /v3\.0/, `${name} must say when the name stops being callable`);
+      assert.equal(err(out).reason, 'retired_tool_alias', `${name} must use the retired-name discriminator`);
+      assert.match(text, new RegExp(`\\b${name}\\b`), `${name} must name itself in prose`);
+      assert.ok(
+        SURVIVORS.some((tool) => text.includes(tool)),
+        `${name} must name its survivor in prose; got: ${text}`,
+      );
+      assert.match(text, /v3\.0/, `${name} must say when the name went away`);
+      assert.deepEqual(h.calls(), [], `${name} must spend no Spotify request`);
+    }
+  });
+
+  it('refuses every retired name even when its arguments are nonsense', async () => {
+    // The forwarding table is what made a mistranslation impossible to reach
+    // by accident: any argument went somewhere. Now that nothing translates,
+    // the refusal has to come from the NAME alone, before argument validation
+    // and before any request — otherwise a caller who sends a stale argument
+    // gets a schema error about a tool the server no longer has, which is a
+    // different claim from "we removed this name on purpose".
+    for (const name of RETIRED_TOOL_FORWARD_NAMES) {
+      const h = await makeHarness();
+      const out = await h.call(name, { not_a_real_argument: true, device_id: 'nowhere' });
+      assert.equal(err(out).reason, 'retired_tool_alias', `${name} must be refused on the name, not its arguments`);
+      assert.deepEqual(h.calls(), []);
     }
   });
 });
+
 
 // ===========================================================================
 // 3. The deprecated input alias

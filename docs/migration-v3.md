@@ -82,9 +82,8 @@ those apart without parsing prose.
 | What you sent | `kind` | `reason` | `error.param` | Where to look it up |
 |---|---|---|---|---|
 | A retired parameter name | `validation` | `retired_input` | the retired name(s) | the parameter tables below |
-| A retired tool name that still forwards | *(succeeds)* | — | — | carries `deprecated_inputs` + `deprecation_note` instead |
-| A retired tool name that does not forward | `unknown_tool` | `unknown_tool` | — | the "Retired tool names" tables below, and `fix` names the survivor |
-| A retired tool name that never existed / is gone with no replacement | `unknown_tool` | `unknown_tool` | — | the "February 2026" table above |
+| A retired tool name | `unknown_tool` | `retired_tool_alias` | — | the "Retired tool names" tables below, and `fix` names the survivor |
+| A name that never existed / is gone with no replacement | `unknown_tool` | `unknown_tool` | — | the "February 2026" table above |
 
 So a `retired_input` refusal is **this page's row, not a defect**. The `fix`
 field names the replacement parameter and the message names the version the
@@ -101,13 +100,16 @@ way a single column would hide:
 
 - **"Removed in"** is the release constant the refusal message quotes. It is
   the version boundary a notice promises.
-- **"Still callable in 3.0?"** is what the code in this tree does today. The
-  ten forwarding names answer calls in 3.0, precisely because forwarding *is*
-  their one-release migration window.
+- **"Still callable in 3.0?"** is what the code in this tree does today, and it
+  is derived from the same record the refusal message is built from.
 
-A name that still answers calls and carries a notice naming `v3.0` is
-therefore neither a contradiction nor a promise that the name is safe to keep
-using. Port your calls; do not read the working forward as an extension.
+**Every retired tool name in 3.0 refuses.** Earlier releases kept some of them
+answering calls for one release, with their arguments translated into the
+survivor's; 3.0 is the release that withdrew that window, so the migration
+lives in the refusal rather than in a forwarded result. A name that answers
+while carrying a notice naming `v3.0` would be neither a contradiction nor a
+promise that the name is safe to keep using — port your calls, and read a
+working forward as a temporary courtesy rather than an extension.
 
 ## Retired names and parameters
 
@@ -135,24 +137,27 @@ registration is what went away, not the capability.
 | `taste_profile` | `statsfm_taste_profile` | v3.0 | only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled |
 | `taste_recommendations` | `statsfm_taste_recommendations` | v3.0 | only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled |
 
-#### Retired names that still forward — removed in v3.0
+#### Retired transfer and volume names — removed in v3.0
 
 These are not the same tool twice, so a name-only rewrite would hand the
-caller a schema error instead of the behaviour they asked for. Each call
-is translated into its survivor's arguments first.
+caller a schema error instead of the behaviour they asked for. They are no
+longer forwarded either: a call on one is refused, and the refusal names
+the survivor plus the arguments the forwarding used to supply — several of
+which the survivor's own schema does not imply. The note column below is
+printed from the same constant the refusal message is built from.
 
-| Retired name | Forwards to | Removed in | Still callable in 3.0? |
+| Retired name | Replaced by | Removed in | Still callable in 3.0? |
 |---|---|---|---|
-| `apply_device_presets` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `apply_volume_plan` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `handoff` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `mute` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `plan_volume_level_across_devices` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `room_level` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `switch_device` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `transfer_playback_with_state` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `unmute` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `volume_step` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
+| `apply_device_presets` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'preset'. |
+| `apply_volume_plan` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level' and the plan's volume as volume_percent; an omitted device list meant every volume-capable device, which is all_devices: true. |
+| `handoff` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: add preserve_position: true — the track and position carry over instead of restarting at 0:00 on the target. |
+| `mute` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'mute'. |
+| `plan_volume_level_across_devices` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level', volume_percent, all_devices: true when no device list was given, and dry_run: true — it was a planner and never committed. |
+| `room_level` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level' and no volume_percent, which copies the active device's level to the others. |
+| `switch_device` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: pass the device as `device`; it defaulted play to true and the replacement does not, so send play: false to transfer paused. |
+| `transfer_playback_with_state` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: add preserve_position: true and restore_shuffle_repeat: true; it defaulted play to true. |
+| `unmute` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'unmute', which restores the level mute kept. |
+| `volume_step` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: pass the same step as delta_step. |
 
 #### Retired queue-read names — removed in v3.0
 

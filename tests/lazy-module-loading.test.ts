@@ -362,18 +362,21 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // shared record rather than added alongside it.
     //
     // 108 -> 102 (#847): six queue readers collapsed into `get_queue` and
-    // `peek_next`. The retired names still forward for one release, so the
-    // tools a caller can name did not shrink by six — the registrations did,
-    // and this is the count of registrations.
+    // `peek_next`. Those six refuse rather than forwarding — the survivors
+    // take arguments the retired tools did not, so a name-only rewrite would
+    // answer a different question — and this is the count of registrations
+    // either way.
     //
     // 102 -> 92 (#848): the same kind of collapse, ten registrations this time.
     // Four transfer tools and eight volume writers of `PUT /me/player/volume`
     // became one `transfer_playback` and one `set_volume`, whose two schemas
-    // carry the union of the flags the twelve each needed. Each retired name
-    // still resolves — `RETIRED_TOOL_FORWARDS` in `src/shaping.ts` forwards it
-    // to the survivor with the flags that made it itself, for one release — so
-    // a caller of an old name keeps working, but it is a registration rather
-    // than a tool, and tools are what this number counts. The two behaviour
+    // carry the union of the flags the twelve each needed. Those ten forwarded
+    // to the survivor with the flags that made them themselves for one
+    // release, and v3.0 removed the forwarding (#1615); what is left on the
+    // name is the refusal in `RETIRED_TOOL_FORWARDS` (`src/shaping.ts`), which
+    // carries the replacement call rather than the behaviour. Either way it is
+    // a registration rather than a tool, and tools are what this number counts.
+    // The two behaviour
     // differences the collapse does make (a device that resolved only by id
     // now also resolves by its sidecar label, and a resume that silently
     // landed at 0:00 is now seek-corrected) are additive and narrowing
