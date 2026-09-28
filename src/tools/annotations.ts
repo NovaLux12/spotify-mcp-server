@@ -2033,9 +2033,10 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // follows the baseline (ceil(24664 * 1.1) = 27131B).
   //
   // The 24,664B is measured on this tree after the rebase onto main, not
-  // carried over from either side of the conflict: main quoted 24,434B over
-  // 592 tools and this branch quoted 24,546B over 556, and the surface here
-  // matches neither. A baseline is a measurement of the tree it sits in.
+  // carried over from either side of the conflict: main quoted 24,434B and
+  // this branch quoted 24,546B, and the surface here matches neither. A
+  // baseline is a measurement of the tree it sits in, and the registry-wide
+  // count it would have to be qualified against is itself a generated figure.
   manifestEntry('exhaust2misc', 'exhaust2misc', lazyModule('./exhaust2_misc.js', 'registerExhaust2MiscTools'), [27, 24664], { scopeKey: 'library' }),
   // #898: 3,695 -> 4,039 bytes (+344B, +9.3%) for the SAME three tools and the
   // same input schemas — every byte is the two descriptions, which now state
