@@ -770,7 +770,8 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
   |---|---|---|---|
   | `playlists` | 48 | 1 (`import_playlist`) | 37 |
   | `library` | 14 | 0 | 15 |
-  | `audiobooks` / `podcast` (by module: `audiobookcopilot`, `podcastsession`, `episodemgmt`) | `archive_played_episodes`, `chapter_bookmarks` | 0 | `jump_to_chapter`, `start_podcast_session` |
+
+  The podcast and audiobook families are too small to tabulate and are split by module rather than by `scopeKey` — `archive_played_episodes` (`episodemgmt`) and `chapter_bookmarks` (`exhaust2misc`) preview by default, while `jump_to_chapter` (`audiobookcopilot`) and `start_podcast_session` (`podcastsession`, which the manifest files under `scopeKey: 'library'`) publish no default and commit on omission.
 
   **A missing schema default does not imply a commit, and it does not imply a preview — it means the caller cannot tell from `tools/list` alone.** Three distinct behaviours hide behind "no `default` in the schema", and a reader who collapses them will be wrong about the one that matters:
 
