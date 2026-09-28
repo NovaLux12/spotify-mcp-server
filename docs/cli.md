@@ -1,8 +1,11 @@
 # The `spotify-mcp` CLI
 
-Five subcommands beyond the server itself that speak to it as a client: `tools`,
-`call`, `watch`, `export` and `init`. The CLI's other three — `auth`, `doctor`
-and `logout` — never open a session, and are documented where they are used
+Five subcommands beyond the server itself: `tools`, `call`, `watch`, `export`
+and `init`. Four of them open a session against a live registry; `init` is
+dispatched separately precisely because it needs none — it writes a config file,
+and booting a registry to answer a question about a config file would make the
+fastest command the slowest. The CLI's other three — `auth`, `doctor` and
+`logout` — never open a session either, and are documented where they are used
 ([FAQ](faq.md)). The five exist because the questions they answer — *what does
 this installation actually do under my environment?* — are answerable without a
 model in the loop, and answering them any other way would be answering them
@@ -85,7 +88,7 @@ get_now_playing
 | `--profile <name>` | Act on a named account profile (see above) |
 | `--help` | Usage |
 
-Each row's facts are read from three different places on purpose:
+Each row carries six facts, read from three different places on purpose:
 
 - `read_only` / `destructive` / `idempotent` come from the tool's own
   `annotations` on the wire — this is what a host sees.

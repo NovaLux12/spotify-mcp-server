@@ -14,7 +14,7 @@ There is no stats.fm OAuth dance: public profile data needs no token. Private pr
 
 ## Taste-tool naming
 
-The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_*`** names. Each also carries a **retired** bare-name alias — `taste_profile`, `artist_affinity` and their siblings — that is no longer registered, so `tools/list` advertises only the `statsfm_*` spelling; the complete pair-by-pair mapping is in the [taste showcase naming table](taste.md#tool-naming).
+The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_*`** names. Each also carries a bare-name alias — `taste_profile`, `artist_affinity` and their siblings — that is **no longer registered**: `tools/list` advertises only the `statsfm_*` spelling. The alias is not gone, though. `LEGACY_TOOL_ALIASES` still resolves it, and the CallTool boundary rewrites a legacy name onto its canonical handler when `SPOTIFY_MCP_LEGACY_ALIASES=1`, so an old call keeps working without being advertised. The complete pair-by-pair mapping is in the [taste showcase naming table](taste.md#tool-naming).
 
 The separate wave-2 composite tools are registered under the `taste` toolset with canonical `taste_*` names. They are live tools, not planned tools; see [taste composites](wave2-composites.md).
 

@@ -166,7 +166,7 @@ All via env vars — no config file. Only `SPOTIFY_CLIENT_ID` is required.
 | Variable | Example | Purpose |
 |---|---|---|
 | `SPOTIFY_MCP_TOOLSETS` | unset | Trim by group for hosts that cap tool counts. Unset registers the curated default surface; `all` registers everything. The tool count for each is in the generated census above. |
-| `SPOTIFY_MCP_STATSFM` | `1` | Register the stats.fm families — the endpoint tools, the eight taste-intelligence tools, and the wave-2 composites. Off by default: they need a separate stats.fm username. `spotify-mcp tools` counts what your environment actually registers. |
+| `SPOTIFY_MCP_STATSFM` | `1` | Register the 50 stats.fm-backed tools across four registration keys — `statsfm`, `taste`, `tastecomposites` and `tastejukebox`. Off by default: they need a separate stats.fm username. Two of them write to Spotify (`taste_to_playlist` and `statsfm_jukebox`); the rest are read-only. `spotify-mcp tools` counts what your environment actually registers. |
 | `SPOTIFY_MCP_READONLY` | `1` | Hide write-capable modules; read-only resources and prompts remain available. |
 | `SPOTIFY_MCP_HISTORY` | `1` | Log mutations to JSONL for undo and audit. |
 | `SPOTIFY_MCP_RECEIPTS` | `1` | Persist mutation receipts so `verify_receipt`/`undo_mutation` survive a restart. |
