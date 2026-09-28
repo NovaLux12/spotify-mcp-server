@@ -1745,8 +1745,12 @@
         "label": "package.json bin field: { \"bin\": { \"spotify-mcp\": \"dist/…"
       },
       {
-        "hash": "323d2f541fa48bcd",
+        "hash": "4a35a45eefb0eccc",
         "label": "tsconfig.json essentials: { \"compilerOptions\": { \"target…"
+      },
+      {
+        "hash": "7ad6625435956331",
+        "label": "The three flags after strict are the ones that measured …"
       },
       {
         "hash": "1929d20c699a27db",
@@ -7298,9 +7302,9 @@
     }
   ],
   "provenance": {
-    "head": "e2e154a100b4a540e5122d2b620159d10ce26c28",
-    "base": "4305a067f67cefdfd4025e99aef9c8ede5fb0ec8",
-    "upstream": "4305a067f67cefdfd4025e99aef9c8ede5fb0ec8",
+    "head": "ae784204a84973c687807dd690338b7676396bbc",
+    "base": "9ee5a5d069ee8597541da5a033fd49b4cedf9bb1",
+    "upstream": "9ee5a5d069ee8597541da5a033fd49b4cedf9bb1",
     "behind": false
   },
   "reanchored": [
@@ -7329,6 +7333,15 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "323d2f541fa48bcd",
+      "label": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
+      "to": "4a35a45eefb0eccc",
+      "toLabel": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
+      "reason": "rebase onto main after #1541: #585 reworded the hand-maintained 'tsconfig.json essentials' fence in SPEC.md to name the strict flags that measured clean; same fence, new text, old hash gone from the file",
       "date": "2026-09-28"
     },
     {
