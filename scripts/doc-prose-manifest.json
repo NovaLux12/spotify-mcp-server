@@ -2069,7 +2069,7 @@
         "label": "maxresults is a DISPLAY cap and never a work cap (#886).…"
       },
       {
-        "hash": "34c07ec51904b462",
+        "hash": "c395232359bff431",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
@@ -2121,7 +2121,7 @@
         "label": "There is no \"still unchanged\" state. #827's DryRunDefaul…"
       },
       {
-        "hash": "702cdfb8d7303070",
+        "hash": "2d488f91402c304b",
         "label": "| Family (manifest scopeKey) | publish default: true | p…"
       },
       {
@@ -2871,6 +2871,50 @@
       {
         "hash": "2785a7762dc22d4a",
         "label": "Scope: the library endpoint, not the removal verbs. Play…"
+      },
+      {
+        "hash": "04289552a1f5765c",
+        "label": "cleanbackupartifacts — the non-library families in the b…"
+      },
+      {
+        "hash": "ad802e383fb2d9b4",
+        "label": "SPOTIFYMCPBACKUPDIR is not a library-backup store with s…"
+      },
+      {
+        "hash": "5d497dfe0f57f32b",
+        "label": "| Written by | Name shape | listbackups | retention expi…"
+      },
+      {
+        "hash": "6ff09a3ab5f63af3",
+        "label": "The .meta.json sidecar is a fourth name shape the two fa…"
+      },
+      {
+        "hash": "678ca6794567406b",
+        "label": "deletebackup's notabackup refusal is not weakened, and t…"
+      },
+      {
+        "hash": "aa5373cb68fc1fb5",
+        "label": "The contract. family selects one of sessions / preimages…"
+      },
+      {
+        "hash": "bfcac8138d93962d",
+        "label": "Confirmation: always, with no count threshold. confirm.t…"
+      },
+      {
+        "hash": "b576bd28b388f3f9",
+        "label": "Refusals, all fail-closed and none of them weakening del…"
+      },
+      {
+        "hash": "dafde9768779f59f",
+        "label": "What is deliberately NOT deleted. Files matching no know…"
+      },
+      {
+        "hash": "30d6092320e94a10",
+        "label": "The two byte figures answer different questions, and the…"
+      },
+      {
+        "hash": "15f4163e2c9c5c3a",
+        "label": "Retention is a separate window, default 14 days, and 0 d…"
       },
       {
         "hash": "d1b72671578d6539",
@@ -4915,7 +4959,7 @@
         "label": "Summary"
       },
       {
-        "hash": "8d977e2956f65028",
+        "hash": "9285b77a40401b0d",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5325,6 +5369,22 @@
       {
         "hash": "8e9e67b89df0b0d0",
         "label": "To remove one snapshot ahead of its window, use the dele…"
+      },
+      {
+        "hash": "4acb180458177b10",
+        "label": "The rest of the backup directory"
+      },
+      {
+        "hash": "00a4a2e35cfdba84",
+        "label": "SPOTIFYMCPBACKUPDIR is shared by four writers, and only …"
+      },
+      {
+        "hash": "7dac6f64eaf917e3",
+        "label": "SPOTIFYMCPBACKUPARTIFACTRETENTIONDAYS is the window for …"
+      },
+      {
+        "hash": "f11fed690d159320",
+        "label": "cleanbackupartifacts applies that window. It previews by…"
       },
       {
         "hash": "0ac3978d664f6bcc",
@@ -7381,9 +7441,9 @@
     }
   ],
   "provenance": {
-    "head": "77a74e4c8f1b2cb5a493bf72dfcacce0c876b159",
-    "base": "781184b1a5206ab353afb6f38d82ca25402d3e32",
-    "upstream": "781184b1a5206ab353afb6f38d82ca25402d3e32",
+    "head": "34babff53adbea06e9c4fba38fe228c3126cb45c",
+    "base": "9ded7ce111cdf0e9d9b8c4704a89798b041f0713",
+    "upstream": "9ded7ce111cdf0e9d9b8c4704a89798b041f0713",
     "behind": false
   },
   "reanchored": [
@@ -7542,6 +7602,15 @@
     },
     {
       "file": "docs/configuration.md",
+      "hash": "8d977e2956f65028",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "9285b77a40401b0d",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "SPOTIFY_MCP_BACKUP_DIR now also holds non-library families and SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS is new (#1592)",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
       "hash": "9d265001651b66d2",
       "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
       "to": "06d6e0e506353873",
@@ -7677,6 +7746,15 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "34c07ec51904b462",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "to": "c395232359bff431",
+      "toLabel": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "reason": "clean_backup_artifacts registers the 71st module, so this paragraph's registry figures move from 559/128/146,360 to 560/129/148,258 (#1592)",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "5415c2b35e7f136c",
       "label": "1566 re-gated the /me/library removal half and left the …",
       "to": "2c668176003913f0",
@@ -7700,6 +7778,15 @@
       "to": "985d30f963b54c8c",
       "toLabel": "Returns: id, name, description, track count, ispublic, i…",
       "reason": "#1556: get_user_playlists substituted 0 for a count Spotify never stated; the paragraph now says which of the two a read produced",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "702cdfb8d7303070",
+      "label": "| Family (manifest scopeKey) | publish default: true | p…",
+      "to": "2d488f91402c304b",
+      "toLabel": "| Family (manifest scopeKey) | publish default: true | p…",
+      "reason": "the family table gains clean_backup_artifacts and its coverage of the non-library families sharing the backup directory (#1592)",
       "date": "2026-09-28"
     },
     {
