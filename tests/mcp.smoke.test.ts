@@ -12,6 +12,7 @@ import './helpers/hermetic.js';
 import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { armFileDeadline } from './helpers/file-deadline.js';
@@ -19,6 +20,50 @@ import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 import { execFileBounded } from './helpers/subprocess-outcome.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
+
+/**
+ * The tool count the PACKED entry must serve, read out of the generated
+ * `surface-census` block rather than typed here (#1623).
+ *
+ * ## Why this is parsed and not written down
+ *
+ * The census measures the default surface by starting the real entry with no
+ * `SPOTIFY_MCP_TOOLSETS` and calling `tools/list`, so this figure and the packed
+ * child's `tools/list` are two measurements of the same registry — which is the
+ * whole point: when the two disagree, the packaging broke. A literal here would
+ * be a hand-typed count, and AGENTS.md §6 is explicit that one is wrong within
+ * a release. When a tool lands, `npm run count:tools -- --write` moves the
+ * number and this test follows it; nothing here has to be edited, and a stale
+ * block fails `count:tools -- --check` in the same run.
+ *
+ * ## Why it must not degrade to a default
+ *
+ * A failed parse throws rather than falling back to 0 or 1: an unparsable block
+ * is a change to the generator's own template, and a test that quietly dropped
+ * to a small floor would keep passing straight through that change — the "I
+ * found nothing" / "I looked and it is clear" confusion AGENTS.md §6 records.
+ *
+ * Anchored on the `registers **N tools**` clause, which is the default-surface
+ * one: the census template puts the `=all` figure behind a `registers all`, so a
+ * loose `\*\*(\d[\d,]*) tools\*\*` would not match it — but the anchor is
+ * still named rather than assumed, because a reworded template must fail here
+ * loudly rather than quietly start reading the other number.
+ */
+const PACKED_DEFAULT_SURFACE_TOOLS = ((): number => {
+  const readme = readFileSync(join(REPO_ROOT, 'README.md'), 'utf8');
+  const start = '<!-- BEGIN:generated surface-census -->';
+  const end = '<!-- END:generated surface-census -->';
+  const startAt = readme.indexOf(start);
+  const endAt = readme.indexOf(end, startAt);
+  assert.ok(startAt >= 0 && endAt > startAt, 'README.md must carry a generated surface-census block');
+  const match = /registers \*\*(\d[\d,]*) tools\*\*/.exec(readme.slice(startAt + start.length, endAt));
+  assert.ok(
+    match,
+    'the generated surface-census block must state the default surface\'s tool count; '
+    + 'if the generator\'s template changed, update the anchor above rather than deleting the assertion',
+  );
+  return Number(match[1].replace(/,/g, ''));
+})();
 
 // Regression guard (#110 follow-up + v1.5 wiring loss): a description
 // rewrite once consumed this tool's name argument and the suite stayed
@@ -402,7 +447,7 @@ describe('MCP stdio smoke (real src/index.ts)', () => {
 });
 
 describe('npm package artifact', () => {
-  it('packs a shebanged dist entry that starts and initializes', async () => {
+  it('packs a shebanged dist entry that starts, initializes and ASSEMBLES ITS REGISTRY (#1623)', async () => {
     // Bounded on both legs, and reported through #1335's vocabulary: a `tsc` that
     // overruns here has to read as a killed subprocess, not as an opaque
     // `spawnSync … ETIMEDOUT`. Neither call can be bounded by the file deadline,
@@ -433,6 +478,12 @@ describe('npm package artifact', () => {
       command: process.execPath,
       args: [packedEntry],
       cwd: packageDir,
+      // NO `SPOTIFY_MCP_TOOLSETS` here, unlike the source child in `before()`.
+      // That is the point rather than an omission: a consumer who runs
+      // `npx @novalux12/spotify-mcp` gets the curated default surface, so the
+      // packaged registry is checked against the default figure in the census
+      // block rather than the `=all` one. `hermeticServerEnv` strips every
+      // `SPOTIFY_*` first, so a developer's exported toolsets cannot reach it.
       env: hermeticServerEnv({ SPOTIFY_MCP_TOKEN_FILE: tokenFile }, 'packaged').env,
     });
     try {
@@ -440,6 +491,43 @@ describe('npm package artifact', () => {
       assert.equal(
         (init.result?.serverInfo as { name?: string } | undefined)?.name,
         'spotify-mcp',
+      );
+
+      // #1623 — `initialize` is a LIVENESS check. It proves the file parses and
+      // the process starts; it cannot say whether the registry is the registry,
+      // because only `tools/list` answers that. This test stopped here, and
+      // passed on a tarball serving anything from the full surface down to
+      // none.
+      //
+      // What this assertion is NOT: a second guard on a missing module file.
+      // The manifest imports each tool module through a lazy thunk, so a tarball
+      // without `dist/tools/` dies on the import and the exit handler below
+      // already fails the run — measured, not assumed (a `files` entry of
+      // `["dist", "!dist/resources"]` fails the `initialize` above on
+      // `Cannot find module …/dist/resources/register.js`).
+      //
+      // What it IS: the quieter class, where the entry starts, handshakes, and
+      // serves a registry that is not the one the checkout serves. A `files` or
+      // `.npmignore` change, a `prepack` that stopped rebuilding, a build config
+      // that emits a different module set — the process is fine and the product
+      // is wrong, and `tools/list` is the first request any host makes.
+      //
+      // The count is the assertion; the call returning is not. It is read from
+      // the generated census block above rather than typed, and it is compared
+      // for EQUALITY rather than as a floor: `> 0` would still pass on a tarball
+      // that lost nine of its ten modules, which is the failure being closed.
+      // An exact match cannot produce a red that `count:tools -- --check` would
+      // not already report on the same tree, so the stronger form is free.
+      const listRes = await packagedClient.request('tools/list');
+      const tools = listRes.result?.tools as Array<{ name: string }> | undefined;
+      assert.ok(Array.isArray(tools), 'tools/list on the packed entry must return a tools array');
+      assert.equal(
+        tools.length,
+        PACKED_DEFAULT_SURFACE_TOOLS,
+        `the packed entry served ${tools.length} tools; the generated census block records `
+        + `${PACKED_DEFAULT_SURFACE_TOOLS} for this surface. A different number means the registry `
+        + 'this tarball ships is not the registry this tree built — check package.json `files`, '
+        + '`.npmignore`, and whether `prepack` still runs a build.',
       );
     } finally {
       // Bounded, and reaped by PID. The old `await once(child, 'exit')` here had

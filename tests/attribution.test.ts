@@ -48,7 +48,9 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { SpotifyClient } from '../src/client.js';
 
 import { CONTENT_ATTRIBUTION_NOTICE } from '../src/branding.js';
-import { attributionEnv, parseAttribution, FALSY_ENV_VALUES } from '../src/config.js';
+import { attributionEnv, initConfig, parseAttribution, FALSY_ENV_VALUES } from '../src/config.js';
+import { buildMcpServer } from '../src/server.js';
+import { resolveToolsets } from '../src/toolsets.js';
 import {
   attributeResult,
   attributeText,
@@ -59,6 +61,8 @@ import {
 } from '../src/attribution.js';
 import { registerSearchTools } from '../src/tools/search.js';
 import { SPOTIFY_REFERENCE_KINDS } from '../src/refs.js';
+import { StubSpotifyClient } from './helpers/stub-client.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -385,5 +389,136 @@ describe('the switch the documentation names', () => {
     assert.equal(logged.length, 1, 'an unrecognised value must warn');
     assert.match(logged[0] as string, /SPOTIFY_MCP_ATTRIBUTION/);
     assert.match(logged[0] as string, /stays ON/);
+  });
+});
+
+/**
+ * The `/search` payload the install-site test serves, in the same shape
+ * `searchStub()` above returns — the tool's own reader is what turns it into
+ * rows, and those rows are what the boundary has to decorate.
+ */
+const searchPayload = (): Record<string, unknown> => ({
+  tracks: {
+    items: [{
+      name: 'Blinding Lights',
+      uri: `spotify:track:${TRACK_ID}`,
+      duration_ms: 200_940,
+      artists: [{ name: 'The Weeknd' }],
+      album: { name: 'After Hours', uri: `spotify:album:${ALBUM_ID}` },
+    }],
+    total: 1,
+    limit: 1,
+    offset: 0,
+  },
+  artists: { items: [], total: 0, limit: 1, offset: 0 },
+  albums: { items: [], total: 0, limit: 1, offset: 0 },
+});
+
+/**
+ * Call `search` through the PRODUCTION server, not a hand-built one.
+ *
+ * `buildMcpServer` is what `src/index.ts` runs for every host, so it is the only
+ * call site where "the boundary is installed" is a claim about the product. The
+ * scope is passed explicitly rather than derived: `resolveToolsets('all')` so
+ * every module registers, an empty `grantedScopes` because
+ * `moduleBlockedByScopes` fails OPEN on an empty set, and `readOnly: false`.
+ * Nothing here reads the developer's exported `SPOTIFY_*` — the three that
+ * would change the answer are pinned and restored.
+ */
+async function callSearchOnProductionServer(): Promise<{ text: string; structured?: Record<string, unknown> }> {
+  const pinned: Record<string, string> = {
+    // Pinned rather than left unset: `attributionEnv()` reads process.env
+    // directly, so a developer with `SPOTIFY_MCP_ATTRIBUTION=0` exported would
+    // otherwise turn this into a test that passes for the wrong reason.
+    SPOTIFY_MCP_ATTRIBUTION: '1',
+    // A path under the hermetic home that does not exist. The acting-account
+    // echo probes the token file before it will call `/me`; pointing it at a
+    // developer's real `SPOTIFY_MCP_TOKEN_FILE` would have this test read a real
+    // credentials file, which is the one thing the hermetic home exists to stop.
+    SPOTIFY_MCP_TOKEN_FILE: DEFAULT_TOKEN_FILE,
+    SPOTIFY_CLIENT_ID: 'attribution-install-test',
+  };
+  const previous: Record<string, string | undefined> = {};
+  for (const [key, value] of Object.entries(pinned)) {
+    previous[key] = process.env[key];
+    process.env[key] = value;
+  }
+  try {
+    // Before the factory, not after: `getConfig()` snapshots process.env on
+    // first read, and several registrars read it during registration.
+    initConfig();
+    const stub = new StubSpotifyClient();
+    stub.get_('/search', { respond: () => searchPayload() });
+    const { sets: activeSets } = resolveToolsets('all');
+    const server = await buildMcpServer(
+      stub,
+      {
+        activeSets,
+        overrides: { enable: new Set<string>(), disable: new Set<string>() },
+        grantedScopes: new Set<string>(),
+        readOnly: false,
+      },
+      { announce: false },
+    );
+    const client = new Client({ name: 'attribution-install-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: 'search', arguments: { query: 'blinding lights' } });
+      const content = result.content as Array<{ type: string; text?: string }>;
+      return {
+        text: content.find((block) => block.type === 'text')?.text ?? '',
+        structured: result.structuredContent as Record<string, unknown> | undefined,
+      };
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+describe('the install site, on the production server (#1610)', () => {
+  it('attributes a tool result through the factory a host actually gets', async () => {
+    // Every other case in this file builds its own `McpServer` and calls
+    // `installAttributionBoundary` itself. That is what makes the boundary's
+    // BEHAVIOUR provable, and it is exactly why the file said nothing about
+    // whether the boundary is ever installed: delete the one call in
+    // `buildMcpServer` and the whole file stays green. The decoration is
+    // correct, tested, and unreachable — the failure #696 was written against,
+    // and the one a test that only ever exercises its own fixture cannot see.
+    //
+    // So this case goes through `buildMcpServer` and reads the text off the
+    // wire, which is the same criterion as every case above it and the one
+    // place the install site is observable at all. It is deliberately NOT a
+    // source-text assertion over `src/server.ts`, which is how the sibling
+    // #1525 boundary is pinned: reading the source proves the source contains a
+    // call, not that the call does anything, and that fallback was chosen only
+    // because standing the real server up was thought to be unavailable. It is
+    // available — `buildMcpServer` is a factory, and
+    // `tests/cli.session.test.ts` already stands it up in-process.
+    const { text, structured } = await callSearchOnProductionServer();
+
+    // `footerCount` rather than a `text.includes(...)`, so the assertion is on
+    // the constant and not on a second hand-typed copy of it.
+    assert.equal(footerCount(text), 1, `expected the footer exactly once, got:\n${text}`);
+    assert.ok(
+      text.includes(`https://open.spotify.com/track/${TRACK_ID}`),
+      `the row carries no link back to Spotify:\n${text}`,
+    );
+    // The structured half is untouched by the boundary, which is the point of
+    // it being a boundary and not a renderer change: a programmatic consumer
+    // still matches on the bare URI.
+    const tracks = (structured?.sections as Record<string, { items?: Array<{ uri?: string }> }> | undefined)
+      ?.tracks?.items ?? [];
+    assert.equal(
+      tracks[0]?.uri,
+      `spotify:track:${TRACK_ID}`,
+      'the boundary must not rewrite the structured payload a caller parses',
+    );
   });
 });
