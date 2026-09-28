@@ -64,17 +64,29 @@ export function moduleBlockedByScopes(key: string, granted: Set<string>): boolea
   return !required.some((scope) => granted.has(scope));
 }
 
-/**
- * Modules that can mutate user state (#111 item 6): hidden entirely when
- * SPOTIFY_MCP_READONLY=1 is set, independent of granted scopes.
+/*
+ * Do not re-add a write-module set here (#1572). One did, and its doc comment
+ * claimed it was the `SPOTIFY_MCP_READONLY` gate. It is not: that gate reads
+ * the registrar manifest's own `readOnlySafe` flag
+ * (`readOnly && module.readOnlySafe !== true`), which tools/doctortool.ts
+ * re-derives from the manifest precisely because a hand-copied list drifts.
  *
- * Derived from WRITE_SCOPE_REQUIREMENTS so the two lists cannot drift —
- * any module added there automatically becomes write-classified here.
+ * A key-level set also cannot express it. `readOnlySafe` is a per-ROW flag
+ * and the gate keys on `module.registrationKey`, so one registration key is
+ * not one answer: `playlistdna` is `readOnlySafe` while its sibling
+ * `playlists` is not, `freshness` is while `following` is not, and under
+ * `library` it is `backup`/`backupfirst`/`showradar` but not
+ * `backupdelete`/`restore`/`undo`. A set keyed by registration key would
+ * have to call each of those three keys both safe and unsafe.
+ *
+ * And a key is the wrong unit for the scope table above regardless:
+ * `playlistfollow` is a key of THAT table, but its manifest row registers
+ * under the toolset key `playlistmisc`
+ * (`manifestEntry('playlistfollow', 'playlistmisc', …, { scopeKey:
+ * 'playlistfollow' })`). The string `playlistfollow` therefore scopes
+ * through this module while the READONLY gate never sees it.
+ *
+ * This file is the SCOPE gate. The two are independent: a module can pass
+ * scopes and still be hidden by READONLY, and (per the fail-open branch
+ * above) pass READONLY's silence while a scope would have blocked it.
  */
-export const WRITE_MODULES: ReadonlySet<string> = new Set(
-  Object.keys(WRITE_SCOPE_REQUIREMENTS),
-);
-
-export function isWriteModule(key: string): boolean {
-  return WRITE_MODULES.has(key);
-}
