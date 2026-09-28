@@ -211,8 +211,12 @@
         "label": "These fail at runtime on app registrations created after…"
       },
       {
-        "hash": "e028cd63776169d0",
+        "hash": "5dcae56c9eae5c73",
         "label": "| Endpoint | Status | |---|---| | GET /recommendations |…"
+      },
+      {
+        "hash": "96c516ada21d15ef",
+        "label": "One row above is an open question, not a settled fact. G…"
       },
       {
         "hash": "540b0347909c2431",
@@ -7377,7 +7381,7 @@
     }
   ],
   "provenance": {
-    "head": "ec3ced0b8d30e30f1800f5f5a96458c9a95b4f97",
+    "head": "afe4924863990aa614f941b07bf4b550cda9379f",
     "base": "781184b1a5206ab353afb6f38d82ca25402d3e32",
     "upstream": "781184b1a5206ab353afb6f38d82ca25402d3e32",
     "behind": false
@@ -7435,6 +7439,15 @@
       "to": "70bf23cebb99cf0c",
       "toLabel": "These fail at runtime on app registrations created after…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "e028cd63776169d0",
+      "label": "| Endpoint | Status | |---|---| | GET /recommendations |…",
+      "to": "5dcae56c9eae5c73",
+      "toLabel": "| Endpoint | Status | |---|---| | GET /recommendations |…",
+      "reason": "the sweep asserted the Nov 2024 post excludes available-genre-seeds by name, which could not be confirmed against Spotify changelog; the row now states only the schema deprecated flag and points at the open question recorded below it",
       "date": "2026-09-28"
     },
     {
