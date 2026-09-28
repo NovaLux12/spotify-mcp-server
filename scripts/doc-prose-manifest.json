@@ -1155,6 +1155,10 @@
         "label": "[docs/v3-roadmap.md](docs/v3-roadmap.md) — what's coming…"
       },
       {
+        "hash": "61309e50de32fe2d",
+        "label": "[docs/migration-v3.md](docs/migration-v3.md) — every ret…"
+      },
+      {
         "hash": "1882df2a6a0df193",
         "label": "[SPEC.md](SPEC.md) — every tool, resource & prompt"
       },
@@ -6135,6 +6139,144 @@
         "label": "[ ] GitHub topic hygiene: mcp, mcp-server, spotify, mode…"
       }
     ],
+    "docs/migration-v3.md": [
+      {
+        "hash": "14cb9e1e5102e5b8",
+        "label": "Migrating to 3.0"
+      },
+      {
+        "hash": "abf7003b05eae30d",
+        "label": "3.0 retires tool names and parameter names. This page is…"
+      },
+      {
+        "hash": "457aebbc96565978",
+        "label": "The tables are generated from the same constants in src/…"
+      },
+      {
+        "hash": "270df7e69fe1d80e",
+        "label": "Following an artist has no replacement"
+      },
+      {
+        "hash": "1b6284b14eda95ac",
+        "label": "followartists and unfollowartists are gone and nothing r…"
+      },
+      {
+        "hash": "739bc51b56134c40",
+        "label": "Spotify removed PUT/DELETE /me/following?type=artist in …"
+      },
+      {
+        "hash": "a1ae46a154a3beb7",
+        "label": "The repository already encodes the asymmetry: LIBRARYSAV…"
+      },
+      {
+        "hash": "f5ecbbebcd30f51a",
+        "label": "checkfollowingartists answers \"do I follow these artists…"
+      },
+      {
+        "hash": "5741c6e429a35c1c",
+        "label": "getfollowedartists and followinganalytics still list the…"
+      },
+      {
+        "hash": "07cb38a962419891",
+        "label": "The write half is unexpressible over this API. A caller …"
+      },
+      {
+        "hash": "121827126ffcf76b",
+        "label": "Retired in the February 2026 endpoint removals (#638)"
+      },
+      {
+        "hash": "6a1314cd054940a3",
+        "label": "These tools are deleted, not forwarded: the endpoint eac…"
+      },
+      {
+        "hash": "afcefe70bf59c5af",
+        "label": "| Retired tool | Why | Replacement in 3.0 | |---|---|---…"
+      },
+      {
+        "hash": "67d5bdd96a9dc140",
+        "label": "/me/library authorises three alternative scopes — user-l…"
+      },
+      {
+        "hash": "1550e1030b218f14",
+        "label": "A caller that reaches for one of these names now gets a …"
+      },
+      {
+        "hash": "db9853135975ce79",
+        "label": "What a refusal mid-migration means"
+      },
+      {
+        "hash": "0f370d8e4b833041",
+        "label": "Every retirement in this document refuses by name, befor…"
+      },
+      {
+        "hash": "f48a63471475c162",
+        "label": "| What you sent | kind | reason | error.param | Where to…"
+      },
+      {
+        "hash": "4b6c88de808c89dd",
+        "label": "So a retiredinput refusal is this page's row, not a defe…"
+      },
+      {
+        "hash": "bfe238d897d0c250",
+        "label": "Reading the two version columns"
+      },
+      {
+        "hash": "e3341edc684761cc",
+        "label": "The \"Removed in\" column and the \"Still callable in 3.0?\"…"
+      },
+      {
+        "hash": "278c21f71423f439",
+        "label": "\"Removed in\" is the release constant the refusal message…"
+      },
+      {
+        "hash": "09eb7d42ceed6755",
+        "label": "\"Still callable in 3.0?\" is what the code in this tree d…"
+      },
+      {
+        "hash": "26fe9aae0fd3a050",
+        "label": "A name that still answers calls and carries a notice nam…"
+      },
+      {
+        "hash": "2573bde7322fe89d",
+        "label": "Retired names and parameters"
+      },
+      {
+        "hash": "7279a231e2df9a96",
+        "label": "What is deliberately not in this document"
+      },
+      {
+        "hash": "2a03813f019a2bfb",
+        "label": "The live tool surface. Counts, byte figures and the modu…"
+      },
+      {
+        "hash": "fe0d8c01da83c1cf",
+        "label": "Registration-gated endpoints. A 403 on a gated path is a…"
+      },
+      {
+        "hash": "6ac69517c0281355",
+        "label": "Deprecations that have not landed. userid on the stats.f…"
+      },
+      {
+        "hash": "f86dacdbf296df32",
+        "label": "See also"
+      },
+      {
+        "hash": "be7269ddd8fce1e7",
+        "label": "[SPEC.md](../SPEC.md) — the full tool contract, includin…"
+      },
+      {
+        "hash": "47a787b0e9bd1c91",
+        "label": "[docs/v3-roadmap.md](v3-roadmap.md) — what else 3.0 chan…"
+      },
+      {
+        "hash": "0412134420e49003",
+        "label": "[docs/non-goals.md](non-goals.md) — the operations that …"
+      },
+      {
+        "hash": "70a008eff9bed410",
+        "label": "[docs/faq.md](faq.md) — auth, Premium, 403s, headless, t…"
+      }
+    ],
     "docs/schema-budgets.md": [
       {
         "hash": "d64bdd5dd35e994a",
@@ -7441,7 +7583,7 @@
     }
   ],
   "provenance": {
-    "head": "2024531eb38617c2557f3070d062c69a4c404453",
+    "head": "80222e1a24918aff5d86f8597d9c15c1882fb6a2",
     "base": "003babf38a0588d97a24c160c463b3ad04c17f49",
     "upstream": "003babf38a0588d97a24c160c463b3ad04c17f49",
     "behind": false
