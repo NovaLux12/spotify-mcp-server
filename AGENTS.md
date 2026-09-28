@@ -530,9 +530,13 @@ ceilings. The same manifest drives startup registration, the census
 attribution, the CI audit, and the per-module table `toolset_report` returns.
 **Tests must not maintain a second registrar list.**
 
-`src/index.ts` iterates the manifest and then runs, in order: the tool naming
-policy, the per-module schema budget gate, annotation application, the tool
-error boundary, and the aggregate surface budget gate. A budget breach fails
+`src/server.ts` registers the manifest in order and then runs, in order: the
+tool naming policy, output-schema publication, the per-module schema budget
+gate, annotation application, task-support stamping, the tool error boundary,
+and the aggregate surface budget gate. Output schemas are published **before**
+either budget gate on purpose — both measure `outputSchema`, so a declaration
+made after them would be free. (`src/index.ts` only calls `buildMcpServer`.)
+A budget breach fails
 server startup, not just CI.
 
 Per module the budget is measured as tool count plus UTF-8 bytes of compact
