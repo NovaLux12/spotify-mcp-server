@@ -3044,6 +3044,7 @@ A trimmed deployment is also reported by `spotify_doctor`: the `surface` row gai
 
 | HTTP Status | Cause | MCP response |
 |---|---|---|
+| 400 Bad Request / 422 Unprocessable Entity | Spotify rejected the request's own arguments — a query parameter name it does not know, a value outside a declared bound, or a body it will not accept | **Not retried** (`RETRYABLE_STATUSES` is 502/503/504 only) and **not** reported as an outage. Classified as `kind: "validation"`, `reason: "validation_failed"`, with the status carried through in `structuredContent.error.status`; `fix` is "Pass values that match the tool schema." **400 and 422 land in the same class** — they are one arm of one classifier, and a server-side defect that split between them by which of the two the edge happened to return would be one defect with two different pieces of advice attached. Note what this row does *not* claim: the public `text` names the class, not Spotify's own `error.message`, so a 400 whose cause is not the arguments is reported as bad arguments |
 | 401 Unauthorized | Token expired | Auto-refresh and retry once; if still 401, return error with setup instructions |
 | 403 Forbidden | OAuth scope missing, deprecated endpoint, regional restriction, or a Premium-only control failure | Surface Spotify's own error message when present; otherwise a hint naming the likely cause categories (never a blanket "requires Premium" claim) |
 | 404 Not Found | Entity doesn't exist | Return descriptive message |
