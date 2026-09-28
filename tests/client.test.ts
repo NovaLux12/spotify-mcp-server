@@ -119,8 +119,24 @@ describe('parseRetryAfter', () => {
   });
 
   it('reads the RFC 850 and asctime HTTP-date forms too', () => {
+    // RFC 850 carries an explicit `GMT`, so the instant is unambiguous and the
+    // expectation can be absolute.
     assert.equal(parseRetryAfter('Sunday, 06-Nov-94 08:50:07 GMT', now), 30);
-    assert.equal(parseRetryAfter('Sun Nov  6 08:50:07 1994', now), 30);
+
+    // asctime carries NO zone at all -- RFC 9110 §5.6.7 lists the form as
+    // obsolete for that reason -- so `Date.parse` resolves it against the
+    // host's local zone and the instant it denotes moves with `TZ`. Measured:
+    // 08:50:07Z under UTC, 18:50:07Z under UTC+14, which turned the hardcoded
+    // 30 into 36030 and reddened the suite for reasons that had nothing to do
+    // with the code under test.
+    //
+    // What the function owes here is the delta against `now`, so the
+    // expectation is derived from the parse that defines the instant rather
+    // than restated from UTC. This is not a tautology: it still fails if the
+    // form stops being read, because an unrecognised instant takes the
+    // `RETRY_AFTER_FALLBACK_SEC` path and returns 1 (measured), not 30.
+    const asctime = 'Sun Nov  6 08:50:07 1994';
+    assert.equal(parseRetryAfter(asctime, Date.parse(asctime) - 30_000), 30);
   });
 
   it('treats a past HTTP-date as retry-now, not a backwards wait', () => {
