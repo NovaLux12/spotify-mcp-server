@@ -1932,7 +1932,7 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('saveddedupe', 'library', lazyModule('./saveddedupe.js', 'registerSavedDedupeTools'), [1, 1438], { scopeKey: 'library' }),
   manifestEntry('podcastsession', 'library', lazyModule('./podcastsession.js', 'registerPodcastSessionTools'), [2, 3427], { scopeKey: 'library' }),
   manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
-  manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1724], { readOnlySafe: true, scopeKey: 'library' }),
+  manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1844], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backupdelete', 'library', lazyModule('./backup_delete.js', 'registerBackupDeleteTools'), [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
   // #1592 — the sibling `delete_backup` was missing. Four writers share
   // SPOTIFY_MCP_BACKUP_DIR and only the library-backup one was reachable, so
