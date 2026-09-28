@@ -50,7 +50,7 @@ import type {
   SpotifyTrack,
   SpotifyVolumeTarget,
 } from '../types/spotify.js';
-import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { isMissingFileRefusal, ownStoreRoots, readLocalFile } from '../paths.js';
 import { textResult, emit } from '../result.js';
 
 type PlayableItem = SpotifyTrack | SpotifyEpisode;
@@ -271,12 +271,27 @@ async function listSessionIds(dir: string): Promise<string[]> {
 }
 
 async function readSession(dir: string, id: string): Promise<ListeningSession | null> {
+  // #623: same guard as the bookmark read above.
+  const file = `${dir}/${sessionPath(id)}`;
+  let raw: string;
   try {
-    // #623: same guard as the bookmark read above.
-    const file = `${dir}/${sessionPath(id)}`;
-    const raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'listening session', target: file });
+    raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'listening session', target: file });
+  } catch (err) {
+    // #1617: an absent session is `null` — that is the caller's "no such
+    // session" answer and it stays. A guard refusal is not absence: it says
+    // the server declined to open a file that IS there, and returning `null`
+    // for it reported a planted FIFO or an over-cap log as "no session". The
+    // sanitiser at `sessionPath` holds, so this is defence in depth — but the
+    // two hazards the sanitiser cannot see (a non-regular file, the size cap)
+    // are exactly the ones it was swallowing, so they now surface.
+    if (!isMissingFileRefusal(err)) throw err;
+    return null;
+  }
+  try {
     return JSON.parse(raw) as ListeningSession;
   } catch {
+    // A corrupt session log is a first-class "cannot read this one", not a
+    // confinement refusal, and the parse error must not be mistaken for one.
     return null;
   }
 }

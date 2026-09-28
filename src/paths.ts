@@ -514,6 +514,45 @@ function refusal(message: string, code?: string): Error {
 }
 
 /**
+ * Is this failure "the file is not there", rather than one of the guard's own
+ * three refusals? (#1617)
+ *
+ * ## Why a caller needs this
+ *
+ * Three caller modules read a store path built from caller-influenced input and
+ * each collapses the failure into "not found" — the honest-sounding answer for a
+ * wrong id, and a *different and misleading* diagnosis for a path that was
+ * refused. The distinction matters: "not found" invites retrying somewhere
+ * else, which is precisely the failure mode the guard exists to prevent. So a
+ * caller must be able to tell the two apart, and it must do so on something
+ * the guard actually guarantees rather than on message text it might reword.
+ *
+ * ## What it reads, and why that is sound
+ *
+ * `refusal()` above attaches the errno to the "no readable file at" branch and
+ * nothing else: the three hazard refusals in `decideInputPath` are thrown as
+ * plain `Error`s with NO `code`. So `code === 'ENOENT' | 'ENOTDIR'` is exactly
+ * the absent case, and its absence is exactly a guard refusal. `readInputFile`
+ * re-checks the cap after the read and throws plain `Error` too, so a file that
+ * grew past the cap between stat and read also lands here rather than reading
+ * as absent.
+ *
+ * A caller that reaches its own code (a `SyntaxError` from `JSON.parse`, say)
+ * has no `code` either, and would be reported as a refusal — which is why the
+ * call sites this serves narrow their `try` to the READ and parse outside it.
+ * That is a real constraint on how it may be used, not an accident:
+ *
+ *   let raw: string;
+ *   try { raw = await readLocalFile({...}); }
+ *   catch (err) { if (!isMissingFileRefusal(err)) throw err; /* absent *\/ ... }
+ *   const parsed = JSON.parse(raw);
+ */
+export function isMissingFileRefusal(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+/**
  * Resolve a caller-supplied read path and refuse anything that leaves the
  * allowed roots, is not a regular file, or is over the size cap — all three
  * decided before a byte is read.
