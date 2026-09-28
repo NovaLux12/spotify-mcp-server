@@ -2129,12 +2129,16 @@
         "label": "A missing schema default does not imply a commit, and it…"
       },
       {
-        "hash": "1f39fbdcdf9d606e",
+        "hash": "7e7ddf74861f94f0",
+        "label": "The tool names are deliberately not enumerated here. Eve…"
+      },
+      {
+        "hash": "316731223f79cc15",
         "label": "1. The schema declares no default and the handler defaul…"
       },
       {
-        "hash": "5415c2b35e7f136c",
-        "label": "1566 re-gated the /me/library removal half and left the …"
+        "hash": "2c668176003913f0",
+        "label": "1566 and #1567 have now closed the /me/library inconsist…"
       },
       {
         "hash": "5cd0f6eb8ab4fb69",
@@ -7369,15 +7373,9 @@
     }
   ],
   "provenance": {
-<<<<<<< HEAD
     "head": "eb10f7471af54522be48cdf406e0c25b6984f4bf",
     "base": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
     "upstream": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
-=======
-    "head": "bd055b98863afcb0330b085b27debead93b1c6c3",
-    "base": "504a96371fa82e71567fa49c983d67a1cce5fce6",
-    "upstream": "504a96371fa82e71567fa49c983d67a1cce5fce6",
->>>>>>> 19b53186 (chore(prose): re-pin #1571's SPEC.md paragraphs after the rebase onto 504a9637)
     "behind": false
   },
   "reanchored": [
@@ -7446,6 +7444,15 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1f39fbdcdf9d606e",
+      "label": "1. The schema declares no default and the handler defaul…",
+      "to": "316731223f79cc15",
+      "toLabel": "1. The schema declares no default and the handler defaul…",
+      "reason": "#1571 review: the class-1 list hand-enumerated members and had already gone stale; the classification is the contract and the measured counts carry the instance",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "1fe8e57ff768b53f",
       "label": "dryrun default in the playback family (v2, #836) — BREAK…",
       "to": "6ff321e0dbe1a3ea",
@@ -7460,6 +7467,15 @@
       "to": "4a35a45eefb0eccc",
       "toLabel": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
       "reason": "rebase onto main after #1541: #585 reworded the hand-maintained 'tsconfig.json essentials' fence in SPEC.md to name the strict flags that measured clean; same fence, new text, old hash gone from the file",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "5415c2b35e7f136c",
+      "label": "1566 re-gated the /me/library removal half and left the …",
+      "to": "2c668176003913f0",
+      "toLabel": "1566 and #1567 have now closed the /me/library inconsist…",
+      "reason": "#1567 moved save_to_library onto DryRunDefault, so the split this paragraph described no longer exists",
       "date": "2026-09-28"
     },
     {
