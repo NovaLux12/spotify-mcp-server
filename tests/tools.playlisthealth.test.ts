@@ -44,6 +44,30 @@ function makeHarness(responder: Responder) {
 const mkTrack = (id: string, overrides: Record<string, unknown> = {}) => ({ added_at: '2026-01-15T10:00:00Z', added_by: { id: 'user1' }, item: { type: 'track' as const, id, name: `Track ${id}`, uri: `spotify:track:${id}`, duration_ms: 200000, artists: [{ name: `Artist ${id}` }], ...overrides }, }) as unknown as PlaylistItemObject;
 const mkUnavailable = () => ({ added_at: '2026-01-15T10:00:00Z', item: null }) as unknown as PlaylistItemObject;
 const mkLocal = () => ({ added_at: '2026-01-15T10:00:00Z', item: { type: 'track', id: 'local1', name: 'Local', uri: 'spotify:local:Artist:Album:Track:123', duration_ms: 180000, artists: [{ name: 'Local Artist' }], is_local: true }, }) as unknown as PlaylistItemObject;
+
+/**
+ * #1555: a harness that stages the case this fix is about — a walk that
+ * returns a correct PREFIX of the playlist plus a verdict saying it stopped.
+ * `makeHarness`'s walk always reports a complete read, so it cannot express
+ * "500 of 900 rows examined", which is the whole defect.
+ */
+function makeCappedHarness(
+  items: PlaylistItemObject[],
+  verdict: { truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null },
+  meta: unknown = null,
+) {
+  const registered: RegisteredTool[] = [];
+  const fakeServer = { tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => z.object(schema).parse(args), handler }); }, registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType).parse(args), handler }); }, } as unknown as McpServer;
+  const client = {
+    async get<T>(path: string): Promise<T | null> { return (meta as T | null); },
+    async getAllPages<T>(): Promise<T[]> { return items as unknown as T[]; },
+    async getAllPagesWithTruncation<T>(): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
+      return { items: items as unknown as T[], ...verdict };
+    },
+    async delete<T>(): Promise<T | null> { return null; },
+  } as unknown as SpotifyClient;
+  return { registered, client, server: fakeServer, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name)!; assert.ok(tool, `tool ${name} registered`); return tool.handler(tool.validate(args)); } };
+}
 let tmpDir = ''; let origDataDir: string | undefined;
 beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'ph-test-')); origDataDir = process.env.SPOTIFY_MCP_DATA_DIR; process.env.SPOTIFY_MCP_DATA_DIR = tmpDir; });
 afterEach(() => { if (origDataDir === undefined) delete process.env.SPOTIFY_MCP_DATA_DIR; else process.env.SPOTIFY_MCP_DATA_DIR = origDataDir; try { rmSync(tmpDir, { recursive: true, force: true }); } catch {} });
@@ -74,6 +98,105 @@ describe('playlist_health_check', () => {
     assert.equal(sc.healthy, false);
   });
   it('empty playlist', async () => { const h = makeHarness(() => []); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' }); const sc = out.structuredContent as { issues: Array<{ type: string }>; healthy: boolean }; assert.equal(sc.healthy, false); assert.ok(sc.issues.some((i) => i.type === 'empty')); });
+
+  // ---- #1555: the capped read ------------------------------------------------
+  // `healthy` is derived entirely from the rows that came back. Under the cap
+  // the rows it did NOT get are exactly the ones that might have carried the
+  // fault, so a clean prefix cannot support `healthy: true`.
+  it('a capped read does not report healthy (#1555)', async () => {
+    const items = [mkTrack('a'), mkTrack('b'), mkTrack('c')];
+    const h = makeCappedHarness(items, { truncated: true, truncatedByCap: true, reportedTotal: 900 });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { healthy: boolean | null; total: number | null; items_examined: number; items_truncated: boolean; truncated_by_cap: boolean; issues: unknown[] };
+    // null, not true: not clean, not faulty, not established.
+    assert.equal(sc.healthy, null);
+    // The size is what Spotify stated (900), not the 3 rows that came back.
+    assert.equal(sc.total, 900);
+    assert.equal(sc.items_examined, 3);
+    assert.equal(sc.items_truncated, true);
+    assert.equal(sc.truncated_by_cap, true);
+    // No fault was found in what WAS examined — that stays true and visible.
+    assert.equal(sc.issues.length, 0);
+  });
+
+  it('a capped read that DID find issues reports false, and says the audit was bounded (#1555)', async () => {
+    const items = [mkTrack('a'), mkUnavailable(), mkTrack('c')];
+    const h = makeCappedHarness(items, { truncated: true, truncatedByCap: true, reportedTotal: 900 });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { healthy: boolean | null; total: number | null; items_examined: number };
+    // A found fault is a found fault whatever the cap did.
+    assert.equal(sc.healthy, false);
+    assert.equal(sc.total, 900);
+    assert.match(out.content[0].text, /audit bounded: 3 of 900/);
+  });
+
+  it('prose does not claim health it could not establish (#1555)', async () => {
+    const items = [mkTrack('a'), mkTrack('b')];
+    const h = makeCappedHarness(items, { truncated: true, truncatedByCap: true, reportedTotal: 900 });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    // The old string was "is healthy: 2 tracks, no issues" — a 2-row prefix
+    // wearing a whole playlist's name.
+    assert.doesNotMatch(out.content[0].text, /is healthy/);
+    assert.match(out.content[0].text, /health NOT established/);
+    assert.match(out.content[0].text, /2 row\(s\) examined/);
+    assert.match(out.content[0].text, /SPOTIFY_MCP_FETCH_ALL_CAP/);
+  });
+
+  it('a complete read still reports healthy true (#1555 — the fix narrows nothing)', async () => {
+    const items = [mkTrack('a'), mkTrack('b'), mkTrack('c')];
+    const h = makeCappedHarness(items, { truncated: false, truncatedByCap: false, reportedTotal: 3 });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { healthy: boolean | null; total: number | null; items_truncated: boolean };
+    assert.equal(sc.healthy, true);
+    assert.equal(sc.total, 3);
+    assert.equal(sc.items_truncated, false);
+    assert.match(out.content[0].text, /is healthy: 3 track\(s\), no issues/);
+  });
+
+  it('a truncated read that is short WITHOUT the cap says so (#718 — the two caps differ)', async () => {
+    // The walk ended on a short page while the server's total still counts
+    // more. Blaming the cap here would name a ceiling that never bound it.
+    const items = [mkTrack('a'), mkTrack('b')];
+    const h = makeCappedHarness(items, { truncated: true, truncatedByCap: false, reportedTotal: 900 });
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { healthy: boolean | null; truncated_by_cap: boolean };
+    assert.equal(sc.healthy, null);
+    assert.equal(sc.truncated_by_cap, false);
+    assert.match(out.content[0].text, /ended short of the end/);
+    assert.doesNotMatch(out.content[0].text, /cap ended the read/);
+  });
+
+  it('total is null, not 0, when Spotify states no count (#1555)', async () => {
+    const items = [mkTrack('a'), mkTrack('b')];
+    // No walk total and no metadata: the length is unknown, not zero and not 2.
+    const h = makeCappedHarness(items, { truncated: false, truncatedByCap: false, reportedTotal: null }, null);
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { healthy: boolean | null; total: number | null; items_examined: number };
+    assert.equal(sc.total, null);
+    assert.equal(sc.items_examined, 2);
+    // A complete walk is still a complete walk even with no stated total.
+    assert.equal(sc.healthy, true);
+    assert.match(out.content[0].text, /length unknown \(2 row\(s\) examined\)/);
+  });
+
+  it('falls back to the playlist object when the walk states no total (#1555)', async () => {
+    const items = [mkTrack('a'), mkTrack('b')];
+    const h = makeCappedHarness(
+      items,
+      { truncated: false, truncatedByCap: false, reportedTotal: null },
+      { items: { total: 640 } },
+    );
+    registerPlaylistHealthTools(h.server as unknown as McpServer, h.client);
+    const out = await h.invoke('playlist_health_check', { playlist_id: 'pl1' });
+    const sc = out.structuredContent as { total: number | null };
+    assert.equal(sc.total, 640);
+  });
 });
 describe('get_playlist_followers', () => {
   it('returns follower count', async () => { const h = makeHarness((path) => { if (path === '/playlists/pl1') return { id: 'pl1', name: 'My Mix', followers: { total: 42 }, owner: { id: 'owner1', display_name: 'Owner' } }; return null; }); registerPlaylistHealthTools(h.server as unknown as McpServer, h.client); const out = await h.invoke('get_playlist_followers', { playlist_id: 'pl1' }); const sc = out.structuredContent as { followers_total: number }; assert.equal(sc.followers_total, 42); });

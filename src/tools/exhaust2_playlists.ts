@@ -61,8 +61,11 @@ import type {
   SpotifyAlbumSimple,
   SpotifyEpisode,
   SpotifyPlaylistSimple,
+  SpotifyPlaylistPage,
   SpotifyTrack,
+  PlaylistWalkVerdict,
 } from '../types/spotify.js';
+import { playlistTotalFromWalk } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 import { positionSchema } from '../positionbase.js';
 import { textResult, emit, type ToolResult } from '../result.js';
@@ -126,16 +129,39 @@ function normalizeTrackRef(ref: string): string {
   return ref.trim();
 }
 
-/** Page every item of a playlist (playlist order), capped by the fetch-all cap.
+/** Page every item of a playlist (playlist order), capped by the fetch-all cap,
+ *  and return the walk's truncation verdict beside the rows (#1555).
  *  `market` is forwarded on the /items query string so album release dates
- *  resolve for rows unavailable in the default market (#874). */
-async function fetchAllItems(client: SpotifyClient, ref: string, market?: string): Promise<PlaylistItemObject[]> {
+ *  resolve for rows unavailable in the default market (#874).
+ *
+ *  This is the ONE walk these tools make; `fetchAllItems` below is its
+ *  rows-only view for the callers that never report a size. The verdict rides
+ *  with the rows rather than being stored on the client, because the MCP SDK
+ *  dispatches `tools/call` without awaiting and a stored flag would answer
+ *  with whichever walk finished last (#864). */
+async function fetchAllItemsVerdict(
+  client: SpotifyClient,
+  ref: string,
+  market?: string,
+): Promise<{ items: PlaylistItemObject[] } & PlaylistWalkVerdict> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
-  return client.getAllPages<PlaylistItemObject>(
+  const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
     `/playlists/${id}/items`,
     { limit: '100', ...(market ? { market } : {}) },
     { maxItems: getConfig().fetchAllCap },
   );
+  return {
+    items: walk.items,
+    fetched: walk.items.length,
+    truncated: walk.truncated,
+    truncatedByCap: walk.truncatedByCap,
+    reportedTotal: walk.reportedTotal,
+  };
+}
+
+/** The rows of `fetchAllItemsVerdict`, for callers that do not report a size. */
+async function fetchAllItems(client: SpotifyClient, ref: string, market?: string): Promise<PlaylistItemObject[]> {
+  return (await fetchAllItemsVerdict(client, ref, market)).items;
 }
 
 const isTrack = (p: SpotifyTrack | SpotifyEpisode | null | undefined): p is SpotifyTrack =>
@@ -1408,11 +1434,20 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
     async (args) => {
       const rf = args.response_format;
       const id = normalizePlaylistRef(args.playlist_id);
-      const meta = await client.get<{ id?: string; name?: string; items?: { total?: number } }>(
+      // #1555: the inline type modelled only the deprecated `tracks` page, so
+      // `items.total` — the canonical one — was invisible to the compiler and
+      // this read that fetched it never read it. `SpotifyPlaylistPage` is both
+      // spellings. Same correction #1533 made to `export_playlist_json`.
+      const meta = await client.get<{ id?: string; name?: string } & SpotifyPlaylistPage>(
         `/playlists/${encodeURIComponent(id)}`,
       );
       if (!meta) throw new Error(`Playlist "${args.playlist_id}" not found`);
-      const items = await fetchAllItems(client, id);
+      // #1555: the read that feeds this report is capped by fetchAllCap, so its
+      // row count is not the playlist's size. Carry the verdict and take the
+      // size from what Spotify states.
+      const walk = await fetchAllItemsVerdict(client, id);
+      const items = walk.items;
+      const totalItems = playlistTotalFromWalk(walk, meta);
       const now = Date.now();
       const ages = items
         .map((e) => daysBetween(e.added_at ?? '', now))
@@ -1438,19 +1473,39 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
         ok: true,
         playlist: id,
         playlist_name: meta.name ?? null,
-        items: items.length,
+        // #1555: the playlist's size as Spotify states it, which is `null`
+        // rather than 0 when Spotify states none. The `items.length` this
+        // replaces published a number bounded by fetchAllCap (500 by default)
+        // under the name of the playlist's length, with nothing marking it as
+        // capped. `items_examined` is the walked count, named as what it is.
+        items: totalItems,
+        items_examined: items.length,
+        items_truncated: walk.truncated,
+        truncated_by_cap: walk.truncatedByCap,
         days_since_latest: latestAge,
         median_age_days: medianAge,
         threshold_days: threshold,
         grade,
+        // The ages were read off the walked rows, so a capped read bounds the
+        // grade too — the missing rows are exactly the ones whose age might
+        // have moved it. Named rather than left implied (#864).
+        grade_bounded_by_walk: walk.truncated,
         suggestions,
       };
       if (args.response_format === 'json') return emit(rf, '', payload);
+      // "unknown" rather than 0 when Spotify stated no count, and the walked
+      // count is disclosed beside it so a bounded read is visible in prose too.
+      const sizePhrase = totalItems === null
+        ? `length unknown (${items.length} item(s) examined)`
+        : `${totalItems} item(s)`;
+      const boundedNote = walk.truncated
+        ? ` — ages read from the first ${items.length} examined; ${walk.truncatedByCap ? 'the fetch-all cap ended the read' : 'the read ended short of the end'}`
+        : '';
       return emit(
         rf,
         [
           `"${meta.name ?? id}" staleness: ${grade.toUpperCase()}`,
-          `  ${items.length} item(s); latest save ${latestAge ?? '?'} day(s) ago; median save ${medianAge ?? '?'} day(s) old (threshold ${threshold}).`,
+          `  ${sizePhrase}; latest save ${latestAge ?? '?'} day(s) ago; median save ${medianAge ?? '?'} day(s) old (threshold ${threshold}).${boundedNote}`,
           `  Suggestions: ${suggestions.join(' | ')}`,
         ].join('\n'),
         payload,

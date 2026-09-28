@@ -21,6 +21,7 @@ interface FakeClient {
   post: (path: string, body?: unknown) => Promise<unknown>;
   put: (path: string, body?: unknown) => Promise<unknown>;
   getAllPages: (path: string, params?: Record<string, unknown>, opts?: unknown) => Promise<unknown[]>;
+  getAllPagesWithTruncation: (path: string, params?: Record<string, unknown>, opts?: unknown) => Promise<{ items: unknown[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }>;
   calls: Call[];
 }
 
@@ -78,9 +79,17 @@ type RegistrarClient = SpotifyClient & Pick<FakeClient, 'calls'>;
 
 /**
  * Fake client mirroring the surface exhaust2_playlists touches:
- * get (metadata), getAllPages (playlist items), post/put (mutations, logged).
+ * get (metadata), getAllPages / getAllPagesWithTruncation (playlist items),
+ * post/put (mutations, logged).
+ *
+ * `verdicts` stages what a walk REPORTED about itself, independently of the
+ * rows it hands back — the capped-read case #1555 is about is a walk that
+ * returns a correct prefix plus a verdict saying it is a prefix.
  */
-function makeFakeClient(routes: Record<string, unknown>): RegistrarClient {
+function makeFakeClient(
+  routes: Record<string, unknown>,
+  verdicts: Record<string, { truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> = {},
+): RegistrarClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
@@ -110,6 +119,22 @@ function makeFakeClient(routes: Record<string, unknown>): RegistrarClient {
       const out = routes[path];
       if (out instanceof Error) throw out;
       return Array.isArray(out) ? out : [];
+    },
+    // #1555: the verdict a capped walk returns. `verdicts[path]` lets a test
+    // stage the case that matters — a walk that stopped short — separately
+    // from the rows it returned, which is the whole distinction under test.
+    getAllPagesWithTruncation: async (path: string) => {
+      calls.push({ method: 'GET', path, params: { paged: true } });
+      const out = routes[path];
+      if (out instanceof Error) throw out;
+      const rows = Array.isArray(out) ? out : [];
+      const staged = verdicts[path];
+      return {
+        items: rows,
+        truncated: staged?.truncated ?? false,
+        truncatedByCap: staged?.truncatedByCap ?? false,
+        reportedTotal: staged?.reportedTotal ?? null,
+      };
     },
   };
   return self.getAllPages.bind(self) && Object.assign(self.getAllPages, { call: null }), self as unknown as RegistrarClient;
@@ -180,11 +205,138 @@ test('playlist_staleness_score grades a stale playlist and suggests refreshes', 
     const p = r.structuredContent as Record<string, unknown>;
     assert.equal(p.ok, true);
     assert.equal(p.playlist, 'mix1');
-    assert.equal(p.items, 5);
+    // #1555: this route states no total, so `items` is null — a length Spotify
+    // did not state is not the walked row count. `items_examined` is the 5.
+    assert.equal(p.items, null);
+    assert.equal(p.items_examined, 5);
+    assert.equal(p.items_truncated, false);
+    assert.equal(p.truncated_by_cap, false);
     // Latest save is 5 days ago -> fresh grade, no refresh push.
     assert.equal(p.days_since_latest, 5);
     assert.equal(p.grade, 'fresh');
     assert.deepEqual(p.suggestions, ['no action needed — ride the momentum']);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+// #1555: the walk is capped by SPOTIFY_MCP_FETCH_ALL_CAP, so its row count is
+// not the playlist's size. These assert the size comes from what Spotify
+// STATES, and that a capped read discloses itself.
+test('playlist_staleness_score reports the stated total, not the walked row count (#1555)', async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(
+      makeServer(registered),
+      makeFakeClient(PLAYLIST_ROUTE, {
+        // 900 rows exist; the walk returned the 5 the route holds and stopped.
+        '/playlists/mix1/items': { truncated: true, truncatedByCap: true, reportedTotal: 900 },
+      }),
+    );
+    const t = find(registered, 'playlist_staleness_score');
+    const p = (await t.handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' }))
+      .structuredContent as Record<string, unknown>;
+    // The 900, not the 5 the walk managed to collect.
+    assert.equal(p.items, 900);
+    assert.equal(p.items_examined, 5);
+    assert.equal(p.items_truncated, true);
+    assert.equal(p.truncated_by_cap, true);
+    // The grade was read off a bounded sample; that is disclosed, not implied.
+    assert.equal(p.grade_bounded_by_walk, true);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('playlist_staleness_score prefers the walk reportedTotal over the metadata read (#1555)', async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    // The two sources disagree. The walk read the /items page this tool
+    // actually scored, so its number is the one that cannot be stale.
+    const routes = {
+      ...PLAYLIST_ROUTE,
+      '/playlists/mix1': { id: 'mix1', name: 'Friday Mix', items: { total: 111 } },
+    };
+    registerExhaust2PlaylistsTools(
+      makeServer(registered),
+      makeFakeClient(routes, {
+        '/playlists/mix1/items': { truncated: true, truncatedByCap: true, reportedTotal: 900 },
+      }),
+    );
+    const t = find(registered, 'playlist_staleness_score');
+    const p = (await t.handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' }))
+      .structuredContent as Record<string, unknown>;
+    assert.equal(p.items, 900);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('playlist_staleness_score falls back to items.total, then tracks.total (#1555)', async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    // No walk verdict, so the metadata read decides. `items.total` is canonical.
+    const canonical: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(
+      makeServer(canonical),
+      makeFakeClient({ ...PLAYLIST_ROUTE, '/playlists/mix1': { id: 'mix1', name: 'Friday Mix', items: { total: 742 } } }),
+    );
+    const p1 = (await find(canonical, 'playlist_staleness_score')
+      .handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' })).structuredContent as Record<string, unknown>;
+    assert.equal(p1.items, 742);
+
+    // Only the pre-Feb-2026 spelling present: still a number, not null.
+    const legacy: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(
+      makeServer(legacy),
+      makeFakeClient({ ...PLAYLIST_ROUTE, '/playlists/mix1': { id: 'mix1', name: 'Friday Mix', tracks: { total: 88 } } }),
+    );
+    const p2 = (await find(legacy, 'playlist_staleness_score')
+      .handler({ playlist_id: 'mix1', dry_run: true, response_format: 'json' })).structuredContent as Record<string, unknown>;
+    assert.equal(p2.items, 88);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('playlist_staleness_score prose says a bounded read was bounded (#1555)', async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(
+      makeServer(registered),
+      makeFakeClient(PLAYLIST_ROUTE, {
+        '/playlists/mix1/items': { truncated: true, truncatedByCap: true, reportedTotal: 900 },
+      }),
+    );
+    const t = find(registered, 'playlist_staleness_score');
+    const prose = text(await t.handler({ playlist_id: 'mix1', dry_run: true }));
+    // The size, and the fact that the ages came from a prefix of it.
+    assert.match(prose, /900 item\(s\)/);
+    assert.match(prose, /first 5 examined/);
+    assert.match(prose, /cap ended the read/);
+  } finally {
+    Date.now = originalDateNow;
+  }
+});
+
+test('playlist_staleness_score prose says "unknown" rather than printing a count it did not read (#1555)', async () => {
+  const originalDateNow = Date.now;
+  Date.now = () => NOW;
+  try {
+    const registered: RegisteredTool[] = [];
+    registerExhaust2PlaylistsTools(makeServer(registered), makeFakeClient(PLAYLIST_ROUTE));
+    const t = find(registered, 'playlist_staleness_score');
+    const prose = text(await t.handler({ playlist_id: 'mix1', dry_run: true }));
+    // Not "5 item(s)" — the walk's row count wearing the playlist's name.
+    assert.match(prose, /length unknown \(5 item\(s\) examined\)/);
+    assert.doesNotMatch(prose, /^\s*5 item\(s\);/m);
   } finally {
     Date.now = originalDateNow;
   }
@@ -289,6 +441,15 @@ function makeMarketAwareClient(
       calls.push({ method: 'GET', path, params: { ...(params ?? {}) } });
       const market = (params?.market as string | undefined) ?? '';
       return byMarket[market] ?? [];
+    },
+    // #1555: the playlist walk goes through the verdict-returning method now,
+    // so this fake needs it too. It reports a complete read of whatever rows
+    // it serves, which is what these market tests mean to stage.
+    getAllPagesWithTruncation: async (path: string, params?: Record<string, unknown>) => {
+      calls.push({ method: 'GET', path, params: { ...(params ?? {}) } });
+      const market = (params?.market as string | undefined) ?? '';
+      const rows = byMarket[market] ?? [];
+      return { items: rows, truncated: false, truncatedByCap: false, reportedTotal: rows.length };
     },
   };
   return self as unknown as RegistrarClient;
