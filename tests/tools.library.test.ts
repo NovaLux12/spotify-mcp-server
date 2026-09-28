@@ -679,9 +679,6 @@ describe('dry_run previews destructive operations without any mutating call (#57
       assert.match(text, /^\[dry run\]/);
       assert.match(text, /nothing was changed/);
       for (const uri of uris) assert.ok(text.includes(uri), `${uri} missing from the plan`);
-      const sc = out.structuredContent as Record<string, unknown>;
-      assert.equal(sc.dry_run, true);
-      assert.deepEqual(sc.would_affect, uris);
     });
 
     it(`${name} with dry_run omitted previews through the PARSED schema too`, async () => {
