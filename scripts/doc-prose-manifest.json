@@ -4741,7 +4741,7 @@
         "label": "Spotify API errors → MCP tool errors"
       },
       {
-        "hash": "4d13e6ab713a8b3a",
+        "hash": "88e17d7ba9fcdf20",
         "label": "| HTTP Status | Cause | MCP response | |---|---|---| | 4…"
       },
       {
@@ -7583,7 +7583,7 @@
     }
   ],
   "provenance": {
-    "head": "80222e1a24918aff5d86f8597d9c15c1882fb6a2",
+    "head": "f0f81b24a84a33fcc73086cf1677aa199e4af2c5",
     "base": "003babf38a0588d97a24c160c463b3ad04c17f49",
     "upstream": "003babf38a0588d97a24c160c463b3ad04c17f49",
     "behind": false
@@ -7911,6 +7911,15 @@
       "to": "c395232359bff431",
       "toLabel": "Response byte cap (#895) — responseformat: 'json' and st…",
       "reason": "clean_backup_artifacts registers the 71st module, so this paragraph's registry figures move from 559/128/146,360 to 560/129/148,258 (#1592)",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "4d13e6ab713a8b3a",
+      "label": "| HTTP Status | Cause | MCP response | |---|---|---| | 4…",
+      "to": "88e17d7ba9fcdf20",
+      "toLabel": "| HTTP Status | Cause | MCP response | |---|---|---| | 4…",
+      "reason": "The 400/422 row added for #1612 lands at the top of the HTTP status table, so the pinned unit is a reword of the same table rather than a deletion. The classifier arm itself is unchanged: one arm, one kind, one reason, one fix — the row documents it, and tests/errors.contract.test.ts asserts 400 and 422 cannot drift apart.",
       "date": "2026-09-28"
     },
     {
