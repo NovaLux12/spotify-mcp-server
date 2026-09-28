@@ -4911,7 +4911,7 @@
         "label": "Summary"
       },
       {
-        "hash": "1987a90e548e74ae",
+        "hash": "a7437f9644cd4edf",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5031,7 +5031,7 @@
         "label": "Local files: reads and writes are confined"
       },
       {
-        "hash": "546e404bd6606c08",
+        "hash": "6555776743433e73",
         "label": "Every tool that writes a local file resolves its destina…"
       },
       {
@@ -5299,7 +5299,7 @@
         "label": "Mutation receipts"
       },
       {
-        "hash": "9d265001651b66d2",
+        "hash": "06d6e0e506353873",
         "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…"
       },
       {
@@ -5319,8 +5319,12 @@
         "label": "An unusable value never becomes an unbounded window. Emp…"
       },
       {
-        "hash": "0e011f6278293caf",
+        "hash": "8e9e67b89df0b0d0",
         "label": "To remove one snapshot ahead of its window, use the dele…"
+      },
+      {
+        "hash": "0ac3978d664f6bcc",
+        "label": "Toolsets and registration keys"
       },
       {
         "hash": "bac6dcbdc7967565",
@@ -5515,8 +5519,8 @@
         "label": "A sidecar that exists but cannot be read is never reset.…"
       },
       {
-        "hash": "ba476774cb7634f6",
-        "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist, porta…"
+        "hash": "b184356b04f402b4",
+        "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…"
       },
       {
         "hash": "0b063ab9919388e9",
@@ -7557,6 +7561,51 @@
       "to": "232a046a29a1468e",
       "toLabel": "Returns: playlist name, owner, track count, ID, URI; plu…",
       "reason": "#1556: get_user_playlists_by_id substituted 0 for a count Spotify never stated; the paragraph now points at the shared rendering",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "0e011f6278293caf",
+      "label": "To remove one snapshot ahead of its window, use the dele…",
+      "to": "8e9e67b89df0b0d0",
+      "toLabel": "To remove one snapshot ahead of its window, use the dele…",
+      "reason": "#1580 corrected the delete_backup sentence; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "1987a90e548e74ae",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "a7437f9644cd4edf",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1580 corrected a default in the env-var table; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "546e404bd6606c08",
+      "label": "Every tool that writes a local file resolves its destina…",
+      "to": "6555776743433e73",
+      "toLabel": "Every tool that writes a local file resolves its destina…",
+      "reason": "#1580 corrected the write-root paragraph; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "9d265001651b66d2",
+      "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
+      "to": "06d6e0e506353873",
+      "toLabel": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
+      "reason": "#1580 corrected the receipts paragraph; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "ba476774cb7634f6",
+      "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist, porta…",
+      "to": "b184356b04f402b4",
+      "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
+      "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
       "date": "2026-09-28"
     }
   ]
