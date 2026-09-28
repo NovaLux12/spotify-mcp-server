@@ -50,23 +50,22 @@ const mkLocal = () => ({ added_at: '2026-01-15T10:00:00Z', item: { type: 'track'
  * returns a correct PREFIX of the playlist plus a verdict saying it stopped.
  * `makeHarness`'s walk always reports a complete read, so it cannot express
  * "500 of 900 rows examined", which is the whole defect.
+ *
+ * Built by overriding the walk on `makeHarness`'s client rather than by
+ * re-declaring the fake server: a second copy of that object literal is a
+ * second copy of its type error, and the budget gate counts them.
  */
 function makeCappedHarness(
   items: PlaylistItemObject[],
   verdict: { truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null },
   meta: unknown = null,
 ) {
-  const registered: RegisteredTool[] = [];
-  const fakeServer = { tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => z.object(schema).parse(args), handler }); }, registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) { registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType).parse(args), handler }); }, } as unknown as McpServer;
-  const client = {
-    async get<T>(path: string): Promise<T | null> { return (meta as T | null); },
-    async getAllPages<T>(): Promise<T[]> { return items as unknown as T[]; },
-    async getAllPagesWithTruncation<T>(): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> {
-      return { items: items as unknown as T[], ...verdict };
-    },
-    async delete<T>(): Promise<T | null> { return null; },
-  } as unknown as SpotifyClient;
-  return { registered, client, server: fakeServer, invoke: async (name: string, args: Record<string, unknown>) => { const tool = registered.find((t) => t.name === name)!; assert.ok(tool, `tool ${name} registered`); return tool.handler(tool.validate(args)); } };
+  const base = makeHarness((path) => (path.endsWith('/items') ? items : meta));
+  const client = base.client as unknown as Record<string, unknown>;
+  client.getAllPagesWithTruncation = async <T>(): Promise<{ items: T[]; truncated: boolean; truncatedByCap: boolean; reportedTotal: number | null }> => ({
+    items: items as unknown as T[], ...verdict,
+  });
+  return { ...base, client: base.client };
 }
 let tmpDir = ''; let origDataDir: string | undefined;
 beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'ph-test-')); origDataDir = process.env.SPOTIFY_MCP_DATA_DIR; process.env.SPOTIFY_MCP_DATA_DIR = tmpDir; });
