@@ -268,13 +268,23 @@ gh release view "$TAG" --json tagName,isDraft,isPrerelease,url
 release. If release-please did not open a PR, inspect the **Release Please**
 run on the latest `main` push before creating a tag manually.
 
-### 2. Publish the tag
+### 2. Watch the publish run
 
-`release.yml` creates the tag and then **dispatches `publish.yml` itself**:
+Merging the release PR is the last thing you do. `release.yml` creates the tag
+and then **dispatches `publish.yml` itself**, so this step has no command to
+run. The line it runs, quoted from `.github/workflows/release.yml`, is:
 
-```bash
+```text
 gh workflow run publish.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_TAG" -f tag="$RELEASE_TAG"
 ```
+
+That is the release workflow's own step, quoted to document the mechanism — it
+is not a maintainer step, and pasting it does not work. `$RELEASE_TAG` is bound
+in that step's `env:` block from the release-please action's `tag_name` output
+and `$GITHUB_REPOSITORY` is a GitHub-provided default; neither is set in your
+shell, so both expand to the empty string. `gh` will not complain about the
+empty values on its own, but `publish.yml` requires the run to be on a `v*` tag
+ref whose `tag` input matches that ref exactly, so nothing publishes.
 
 The dispatch is not a workaround, it is the mechanism. release-please creates
 the tag with the repository's `GITHUB_TOKEN`, and a tag pushed with
