@@ -6339,8 +6339,8 @@
         "label": "Destructive bulk writes fail closed. If the client canno…"
       },
       {
-        "hash": "b23656edb5cc063c",
-        "label": "The 2.0 playlist input spellings are gone. They were cal…"
+        "hash": "4204f6a63cdbb01f",
+        "label": "The 2.0 playlist input spellings go away in 3.0. They ar…"
       },
       {
         "hash": "0a8f8922f94eb354",
@@ -7377,9 +7377,9 @@
     }
   ],
   "provenance": {
-    "head": "e4533ec3d985926d36eabd2dceb092215f3bf616",
-    "base": "2c4a507e018f5cd9fba53710dddfeb41850f402c",
-    "upstream": "2c4a507e018f5cd9fba53710dddfeb41850f402c",
+    "head": "f026d3e5a1d70bffcb510ad12d42d5ae7f842a8f",
+    "base": "2e4276a414fa96ef5f8f94cb6bc37e607153756b",
+    "upstream": "2e4276a414fa96ef5f8f94cb6bc37e607153756b",
     "behind": false
   },
   "reanchored": [
@@ -7543,6 +7543,15 @@
       "to": "7fadc3618dfe8d18",
       "toLabel": "Merging the release PR is the last human step. The tag i…",
       "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/v3-roadmap.md",
+      "hash": "b23656edb5cc063c",
+      "label": "The 2.0 playlist input spellings are gone. They were cal…",
+      "to": "4204f6a63cdbb01f",
+      "toLabel": "The 2.0 playlist input spellings go away in 3.0. They ar…",
+      "reason": "#1573: the 2.0 playlist input spellings are withdrawn in 3.0, not already gone; the paragraph now says which line they are callable through",
       "date": "2026-09-28"
     },
     {

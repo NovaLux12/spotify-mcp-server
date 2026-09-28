@@ -99,10 +99,10 @@ release exists to cure.
   confirmation, the server refuses. It does not proceed hopefully. For
   headless automation there is one deliberate bypass, and its value has to be
   spelled exactly.
-- **The 2.0 playlist input spellings are gone.** They were callable through
-  2.0 and withdrawn in 3.0. Sending one now is refused before any Spotify
-  request, with an error that names both what you sent and what to send
-  instead. The README's upgrade section has the per-tool migration table,
+- **The 2.0 playlist input spellings go away in 3.0.** They are still callable
+  through the 2.1 line; sending one after the upgrade is refused before any
+  Spotify request, with an error that names both what you sent and what to
+  send instead. The README's upgrade section has the per-tool migration table,
   because each tool declared exactly one alias pair and there is no single
   spelling that was right everywhere.
 - **Unknown arguments are rejected** rather than ignored, so a renamed
