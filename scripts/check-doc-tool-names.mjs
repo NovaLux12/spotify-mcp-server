@@ -197,6 +197,22 @@ const parameterAllowlist = new Set([
   'response_cap', 'response_capped', 'cap_bytes', 'actual_bytes',
   'retained_fields', 'omitted_fields', 'omitted_field_count',
   'removed_uris', 'scan_cap', 'base_playlist', 'target_playlist',
+  // #1592: clean_backup_artifacts' result shape, which SPEC.md §5.5 names to
+  // keep the two byte figures from being read as one number.
+  // `directory_bytes` and `library_backup_bytes` are the two halves of the
+  // same directory — one an lstat measurement of every regular file, one the
+  // storeEnvelope figure list_backups publishes — and `dir_bytes_caveat` is
+  // the sentence saying so, carried in the payload rather than only in prose.
+  // `not_regular` names the symlink/directory/device entries the tool
+  // declined to touch. The three `reason` values are what the tool returns
+  // instead of a deletion: `not_a_backup` is delete_backup's own pre-existing
+  // refusal, named in SPEC.md to say it was NOT widened, and the other two
+  // are clean_backup_artifacts' refusals. `pre_images` and
+  // `migrated_bookmarks` are two of the five values of the `family`
+  // parameter, not parameters themselves.
+  'directory_bytes', 'library_backup_bytes', 'dir_bytes_caveat',
+  'not_regular', 'not_a_backup', 'is_a_library_backup',
+  'not_a_cleanup_target', 'pre_images', 'migrated_bookmarks',
   // #724: the whats_new watermark is per kind, so these are the on-disk key
   // the sidecar carries and the two structuredContent keys a call uses to say
   // where its cutoff came from and that it read a pre-2.2 flat file. They name
