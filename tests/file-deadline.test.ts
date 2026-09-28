@@ -74,7 +74,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -836,4 +836,105 @@ describe('the sandbox is still airtight (#1365)', () => {
     const { home } = hermeticServerEnv({}, 'breach-sandbox');
     assert.ok(home.startsWith(HERMETIC_ROOT), `every child home must be disposable, got ${home}`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1569 — the bound is fleet-wide, not three files
+// ---------------------------------------------------------------------------
+
+/**
+ * A test file is *spawn-capable* when its code spawns an **asynchronous** child.
+ *
+ * Read from **stripped** code, so a file cannot qualify by mentioning
+ * `StdioJsonRpcChild.spawn` in a comment — the AGENTS.md §6 trap one level
+ * down, where an assertion ends up checking its own explanation.
+ *
+ * `execFileSync` and `spawnSync` are deliberately **not** in this set. A
+ * synchronous child holds the event loop for the whole of its life and releases
+ * its pipes before the call returns, so it cannot leave an undrained
+ * `PipeWrap` behind and cannot produce this wedge. The helper's own header says
+ * the same thing from the other direction — a timer cannot bound a synchronous
+ * child, which is why `execFileBoundedSync` bounds those by their own
+ * `timeout`/`killSignal` instead. Including them here would make the guard
+ * claim a coverage it does not have.
+ */
+const SPAWN_CAPABLE =
+  /StdioJsonRpcChild\.spawn|spawn\(process\.execPath|execFile\(|fork\(/;
+
+const SPAWN_CAPABLE_EXEMPT = new Set(['file-deadline.test.ts']);
+
+function spawnCapableFiles(): string[] {
+  const dir = join(import.meta.dirname);
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.test.ts') && name !== 'file-deadline.test.ts')
+    .filter((name) => SPAWN_CAPABLE.test(stripCommentsAndLiterals(readFileSync(join(dir, name), 'utf8'))))
+    .sort();
+}
+
+describe('every spawn-capable file is bounded, not just three of them (#1569)', () => {
+  it('classifies a real population, and a file that spawns nothing', () => {
+    // Anti-vacuity. A predicate that matched nothing would make the guard below
+    // pass for the wrong reason — which is worse than not having the guard,
+    // because it reads as coverage.
+    const files = spawnCapableFiles();
+    // 15 as of #1569. The floor is well under that on purpose: it is there to
+    // catch the predicate silently matching nothing, not to pin the list, which
+    // should grow as files are added. The two membership assertions below are
+    // what make the population mean something.
+    assert.ok(files.length >= 12, `expected the spawn-capable population to be real, got ${files.length}: ${files.join(', ')}`);
+    assert.ok(
+      files.includes('server-instructions.test.ts'),
+      'the file the #1569 CI log parks on must be in the population, or the guard is not looking at it',
+    );
+    assert.ok(
+      !files.includes('tools.search.test.ts'),
+      'a file that spawns nothing must not be swept into the population',
+    );
+  });
+
+  it('exempts exactly one file, and names why', () => {
+    // `file-deadline.test.ts` is the mechanism's own test: it spawns
+    // deliberately-leaking probes inside sandboxes and asserts on their output,
+    // so bounding *it* from a module-scope call would be meaningless. That is a
+    // real reason and it is the only one — so the exemption list is itself
+    // asserted, and a second exemption added later fails here first.
+    const dir = join(import.meta.dirname);
+    const all = readdirSync(dir).filter((n) => n.endsWith('.test.ts'));
+    const spawners = all.filter((name) =>
+      SPAWN_CAPABLE.test(stripCommentsAndLiterals(readFileSync(join(dir, name), 'utf8'))));
+    const exempt = spawners.filter((name) => SPAWN_CAPABLE_EXEMPT.has(name));
+    assert.deepEqual(
+      exempt,
+      ['file-deadline.test.ts'],
+      'only the deadline helper\'s own test may be exempt, and the list must not grow silently',
+    );
+  });
+
+  for (const name of spawnCapableFiles()) {
+    it(`bounds ${name}`, () => {
+      const code = stripCommentsAndLiterals(readFileSync(join(import.meta.dirname, name), 'utf8'));
+      const arm = code.indexOf('armFileDeadline(');
+      assert.notEqual(arm, -1, `${name} spawns a child process and must arm a whole-file deadline. `
+        + 'A child whose tree still holds an inherited stdio write end keeps this file\'s PipeWrap '
+        + 'registered and its loop undrainable — silent, unbounded, and killed by timeout-minutes '
+        + 'with nothing in the log. See helpers/file-deadline.ts and #1569.');
+      // Word-boundary anchored, and deliberately not `indexOf('it(')`. A
+      // substring search for `it(` also matches inside `exit(`, `wait(`,
+      // `split(` and `submit(`, so the first draft of this guard reported a
+      // placement failure in a file that was armed correctly — a red for the
+      // wrong reason, which is the failure mode §6 is about. `RegExp.exec`
+      // over the stripped code finds the real call sites.
+      const firstHook = (() => {
+        const m = /\b(?:before|beforeEach|after|afterEach|describe|test|it)\s*\(/.exec(code);
+        return m ? m.index : -1;
+      })();
+      assert.notEqual(firstHook, -1, `${name} registers no hook or suite, so arming above one proves nothing`);
+      assert.ok(
+        arm < firstHook,
+        `${name} arms its deadline at ${arm} but registers its first hook at ${firstHook}. `
+        + 'A bound below the first hook is a bound a teardown can clear, and a bound nothing clears '
+        + 'is not a bound — the #1365 shape.',
+      );
+    });
+  }
 });

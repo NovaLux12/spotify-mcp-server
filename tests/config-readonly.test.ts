@@ -54,6 +54,7 @@ import {
 } from '../src/config.ts';
 import { readOnlyModeEnabled } from '../src/tools/annotations.ts';
 import { assertChildRan } from './helpers/subprocess-outcome.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 
@@ -62,6 +63,23 @@ const TRUTHY_CASES = ['1', 'true', 'yes', 'on', 'ON', 'On', 'TRUE', ' yes ', '\t
 const FALSY_CASES = ['0', 'false', 'no', 'off', 'OFF', ' 0 ', 'no', 'Off'] as const;
 /** Set, non-empty, and neither table — a typo, which must warn and read OFF. */
 const TYPO_CASES = ['maybe', 'enabled', 'readonly', 'y', '2', 't', 'truthy', 'onn'] as const;
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/config-readonly.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('SPOTIFY_MCP_READONLY parsing (#611)', () => {
   it('reads every accepted spelling as true, through loadConfig', () => {

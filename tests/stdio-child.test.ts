@@ -57,6 +57,7 @@ import {
   isOwnChild,
   StdioJsonRpcChild,
 } from './helpers/stdio-child.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const NODE = process.execPath;
 
@@ -92,6 +93,23 @@ function spawnIdleChild(label: string, timeoutMs: number): StdioJsonRpcChild {
     exitGraceMs: 2_000,
   });
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/stdio-child.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('a killed child is reported as killed (#1366)', () => {
   it('names the signal, the pid and the null exit code, not a timeout', async () => {

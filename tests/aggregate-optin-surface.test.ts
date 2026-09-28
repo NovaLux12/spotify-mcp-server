@@ -56,6 +56,7 @@ import {
   registerManifestModules,
 } from '../src/tools/annotations.js';
 import { applyTaskSupport } from '../src/tasks.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const DOC = 'docs/schema-budgets.md';
@@ -207,6 +208,23 @@ function checkRejects(overrides: Record<string, unknown>, expected: RegExp): voi
   assert.notEqual(status, 0, `precondition: ${JSON.stringify(overrides)} was expected to be rejected, but the census exited 0:\n${output}`);
   assert.match(output, expected);
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/aggregate-optin-surface.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('the aggregate budget describes the opted-in surface too (#1493)', () => {
   it('the opt-in genuinely registers a larger surface than the default', async () => {

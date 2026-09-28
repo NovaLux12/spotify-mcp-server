@@ -63,6 +63,7 @@ import {
   describeOutcome,
   type RawChildResult,
 } from './helpers/subprocess-outcome.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 /** Run `body` and return the `assert.throws` message it produced. */
 function failureMessage(run: () => unknown): string {
@@ -73,6 +74,23 @@ function failureMessage(run: () => unknown): string {
   }
   return assert.fail('expected this to throw, and it did not');
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/subprocess-outcome.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('a child that never ran is not a child that answered (#1335)', () => {
   it('does not read a never-started child as a clean exit', () => {

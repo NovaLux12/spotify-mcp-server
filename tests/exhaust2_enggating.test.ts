@@ -16,6 +16,7 @@ import { pathToFileURL } from 'node:url';
 
 import { StdioJsonRpcChild } from './helpers/stdio-child.js';
 import { structured } from './helpers/structured.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type RegisteredTool = { name: string; description: string; schema: Record<string, unknown>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
@@ -93,6 +94,23 @@ function find(registered: RegisteredTool[], name: string): RegisteredTool {
 function text(r: ToolContent): string {
   return r.content.map((c) => c.text).join('\n');
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/exhaust2_enggating.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 test('isGatedPath classifies the #329 and #725 gated families', () => {
   const gated = [

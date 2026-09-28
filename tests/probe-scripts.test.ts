@@ -43,6 +43,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const EDGE_PROBE = join(ROOT, 'scripts/edge-probe.mjs');
@@ -306,6 +307,23 @@ const BASE = {
   now: () => '2026-09-27T00:00:00.000Z',
   attemptTimeoutMs: 15_000,
 };
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/probe-scripts.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('probe-lib quota handling (#646)', () => {
   it('waits exactly the Retry-After the server asked for, before the retry leaves', async () => {

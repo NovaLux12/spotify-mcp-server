@@ -31,6 +31,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SWEEP_LOOP = join(ROOT, 'scripts/sweep-loop.sh');
@@ -335,6 +336,23 @@ async function waitForExit(pid: number, timeoutMs = 8_000): Promise<boolean> {
 function markerOf(report: string): string {
   return (JSON.parse(readFileSync(report, 'utf8')) as { marker: string }).marker;
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/guard-sweep-loop.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('sweep-loop.sh guard (#656)', () => {
   it('rejects a non-numeric BATCH with a usage error and never starts node', () => {
