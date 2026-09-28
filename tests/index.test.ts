@@ -153,7 +153,10 @@ describe('progress-token wiring (#728)', () => {
     responder = threePageResponder;
     const { client, cleanup } = await bootstrap();
     const captured: unknown[] = [];
-    client.setNotificationHandler(ProgressNotificationSchema, (n) => captured.push(n));
+    // A block body, not `(n) => captured.push(n)`: the handler's declared
+    // return is `void | Promise<void>`, and an expression body hands it
+    // `push`'s number. Same capture, no number leaking out as a result.
+    client.setNotificationHandler(ProgressNotificationSchema, (n) => { captured.push(n); });
     try {
       const result = await client.callTool({ name: 'walk_saved_tracks', arguments: {} });
       assert.equal(result.isError, undefined);
@@ -266,7 +269,7 @@ describe('progress-token wiring (#728)', () => {
     };
 
     const captured: unknown[] = [];
-    mcpClient.setNotificationHandler(ProgressNotificationSchema, (n) => captured.push(n));
+    mcpClient.setNotificationHandler(ProgressNotificationSchema, (n) => { captured.push(n); });
     try {
       await mcpClient.callTool({
         name: 'walk_saved_tracks_4',

@@ -481,7 +481,12 @@ function recordingHarness(): {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `${name} should be registered`);
       // The 404 path is fine here: the assertion is on the path, not the result.
-      await tool.handler(tool.schema.parse(args)).catch(() => undefined);
+      // `ZodTypeAny.parse` returns `unknown`; the handler takes a record.
+      // The 404 path is fine here, so the payload is never read - but the
+      // argument is still the validated object, and saying so is cheaper
+      // than a cast at the `parse` site.
+      const parsed: unknown = tool.schema.parse(args);
+      await tool.handler((parsed ?? {}) as Record<string, unknown>).catch(() => undefined);
     },
   };
 }

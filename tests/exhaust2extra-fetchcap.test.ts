@@ -29,6 +29,9 @@ import './helpers/hermetic.js';
 
 import { test, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+// A TYPE-only import, so it is erased at compile time and cannot observe the
+// un-set env vars above. Everything that needs those set is a dynamic import.
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -132,11 +135,19 @@ async function seedTokens(): Promise<void> {
   );
 }
 
-function makeServer(registered: RegisteredTool[]): unknown {
+/**
+ * The recording double for the registrar's `server` argument.
+ *
+ * Cast ONCE here rather than at the registration call: the cast is a claim
+ * about this file's harness (a `tool()` recorder, not an SDK server), and the
+ * literal is still checked against `RegisteredTool` before it is asserted to
+ * be an `McpServer`.
+ */
+function makeServer(registered: RegisteredTool[]): McpServer {
   return {
     tool: (name: string, description: string, _schema: unknown, handler: RegisteredTool['handler']) =>
       registered.push({ name, description, handler }),
-  };
+  } as unknown as McpServer;
 }
 
 function register(): RegisteredTool[] {

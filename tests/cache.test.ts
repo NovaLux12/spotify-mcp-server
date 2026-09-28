@@ -30,6 +30,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The `SpotifyClient` DESTRUCTURED below is a value — it comes out of an
+// `await import(...)` that must stay below the env setup — so it cannot be
+// named in a type position. This alias is the same class seen as a type; being
+// `import type`, it is erased at runtime and disturbs no import ordering.
+import type { SpotifyClient as SpotifyClientType } from '../src/client.ts';
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MB = 1024 * 1024;
 
@@ -56,6 +62,21 @@ function headerOf(init: RequestInit | undefined, name: string): string | null {
   return headers?.[name] ?? null;
 }
 
+/**
+ * Release a gated read, tolerating "the gate was never armed".
+ *
+ * Each race test parks its fetch stub's response behind a `releaseRead` latch
+ * that the stub ASSIGNS from inside its own callback. TypeScript's control-flow
+ * analysis only sees the `null` initializer at the call site — an assignment
+ * from a closure does not widen it back — so `releaseRead?.()` there is typed
+ * `never` and rejected. Taking the latch as a parameter moves the call into a
+ * position where the declared `(() => void) | null` type is what the compiler
+ * checks, which is the same optional call the test already wrote.
+ */
+function releaseGatedRead(release: (() => void) | null): void {
+  release?.();
+}
+
 const realFetch = globalThis.fetch;
 after(() => {
   globalThis.fetch = realFetch;
@@ -72,7 +93,7 @@ describe('cache: byte budget (#894)', () => {
     // the default 1 MB per-entry ceiling is exercised separately below. With
     // that ceiling in force these writes are refused outright, which also
     // respects the budget but retains nothing.
-    const cache = new LruTtlCache<object>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
+    const cache = new LruTtlCache<{ i: number }>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
     for (let i = 0; i < 10; i++) cache.set(`k${i}`, { i }, { bytes: 2 * MB });
 
     assert.ok(cache.size <= 4, `expected at most 4 entries retained, got ${cache.size}`);
@@ -87,7 +108,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('evicts least-recently-used first when the byte budget is reached', () => {
-    const cache = new LruTtlCache<object>({ maxEntries: 100, maxBytes: 4 * MB, maxEntryBytes: 2 * MB });
+    const cache = new LruTtlCache<{ n: string }>({ maxEntries: 100, maxBytes: 4 * MB, maxEntryBytes: 2 * MB });
     cache.set('a', { n: 'a' }, { bytes: 2 * MB });
     cache.set('b', { n: 'b' }, { bytes: 2 * MB });
     assert.equal(cache.get('a')?.n, 'a'); // refresh recency: b is now least recent
@@ -103,7 +124,7 @@ describe('cache: byte budget (#894)', () => {
     // The "bound is real" case: an entry-count bound would happily hold this
     // one entry, and a byte bound that silently over-shot would report a
     // number the process never kept.
-    const cache = new LruTtlCache<object>({ maxEntries: 200, maxBytes: MB });
+    const cache = new LruTtlCache<{ n: number }>({ maxEntries: 200, maxBytes: MB });
     cache.set('huge', { n: 1 }, { bytes: 2 * MB });
 
     assert.equal(cache.size, 0);
@@ -112,7 +133,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('refuses an entry above the per-entry ceiling and counts the skip', () => {
-    const cache = new LruTtlCache<object>({ maxBytes: 8 * MB }); // default maxEntryBytes 1 MB
+    const cache = new LruTtlCache<{ n: number }>({ maxBytes: 8 * MB }); // default maxEntryBytes 1 MB
     cache.set('big', { n: 1 }, { bytes: 2 * MB });
     assert.equal(cache.size, 0);
     assert.equal(cache.skippedOversize, 1);
@@ -132,7 +153,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('never reports bytes above the budget, whatever the write order', () => {
-    const cache = new LruTtlCache<object>({ maxEntries: 1000, maxBytes: 5 * MB, maxEntryBytes: 3 * MB });
+    const cache = new LruTtlCache<{ i: number }>({ maxEntries: 1000, maxBytes: 5 * MB, maxEntryBytes: 3 * MB });
     for (let i = 0; i < 40; i++) {
       cache.set(`k${i}`, { i }, { bytes: (i % 3) * MB + MB / 2 });
       assert.ok(cache.bytes <= 5 * MB, `byte budget exceeded after write ${i}: ${cache.bytes}`);
@@ -141,7 +162,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('charges an overwrite once, not twice', () => {
-    const cache = new LruTtlCache<object>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
+    const cache = new LruTtlCache<{ v: number }>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
     cache.set('k', { v: 1 }, { bytes: 2 * MB });
     cache.set('k', { v: 2 }, { bytes: 2 * MB });
     assert.equal(cache.size, 1);
@@ -150,7 +171,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('releases bytes on delete, clear and expiry', async () => {
-    const cache = new LruTtlCache<object>({ ttlMs: 60_000, maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
+    const cache = new LruTtlCache<{ n: number }>({ ttlMs: 60_000, maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
     cache.set('a', { n: 1 }, { bytes: 1024 });
     cache.set('b', { n: 2 }, { bytes: 1024 });
     assert.equal(cache.bytes, 2048);
@@ -160,7 +181,7 @@ describe('cache: byte budget (#894)', () => {
     assert.equal(cache.bytes, 0);
 
     // Expiry on read releases the charge too.
-    const short = new LruTtlCache<object>({ ttlMs: 10, maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
+    const short = new LruTtlCache<{ n: number }>({ ttlMs: 10, maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
     short.set('x', { n: 1 }, { bytes: 512 });
     assert.equal(short.bytes, 512);
     await new Promise((r) => setTimeout(r, 25));
@@ -169,7 +190,7 @@ describe('cache: byte budget (#894)', () => {
   });
 
   it('a read that refreshes recency does not change the byte total', () => {
-    const cache = new LruTtlCache<object>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
+    const cache = new LruTtlCache<{ n: number }>({ maxBytes: 8 * MB, maxEntryBytes: 4 * MB });
     cache.set('a', { n: 1 }, { bytes: 2048 });
     cache.set('b', { n: 2 }, { bytes: 2048 });
     assert.equal(cache.get('a')?.n, 1);
@@ -548,7 +569,7 @@ describe('cache: scoped invalidation (#893)', () => {
     await new Promise((r) => setTimeout(r, 40)); // the read is now in flight
     gateRead = false;
     await client.post('/playlists/A/items', { uris: ['spotify:track:new'] });
-    releaseRead?.();
+    releaseGatedRead(releaseRead);
 
     // The in-flight caller still gets a truthful answer to its own read.
     const first = await inflight;
@@ -597,7 +618,7 @@ describe('cache: scoped invalidation (#893)', () => {
     const inflight = client.get('/artists/AR/albums', { limit: '50' });
     await new Promise((r) => setTimeout(r, 40)); // the read is in flight
     await client.post('/me/player/queue', { uri: 'spotify:track:x' });
-    releaseRead?.();
+    releaseGatedRead(releaseRead);
     await inflight;
 
     assert.equal(
@@ -642,7 +663,7 @@ describe('cache: scoped invalidation (#893)', () => {
     const inflight = client.get('/me/player/queue');
     await new Promise((r) => setTimeout(r, 40));
     gate = false;
-    releaseRead?.();
+    releaseGatedRead(releaseRead);
     await inflight;
     await client.get('/me/player/queue');
     assert.equal(offered.at(-1), '"q1"', 'control: with no mutation the validator IS offered');
@@ -653,7 +674,7 @@ describe('cache: scoped invalidation (#893)', () => {
     await new Promise((r) => setTimeout(r, 40));
     await client.post('/me/player/queue', { uri: 'spotify:track:x' });
     gate = false;
-    releaseRead?.();
+    releaseGatedRead(releaseRead);
     await raced;
     await client.get('/me/player/queue');
     assert.equal(
@@ -710,7 +731,7 @@ describe('cache: scoped invalidation (#893)', () => {
     await new Promise((r) => setTimeout(r, 40)); // the revalidation is in flight
     await client.post('/me/player/queue', { uri: 'spotify:track:x' });
     gate = false;
-    releaseRead?.();
+    releaseGatedRead(releaseRead);
     await revalidating;
 
     const before = network;
@@ -922,8 +943,8 @@ describe('cache: cross-process persistence (#893)', () => {
    * delete that has already walked it — the final `rmdir` then fails
    * `ENOTEMPTY` and takes the whole gate with it.
    */
-  let clients: SpotifyClient[] = [];
-  const newClient = (): SpotifyClient => {
+  let clients: SpotifyClientType[] = [];
+  const newClient = (): SpotifyClientType => {
     const c = new SpotifyClient();
     clients.push(c);
     return c;
@@ -1035,8 +1056,20 @@ describe('cache: cross-process persistence (#893)', () => {
 
     const realStringify = JSON.stringify;
     let serializedBytes = 0;
-    JSON.stringify = function counting(...args: Parameters<typeof realStringify>) {
-      const out = realStringify(...args);
+    // `JSON.stringify` is OVERLOADED (a replacer may be a function or a list
+    // of keys), and `Parameters<typeof realStringify>` only ever names the
+    // last overload — which is why the original spread form would not
+    // typecheck as a replacement. Spell both arms out in one union and pick
+    // the overload by the replacer's runtime kind.
+    JSON.stringify = function counting(
+      value: unknown,
+      replacer?: ((this: unknown, key: string, value: unknown) => unknown) | (string | number)[] | null,
+      space?: string | number,
+    ): string {
+      const out =
+        typeof replacer === 'function'
+          ? realStringify(value, replacer, space)
+          : realStringify(value, replacer, space);
       serializedBytes += typeof out === 'string' ? out.length : 0;
       return out;
     };
@@ -1435,8 +1468,8 @@ describe('cache: a hard-killed save is reported, not silently dropped (#1279)', 
    * pending save is the thing under test, and this array is not inherited by a
    * spawned process, so flushing here cannot touch it.
    */
-  let clients: SpotifyClient[] = [];
-  const newClient = (): SpotifyClient => {
+  let clients: SpotifyClientType[] = [];
+  const newClient = (): SpotifyClientType => {
     const c = new SpotifyClient();
     clients.push(c);
     return c;

@@ -119,8 +119,8 @@ function harness() {
     tool(name: string, _desc: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, cfg: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-      registered.push({ name, validate: (a) => (cfg.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, cfg: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+      registered.push({ name, validate: (a) => (cfg.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
   } as unknown as McpServer;
   const { client, calls } = stubClient();

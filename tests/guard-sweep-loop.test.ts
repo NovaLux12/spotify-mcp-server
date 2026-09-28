@@ -246,7 +246,10 @@ function sandbox(plan: StubStep[]): Sandbox {
     start: (env = {}) => {
       const child = spawn('bash', ['scripts/sweep-loop.sh'], {
         cwd: dir,
-        encoding: 'utf8',
+        // No `encoding` here: it is a `spawnSync` option only, and the async
+        // `spawn` has no such key — it was silently inert, and its presence
+        // defeated overload resolution so the child typed as `never`. Output
+        // decoding is `collect`'s job (`String(chunk)`), unchanged.
         env: { ...process.env, ...baseEnv, ...env },
         // Its own process group, so a signal test can signal the loop alone but
         // still clean up after it. A loop that ignores a signal has to be
@@ -255,8 +258,10 @@ function sandbox(plan: StubStep[]): Sandbox {
         // hang on teardown instead of reporting a failure.
         detached: true,
       });
-      assert.equal(typeof child.pid, 'number', 'the loop must be startable so its pid can be signalled');
-      return { pid: child.pid!, ...collect(child) };
+      // assert.ok, not assert.equal: it is an assertion function, so the pid
+      // narrows to a number and the `!` below is not needed to read it.
+      assert.ok(typeof child.pid === 'number', 'the loop must be startable so its pid can be signalled');
+      return { pid: child.pid, ...collect(child) };
     },
     shim: (name, body) => {
       const bin = join(dir, 'shim-bin');

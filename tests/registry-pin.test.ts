@@ -84,6 +84,7 @@ import { wireTools, type WireTool } from './wire-registry.js';
 import {
   AGGREGATE_SURFACE_LIMITS,
   loadManifestRegistrars,
+  localModule,
   moduleToolNames,
   registerManifestModule,
   registerManifestModules,
@@ -217,11 +218,20 @@ describe('registry pin: no duplicate names', () => {
     const stolen = moduleToolNames(server, first.key)[0];
     assert.ok(stolen, `${first.key} registered nothing to collide with`);
 
+    // Built through `localModule`, the same helper every synthetic manifest
+    // row in this tree uses, rather than as a bare object literal. A
+    // `RegistrarManifestEntry` extends `RegistrarSpec`, so it owes `name` and
+    // `load` as well as `registrar`; a literal that declared only `registrar`
+    // was an entry the type did not accept, and the duplicate-detection path
+    // under test is exactly the one that must not depend on a hand-built
+    // object. `load` is never called here — `registrar` is already resolved —
+    // but it is part of the contract, so the row carries a real one.
+    const steal = (target: McpServer) => { target.tool(stolen, 'duplicate', {}, async () => ({ content: [] })); };
     const impostor: RegistrarManifestEntry = {
       key: 'duplicate-probe-module',
       registrationKey: 'duplicate-probe',
-      file: 'tests/registry-pin.test.ts',
-      registrar: (target) => { target.tool(stolen, 'duplicate', {}, async () => ({ content: [] })); },
+      ...localModule('tests/registry-pin.test.ts', 'steal', steal),
+      registrar: steal,
       baseline: { toolCount: 1, schemaBytes: 1 },
       ceiling: { toolCount: 2, schemaBytes: 2 },
     };

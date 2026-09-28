@@ -22,6 +22,7 @@ import { promisify } from 'node:util';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { structured } from './helpers/structured.js';
 import { StubFromResponder } from './helpers/stub-client.js';
 import type { LegacyResponder } from './helpers/stub-client.js';
 import { registerFreshnessTools } from '../src/tools/freshness.js';
@@ -34,10 +35,28 @@ import { initConfig } from '../src/config.js';
 interface RecordedCall {
   method: 'GET' | 'POST' | 'PUT' | 'PUT_RAW' | 'DELETE';
   path: string;
-  arg?: unknown;
+  /**
+   * The argument production passed: query params for a `GET`, body for a
+   * write. The shared stub records it through `describeArg`, which yields a
+   * record or nothing, so `Record<string, unknown>` is the real shape — and
+   * saying so is what lets the assertions read `arg.after` and `arg.offset`
+   * instead of being handed a value with no properties to find.
+   */
+  arg?: Record<string, unknown>;
 }
 
-type Responder = (path: string, arg: unknown) => unknown;
+/**
+ * The responder the harness hands the recorded request to.
+ *
+ * `arg` is the argument production passed: the query params for a `GET`, the
+ * body for a write. The stub records it as a record either way
+ * (`describeArg` in `tests/helpers/stub-client.ts` returns
+ * `Record<string, unknown> | null`), so the responders below read `params.after`
+ * and `params.offset` off it. Declaring it `unknown` — as this did — is what
+ * made every one of those reads an error, and the reason the compiler offered
+ * no property to find: it was being asked about a value it could not see into.
+ */
+type Responder = (path: string, arg: Record<string, unknown>) => unknown;
 
 interface RegisteredTool {
   name: string;
@@ -51,7 +70,25 @@ interface RegisteredTool {
   }>;
 }
 
-function makeStubClient(responder: Responder = () => null) {
+/**
+ * The stub, with the two test-only controls `makeStubClient` bolts on.
+ *
+ * `setResponder` and `setCooldown` are installed with `Object.defineProperty`
+ * below, which is a runtime operation the compiler cannot see. Without this
+ * intersection every test that drives a cooldown or swaps the responder was
+ * reading a member the declared type said could not exist — which is the same
+ * defect as a stale `FakeClient`, just added after construction instead of at
+ * the factory.
+ */
+type FreshnessStubClient = StubFromResponder & {
+  setResponder: (fn: Responder) => void;
+  setCooldown: (ms: number) => void;
+};
+
+function makeStubClient(responder: Responder = () => null): {
+  calls: RecordedCall[];
+  client: FreshnessStubClient;
+} {
   let respond: Responder = responder;
   // #659: the paging walk below used to be a hand copy of
   // `getAllPagesWithTruncation` with a hardcoded `?? 500` cap, so a change to
@@ -67,7 +104,7 @@ function makeStubClient(responder: Responder = () => null) {
   // client increments `requestsTotal` inside its own request path and the stub
   // short-circuits that. Counting here — once per route hit, on the object the
   // recorder also pushes to — is what keeps `requests_made` and
-  // `cost.requests` cross-checkable against `h.client.calls.length`, which is
+  // `cost.requests` cross-checkable against `h.calls.length`, which is
   // the whole point of upstream's assertions.
   let requestsTotal = 0;
   const client = new StubFromResponder((path, arg) => (respond as LegacyResponder)(path, arg));
@@ -88,7 +125,7 @@ function makeStubClient(responder: Responder = () => null) {
     value: (ms: number) => { cooldownRemainingMs = ms; },
   });
   const calls = client.calls as unknown as RecordedCall[];
-  return { calls, client };
+  return { calls, client: client as FreshnessStubClient };
 }
 
 function harness(responder: Responder = () => null) {
@@ -118,7 +155,16 @@ function harness(responder: Responder = () => null) {
     invoke: async (name: string, args: Record<string, unknown>) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
-      return tool.handler(tool.validate(args));
+      const out = await tool.handler(tool.validate(args));
+      // Every `CallPayload` read below arrives by casting this field, and the
+      // cast is over an OPTIONAL — so when a tool published no payload the
+      // assertion downstream was reading `undefined` typed as a payload.
+      // Proving the field is present here is what makes those casts honest.
+      assert.ok(
+        out.structuredContent !== undefined,
+        `${name} returned no structuredContent, so every CallPayload assertion below would read nothing`,
+      );
+      return out as { content: Array<{ type: string; text: string }>; structuredContent: Record<string, unknown> };
     },
   };
 }
@@ -275,11 +321,11 @@ describe('whats_new', () => {
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
 
-    const followingCalls = h.client.calls.filter((c) => c.path === '/me/following');
+    const followingCalls = h.calls.filter((c) => c.path === '/me/following');
     assert.equal(followingCalls.length, 2);
     assert.equal(followingCalls[0].arg?.after, undefined);
     assert.equal(followingCalls[1].arg?.after, 'cursor-1');
-    const albumPaths = h.client.calls.map((c) => c.path).filter((p) => p.endsWith('/albums'));
+    const albumPaths = h.calls.map((c) => c.path).filter((p) => p.endsWith('/albums'));
     assert.deepEqual(albumPaths, ['/artists/a1/albums', '/artists/b2/albums']);
 
     const text = textOf(out);
@@ -327,9 +373,9 @@ describe('whats_new', () => {
 
       // Cap 2 reached inside the first follow page: exactly two album lookups,
       // and the second follow page is never fetched.
-      const albumPaths = h.client.calls.map((c) => c.path).filter((p) => p.endsWith('/albums'));
+      const albumPaths = h.calls.map((c) => c.path).filter((p) => p.endsWith('/albums'));
       assert.deepEqual(albumPaths, ['/artists/a1/albums', '/artists/b2/albums']);
-      assert.equal(h.client.calls.filter((c) => c.path === '/me/following').length, 1);
+      assert.equal(h.calls.filter((c) => c.path === '/me/following').length, 1);
 
       const payload = out.structuredContent as {
         lookups: { artist_album_calls: number; albums_truncated_by_cap: boolean };
@@ -354,7 +400,7 @@ describe('whats_new', () => {
     const out = await h.invoke('whats_new', { kinds: ['podcasts'], since: '2026-08-01' });
 
     // No artist lookups when podcasts-only.
-    assert.ok(!h.client.calls.some((c) => c.path.includes('/artists/')));
+    assert.ok(!h.calls.some((c) => c.path.includes('/artists/')));
     const text = textOf(out);
     assert.match(text, /Episode 42 — Tech Weekly \| 2026-08-22 \| URI: spotify:episode:ep-new/);
     assert.doesNotMatch(text, /Episode 1/);
@@ -389,7 +435,7 @@ describe('whats_new', () => {
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true });
 
-    assert.equal(h.client.calls.length, 0);
+    assert.equal(h.calls.length, 0);
     const text = textOf(out);
     assert.match(text, /\[dry run\]/);
     assert.match(text, /2026-08-01/);
@@ -540,7 +586,7 @@ describe('whats_new', () => {
       assert.ok(message.includes(since), `error should echo ${since}: ${message}`);
       assert.match(message, expected);
       // Rejected at validation: no scan happened, so no window was queried.
-      assert.equal(h.client.calls.length, 0, 'no API call may be made for an impossible since');
+      assert.equal(h.calls.length, 0, 'no API call may be made for an impossible since');
     });
   }
 
@@ -688,7 +734,7 @@ describe('whats_new', () => {
   it('dry_run reports cost_estimate and max_artists without making API calls', async () => {
     const h = harness(() => { throw new Error('no API call expected'); });
     const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true });
-    assert.equal(h.client.calls.length, 0);
+    assert.equal(h.calls.length, 0);
     const payload = out.structuredContent as { cost_estimate: string; max_artists: number; dry_run: boolean };
     assert.equal(payload.dry_run, true);
     assert.ok(typeof payload.cost_estimate === 'string' && payload.cost_estimate.length > 0);
@@ -1011,6 +1057,14 @@ interface CallPayload {
   cost: {
     kind: 'budget_bound' | 'measured' | 'measured_lower_bound';
     measured: boolean;
+    /**
+     * The whole call's planned request ceiling — the sum of the per-source
+     * `max_requests`. Declared because `planCallCost` emits it at the top of
+     * the object; its absence here is why a dry-run assertion on
+     * `cost.max_requests` typechecked as reading a field that cannot exist,
+     * which is a field the payload does carry.
+     */
+    max_requests?: number;
     requests: number | null;
     requests_floor?: number;
     requests_note?: string;
@@ -1061,7 +1115,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     const h = harness(() => { throw new Error('dry_run must make no API call'); });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
-    const { cost } = out.structuredContent as CallPayload;
+    const { cost } = structured<CallPayload>(out);
 
     // Hand arithmetic, not a re-run of the code under test: 60 artists at the
     // walk's page size of 50 needs ceil(60/50) = 2 follow pages, plus the 60
@@ -1079,7 +1133,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     const h = harness(() => { throw new Error('dry_run must make no API call'); });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
-    const { cost } = out.structuredContent as CallPayload;
+    const { cost } = structured<CallPayload>(out);
 
     assert.equal(cost.kind, 'budget_bound');
     assert.equal(cost.measured, false);
@@ -1099,20 +1153,20 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     );
 
     const dry = await h.invoke('whats_new', { since: '2026-08-01', dry_run: true, max_artists: 60, kinds: ['albums'] });
-    const bound = (dry.structuredContent as CallPayload).cost.albums!.max_requests;
+    const bound = structured<CallPayload>(dry).cost.albums!.max_requests;
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', max_artists: 60, kinds: ['albums'] });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     // 2 follow pages for 60 artists — the page the flat "+1" did not charge.
     assert.equal(payload.lookups.follow_pages, 2);
-    assert.equal(h.client.calls.filter((c) => c.path === '/me/following').length, 2);
+    assert.equal(h.calls.filter((c) => c.path === '/me/following').length, 2);
     assert.equal(payload.cost.kind, 'measured');
     assert.equal(payload.cost.requests, 62);
     // Cross-check against the transport's own record, not against the tool's
     // own counters: a self-consistent sum would pass even if the sum were wrong.
-    assert.equal(payload.cost.requests, h.client.calls.length);
-    assert.equal(payload.requests_made, h.client.calls.length);
+    assert.equal(payload.cost.requests, h.calls.length);
+    assert.equal(payload.requests_made, h.calls.length);
     // And the bound an agent would have budgeted against must not be short.
     assert.ok(payload.cost.requests! <= bound, `spent ${payload.cost.requests} against a bound of ${bound}`);
   });
@@ -1129,7 +1183,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['podcasts'] });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     assert.equal(payload.quota_hit, true);
     assert.equal(payload.quota_source, 'podcasts');
@@ -1151,7 +1205,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     // And the total is cross-checked against the transport record: 1 listing
     // page + 3 episode requests, the last of which failed.
     assert.equal(payload.cost.requests, 4);
-    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.equal(payload.cost.requests, h.calls.length);
     assert.match(textOf(out), /2 shows scanned/);
     assert.match(textOf(out), /podcasts leg/);
   });
@@ -1165,7 +1219,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01' });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     assert.equal(payload.quota_source, 'albums');
     const podcasts = rowOf(payload, 'podcasts');
@@ -1180,7 +1234,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     assert.match(textOf(out), /podcasts NOT walked/);
     assert.match(textOf(out), /not a statement about your saved shows/);
     // No listing request was ever made for podcasts.
-    assert.equal(h.client.calls.some((c) => c.path === '/me/shows'), false);
+    assert.equal(h.calls.some((c) => c.path === '/me/shows'), false);
   });
 
   it('marks a clipped saved-shows listing as a partial source and holds the watermark', async () => {
@@ -1201,7 +1255,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
         });
 
         const out = await h.invoke('whats_new', { since: 'last-check', kinds: ['podcasts'], max_artists: 2 });
-        const payload = out.structuredContent as CallPayload;
+        const payload = structured<CallPayload>(out);
         const look = payload.lookups;
 
         // The listing's own verdict, not the episode loop's: the two episode
@@ -1234,7 +1288,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['podcasts'] });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     // The page count never came back, so it is unknown — NOT zero, and not a
     // total. A request was issued and did cost quota, so the floor counts it.
@@ -1242,7 +1296,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     assert.equal(payload.cost.requests, null);
     assert.equal(payload.cost.kind, 'measured_lower_bound');
     assert.equal(payload.cost.requests_floor, 1);
-    assert.equal(h.client.calls.length, 1, 'the failed listing request was really issued');
+    assert.equal(h.calls.length, 1, 'the failed listing request was really issued');
     assert.match(String(payload.cost.requests_note), /floor, not a total/);
     assert.match(textOf(out), /at least 1 request\(s\)/);
   });
@@ -1255,7 +1309,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     });
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', kinds: ['albums'] });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     assert.equal(payload.quota_hit, true);
     // Two album lookups issued, one read. Counting only the one that returned
@@ -1263,7 +1317,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     assert.equal(payload.lookups.artist_album_calls, 2);
     assert.equal(payload.scanned.artists, 1);
     assert.equal(payload.cost.breakdown.album_lookups, 2);
-    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.equal(payload.cost.requests, h.calls.length);
   });
 
   it('reports the paged bound, not a flat +1, on the cooldown gate', async () => {
@@ -1280,7 +1334,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     assert.equal(payload.cost.kind, 'budget_bound');
     assert.equal(payload.cost.albums?.max_listing_pages, 2);
     assert.equal(payload.cost.albums?.max_requests, 62);
-    assert.equal(h.client.calls.length, 0);
+    assert.equal(h.calls.length, 0);
   });
 
   it('restates the planned bound on a real call so the next one can be budgeted', async () => {
@@ -1292,7 +1346,7 @@ describe('whats_new cost estimate and per-source scan counters (#679)', () => {
     );
 
     const out = await h.invoke('whats_new', { since: '2026-08-01', max_artists: 60, kinds: ['albums'] });
-    const payload = out.structuredContent as CallPayload;
+    const payload = structured<CallPayload>(out);
 
     assert.equal(payload.cost.kind, 'measured');
     assert.equal(payload.cost.planned?.max_requests, 62);
@@ -1374,7 +1428,7 @@ describe('whats_new planned cost aggregates both kinds (#1291)', () => {
     assert.match(payload.cost_estimate, /albums: .* = at most 62 requests for albums/);
     assert.match(payload.cost_estimate, /podcasts: .* = at most 62 requests for podcasts/);
     assert.match(textOf(out), /at most 124 requests if both kinds are walked/);
-    assert.equal(h.client.calls.length, 0, 'a dry run still issues no requests');
+    assert.equal(h.calls.length, 0, 'a dry run still issues no requests');
   });
 
   it('restates a two-kind bound a real walk actually fits inside', async () => {
@@ -1416,7 +1470,7 @@ describe('whats_new planned cost aggregates both kinds (#1291)', () => {
     // measured cost is counted by the transport, not by the tool's own
     // counters, so a self-consistent sum could not rescue a wrong total.
     assert.equal(payload.cost.requests, 124);
-    assert.equal(payload.cost.requests, h.client.calls.length);
+    assert.equal(payload.cost.requests, h.calls.length);
     assert.ok(
       payload.cost.requests! <= payload.cost.planned.max_requests,
       `spent ${payload.cost.requests} against a planned bound of ${payload.cost.planned.max_requests}`,
@@ -1441,7 +1495,7 @@ describe('whats_new planned cost aggregates both kinds (#1291)', () => {
     assert.equal(payload.cost.albums?.max_requests, 62);
     assert.equal(payload.cost.podcasts?.max_requests, 62);
     assert.equal(payload.cost.max_requests, 124);
-    assert.equal(h.client.calls.length, 0);
+    assert.equal(h.calls.length, 0);
   });
 });
 

@@ -140,7 +140,12 @@ function makeFakeTimers() {
   let now = 0;
   const timers: WindDownTimers = {
     setTimeout(fn: () => void, ms: number) {
-      const handle = { fn, ms };
+      // The real handle carries `unref`, and the production wind-down calls it
+      // on every timer it arms. A fake without one is a stub that breaks the
+      // first time the code under test unrefs something - and it is also why
+      // `{ fn, ms }` did not satisfy `WindDownHandle`, whose only member is
+      // that optional `unref`.
+      const handle: { fn: () => void; ms: number } & WindDownHandle = { fn, ms, unref: () => handle };
       scheduled.push(handle);
       return handle;
     },

@@ -70,7 +70,12 @@ interface Tool {
 
 interface JsonRpc { id?: number; result?: { tools?: Tool[] }; error?: { code: number; message: string } }
 
-async function listTools(env: Record<string, string>): Promise<Tool[]> {
+// `string | undefined`, not `string`: the #889 cases below pass
+// `{ SPOTIFY_MCP_TOOLSETS: undefined }` on purpose - the key has to be
+// PRESENT-and-undefined so `hermeticServerEnv` deletes it, which is not the
+// same request as a blanked value. Typing the parameter `string` made the
+// honest spelling of that look like a type error.
+async function listTools(env: Record<string, string | undefined>): Promise<Tool[]> {
   const child = StdioJsonRpcChild.spawn({
     label: `tool-surface ${JSON.stringify(env)}`,
     command: 'node',

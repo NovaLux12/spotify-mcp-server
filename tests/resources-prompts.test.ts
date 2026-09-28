@@ -20,6 +20,7 @@ import assert from 'node:assert/strict';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { PromptMessage, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 
 import { registerReadSurfaces } from '../src/resources/register.js';
@@ -125,15 +126,40 @@ async function connect(stub: SpotifyClient): Promise<Client> {
   return client;
 }
 
-function firstContent(result: { contents: Array<{ mimeType: string; text: string }> }): {
+/**
+ * The first content block of a `readResource` result, narrowed to the text
+ * shape every assertion below reads.
+ *
+ * The parameter used to be a hand-written `{ contents: Array<{ mimeType:
+ * string; text: string }> }`, which is NARROWER than what `readResource`
+ * returns: the SDK's block is a union whose `mimeType` is optional and which
+ * has a blob variant. So the declared type promised a guarantee the real value
+ * does not carry, and every call site was an error. Taking the real
+ * `ReadResourceResult` and proving the two facts each caller depends on — the
+ * block exists, it is a text block, and it declares a mimeType — turns an
+ * unchecked assumption into three assertions that can fail.
+ */
+function firstContent(result: ReadResourceResult): {
   mimeType: string;
   text: string;
 } {
-  return result.contents[0];
+  const first = result.contents[0];
+  assert.ok(first, 'readResource returned no content blocks');
+  assert.ok('text' in first, `expected a text content block, got ${JSON.stringify(first)}`);
+  assert.ok(typeof first.mimeType === 'string', `text content block without a mimeType: ${JSON.stringify(first)}`);
+  return { mimeType: first.mimeType, text: first.text };
 }
 
-function textOf(message: { content: { type: string; text?: string } }): string {
-  return message.content.type === 'text' ? (message.content.text ?? '') : '';
+/**
+ * The text of one `PromptMessage`, or `''` when the block is not text.
+ *
+ * `PromptMessage.content` is a union of four block kinds, so the `type === 'text'`
+ * test is what narrows it; the parameter is the SDK's own type rather than a
+ * hand-written `{ content: { type: string; text?: string } }`, which described
+ * a shape the protocol does not have.
+ */
+function textOf(message: PromptMessage): string {
+  return message.content.type === 'text' ? message.content.text : '';
 }
 
 // ------------------------------------------------------- resource inventory
@@ -539,7 +565,11 @@ test('genre-heatmap no longer claims a followed_artists sidecar it never read (#
   const heatmap = resources.resources.find((r) => r.uri === 'spotify://me/genre-heatmap');
   assert.ok(heatmap, 'genre-heatmap resource is registered');
   // The description promised a sidecar source that no code path reads, which
-  // is the coverage promise #604 exists to remove.
+  // is the coverage promise #604 exists to remove. The description is optional
+  // on a listed resource, so it is asserted present first: without that,
+  // `doesNotMatch(undefined, …)` is a TypeError rather than the comparison
+  // these two lines are making.
+  assert.ok(typeof heatmap.description === 'string', 'genre-heatmap must publish a description');
   assert.doesNotMatch(heatmap.description, /sidecar/);
   assert.doesNotMatch(heatmap.description, /followed_artists/);
 });
@@ -549,8 +579,14 @@ test('genre-heatmap no longer claims a followed_artists sidecar it never read (#
 test('all fourteen prompts are registered (#60, #112)', async () => {
   const client = await connect(makeClientStub());
   const prompts = await client.listPrompts();
+  // `name` is optional on a listed prompt in the SDK's schema, so an unnamed
+  // one would otherwise sort in as `undefined` and be compared as a string.
+  const names = prompts.prompts.map((p) => {
+    assert.equal(typeof p.name, 'string', `listed prompt without a name: ${JSON.stringify(p)}`);
+    return p.name;
+  });
   assert.deepEqual(
-    prompts.prompts.map((p) => p.name).sort(),
+    names.sort(),
     [
       'artist_deep_dive',
       'crate_digging',

@@ -305,10 +305,19 @@ API's answer rather than a local fact.
     "moduleResolution": "Node16",
     "outDir": "dist",
     "strict": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
     "esModuleInterop": true
   }
 }
 ```
+
+The three flags after `strict` are the ones that measured clean over both `src`
+and `tests` when #585 turned on the strict family. `noUnusedLocals`,
+`noUnusedParameters`, `noUncheckedIndexedAccess`,
+`noPropertyAccessFromIndexSignature` and `exactOptionalPropertyTypes` are NOT
+set, and the counts that keep them out are in AGENTS.md.
 
 The compiled output must have `#!/usr/bin/env node` as the first line of `dist/index.js` (add via a build script or banner).
 

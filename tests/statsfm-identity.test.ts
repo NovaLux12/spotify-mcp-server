@@ -58,6 +58,7 @@ import {
   __resetTasteCompositeFetchImpl,
 } from '../src/tools/taste_composites.js';
 import type { SpotifyClient } from '../src/client.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 // ---------------------------------------------------------------- fixtures
 
@@ -99,8 +100,23 @@ function recordingStatsfmClient(paths: PathLog) {
   };
 }
 
-/** Collect the tools a registrar registers, without a network. */
-function collect(register: (server: unknown, client: unknown) => void, client: unknown): Map<string, RegisteredTool> {
+/**
+ * Collect the tools a registrar registers, without a network.
+ *
+ * The registrar parameter is typed `(server: McpServer, client: never)` rather
+ * than the `unknown`s this used to declare. TypeScript checks function
+ * PARAMETERS contravariantly, so an `unknown` parameter admits nothing: under
+ * `strictFunctionTypes` every real registrar — which takes an `McpServer` and a
+ * `StatsfmClient`/`SpotifyClient` — was rejected as an argument, and the
+ * `as never` below was the only reason it compiled. Naming the real server type
+ * makes the call sites checked, and `client: never` states the honest fact that
+ * this harness never passes a usable client: the registrars either ignore it
+ * (the taste modules read through the shared fetch seam) or are handed the
+ * recording stub, which they are not required to treat as a real client.
+ */
+type Registrar = (server: McpServer, client: never) => void;
+
+function collect(register: Registrar, client: unknown): Map<string, RegisteredTool> {
   const registered = new Map<string, RegisteredTool>();
   const server = {
     tool: (name: string, _desc: string, schema: RegisteredTool['schema'], handler: RegisteredTool['handler']) =>
@@ -310,7 +326,12 @@ test('NO HANDLER SKIPS THE GUARD: every registered stats.fm tool either resolves
    */
   initConfig({});
 
-  const registrars: Array<[string, (s: unknown, c: unknown) => void]> = [
+  // The inventory is a heterogeneous set — the third entry is a TASTE registrar
+  // taking a `SpotifyClient`, the second ignores its client entirely, the first
+  // takes a `StatsfmClient` — so the array's element type is the `Registrar`
+  // seam `collect` uses rather than one concrete signature, which none of the
+  // three would satisfy.
+  const registrars: Array<[string, Registrar]> = [
     ['statsfm', registerStatsfmTools],
     ['taste', registerStatsfmTasteTools],
     ['tastecomposites', registerTasteCompositeTools],

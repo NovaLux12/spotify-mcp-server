@@ -72,7 +72,11 @@ let stderrCaptured = false;
 
 // The client must never reach the real API from a test: a 401 here would be
 // indistinguishable from a genuine transport failure.
-globalThis.fetch = (async (input: RequestInfo | URL): Promise<Response> => {
+// `RequestInfo` is a DOM global, and this project compiles with no `dom` lib —
+// naming it here made the whole stub's parameter an unresolved name, so the
+// fake fetch described a signature the file never had. The parameter is taken
+// from the real `fetch` this is assigned over, which is the thing being faked.
+globalThis.fetch = (async (input: Parameters<typeof fetch>[0]): Promise<Response> => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
   const body = url.startsWith('https://accounts.spotify.com/')
     ? { access_token: 'tok-refreshed', refresh_token: 'ref-initial', expires_in: 3600 }

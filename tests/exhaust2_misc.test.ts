@@ -1,6 +1,6 @@
 import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 
-import { describe, it, mock, before, after, afterEach, type TestContext } from 'node:test';
+import { describe, it, mock, before, after, afterEach, type TestContext, type Mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, statSync } from 'node:fs';
@@ -33,7 +33,28 @@ type Handler = (args: Record<string, unknown>) => Promise<{
   structuredContent?: Record<string, unknown>;
 }>;
 
-function makeClient(overrides: Record<string, unknown> = {}) {
+/**
+ * The client double, typed so an assertion can read node:test's call log off
+ * the SAME object the registrar is handed.
+ *
+ * `Mock<F>` is `F` plus a `mock` property, so every member here is still a
+ * real `SpotifyClient` member and the whole thing stays assignable to
+ * `SpotifyClient` — the registrar sees no difference. What the extra typing
+ * buys is that `client.put.mock.callCount()` becomes a checked read: a rename
+ * of `put` on the real client now fails to compile here, where before the
+ * property was simply missing from the type and the read would have been
+ * flagged for a reason that had nothing to do with the test.
+ */
+type MockedClient = SpotifyClient & {
+  get: Mock<SpotifyClient['get']>;
+  getAllPages: Mock<SpotifyClient['getAllPages']>;
+  put: Mock<SpotifyClient['put']>;
+  post: Mock<SpotifyClient['post']>;
+  delete: Mock<SpotifyClient['delete']>;
+  getRateLimitStatus: Mock<SpotifyClient['getRateLimitStatus']>;
+};
+
+function makeClient(overrides: Record<string, unknown> = {}): MockedClient {
   const base = {
     // The real SpotifyClient always sets this at construction; a stub that
     // omits it is not a client the stores can key by (#1385).
@@ -64,7 +85,7 @@ function makeClient(overrides: Record<string, unknown> = {}) {
       reportedTotal: null,
       pages: 1,
     })),
-  } as unknown as import('../src/client.js').SpotifyClient;
+  } as unknown as MockedClient;
 }
 
 /** Register and extract the handler for one tool by name. */
@@ -1200,7 +1221,17 @@ describe('exhaust2_misc — 27-tool misc slice', () => {
     const file = process.env.SPOTIFY_MCP_EXHAUST2_MISC_FILE!;
     writeFileSync(file, JSON.stringify({ checkpoints: {}, bookmarks: {}, journal: [], reports: {} }));
     chmodSync(file, 0o644);
-    await saveMiscStore({ checkpoints: { k: { value: 1, captured_at: '2026-01-01T00:00:00Z', context: 'c', source: 's' } }, bookmarks: {}, journal: [], reports: {} });
+    // A real `TasteCheckpoint` (exhaust2_misc.ts): the earlier fixture used
+    // `{ value, captured_at, context, source }`, none of which is a field the
+    // store has ever emitted, so it was a payload the writer could not produce.
+    // The assertion is about the file MODE, so the contents are incidental —
+    // but an incidental fixture should still be one the code can write.
+    await saveMiscStore({
+      checkpoints: { k: { label: 'k', saved_at: '2026-01-01T00:00:00Z', time_range: 'short_term', artists: [], tracks: [] } },
+      bookmarks: {},
+      journal: [],
+      reports: {},
+    });
     assert.equal(statSync(file).mode & 0o777, 0o600);
   });
 });

@@ -531,6 +531,7 @@ describe('undo_mutation occurrence targeting (#625)', () => {
     assert.deepEqual(playlists.pl1, [x, b, y, b, z], 'the row goes back where it was');
 
     const stay = (out.structuredContent?.receipt ?? null) as { receipt_id?: string; affected?: unknown } | null;
+    assert.ok(stay, 'undo_mutation must hand back the receipt it just wrote');
     assert.deepEqual(stay.affected, [{ uri: b, positions: [1] }],
       'records the re-inserted row, not the pre-existing twin at index 3');
 
@@ -562,6 +563,7 @@ describe('undo_mutation occurrence targeting (#625)', () => {
     assert.deepEqual(playlists.pl1, [row('a'), row('b'), row('c'), row('d'), row('e')]);
 
     const stay = (out.structuredContent?.receipt ?? null) as { affected?: unknown } | null;
+    assert.ok(stay, 'the re-insert must hand back a receipt, not an absent one');
     assert.deepEqual(stay.affected, [
       { uri: row('b'), positions: [1] },
       { uri: row('d'), positions: [3] },

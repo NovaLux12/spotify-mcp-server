@@ -199,7 +199,10 @@ describe('response byte cap (#895)', () => {
   });
 
   it('leaves a payload under the cap completely untouched', () => {
-    const small = { total: 2, items: rows(2) };
+    // `response_cap` is optional-and-absent here, which is the whole claim:
+    // under the cap the object is returned by identity and nothing is added.
+    // Declaring it present would assert the opposite.
+    const small: { total: number; items: Row[]; response_cap?: unknown } = { total: 2, items: rows(2) };
     const result = { content: [{ type: 'text', text: 'ok' }], structuredContent: small };
     assert.equal(applyResponseCap(result), result, 'under-cap results must be returned by identity');
     assert.equal(result.structuredContent.response_cap, undefined);

@@ -222,7 +222,7 @@ export class Rfc6570UriTemplate extends UriTemplate {
     return variables;
   }
 
-  match(uri: string): Variables | null {
+  override match(uri: string): Variables | null {
     if (!this.head) return super.match(uri);
     const found = this.head.exec(uri);
     if (!found) return null;

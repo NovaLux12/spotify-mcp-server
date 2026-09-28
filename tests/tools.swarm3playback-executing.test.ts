@@ -707,7 +707,7 @@ describe('#668 split_queue_plan', () => {
 describe('#668 queue_prune_plan', () => {
   it('keeps the first of each uri and lists the rest as drops', async () => {
     const h = makeHarness({
-      queue: { currently_playing: null, queue: [track(1), track(2), track(1), episode(3, 100_000)] },
+      queue: { currently_playing: null, queue: [track(1, 200_000), track(2, 200_000), track(1, 200_000), episode(3, 100_000)] },
     });
     const out = await h.invoke('queue_prune_plan', {});
     const sc = h.structured(out);
@@ -728,7 +728,7 @@ describe('#668 queue_prune_plan', () => {
 
   it('drops episodes too when asked, and says which kind each drop is', async () => {
     const h = makeHarness({
-      queue: { currently_playing: null, queue: [track(1), episode(3, 100_000), track(2)] },
+      queue: { currently_playing: null, queue: [track(1, 200_000), episode(3, 100_000), track(2, 200_000)] },
     });
     const out = await h.invoke('queue_prune_plan', { drop_episodes: true });
     assert.deepEqual(h.structured(out).drop, ['spotify:episode:e03']);
@@ -737,7 +737,7 @@ describe('#668 queue_prune_plan', () => {
   });
 
   it('reports a clean queue when there is nothing to prune', async () => {
-    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1), track(2)] } });
+    const h = makeHarness({ queue: { currently_playing: null, queue: [track(1, 200_000), track(2, 200_000)] } });
     const out = await h.invoke('queue_prune_plan', {});
     assert.equal(h.structured(out).dropped_count, 0);
     assert.match(h.text(out), /nothing to prune — queue is already clean/);

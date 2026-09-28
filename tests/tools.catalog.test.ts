@@ -3,13 +3,14 @@ import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 import test, { afterEach, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { registerCatalogTools, resetProfileCountryCache as resetCatalogMarketCache } from '../src/tools/catalog.js';
-import { SpotifyApiError } from '../src/client.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { installGatedPathContract } from '../src/gating.js';
 import { registerAudiobookTools, resetProfileCountryCache as resetAudiobooksMarketCache } from '../src/tools/audiobooks.js';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { structured } from './helpers/structured.js';
 
 // The typed-search factory records every executed search to the local
 // sidecar (#766). Point it at a temp file so the suite never writes to the
@@ -37,7 +38,7 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
+async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }: { tokenFile: string }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 
@@ -55,7 +56,39 @@ type RegisteredTool = {
   handler: (args: Record<string, unknown>) => Promise<ToolContent>;
 };
 
-type Call = { method: string; path: string; params?: Record<string, string> };
+/**
+ * One request the harness's client double received.
+ *
+ * `body` is recorded by the `put` stub, which really is handed one by the
+ * code under test — the type said otherwise, so a test that later wanted to
+ * assert a PUT body had to be told the field did not exist. Nothing asserts
+ * off it today; it is declared because the recorder does populate it, not
+ * because a claim depends on it.
+ */
+type Call = { method: string; path: string; params?: Record<string, string>; body?: unknown };
+
+/**
+ * The client double {@link makeHarness} hands to a registrar.
+ *
+ * Named so the boundary is visible: this object implements the five methods
+ * the catalog tools reach for, and `register(server as never, client as never)`
+ * says so out loud. `installGatedPathContract` wants a real `SpotifyClient`,
+ * and it is handed one through the same cast convention the rest of the suite
+ * uses at that call (`client as unknown as SpotifyClient`, as in
+ * `tests/removed-fields.test.ts` and `tests/tools.queueops.test.ts`).
+ *
+ * What the cast costs: if the gating contract ever grew to use a method other
+ * than `get`, this double would still satisfy the compiler and the failure
+ * would surface as a runtime `not a function` inside the wrapped call instead
+ * of a type error at the call site.
+ */
+type HarnessClient = {
+  get: (path: string, params?: Record<string, string>) => Promise<unknown>;
+  post: (path: string) => Promise<null>;
+  put: (path: string, body?: unknown) => Promise<void>;
+  delete: (path: string) => Promise<void>;
+  getAllPages: () => Promise<unknown[]>;
+};
 
 interface ClientOptions {
   getResponse?: (path: string, params?: Record<string, string>) => unknown;
@@ -138,7 +171,7 @@ function makeHarness(
   opts: ClientOptions = {},
 ) {
   const calls: Call[] = [];
-  const client = {
+  const client: HarnessClient = {
     get: async (path: string, params?: Record<string, string>) => {
       const err = opts.getError?.(path, params);
       if (err !== undefined) {
@@ -724,13 +757,14 @@ test('get_several_tracks truncates merged results to the #53 default cap', async
   assert.match(text(result), /Tracks \(60\):/);
   assert.match(text(result), /\(10 more — pass offset or fetch_all\)/);
   assert.ok(!text(result).includes('spotify:track:id59'));
-  assert.deepEqual(result.structuredContent.pagination, {
+  const payload = structured<{ pagination: unknown; items: unknown[] }>(result);
+  assert.deepEqual(payload.pagination, {
     total: 60,
     offset: 0,
     limit: null,
     next_offset: null,
   });
-  assert.equal(result.structuredContent.items.length, 50);
+  assert.equal(payload.items.length, 50);
 });
 
 test('get_several_albums chunks at 20 per request (#43 cap)', async () => {
@@ -841,7 +875,7 @@ test('#725 get_several_tracks falls back to per-item on gated 403 and marks degr
       return m ? perItem(m[1]) : undefined;
     },
   });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
 
   const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] });
 
@@ -934,7 +968,7 @@ test('#725 every get_several_* kind falls back on gated 403 with degraded metada
         return m ? c.fixture(m[1]) : undefined;
       },
     });
-    installGatedPathContract(harness.client);
+    installGatedPathContract(harness.client as unknown as SpotifyClient);
 
     const result = await invoke(findTool(harness.registered, c.tool), { ids: ['id1', 'id2'] });
 
@@ -965,7 +999,7 @@ test('#725 a per-item 404 during fallback is recorded in missing_ids, not raised
       return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
     },
   });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
 
   const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['live', 'dead'] });
 
@@ -986,7 +1020,7 @@ test('#725 the json response_format still publishes degraded:true', async () => 
       return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
     },
   });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
 
   const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1'], response_format: 'json' });
 
@@ -1037,7 +1071,7 @@ test('#725 batch truncation (#53) still applies after the per-item fallback', as
       return m ? trackFixture({ id: m[1], uri: `spotify:track:${m[1]}` }) : undefined;
     },
   });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
 
   const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids });
 
@@ -1088,7 +1122,7 @@ test('#778 get_several_tracks names the id a batch could not resolve', async () 
 
   assert.match(text(result), /Tracks \(1\):/);
   assert.match(text(result), /1 id unresolved: 0c6b2CqRjjQZ4NvS7xW1LmQ/);
-  assert.deepEqual(result.structuredContent.counts, {
+  assert.deepEqual(structured<{ counts: unknown }>(result).counts, {
     requested: 2,
     resolved: 1,
     missing_ids: [DEAD_ID],
@@ -1108,8 +1142,9 @@ test('#778 a fully-resolved batch reports an empty missing_ids, not a silent one
   });
 
   // The assertion that would pass vacuously if counts were omitted entirely.
-  assert.ok(result.structuredContent.counts, 'counts must be published');
-  assert.deepEqual(result.structuredContent.counts, {
+  const payload = structured<{ counts?: unknown }>(result);
+  assert.ok(payload.counts, 'counts must be published');
+  assert.deepEqual(payload.counts, {
     requested: 2,
     resolved: 2,
     missing_ids: [],
@@ -1128,7 +1163,7 @@ test('#778 get_several_tracks carries the counts in the json payload too', async
     response_format: 'json',
   });
 
-  assert.deepEqual(result.structuredContent.counts, {
+  assert.deepEqual(structured<{ counts: unknown }>(result).counts, {
     requested: 2,
     resolved: 1,
     missing_ids: [DEAD_ID],
@@ -1154,12 +1189,13 @@ test('#778 an unresolved id is attributed to the chunk that carried it', async (
 
   // counts.resolved is what the endpoint resolved, not what the display cap let
   // through: 59 resolved, 50 rendered.
-  assert.deepEqual(result.structuredContent.counts, {
+  const payload = structured<{ counts: unknown; items: unknown[] }>(result);
+  assert.deepEqual(payload.counts, {
     requested: 60,
     resolved: 59,
     missing_ids: ['id59'],
   });
-  assert.equal(result.structuredContent.items.length, 50);
+  assert.equal(payload.items.length, 50);
   assert.match(text(result), /1 id unresolved: id59/);
 });
 
@@ -1211,7 +1247,7 @@ test('#778 every get_several_* tool reports the ids it could not resolve', async
     const result = await invoke(findTool(registered, c.tool), { ids: ['a', 'b'] });
 
     assert.deepEqual(
-      result.structuredContent.counts,
+      structured<{ counts: unknown }>(result).counts,
       { requested: 2, resolved: 1, missing_ids: ['b'] },
       `${c.tool} must account for the id it dropped`,
     );
@@ -1230,8 +1266,9 @@ test('#778 catalog_batch_lookup names the URI the endpoint could not resolve', a
   });
 
   assert.match(text(result), /IDs the endpoint could not resolve: spotify:track:stale1/);
-  assert.deepEqual(result.structuredContent.unresolved, ['spotify:track:stale1']);
-  assert.deepEqual(result.structuredContent.invalid, []);
+  const payload = structured<{ unresolved: unknown; invalid: unknown }>(result);
+  assert.deepEqual(payload.unresolved, ['spotify:track:stale1']);
+  assert.deepEqual(payload.invalid, []);
 });
 
 // --------------------------------------------- #47 parameter completeness
@@ -1569,13 +1606,14 @@ test('get_artist_albums truncates to max_results with the shared footer math (#5
   assert.equal(out.match(/• "Album \d+"/g)?.length, 2);
   assert.match(out, /\(3 more — pass offset or fetch_all\)/);
   // structuredContent carries the truncated page plus server-side pagination (#52).
-  assert.deepEqual(result.structuredContent!.pagination, {
+  const payload = structured<{ pagination: unknown; items: unknown[] }>(result);
+  assert.deepEqual(payload.pagination, {
     total: 12,
     offset: 0,
     limit: 10,
     next_offset: 2,
   });
-  assert.equal(result.structuredContent!.items.length, 2);
+  assert.equal(payload.items.length, 2);
   // No extra API calls were made — truncation is local shaping only.
   assert.equal(calls.length, 1);
 });
@@ -1632,13 +1670,14 @@ test('get_saved_audiobooks emits structuredContent with pagination (#52)', async
 
   const result = await invoke(findTool(registered, 'get_saved_audiobooks'));
 
-  assert.deepEqual(result.structuredContent!.pagination, {
+  const payload = structured<{ pagination: unknown; items: unknown[] }>(result);
+  assert.deepEqual(payload.pagination, {
     total: 21,
     offset: 0,
     limit: 20,
     next_offset: 1,
   });
-  assert.equal(result.structuredContent!.items.length, 1);
+  assert.equal(payload.items.length, 1);
   assert.match(text(result), /More pages available — pass offset=1 \(20 items left\)/);
 });
 
@@ -1686,7 +1725,7 @@ test('get_several_tracks explains the Feb 2026 removal on 403 instead of a raw e
         ? trackFixture({ id: path.split('/').pop()! })
         : undefined,
   });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
 
   const result = await invoke(findTool(harness.registered, 'get_several_tracks'), { ids: ['trk1', 'trk2'] });
   assert.equal(harness.calls.length, 3, 'one batch call + two per-item calls');
@@ -1720,11 +1759,13 @@ test('get_category forwards country and locale', async () => {
 });
 
 test('search_tracks locks type=track and renders', async () => {
-  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.equal(params.type, 'track'); return { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1', artists: [{ name: 'A' }], album: { name: 'Alb' }, duration_ms: 200000 }], total: 1 } }; } return undefined; } });
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.ok(params, '/search must be called with query params'); assert.equal(params.type, 'track'); return { tracks: { items: [{ id: 't1', name: 'Song', uri: 'spotify:track:t1', artists: [{ name: 'A' }], album: { name: 'Alb' }, duration_ms: 200000 }], total: 1 } }; } return undefined; } });
   const out = text(await invoke(findTool(registered, 'search_tracks'), { query: 'hello' }));
   assert.match(out, /Search tracks for "hello"/);
   assert.match(out, /Song/);
-  assert.equal(calls[0].params.q, 'hello');
+  const searchCall = calls[0];
+  assert.ok(searchCall.params, 'the /search call carried query params');
+  assert.equal(searchCall.params.q, 'hello');
 });
 
 test('search_artists / search_albums / search_playlists / search_shows / search_episodes / search_audiobooks registered and type-locked', async () => {
@@ -1737,10 +1778,12 @@ test('search_artists / search_albums / search_playlists / search_shows / search_
     { tool: 'search_audiobooks', type: 'audiobook', key: 'audiobooks' },
   ];
   for (const k of kinds) {
-    const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.equal(params.type, k.type); return { [k.key]: { items: [{ id: 'x1', name: 'Found', uri: `spotify:${k.type}:x1`, artists: [{ name: 'A' }], owner: { display_name: 'Owner', id: 'o1' }, publisher: 'Pub', show: { name: 'Show' }, authors: [{ name: 'Author' }], duration_ms: 1000 }], total: 1 } }; } return undefined; } });
+    const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/search') { assert.ok(params, '/search must be called with query params'); assert.equal(params.type, k.type); return { [k.key]: { items: [{ id: 'x1', name: 'Found', uri: `spotify:${k.type}:x1`, artists: [{ name: 'A' }], owner: { display_name: 'Owner', id: 'o1' }, publisher: 'Pub', show: { name: 'Show' }, authors: [{ name: 'Author' }], duration_ms: 1000 }], total: 1 } }; } return undefined; } });
     const out = text(await invoke(findTool(registered, k.tool), { query: 'q' }));
     assert.match(out, /Found/);
-    assert.equal(calls[0].params.type, k.type);
+    const searchCall = calls[0];
+    assert.ok(searchCall.params, 'the /search call carried query params');
+    assert.equal(searchCall.params.type, k.type);
   }
 });
 
@@ -1832,7 +1875,7 @@ test('search_tracks keeps the truncation footer consistent with the paging line 
 });
 
 test('catalog_batch_lookup partitions mixed URIs', async () => {
-  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { if (p === '/tracks') return { tracks: params.ids.split(',').map((id) => ({ id, name: `Track ${id}`, uri: `spotify:track:${id}` })) }; if (p === '/artists') return { artists: params.ids.split(',').map((id) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}` })) }; return undefined; } });
+  const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p, params) => { assert.ok(params, 'the batch lookup must be called with query params'); if (p === '/tracks') return { tracks: params.ids.split(',').map((id) => ({ id, name: `Track ${id}`, uri: `spotify:track:${id}` })) }; if (p === '/artists') return { artists: params.ids.split(',').map((id) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}` })) }; return undefined; } });
   const out = text(await invoke(findTool(registered, 'catalog_batch_lookup'), { uris: ['spotify:track:t1', 'spotify:artist:a1'] }));
   assert.match(out, /Batch lookup/);
   assert.match(out, /Track t1/);
@@ -1851,14 +1894,20 @@ test('get_artist_singles calls include_groups=single', async () => {
   const out = text(await invoke(findTool(registered, 'get_artist_singles'), { artist_id: 'art1' }));
   assert.match(out, /Singles for artist/);
   assert.match(out, /Single 1/);
-  assert.equal(calls.find((c) => c.path === '/artists/art1/albums').params.include_groups, 'single');
+  const albumsCall = calls.find((c) => c.path === '/artists/art1/albums');
+  assert.ok(albumsCall, 'get_artist_singles read the albums endpoint');
+  assert.ok(albumsCall.params, 'the albums read carried query params');
+  assert.equal(albumsCall.params.include_groups, 'single');
 });
 
 test('get_artist_appearances calls include_groups=appears_on', async () => {
   const { registered, calls } = makeHarness(registerCatalogTools, { getResponse: (p) => (p === '/artists/art1/albums' ? { items: [{ id: 'ap1', name: 'Feat 1', uri: 'spotify:album:ap1', album_type: 'appears_on', release_date: '2026-01-01' }], total: 1 } : undefined) });
   const out = text(await invoke(findTool(registered, 'get_artist_appearances'), { artist_id: 'art1' }));
   assert.match(out, /Appearances/);
-  assert.equal(calls.find((c) => c.path === '/artists/art1/albums').params.include_groups, 'appears_on');
+  const albumsCall = calls.find((c) => c.path === '/artists/art1/albums');
+  assert.ok(albumsCall, 'get_artist_appearances read the albums endpoint');
+  assert.ok(albumsCall.params, 'the albums read carried query params');
+  assert.equal(albumsCall.params.include_groups, 'appears_on');
 });
 
 test('market_validate validates codes', async () => {
@@ -1880,7 +1929,7 @@ test('market_validate handles 403 gracefully', async () => {
   // runs the contract against the fake client to mirror the production
   // entry point (src/index.ts installs it unconditionally).
   const harness = makeHarness(registerCatalogTools, { getError: (p) => (p === '/markets' ? new SpotifyApiError(403, 'Forbidden') : undefined) });
-  installGatedPathContract(harness.client);
+  installGatedPathContract(harness.client as unknown as SpotifyClient);
   const out = text(await invoke(findTool(harness.registered, 'market_validate'), { markets: ['US'] }));
   assert.match(out, /403|removed|unavailable/i);
 });

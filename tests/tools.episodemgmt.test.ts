@@ -22,6 +22,18 @@ type ToolResult = {
   structuredContent?: Record<string, unknown>;
 };
 
+/**
+ * A tool result whose `structuredContent` has been proved present.
+ *
+ * MCP's `CallToolResult` really does make the field optional, so the tests
+ * that read it were reading a value the type said might not be there — which
+ * is what `?.` and `as` do with an absent field: both are quiet, and a
+ * payload-shaped assertion against no payload passes. Every tool driven here
+ * publishes a payload, so `invoke` asserts that once and the rest of the file
+ * reads a type that says so.
+ */
+type StructuredToolResult = ToolResult & { structuredContent: Record<string, unknown> };
+
 type RegisteredTool = {
   name: string;
   schema: z.ZodRawShape;
@@ -133,21 +145,32 @@ function harness(overrides: { episodes?: EpisodeItem[]; answer?: ElicitationAnsw
     },
   };
   if (overrides.answer !== undefined) {
+    // Read through a `const`. The narrowing of `overrides.answer` above does
+    // not survive into the closure below — `overrides` is a parameter object,
+    // so its properties stay mutable and the `undefined` arm is re-entered on
+    // every call. A local const keeps the narrowing, which is also why the
+    // returned type is `ElicitationAnswer` rather than `… | undefined`.
+    const answer = overrides.answer;
     server.server = {
       getClientCapabilities: () => ({ elicitation: { form: {} } }),
       async elicitInput() {
         prompts += 1;
-        if (overrides.answer instanceof Error) throw overrides.answer;
-        return overrides.answer;
+        if (answer instanceof Error) throw answer;
+        return answer;
       },
     };
   }
   // Test double implements only the registration and elicitation surface used here.
   registerEpisodeMgmtTools(server as unknown as McpServer, client);
-  const invoke = async (name: string, args: unknown) => {
+  const invoke = async (name: string, args: unknown): Promise<StructuredToolResult> => {
     const tool = registered.find((entry) => entry.name === name);
     assert.ok(tool, `tool ${name} not found`);
-    return tool.handler(z.object(tool.schema).parse(args));
+    const out = await tool.handler(z.object(tool.schema).parse(args));
+    assert.ok(
+      out.structuredContent !== undefined,
+      `${name} returned no structuredContent, so every payload assertion below would be reading nothing`,
+    );
+    return out as StructuredToolResult;
   };
   return {
     registered,

@@ -26,7 +26,12 @@ import type { SectionCap } from '../src/shaping.js';
 // Stub plumbing
 // ---------------------------------------------------------------------------
 
-type Responder = (path: string, arg: unknown) => unknown;
+// The harness responder IS the shared stub's `LegacyResponder` — declaring a
+// narrower local `(path, arg: unknown) => unknown` instead made every fixture
+// that narrows `arg` to `Record<string, string>` unassignable, and the file
+// papered over that with `as LegacyResponder` at the one construction site.
+// Naming the real contract here removes the cast and the mismatch with it.
+type Responder = LegacyResponder;
 
 interface RegisteredTool {
   name: string;
@@ -45,7 +50,7 @@ function makeStubClient(responder: Responder = () => null) {
   // the cap comes from `getConfig().fetchAllCap` and the short-page / total
   // breaks are the production ones. This file's hand-copied loop (hardcoded
   // `?? 500`) could not catch a regression in any of that.
-  const client = new StubFromResponder(responder as LegacyResponder);
+  const client = new StubFromResponder(responder);
   return { calls: client.calls, client };
 }
 
@@ -75,7 +80,14 @@ function harness(responder: Responder = () => null) {
     invoke: async (name: string, args: Record<string, unknown> = {}) => {
       const tool = registered.find((t) => t.name === name);
       assert.ok(tool, `tool "${name}" should be registered`);
-      return tool.handler(tool.validate(args));
+      const res = await tool.handler(tool.validate(args));
+      // Every `library_hygiene` exit runs through `shapeResult`, which always
+      // populates `structuredContent`; the optional in the wire type is MCP's,
+      // not this tool's. Proving it ONCE here replaces the `!` that stood in
+      // for the proof at ~30 read sites — and makes a missing payload a named
+      // failure instead of a chain of `undefined` reads.
+      assert.ok(res.structuredContent, `tool "${name}" returned no structuredContent`);
+      return { ...res, structuredContent: res.structuredContent };
     },
   };
 }
@@ -126,6 +138,12 @@ interface TrackSpec {
   albumId: string;
 }
 
+// `SpotifyArtistSimple` and `SpotifyAlbumSimple` require `uri` / `images`
+// because real `GET /me/tracks` rows carry them (`SimplifiedAlbumObject` is
+// `AlbumBase` + artists). The fixture omitted them and `tsx` never checked, so
+// the row it built was narrower than the one production walks.
+const artistSimple = (id: string) => ({ id, name: `Artist ${id}`, uri: `spotify:artist:${id}` });
+
 const likedTrack = (spec: TrackSpec): SavedTrackItem => ({
   added_at: '2026-01-01T00:00:00Z',
   track: {
@@ -135,8 +153,13 @@ const likedTrack = (spec: TrackSpec): SavedTrackItem => ({
     type: 'track',
     duration_ms: 200000,
     explicit: false,
-    artists: [{ id: spec.artistId, name: `Artist ${spec.artistId}` }],
-    album: { id: spec.albumId, name: `Album ${spec.albumId}`, uri: `spotify:album:${spec.albumId}` },
+    artists: [artistSimple(spec.artistId)],
+    album: {
+      id: spec.albumId,
+      name: `Album ${spec.albumId}`,
+      uri: `spotify:album:${spec.albumId}`,
+      images: [],
+    },
   },
 });
 
@@ -155,7 +178,7 @@ const albumFull = (
   album_type: opts.album_type ?? 'album',
   release_date: '2026-01-01',
   total_tracks: opts.total_tracks ?? (opts.trackIds?.length ?? 1),
-  artists: (opts.artistIds ?? ['a1']).map((aid) => ({ id: aid, name: `Artist ${aid}` })),
+  artists: (opts.artistIds ?? ['a1']).map(artistSimple),
   images: [],
   tracks: {
     items: (opts.trackIds ?? []).map((tid) => ({
@@ -165,7 +188,7 @@ const albumFull = (
       duration_ms: 200000,
       explicit: false,
       track_number: 1,
-      artists: [{ id: opts.artistIds?.[0] ?? 'a1', name: `Artist ${opts.artistIds?.[0] ?? 'a1'}` }],
+      artists: [artistSimple(opts.artistIds?.[0] ?? 'a1')],
     })),
     total: opts.trackIds?.length ?? 0,
   },
@@ -184,10 +207,14 @@ function libraryResponder(
   opts: { throttleIds?: readonly string[]; retryAfterSec?: number } = {},
 ) {
   const throttled = new Set(opts.throttleIds ?? []);
-  return (path: string, params?: Record<string, string>) => {
+  // `arg` is `unknown` because `LegacyResponder` also carries POST/PUT bodies;
+  // a `/me/tracks` GET always sends a query object, and `recordOf` says so by
+  // name rather than letting a `?.offset` on a non-object read as offset 0.
+  return (path: string, arg?: unknown) => {
     if (path === '/me/tracks') {
+      const params = recordOf(arg ?? {}, 'GET /me/tracks params');
       const limit = 50;
-      const offset = Number(params?.offset ?? 0);
+      const offset = Number(params.offset ?? 0);
       return {
         items: tracks.slice(offset, offset + limit),
         total: tracks.length,
@@ -304,26 +331,26 @@ describe('library_hygiene coverage boundaries', () => {
 
   it('includes albums at exactly 0.7 coverage (inclusive lower bound)', async () => {
     const out = await buildCase(7, 10);
-    const payload = out.structuredContent!;
-    assert.equal(payload.counts.near_complete, 1);
-    const finding = (payload.near_complete as Array<Record<string, unknown>>)[0];
+    const payload = out.structuredContent;
+    assert.equal(objectAt(payload, 'counts').near_complete, 1);
+    const finding = recordOf(rowsOf(payload.near_complete, 'payload.near_complete')[0], 'near_complete[0]');
     assert.equal(finding.coverage, 0.7);
     assert.match(String(finding.suggestion), /prune the 7 singles/);
   });
 
   it('excludes albums below 0.7 coverage', async () => {
     const out = await buildCase(6, 10);
-    assert.equal(out.structuredContent!.counts.near_complete, 0);
+    assert.equal(objectAt(out.structuredContent, 'counts').near_complete, 0);
   });
 
   it('excludes fully-liked albums (coverage 1.0)', async () => {
     const out = await buildCase(10, 10);
-    assert.equal(out.structuredContent!.counts.near_complete, 0);
+    assert.equal(objectAt(out.structuredContent, 'counts').near_complete, 0);
   });
 
   it('excludes albums just above completeness boundary only up to <1.0', async () => {
     const out = await buildCase(9, 10); // 0.9 → included
-    assert.equal(out.structuredContent!.counts.near_complete, 1);
+    assert.equal(objectAt(out.structuredContent, 'counts').near_complete, 1);
   });
 });
 
@@ -348,14 +375,14 @@ describe('library_hygiene caps and truncation notes', () => {
     let inFlight = 0;
     let peakInFlight = 0;
     const base = libraryResponder(tracks, albums);
-    const h = harness(async (path: string, params?: Record<string, string>) => {
+    const h = harness(async (path: string, arg?: unknown) => {
       inFlight++;
       peakInFlight = Math.max(peakInFlight, inFlight);
       // Yield so overlapping reads are observable rather than collapsed into a
       // synchronous responder that could never show a width above 1.
       await Promise.resolve();
       inFlight--;
-      return base(path, params);
+      return base(path, arg);
     });
     await h.invoke('library_hygiene', {});
 
@@ -463,9 +490,9 @@ describe('library_hygiene orphaned singles', () => {
     };
     const h = harness(libraryResponder(tracks, albums));
     const out = await h.invoke('library_hygiene', {});
-    const payload = out.structuredContent!;
-    assert.equal(payload.counts.orphaned_singles, 1);
-    const finding = (payload.orphaned_singles as Array<Record<string, unknown>>)[0];
+    const payload = out.structuredContent;
+    assert.equal(objectAt(payload, 'counts').orphaned_singles, 1);
+    const finding = recordOf(rowsOf(payload.orphaned_singles, 'payload.orphaned_singles')[0], 'orphaned_singles[0]');
     assert.equal(finding.confidence, 'low');
     assert.equal(finding.track_id, 's1');
     assert.match(textOf(out), /LOW CONFIDENCE/);
@@ -482,7 +509,7 @@ describe('library_hygiene orphaned singles', () => {
     };
     const h = harness(libraryResponder(tracks, albums));
     const out = await h.invoke('library_hygiene', {});
-    assert.equal(out.structuredContent!.counts.orphaned_singles, 0);
+    assert.equal(objectAt(out.structuredContent, 'counts').orphaned_singles, 0);
   });
 
   it('does NOT flag when another track of the SAME release is liked under a different album id', async () => {
@@ -497,7 +524,7 @@ describe('library_hygiene orphaned singles', () => {
     };
     const h = harness(libraryResponder(tracks, albums));
     const out = await h.invoke('library_hygiene', {});
-    assert.equal(out.structuredContent!.counts.orphaned_singles, 0);
+    assert.equal(objectAt(out.structuredContent, 'counts').orphaned_singles, 0);
   });
 
   it('treats short releases (total_tracks <= 3) as singles regardless of album_type', async () => {
@@ -507,7 +534,7 @@ describe('library_hygiene orphaned singles', () => {
     };
     const h = harness(libraryResponder(tracks, albums));
     const out = await h.invoke('library_hygiene', {});
-    assert.equal(out.structuredContent!.counts.orphaned_singles, 1);
+    assert.equal(objectAt(out.structuredContent, 'counts').orphaned_singles, 1);
   });
 });
 
@@ -712,32 +739,34 @@ describe('library_hygiene rate-limited partials (#763)', () => {
     // the row-level assertions below read the json bulk export while the
     // partial-run prose is asserted from the prose mode that renders it.
     const bulk = await h.invoke('library_hygiene', { response_format: 'json' });
-    const payload = bulk.structuredContent!;
+    const payload = bulk.structuredContent;
     const out = await h.invoke('library_hygiene', {});
 
-    assert.equal(payload.album_lookups.rate_limited, true);
-    assert.equal(payload.album_lookups.retry_after_sec, 11);
-    assert.match(payload.album_lookups.rate_limit_message, /Rate limited/);
+    const lookups = objectAt(payload, 'album_lookups');
+    assert.equal(lookups.rate_limited, true);
+    assert.equal(lookups.retry_after_sec, 11);
+    assert.match(String(lookups.rate_limit_message), /Rate limited/);
     assert.match(textOf(out), /PARTIAL: album lookups were rate limited/);
     assert.match(textOf(out), /wait ~11s/);
 
     // 40 of 60 albums resolved; the 20 throttled reads stay unresolved rather
     // than the whole run being lost.
-    const resolved = (payload.groups as Array<{ total_tracks: number | null }>)
-      .filter((g) => g.total_tracks !== null);
-    assert.equal(resolved.length, 40);
-    assert.equal((payload.groups as Array<{ total_tracks: number | null }>)
-      .filter((g) => g.total_tracks === null).length, 20);
+    const groups = rowsOf(payload.groups, 'payload.groups');
+    const unresolvedTotal = (g: unknown) => recordOf(g, 'group').total_tracks === null;
+    assert.equal(groups.filter((g) => !unresolvedTotal(g)).length, 40);
+    assert.equal(groups.filter(unresolvedTotal).length, 20);
     // The prose mode withheld them, and said so with the exact count rather
     // than shipping an empty array that would read as "no albums found".
-    const prosePayload = out.structuredContent!;
+    const prosePayload = out.structuredContent;
     assert.equal(prosePayload.groups, undefined);
-    const proseSections = prosePayload.sections as Record<string, { withheld?: boolean; total: number }>;
-    assert.equal(proseSections.groups.withheld, true);
-    assert.equal(proseSections.groups.total, 60);
+    const proseSections = objectAt(prosePayload, 'sections');
+    assert.equal(recordOf(proseSections.groups, 'sections.groups').withheld, true);
+    assert.equal(recordOf(proseSections.groups, 'sections.groups').total, 60);
     // #1224: the throttled ids are named with their reason, so a caller can
     // tell a rate-limited read from an album with no track total.
-    const unresolved = payload.album_lookups.unresolved as Array<{ id: string; status: number | null }>;
+    const unresolved = rowsOf(lookups.unresolved, 'album_lookups.unresolved').map((u) =>
+      recordOf(u, 'album_lookups.unresolved[]'),
+    );
     assert.deepEqual(unresolved.map((u) => u.id).sort(), [...throttled].sort());
     assert.ok(unresolved.every((u) => u.status === 429));
     assert.match(textOf(out), /20 album reads failed/);

@@ -94,11 +94,18 @@ function installWireStub(): void {
 }
 
 /** A server whose one tool performs a real authenticated GET /me. */
-async function harness(): Promise<Client> {
+// `Client` was destructured out of `await import(...)` at the top of this file,
+// which yields a value and not a type. `InstanceType<typeof Client>` is the
+// same class as a type position here, and says which one is meant.
+async function harness(): Promise<InstanceType<typeof Client>> {
   const server = new McpServer({ name: 'refresh-classification', version: '0.0.0' });
   server.tool('get_me', 'Read the current user.', async () => {
     const client = new SpotifyClient();
-    return await client.get('/me');
+    // See the note in token-failure-classification.test.ts: a tool callback
+    // returns a `CallToolResult`, and `get<T>()`'s unconstrained `T` is what
+    // let the raw body stand in for one without the compiler noticing.
+    const me = await client.get<Record<string, unknown>>('/me');
+    return { content: [{ type: 'text', text: JSON.stringify(me) }], structuredContent: me ?? {} };
   });
   installToolErrorBoundary(server);
 

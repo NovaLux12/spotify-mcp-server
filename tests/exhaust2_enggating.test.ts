@@ -2,7 +2,9 @@ import './helpers/hermetic.js';
 
 import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
-import { SpotifyApiError } from '../src/client.js';
+import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
+import { DEFAULT_TOKEN_FILE } from './helpers/hermetic.js';
 import { GATED_PATH_PATTERNS, graceful403Message, installGatedPathContract, isGatedError, isGatedPath } from '../src/gating.js';
 import { registerExhaust2EnggatingTools } from '../src/tools/exhaust2_enggating.js';
 import { registerExhaust2CatalogTools } from '../src/tools/exhaust2_catalog.js';
@@ -13,21 +15,45 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { StdioJsonRpcChild } from './helpers/stdio-child.js';
+import { structured } from './helpers/structured.js';
 
 type ToolContent = { content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> };
 type RegisteredTool = { name: string; description: string; schema: Record<string, unknown>; handler: (a: Record<string, unknown>) => Promise<ToolContent> };
 type Call = { method: string; path: string; params?: Record<string, string> };
 
 interface FakeClient {
+  // Mirrored from the real `SpotifyClient.tokenFile: string` (src/client.ts).
+  // The account stores key by it (#1385), so a double without it is not a
+  // client the stores can route through.
+  tokenFile: string;
   get: (path: string, params?: Record<string, string>, opts?: { priority?: 'normal' | 'low' }) => Promise<unknown>;
   getAllPages: (path: string, params?: Record<string, string>) => Promise<unknown[]>;
   calls: Call[];
 }
 
-function makeFakeClient(respond?: (path: string, params?: Record<string, string>) => unknown): FakeClient {
+/**
+ * The registrar's `client` parameter, as the value this file hands it.
+ *
+ * `SpotifyClient` is a CLASS with private state (the 429 queue, the TTL cache,
+ * the token loader), so no structural double can satisfy it — and this double
+ * is deliberately structural, because its job is to record the calls that
+ * `installGatedPathContract` wraps. The cast is therefore confined to the one
+ * place the two meet: the object literal is still built and checked as a
+ * `FakeClient` first, so the members it claims are verified, and `calls`
+ * survives into the return type so assertions read the real log.
+ *
+ * What the cast stops catching: changes to the ~65 members of `SpotifyClient`
+ * this file never invokes. The alternative was that cast at each of the 11
+ * call sites, which is 11 chances to cast the wrong thing.
+ */
+type RegistrarClient = SpotifyClient & Pick<FakeClient, 'calls'>;
+
+function makeFakeClient(respond?: (path: string, params?: Record<string, string>) => unknown): RegistrarClient {
   const calls: Call[] = [];
   const self: FakeClient = {
     calls,
+    // The real SpotifyClient always sets this at construction (#1385).
+    tokenFile: DEFAULT_TOKEN_FILE,
     get: async (path, params) => {
       calls.push({ method: 'GET', path, params });
       const out = respond ? respond(path, params) : null;
@@ -41,14 +67,21 @@ function makeFakeClient(respond?: (path: string, params?: Record<string, string>
       return page?.items ?? [];
     },
   };
-  return self;
+  return self as unknown as RegistrarClient;
 }
 
-function makeServer(registered: RegisteredTool[]): unknown {
+/**
+ * The recording double for the registrar's `server` argument.
+ *
+ * Cast ONCE here rather than at each registration: the cast is a claim about
+ * this file's harness (a `tool()` recorder, not an SDK server), and the
+ * literal is still checked against `RegisteredTool` first.
+ */
+function makeServer(registered: RegisteredTool[]): McpServer {
   return {
     tool: (name: string, description: string, schema: Record<string, unknown>, handler: RegisteredTool['handler']) =>
       registered.push({ name, description, schema, handler }),
-  };
+  } as unknown as McpServer;
 }
 
 function find(registered: RegisteredTool[], name: string): RegisteredTool {
@@ -668,8 +701,11 @@ function browseCallers(respond: (path: string) => unknown): Map<string, Register
   const client = makeFakeClient((path) => respond(path));
   installGatedPathContract(client);
   const registered: RegisteredTool[] = [];
-  registerCatalogTools(makeServer(registered) as never, client as never);
-  registerExhaust2CatalogTools(makeServer(registered) as never, client as never);
+  // No `as never` here: both factories now return the types the registrars
+  // declare, so a change to either signature is a compile error in this file
+  // rather than something the cast was swallowing.
+  registerCatalogTools(makeServer(registered), client);
+  registerExhaust2CatalogTools(makeServer(registered), client);
   const names = ['get_category', 'browse_category_deepdive', 'category_resolver'];
   return new Map(names.map((name) => [name, find(registered, name)]));
 }
@@ -800,6 +836,13 @@ test('#1359 a healthy page still resolves the best match', async () => {
       : null,
   );
   const out = await resolver.handler({ text: 'chill' });
-  assert.equal(out.structuredContent?.best_match?.id, 'chill');
+  // `best_match` is `{ id, name, score } | null` on the wire
+  // (exhaust2_catalog.ts), and `structuredContent` is an untyped record, so
+  // both levels are narrowed here rather than read through `?.` — the point of
+  // this test is that a match IS found, and `undefined?.id` would have passed
+  // just as happily as the id it is checking.
+  const best = structured<{ best_match: { id: string; name: string; score: number } | null }>(out).best_match;
+  assert.ok(best, 'an exact category id must resolve to a best match');
+  assert.equal(best.id, 'chill');
   assert.match(text(out), /Best match for "chill"/);
 });

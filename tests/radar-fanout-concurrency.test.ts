@@ -38,6 +38,7 @@ import { registerShowRadarTools, resetProfileCountryCache } from '../src/tools/s
 import { registerArtistWatchTools } from '../src/tools/artistwatch.js';
 import { registerSearchDeepTool } from '../src/tools/searchdive.js';
 import { DEFAULT_MAX_CONCURRENCY, MAX_CONCURRENCY_CEILING, initConfig } from '../src/config.js';
+import { structured } from './helpers/structured.js';
 
 // ---------------------------------------------------------------------------
 // Clock-free concurrency
@@ -319,7 +320,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     await withFanout(2, async () => {
       const h = showRadarHarness({ shows: 6 });
       const out = await h.invoke();
-      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      const p = structured<{ fanout_concurrency: number; fanout_concurrency_source: string; shows_scanned: number }>(out);
       assert.equal(p.fanout_concurrency, 2);
       assert.equal(p.fanout_concurrency_source, 'SPOTIFY_MCP_FANOUT_CONCURRENCY');
       assert.equal(h.gauge.peak, 2);
@@ -345,7 +346,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     await withFanout(2, async () => {
       const h = showRadarHarness({ shows: 6 });
       const out = await h.invoke();
-      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      const p = structured<{ fanout_concurrency: number; fanout_concurrency_source: string; shows_scanned: number }>(out);
       assert.equal(p.fanout_concurrency, 3);
       assert.equal(p.fanout_concurrency_source, 'SPOTIFY_MCP_MAX_CONCURRENCY');
       // The bound must be the one reported, not merely the one configured:
@@ -363,7 +364,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     await withFanout(1, async () => {
       const h = showRadarHarness({ shows: 8 });
       const out = await h.invoke();
-      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      const p = structured<{ fanout_concurrency: number; fanout_concurrency_source: string; shows_scanned: number }>(out);
       assert.equal(p.fanout_concurrency, 8);
       assert.equal(p.fanout_concurrency_source, 'SPOTIFY_MCP_MAX_CONCURRENCY');
       assert.equal(h.gauge.peak, 8);
@@ -379,7 +380,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     await withFanout(undefined, async () => {
       const h = showRadarHarness({ shows: 6 });
       const out = await h.invoke();
-      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      const p = structured<{ fanout_concurrency: number; fanout_concurrency_source: string; shows_scanned: number }>(out);
       assert.equal(p.fanout_concurrency, DEFAULT_MAX_CONCURRENCY);
       // Nothing was set, so nothing may be reported as the source.
       assert.equal(p.fanout_concurrency_source, 'default');
@@ -395,7 +396,7 @@ describe('show_new_episodes fan-out (#783)', () => {
     await withFanout(undefined, async () => {
       const h = showRadarHarness({ shows: 6 });
       const out = await h.invoke();
-      const p = out.structuredContent as { fanout_concurrency: number; fanout_concurrency_source: string };
+      const p = structured<{ fanout_concurrency: number; fanout_concurrency_source: string; shows_scanned: number }>(out);
       assert.equal(p.fanout_concurrency, MAX_CONCURRENCY_CEILING);
       assert.equal(p.fanout_concurrency_source, 'SPOTIFY_MCP_MAX_CONCURRENCY');
       // The scan cannot peak above the shows it has, so the observable

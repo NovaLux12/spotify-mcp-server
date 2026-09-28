@@ -98,8 +98,13 @@ beforeEach(() => {
 
 interface CapturedTool {
   name: string;
-  /** The tool's declared input shape, as the registrar passed it. */
-  shape: z.ZodRawShape;
+  /**
+   * The tool's declared input shape, as the registrar passed it. Typed as the
+   * named members rather than `z.ZodRawShape` so a reader can ask a field
+   * about itself (`receipt_id.isOptional()`); `ZodRawShape`'s values are
+   * zod v4's internal `$ZodType`, which has no such method.
+   */
+  shape: Record<string, z.ZodType>;
   validate: (args: unknown) => Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<ToolOutput>;
 }
@@ -134,16 +139,19 @@ function fakeServer(opts: { canConfirm?: boolean } = {}): {
     schemaOrHandler: unknown,
     maybeHandler?: unknown,
   ) => {
-    // Two call shapes: tool(name, description, shape, handler) and
-    // registerTool(name, config, handler).
+    // Two call shapes: tool(name, description, shape, handler) — the raw
+    // shape the undo tools use — and registerTool(name, config, handler),
+    // whose `inputSchema` is a whole OBJECT schema, so its declared keys are
+    // on `.shape`. Storing the object schema itself as the shape would make
+    // `Object.keys` report zod's internals instead of the tool's parameters.
     const handler = maybeHandler ?? schemaOrHandler;
-    const shape = maybeHandler === undefined ? descriptionOrConfig : schemaOrHandler;
-    const parse = maybeHandler === undefined
-      ? (args: unknown) => args
-      : (args: unknown) => z.object(shape as z.ZodRawShape).parse(args);
+    const declared = (maybeHandler === undefined ? descriptionOrConfig : schemaOrHandler) as Record<string, z.ZodType>;
+    const parse: CapturedTool['validate'] = maybeHandler === undefined
+      ? (args) => (args ?? {}) as Record<string, unknown>
+      : (args) => z.object(declared).parse(args);
     tools.push({
       name,
-      shape: (maybeHandler === undefined ? descriptionOrConfig : schemaOrHandler) as z.ZodRawShape,
+      shape: declared,
       validate: parse,
       handler: handler as CapturedTool['handler'],
     });
@@ -153,7 +161,7 @@ function fakeServer(opts: { canConfirm?: boolean } = {}): {
     tool: (name: string, description: string, shape: z.ZodRawShape, handler: CapturedTool['handler']) =>
       capture(name, description, shape, handler),
     registerTool: (name: string, config: { inputSchema?: z.ZodType }, handler: CapturedTool['handler']) =>
-      capture(name, config, config.inputSchema, handler),
+      capture(name, config, (config.inputSchema as z.ZodObject<z.ZodRawShape>).shape, handler),
     server: opts.canConfirm === false
       ? undefined
       : {

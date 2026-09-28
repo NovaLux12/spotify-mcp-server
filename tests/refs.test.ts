@@ -17,6 +17,9 @@ import { McpServer as McpServerImpl } from '@modelcontextprotocol/sdk/server/mcp
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { installToolErrorBoundary } from '../src/tools/annotations.js';
+
+/** `SPOTIFY_REFERENCE_KINDS` as a membership test over an arbitrary string. */
+const VOCABULARY: ReadonlySet<string> = new Set(SPOTIFY_REFERENCE_KINDS);
 import { registerSwarm3AnalyticsTools } from '../src/tools/swarm3_analytics.js';
 import type { SpotifyClient } from '../src/client.js';
 
@@ -219,7 +222,11 @@ describe('playlist reference shaping', () => {
       `https://open.spotify.com/playlist/${ID}/extra`,
     ]) {
       assert.equal(classifySpotifyReference(reference, 'playlist').valid, false, reference);
-      assert.throws(() => normalizePlaylistReference(reference), undefined, reference);
+      // Two args, not three: with an `undefined` in the middle this picks the
+      // overload whose second parameter is a required `AssertPredicate`.
+      // The message is the third position of the predicate overload, so the
+      // reference is what the reader needs either way.
+      assert.throws(() => normalizePlaylistReference(reference), reference);
     }
   });
 
@@ -571,7 +578,13 @@ describe('the kind vocabulary is a closed set (#584)', () => {
       if (uri === null) continue;
       const kind = uri.slice('spotify:'.length, uri.lastIndexOf(':'));
       assert.ok(
-        SPOTIFY_REFERENCE_KINDS.includes(kind),
+        // A `Set`, not `SPOTIFY_REFERENCE_KINDS.includes(kind)`: the exported
+        // constant is a literal tuple, so `.includes` wants one of those eight
+        // literals and `kind` is whatever came out of the URI. Widening the
+        // argument to the reference-kind type would be the same membership
+        // test with the compiler switched off; the set keeps it a real one and
+        // stays correct if a kind is ever added to the vocabulary.
+        VOCABULARY.has(kind),
         `spotifyUri emitted a non-vocabulary kind ${JSON.stringify(kind)} in ${uri}`,
       );
     }

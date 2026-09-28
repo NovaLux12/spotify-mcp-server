@@ -43,7 +43,10 @@ function harness(registry: Record<string, unknown>): Map<string, Handler> {
       return { name };
     },
   };
-  registerSwarm3MetaTools(server as never, {} as never);
+  // One parameter: the server. The second `{} as never` was padding a call
+  // that never had a second parameter, which is what a compile error should
+  // have said and was not saying because the argument was already `never`.
+  registerSwarm3MetaTools(server as never);
   return handlers;
 }
 

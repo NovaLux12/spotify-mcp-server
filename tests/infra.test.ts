@@ -424,7 +424,11 @@ describe('client: read cache keys (#678)', () => {
     assert.equal(client.cache?.size, 1, 'reordered params created a second cache entry');
 
     // A changed VALUE must not collide with the cached entry.
+    // `get<T>` is declared `T | null`; assert the body arrived before reading
+    // `.call` off it, so a null here is a named failure rather than a
+    // TypeError on undefined.
     const other = await client.get<{ call: number }>('/albums', { limit: '5', offset: '20' });
+    assert.ok(other, 'the changed-params request returned no body');
     assert.equal(other.call, 2, 'a changed param value reused the cached response');
     assert.equal(client.cache?.size, 2);
   });

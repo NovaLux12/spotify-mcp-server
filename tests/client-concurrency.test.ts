@@ -60,6 +60,12 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+// See the sibling `client.test.ts`: `SpotifyApiError` is destructured from an
+// `await import`, so it is a VALUE here and cannot be named in a type position.
+// This `import type` alias is the same class as a type, and being erased at
+// runtime it leaves the env-before-import ordering alone.
+import type { SpotifyApiError as SpotifyApiErrorType } from '../src/client.ts';
+
 // Env MUST be set before any token read: getTokenFilePath() resolves per call.
 const tokenDir = await mkdtemp(path.join(tmpdir(), 'spotify-mcp-concurrency-test-'));
 process.env.SPOTIFY_MCP_TOKEN_FILE = path.join(tokenDir, 'tokens.json');
@@ -421,7 +427,7 @@ describe('request funnel — bounded concurrency and the shared start gate (#892
       );
       for (const result of results) {
         assert.equal(result.status, 'rejected');
-        const err = (result as PromiseRejectedResult).reason as SpotifyApiError;
+        const err = (result as PromiseRejectedResult).reason as SpotifyApiErrorType;
         assert.ok(err instanceof SpotifyApiError);
         assert.equal(err.status, 429);
         assert.equal(typeof err.retryAfterSec, 'number', 'the caller is told how long to wait');
@@ -447,7 +453,7 @@ describe('request funnel — bounded concurrency and the shared start gate (#892
         issuedBefore,
         'the refused request was never sent — no fetch was issued behind the wall',
       );
-      const lateErr = (lateResults[0] as PromiseRejectedResult).reason as SpotifyApiError;
+      const lateErr = (lateResults[0] as PromiseRejectedResult).reason as SpotifyApiErrorType;
       assert.equal(lateErr.status, 429);
       assert.ok(lateErr.retryAfterSec! > 0, 'even a refused call carries the wait');
     });
@@ -485,7 +491,7 @@ describe('request funnel — bounded concurrency and the shared start gate (#892
         'a run of consecutive 429s is answered, not waited out',
       );
       for (const result of results) {
-        const err = (result as PromiseRejectedResult).reason as SpotifyApiError;
+        const err = (result as PromiseRejectedResult).reason as SpotifyApiErrorType;
         assert.ok(err instanceof SpotifyApiError);
         assert.equal(err.status, 429);
         assert.ok(err.retryAfterSec! > 0, 'even a refused call carries the wait');

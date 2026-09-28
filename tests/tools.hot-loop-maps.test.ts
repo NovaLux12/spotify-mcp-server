@@ -66,9 +66,13 @@ async function countScans(fn: () => Promise<unknown>): Promise<{ counts: ScanCou
   Array.prototype.includes = function patchedIncludes(
     this: unknown[],
     ...args: Parameters<typeof realIncludes>
-  ): unknown {
+  ): boolean {
     counts.includes++;
-    return (realIncludes as (...a: unknown[]) => unknown).apply(this, args);
+    // `Array.prototype.includes` is declared to return `boolean`, so the
+    // wrapper has to as well — a patch typed `unknown` is not assignable to
+    // it, which made the COUNTER the compile error rather than the code it
+    // exists to count. The forwarded call really does return a boolean.
+    return (realIncludes as (...a: unknown[]) => boolean).apply(this, args);
   };
   try {
     await fn();
@@ -124,7 +128,12 @@ function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 
   // copy would have applied. The shared stub runs the production walk, so the
   // cap it honours is the real configured one and the workaround is now load
   // bearing for the right reason.
-  const client = new StubSpotifyClient();
+  // `Object.assign` rather than a follow-up `as unknown as { writes }`: the
+  // intersection it returns is part of the inferred type, so callers reading
+  // `client.writes` are checked. Bolting the field on afterwards with a cast
+  // left it invisible to every reader, which is how a typo in `writes` reached
+  // a test that asserted on it.
+  const client = Object.assign(new StubSpotifyClient(), { writes });
   const record = (method: RecordedWrite['method']) => (call: { path: string; arg?: unknown }) => {
     writes.push({ method, path: call.path, body: call.arg });
   };
@@ -152,7 +161,6 @@ function makeClient(playlists: Record<string, PlaylistItemObject[]>, pageSize = 
   client.route('POST', /^.*$/, { respond: (call) => { record('POST')(call); return { snapshot_id: 'snap' }; } });
   client.route('PUT', /^.*$/, { respond: (call) => { record('PUT')(call); return { snapshot_id: 'snap' }; } });
   client.route('DELETE', /^.*$/, { respond: (call) => { record('DELETE')(call); return null; } });
-  (client as unknown as { writes: RecordedWrite[] }).writes = writes;
   return client;
 }
 
@@ -168,12 +176,16 @@ function fakeServer(registered: Registered) {
     },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      // `inputSchema` is an OBJECT schema, so its parse output is the
+      // validated argument record — a bare `z.ZodType` erases that to
+      // `unknown`, which is why the `parse` below needed a cast and then
+      // failed the assignment to `validate`.
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: (a: Record<string, unknown>) => Promise<ToolOut>,
     ) {
       registered.push({
         name,
-        validate: (a) => (config.inputSchema as z.ZodType).parse(a),
+        validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a),
         handler,
       });
     },
@@ -743,9 +755,12 @@ describe('groupSessions de-duplication (#903)', () => {
     const streams = streamFixture();
     let calls = 0;
     const real = Array.prototype.includes;
-    Array.prototype.includes = function patched(this: unknown[], ...args: Parameters<typeof real>): unknown {
+    // `boolean`, not `unknown`: that is what `Array.prototype.includes` is
+    // declared to return, so the patch must be assignable to the slot it
+    // replaces (see the same wrapper in `countScans` above).
+    Array.prototype.includes = function patched(this: unknown[], ...args: Parameters<typeof real>): boolean {
       calls++;
-      return (real as (...a: unknown[]) => unknown).apply(this, args);
+      return (real as (...a: unknown[]) => boolean).apply(this, args);
     };
     try {
       groupSessions(streams);

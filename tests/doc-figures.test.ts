@@ -37,6 +37,7 @@ import {
   registryScaleToolCounts,
   scannableFiles,
 } from '../scripts/check-doc-tool-counts.mjs';
+import type { ToolCountCensus } from '../scripts/check-doc-tool-counts.mjs';
 import {
   AGGREGATE_SURFACE_LIMITS,
   TOOL_SURFACE_BUDGET,
@@ -564,9 +565,13 @@ function censusJson(): string {
   return cachedCensusFile;
 }
 
-function census(): Record<string, any> {
+// The census is a JSON blob, so it arrives untyped. Naming the two fields the
+// floor contract is argued from (the gate's own `ToolCountCensus`) means a
+// census that renames or drops them fails here rather than reading `undefined`
+// inside an assertion and passing vacuously.
+function census(): ToolCountCensus {
   censusJson();
-  return cachedCensus as Record<string, any>;
+  return cachedCensus as unknown as ToolCountCensus;
 }
 
 /**

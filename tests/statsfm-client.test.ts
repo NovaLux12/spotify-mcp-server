@@ -134,7 +134,11 @@ describe('the query builder is what actually goes on the wire', () => {
     // a source change here (#666 is a coverage issue). Pinned so a future
     // tidy-up is a decision, not a silent diff.
     const h = recordingClient(() => json({ items: [] }));
-    await h.client.get('/users/u', { a: undefined, b: null } as Record<string, string | number>);
+    // `as unknown as`, and deliberately: the client's parameter type forbids
+    // nullish values, and the whole point of this case is to pin that it
+    // drops them anyway. The two-step says "out of contract"; a single
+    // `as` is rejected outright because the shapes do not overlap.
+    await h.client.get('/users/u', { a: undefined, b: null } as unknown as Record<string, string | number>);
     assert.equal(h.lastUrl(), `${BASE}/users/u?`, 'neither undefined nor null may reach the wire');
 
     await h.client.get('/users/u', {});

@@ -102,8 +102,8 @@ function harness(seed: Record<string, SeededPlaylist>, opts: HarnessOptions = {}
     tool(name: string, description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
       registered.push({ name, description, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-      registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+      registered.push({ name, description: config.description ?? '', validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
     ...(canElicit
       ? {
@@ -490,7 +490,13 @@ describe('#881 the fetch-all cap is real, and the union path says so', () => {
       assert.equal(sc(out).scan_cap, cap, 'the payload names the cap that bound the walk');
       assert.match(textOf(out), new RegExp(`reached the configured cap of ${cap} rows`));
       assert.equal(sc(out).total, cap, 'the union carries the cap worth of rows, not the 600 the playlist holds');
-      assert.equal(sc(out).uris.length, 3, 'the render cap is separate from the read cap');
+      // `sc` hands back the payload as an untyped record, so `uris` is
+      // `unknown` until something says it is an array. `assert.equal(3)`
+      // against `undefined.length` would throw rather than compare, and the
+      // claim being made is that the tool rendered three uris.
+      const rendered = sc(out).uris;
+      assert.ok(Array.isArray(rendered), `rendered uris must be an array, got ${JSON.stringify(rendered)}`);
+      assert.equal(rendered.length, 3, 'the render cap is separate from the read cap');
       assert.deepEqual(h.stub.logOf(B).replaces, [], 'a dry run issues no write whatever the cap did');
     } finally {
       /* no session state to release */

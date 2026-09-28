@@ -129,6 +129,13 @@ interface PropertySchema {
   readonly description?: string;
   readonly items?: PropertySchema;
   readonly anyOf?: readonly PropertySchema[];
+  /**
+   * Present on every object-shaped node, and the whole point of `childNamed`:
+   * an arm of a union is reached THROUGH its `properties`. The mirror omitted
+   * it, so descending `a.b.c` silently stopped at depth two instead of
+   * failing loudly.
+   */
+  readonly properties?: Record<string, PropertySchema>;
 }
 
 interface LiveSchema {

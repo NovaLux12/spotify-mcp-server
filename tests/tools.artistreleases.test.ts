@@ -35,6 +35,11 @@ process.env.SPOTIFY_MCP_FRESHNESS_STATE = path.join(stateDir, 'freshness.json');
 process.env.SPOTIFY_MCP_READONLY = '';
 
 const { SpotifyClient } = await import('../src/client.ts');
+// Destructured out of `await import(...)`, so `SpotifyClient` names a value
+// and not a class type. `InstanceType<typeof ...>` is the same class in a
+// type position - and unlike `as any`, it still checks every constructor
+// argument at each `new` below.
+type SpotifyClientInstance = InstanceType<typeof SpotifyClient>;
 const { getTokenFilePath } = await import('../src/auth.ts');
 const tokenPath = getTokenFilePath();
 const { LruTtlCache, cacheKey } = await import('../src/cache.ts');
@@ -114,7 +119,7 @@ type Handler = (args: Record<string, unknown>) => Promise<ToolResult>;
  * one tool is visible to the next. Registering them separately is what hides
  * the duplication the issue is about.
  */
-function harness(client: SpotifyClient): Map<string, Handler> {
+function harness(client: SpotifyClientInstance): Map<string, Handler> {
   const handlers = new Map<string, Handler>();
   const server = {
     tool(name: string, _d: string, schema: unknown, handler: Handler) {
@@ -203,7 +208,7 @@ function respondFor(artists: Array<[string, string]>, followed: string[] = artis
  * that reached the wire for ARTIST_A. Each call site must be observed on its
  * own request, which a shared client would hide behind the cache.
  */
-async function runIsolated(run: (client: SpotifyClient) => Promise<ToolResult>): Promise<string[]> {
+async function runIsolated(run: (client: SpotifyClientInstance) => Promise<ToolResult>): Promise<string[]> {
   const client = new SpotifyClient();
   await run(client);
   return fetchUrls
@@ -290,7 +295,7 @@ describe('canonical artist-release probe: shared across tools (#900)', () => {
     // One client PER TOOL, so each call site actually reaches the wire: on one
     // shared client the second tool's probes are cache hits and never appear
     // in the captured URLs, which would make this assertion vacuous.
-    const calls: Array<(c: SpotifyClient) => Promise<ToolResult>> = [
+    const calls: Array<(c: SpotifyClientInstance) => Promise<ToolResult>> = [
       (c) => harness(c).get('whats_new')!({ days_back: 60, kinds: ['albums'], max_artists: 5 }),
       (c) => harness(c).get('artist_name_disambiguator')!({ name: 'Artist AAA', candidates_cap: 1 }),
       (c) => harness(c).get('new_music_from_top_artists')!({ days: 365, artists_cap: 1 }),

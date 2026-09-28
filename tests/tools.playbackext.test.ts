@@ -18,7 +18,9 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
   let wrote = false;
   // Mirror the real paged walks so the verdict the tool reports is the one
   // the walk actually produced — not a canned constant (#1092).
-  const saved = overrides.saved ?? [];
+  // Element types, not `any`: an untyped `?? []` makes every downstream
+  // callback parameter implicit-any and stops the row shape being checked.
+  const saved: Array<Record<string, unknown>> = overrides.saved ?? [];
   let playlistSeq = 0;
   const client = {
     async get(path: string, params?: Record<string, string>) {
@@ -80,12 +82,12 @@ function makeClient(overrides: Partial<Record<string, any>> = {}) {
       // not a bare show object — so wrap the test's shows here, where the
       // harness is responsible for the row shape.
       if (path === '/me/shows') {
-        const shows = overrides.savedShows ?? [];
+        const shows: Array<Record<string, unknown>> = overrides.savedShows ?? [];
         const maxItems = opts?.maxItems ?? 500;
         return shows.slice(0, maxItems).map((s) => ({ added_at: '2026-01-01T00:00:00Z', show: s }));
       }
       if (path === '/me/episodes') {
-        const eps = overrides.savedEpisodes ?? [];
+        const eps: string[] = overrides.savedEpisodes ?? [];
         const maxItems = opts?.maxItems ?? 500;
         return eps.slice(0, maxItems).map((uri) => ({ added_at: '2026-01-02T00:00:00Z', episode: { uri } }));
       }

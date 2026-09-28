@@ -147,8 +147,8 @@ function harness(): { invoke: (name: string, args?: Record<string, unknown>) => 
       const handler = (typeof annotationsOrHandler === 'function' ? annotationsOrHandler : maybeHandler) as Handler;
       registered.push({ name, validate: (args) => z.object(schema).parse(args), handler });
     },
-    registerTool(name: string, config: { inputSchema?: z.ZodType }, handler: Handler) {
-      registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType).parse(args), handler });
+    registerTool(name: string, config: { inputSchema?: z.ZodType<Record<string, unknown>> }, handler: Handler) {
+      registered.push({ name, validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args), handler });
     },
     async elicitInput() {
       return { action: 'accept', content: { confirm: true } };

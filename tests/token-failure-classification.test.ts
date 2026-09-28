@@ -551,11 +551,22 @@ interface ErrorResult {
 let closeHarness: (() => Promise<void>) | undefined;
 
 /** A server whose one tool performs a real authenticated GET /me. */
-async function harness(): Promise<Client> {
+// `Client` was destructured out of `await import(...)` at the top of this file,
+// which yields a value and not a type. `InstanceType<typeof Client>` is the
+// same class as a type position here, and says which one is meant.
+async function harness(): Promise<InstanceType<typeof Client>> {
   const server = new McpServer({ name: 'token-classification', version: '0.0.0' });
   server.tool('get_me', 'Read the current user.', async () => {
     const client = new SpotifyClient({ disableCache: true });
-    return await client.get('/me');
+    // A tool callback's return type is `CallToolResult`; the raw parsed body
+    // is not one. `get<T>()` is generic with an unconstrained `T`, so the bare
+    // `await client.get('/me')` typed as `unknown` and the compiler could not
+    // see the mismatch. These tests are entirely about the FAILING path (every
+    // case drives a bad token into a 401 and asserts the classified envelope),
+    // but the success path still has to be a legal tool return rather than
+    // something that only slips through because nothing checks it.
+    const me = await client.get<Record<string, unknown>>('/me');
+    return { content: [{ type: 'text', text: JSON.stringify(me) }], structuredContent: me ?? {} };
   });
   installToolErrorBoundary(server);
 

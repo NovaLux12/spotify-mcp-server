@@ -74,13 +74,13 @@ function harness(responder: Responder = () => null) {
     },
     registerTool(
       name: string,
-      config: { description?: string; inputSchema?: z.ZodType },
+      config: { description?: string; inputSchema?: z.ZodType<Record<string, unknown>> },
       handler: RegisteredTool['handler'],
     ) {
       registered.push({
         name,
         description: config.description ?? '',
-        validate: (args) => (config.inputSchema as z.ZodType).parse(args),
+        validate: (args) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(args),
         handler,
       });
     },

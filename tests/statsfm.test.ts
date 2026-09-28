@@ -192,13 +192,16 @@ test('StatsfmClient preserves typed 404 and 429 metadata', async () => {
 });
 
 test('StatsfmClient redacts response messages and preserves classified failure metadata', async () => {
-  const cases = [
+  // Typed rather than `as const`: with the tuple form, `retryAfter` existed on
+  // exactly the two rows that declare it, and the other three read as a type
+  // error even though "this error carries no backoff" is the claim.
+  const cases: ReadonlyArray<{ status: number; reason: string; retryAfter?: number }> = [
     { status: 401, reason: 'AUTHENTICATION_REQUIRED' },
     { status: 403, reason: 'ACCESS_FORBIDDEN' },
     { status: 404, reason: 'RESOURCE_NOT_FOUND' },
     { status: 429, reason: 'QUOTA_EXCEEDED', retryAfter: 29 },
     { status: 503, reason: 'SERVICE_UNAVAILABLE' },
-  ] as const;
+  ];
 
   for (const expected of cases) {
     const client = new StatsfmClient(

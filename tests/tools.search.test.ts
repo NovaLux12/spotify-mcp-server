@@ -33,7 +33,9 @@ const HISTORY_ENTRY = z.object({
   offset: z.number().optional(),
 });
 
-async function readHistory({ tokenFile: DEFAULT_TOKEN_FILE }) {
+// The token file is named in the shape so the fixture cannot quietly change
+// which store this reads; the body resolves the history file from config.
+async function readHistory({ tokenFile }: { tokenFile: string }) {
   return z.array(HISTORY_ENTRY).parse(JSON.parse(await readFile(historyFile, 'utf8')));
 }
 

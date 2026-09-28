@@ -333,7 +333,7 @@ describe('swarm3b timeline and anniversary edge cases', () => {
       constructor(value?: string | number) {
         super(value === undefined ? fixedMs : value);
       }
-      static now(): number {
+      static override now(): number {
         return fixedMs;
       }
     }
@@ -635,10 +635,29 @@ describe('swarm3 discovery market parameters use the validated shared code (#775
   ] as const) {
     it(`rejects "usa" and uppercases "us" on all ${expected} market-bearing tools`, () => {
       const h = makeHarness(register, () => null);
-      const withMarket = h.registered.filter((t) => (t.schema as Record<string, { safeParse(v: unknown): { success: boolean; data?: unknown } }>).market);
+      // `Registered.schema` is `z.ZodRawShape | z.ZodType`, and a raw shape is
+      // NOT a `ZodType` - so the cast this used to do was claiming a shape
+      // could be a schema. Naming which one it is, and returning `undefined`
+      // for the other, is what makes the filter below mean "the tools whose
+      // input is a raw shape carrying a `market` key".
+      type MarketField = { safeParse(v: unknown): { success: boolean; data?: unknown } };
+      const marketFieldOf = (schema: z.ZodRawShape | z.ZodType): MarketField | undefined => {
+        // A `ZodType` is not a raw shape: it carries its own `safeParse` and has
+        // no named keys. Naming which of the two this is what makes the filter
+        // mean "input shape declares `market`" rather than "something here has
+        // a property called market".
+        if ('safeParse' in schema) return undefined;
+        // `ZodRawShape` is `{ [k: string]: $ZodType }` — zod v4's internal
+        // core, which has no `safeParse`. `z.ZodType` is the public interface
+        // over the same object, so this is a downcast to the declared shape,
+        // not a widening: a value that is not a `ZodType` still fails.
+        return schema.market as z.ZodType | undefined;
+      };
+      const withMarket = h.registered.filter((t) => marketFieldOf(t.schema));
       assert.equal(withMarket.length, expected);
       for (const tool of withMarket) {
-        const market = (tool.schema as Record<string, { safeParse(v: unknown): { success: boolean; data?: unknown } }>).market;
+        const market = marketFieldOf(tool.schema);
+        assert.ok(market, `${tool.name} has no market field`);
         assert.equal(market.safeParse('usa').success, false, `${tool.name} must reject "usa"`);
         assert.equal(market.safeParse('english').success, false, `${tool.name} must reject "english"`);
         assert.equal(market.safeParse('us').data, 'US', `${tool.name} must uppercase "us"`);

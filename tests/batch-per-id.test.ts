@@ -181,7 +181,10 @@ function makeRecorder(options: ClientOptions = {}): Recorder {
   const byAlbumId = new Map(albums.map((a) => [a.id, a]));
   const savedAlbums = options.savedAlbums ?? releases;
   const trackIds = options.trackIds ?? releases.map((_, i) => trackId(i));
-  const savedTracks = options.savedTracks
+  // Annotated to the option's own type: the `??` default is an object literal
+  // that would otherwise infer the narrower `{ id; albumId }` and drop the
+  // optional `artistIds` the fixture below reads.
+  const savedTracks: NonNullable<ClientOptions['savedTracks']> = options.savedTracks
     ?? releases.map((a, i) => ({ id: `lik${String(i).padStart(19, '0')}`, albumId: a.id }));
 
   const records: Recorded[] = [];

@@ -300,8 +300,8 @@ function harness(register: (s: McpServer, c: SpotifyClient) => void, options: St
     tool(name: string, _description: string, schema: z.ZodRawShape, handler: RegisteredTool['handler']) {
       registered.push({ name, validate: (a) => z.object(schema).parse(a), handler });
     },
-    registerTool(name: string, config: { inputSchema?: z.ZodType }, handler: RegisteredTool['handler']) {
-      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType).parse(a), handler });
+    registerTool(name: string, config: { inputSchema?: z.ZodType<Record<string, unknown>> }, handler: RegisteredTool['handler']) {
+      registered.push({ name, validate: (a) => (config.inputSchema as z.ZodType<Record<string, unknown>>).parse(a), handler });
     },
   } as unknown as McpServer;
   const stub = makeStub(options);
@@ -523,8 +523,14 @@ describe('#879 swarm3_playlistops targeted removals verify by row', () => {
     // `missing` — `missing` is uris the walk did not find and is consumed as
     // data. The assertion is that a human-readable reason is surfaced
     // somewhere, so it now reads the field the reason actually lives in.
+    // `reason` and `unmet` are `unknown` on an untyped receipt row, so each is
+    // read only when it is actually a string. Concatenating `unknown` is what
+    // the previous line did, and it produced `{}` for both fields.
+    const why = [receipts[0].reason, receipts[0].unmet]
+      .map((value) => (typeof value === 'string' ? value : ''))
+      .join('');
     assert.match(
-      (receipts[0].reason ?? '') + (receipts[0].unmet ?? '') + JSON.stringify(receipts[0].missing),
+      why + JSON.stringify(receipts[0].missing),
       /row count|still-present|missing/,
       'a failed receipt must say why it failed',
     );
