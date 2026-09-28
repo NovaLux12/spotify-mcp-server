@@ -28,13 +28,9 @@ carries it.
 
 ## Still open, deliberately not decided here
 
-Three questions this document touches are owned by other issues, and a reader
+Two questions this document touches are owned by other issues, and a reader
 should not read a decision into their absence:
 
-- **Remote access.** [#599](https://github.com/NovaLux12/spotify-mcp-server/issues/599)
-  decides whether an opt-in remote transport ships at all. The non-goal below is
-  *multi-tenant operation*, not remote access — a single-user remote transport
-  does not contradict anything here.
 - **Default registration of the stats.fm families.**
   [#607](https://github.com/NovaLux12/spotify-mcp-server/issues/607) owns it. The
   non-goal below is a *second* upstream, not stats.fm, which is disclosed today.
