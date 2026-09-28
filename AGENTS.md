@@ -586,6 +586,32 @@ explicitly, because MCP's default is `true` and silence would advertise
 `save_to_library` as dangerous as `remove_from_library`. Do not add `title`
 keys; hosts fall back to the tool name and duplicating it cost ~25 KB.
 
+A verb prefix is only an allowlist in the safe direction when it is a VERB. A
+product prefix is not one, so a family named for the thing it talks to rather
+than what it does cannot be granted read-only by name — `statsfm_*` was, which
+meant a future stats.fm writer inherited the grant and nothing had to notice
+(#1600). That family is instead positively enumerated in `STATSFM_READ_ONLY`
+and consulted **before** the verb prefixes, so a name outside the set is a
+write and a name added to the set is a read. That is a claim about
+*classification* only — it is not what hides a write from a read-only session.
+`SPOTIFY_MCP_READONLY` is enforced per manifest **module**
+(`registerManifestModule` returns `read_only_hidden` when `readOnly &&
+module.readOnlySafe !== true`), and no per-tool annotation is consulted for
+visibility at all. So a read left out of the set is not hidden: while its
+module is `readOnlySafe` it still registers, and all it loses is
+`readOnlyHint`/`idempotentHint`, leaving a host that keys confirmation off
+those hints to ask a human to approve a harmless read. The module's flag is
+the only thing that hides a tool — and the family spans modules with mixed
+flags (`statsfm_record_feedback` sits in a `readOnlySafe` one,
+`statsfm_jukebox` does not), so whether a stats.fm tool is visible in
+read-only mode is a question about its module and never about this set.
+
+Note the ordering requirement if you extend it: the `stats` alternative alone
+already matches every `statsfm_*` string, so a family check placed after the
+prefix test could never fire and would look like a fix while changing nothing.
+The same `^`-anchoring shadows the destructive verbs too — strip the family
+prefix before testing for one.
+
 ---
 
 ## 5. Confirmation, deprecation, releases

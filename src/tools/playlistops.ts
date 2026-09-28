@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
-import { getConfig } from '../config.js';
+import { scanCapFloor } from '../config.js';
 import {
   DryRun,
   PlaylistListFields,
@@ -66,8 +66,6 @@ function summarizeSections(head: string) {
 const summarizeDiff = summarizeSections('Playlist diff.');
 const summarizeOverlap = summarizeSections('Playlist overlap.');
 
-// Hard cap for fetch-all pagination loops (#55), same as playlists.ts.
-const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 const PlaylistWalkFields = {
   limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
   scan_cap: z.number().int().min(1).max(10_000).optional().describe('Maximum source rows to scan; bounded by SPOTIFY_MCP_FETCH_ALL_CAP'),
@@ -149,7 +147,7 @@ async function fetchAllItems(
   options: { limit?: number; scan_cap?: number; fields?: string } = {},
 ): Promise<SourceWalk> {
   const id = encodeURIComponent(normalizePlaylistRef(ref));
-  const cap = Math.min(options.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+  const cap = scanCapFloor(options.scan_cap);
   const pageLimit = Math.min(options.limit ?? 100, 100);
   const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
     `/playlists/${id}/items`,
@@ -293,7 +291,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const sourceWalks = await Promise.all(
         sourceRefs.map((ref) => fetchAllItems(client, ref, { ...args, fields: MERGE_ITEM_FIELDS })),
       );
-      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const sourceCap = scanCapFloor(args.scan_cap);
       // #902: one accumulation across every source, so a merge of N capped
       // sources reports N caps' worth of rows and the true combined total
       // rather than a single source's worth.
@@ -480,7 +478,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       ]);
       const aItems = aWalk.items;
       const bItems = bWalk.items;
-      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const sourceCap = scanCapFloor(args.scan_cap);
       const read = summarizeSourceWalks([aWalk, bWalk]);
       // #899: both sides are walked in parallel, so the cost is their sum.
       const { requests: requestsRead, truncated } = read;
@@ -611,7 +609,7 @@ export function registerPlaylistOpsTools(server: McpServer, client: SpotifyClien
       const itemLists = read.lists;
       // #899: this tool is read-only, so the walk IS the cost of the call.
       const { requests: requestsRead } = read;
-      const sourceCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+      const sourceCap = scanCapFloor(args.scan_cap);
       const { truncated } = read;
       const truncationNote = describeSourceTruncation(read, sourceCap);
       // One pass records presence and, at the same time, the display name each

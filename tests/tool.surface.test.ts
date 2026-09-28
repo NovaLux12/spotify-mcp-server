@@ -42,6 +42,8 @@ import {
   NEVER_MUTATING_PLANS,
   READ_ONLY_OVERRIDES,
   DESTRUCTIVE_OVERRIDES,
+  MUTATING_PREFIXES,
+  READ_ONLY_PREFIXES,
   moduleToolNames,
   localModule,
   manifestEntry,
@@ -128,16 +130,22 @@ async function listTools(env: Record<string, string | undefined>): Promise<Tool[
 const bytesOf = (t: Tool): number => JSON.stringify(t).length;
 
 /**
- * Verbs that change state. Bare `plan` is deliberately NOT here: a `_plan`
- * suffix alone is not evidence of mutation, so `*_plan` tools are classified by
- * capability in NEVER_MUTATING_PLANS (imported live so this gate cannot drift
- * from the classifier).
+ * Verbs that change state, and the read-verb allowlist. Both are IMPORTED from
+ * the classifier rather than copied.
+ *
+ * They used to be local copies here, which is the drift this gate could not
+ * afford: a copy is a second, unwatched statement of the policy, and the gate
+ * then reports on the policy as it used to be. #1600 removed the redundant
+ * `statsfm` alternative from READ_ONLY_PREFIXES — a change that is invisible to
+ * a copy, because a copy is not told — and the copies below had been
+ * byte-identical to the exports, so nothing would have said otherwise. Reading
+ * them live is strictly stronger: the gate now measures the policy the server
+ * actually applies.
+ *
+ * Bare `plan` is deliberately NOT in MUTATING_PREFIXES: a `_plan` suffix alone
+ * is not evidence of mutation, so `*_plan` tools are classified by capability
+ * in NEVER_MUTATING_PLANS (also imported live).
  */
-const MUTATING_PREFIXES =
-  /^(apply|start|save|add|create|update|set|replace|import|move|copy|remove|delete|unfollow|unsave|follow|pin|fill|merge|split|sort|shuffle|reorder|transfer|restore|cancel|clean|clear|trim|cull|archive|mark|queue|play|pause|skip|seek|generate|grow|balance|reschedule|migrate|handoff|dj|undo|export|backup|write|upload|rename|retag|sync|dedupe|take|snapshot|volume|sleep|transfer_playback|recently|retry|revert|reset|purge|wipe|drop|erase|revoke|disconnect|logout)/;
-
-const READ_ONLY_PREFIXES =
-  /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
 
 /**
  * A token in a tool description that could be naming another tool. The shape is
