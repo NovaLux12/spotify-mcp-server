@@ -755,10 +755,14 @@ release-please creates the tag with the repository's `GITHUB_TOKEN`, and a tag
 pushed with `GITHUB_TOKEN` does not start a push-triggered workflow, so without
 the dispatch nothing would publish. **Do not dispatch it manually a second
 time** — a manual `gh workflow run publish.yml --ref vX.Y.Z` races the run the
-release workflow already started, and npm versions are immutable, so the second
-attempt fails on a version that already exists. That is what caused the double
-publish on 2026-09-25. `publish.yml` keeps a `push: tags: ["v*"]` trigger for
-tags created by something other than `GITHUB_TOKEN`, and both trigger types land
+release workflow already started. The npm step is guarded, not failing: it runs
+`npm view "@novalux12/spotify-mcp@$VERSION"` first and skips a version already
+on npm, so a duplicate run is not a red npm publish. The registry job has no
+equivalent check and re-attempts `mcp-publisher publish`, and the npm guard has
+been in `publish.yml` since 2026-08-25 — a month before the double publish on
+2026-09-25 — so npm immutability is not the mechanism that date recorded.
+`publish.yml` keeps a `push: tags: ["v*"]` trigger for tags created by
+something other than `GITHUB_TOKEN`, and both trigger types land
 in the `publish-<tag>` concurrency group with `cancel-in-progress: false`. The
 previous wording here said the opposite — that the tag push alone starts the
 workflow and a dispatch is therefore wrong — which is right as advice and wrong

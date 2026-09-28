@@ -117,9 +117,13 @@ Merging the release PR is the last human step. The tag it creates starts
 `Publish` on its own — `release.yml` dispatches the guarded workflow at the tag
 it just pushed — so there is nothing to dispatch by hand. Do not run
 `gh workflow run publish.yml` against a release tag: it races the automatic
-dispatch, and npm versions are immutable, so the second attempt fails on a
-version that already exists. That instruction was here once, and following it
-caused a double publish on 2026-09-25.
+dispatch. The npm step is guarded, not failing: it runs
+`npm view "@novalux12/spotify-mcp@$VERSION"` first and skips a version that is
+already on npm, so a duplicate run is not a red npm publish. The registry job
+has no equivalent check and re-attempts `mcp-publisher publish`, and the npm
+guard predates 2026-09-25, so npm immutability is not what the double publish
+on that date ran into. That instruction was here once, and following it caused
+a double publish on 2026-09-25.
 
 To watch the run the tag started:
 
