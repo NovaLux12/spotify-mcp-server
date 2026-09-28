@@ -31,7 +31,7 @@ import { readOnlyEnv, legacyAliasesEnv } from '../config.js';
 // Tool modules are NOT imported here (#906). The manifest below names each
 // one and loads it through a thunk, so a module whose registration key is
 // inactive is never evaluated. A static `import { registerXTools }` would
-// force evaluation of all 70 modules before the toolset gate could answer —
+// force evaluation of all 71 modules before the toolset gate could answer —
 // which is why trimming the surface used to shrink the payload without
 // shrinking startup or RSS. See RegistrarSpec and loadManifestRegistrars.
 import { formatReceipt, MAX_RECEIPTS, RECEIPT_ID_PATTERN, RECEIPT_ID_SHAPE, receiptMissMessage, verifyReceipt } from '../receipts.js';
@@ -2413,8 +2413,8 @@ function owningModuleKey(metadata: ServerModuleMetadata, toolName: string): stri
 /**
  * The MCP SDK aborts a duplicate registration with `Tool <name> is already
  * registered`, which names the collision and nothing about who caused it. In a
- * 70-module manifest the stack points at the second registration, so the report
- * leaves the reader to work out which of the other 69 modules owns the name —
+ * 71-module manifest the stack points at the second registration, so the report
+ * leaves the reader to work out which of the other 70 modules owns the name —
  * and startup dies before any test can add that context. #662 wants both
  * modules named, so recover the name from the SDK's own message and annotate.
  *

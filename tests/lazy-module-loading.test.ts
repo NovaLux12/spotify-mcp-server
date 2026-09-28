@@ -407,7 +407,7 @@ describe('#906 every manifest entry is a working thunk', () => {
 
   it('never hands a module a client it did not ask for', async () => {
     // Every registrar is called as `registrar(server, client)`. That is right
-    // for the 66 modules taking a `SpotifyClient`, and wrong for the one that
+    // for the 67 modules taking a `SpotifyClient`, and wrong for the one that
     // does not: `registerStatsfmTools(server, client: StatsfmClient = new
     // StatsfmClient())`. Passing Spotify's client there would send every
     // stats.fm request to api.spotify.com, and no schema comparison can see
@@ -415,8 +415,8 @@ describe('#906 every manifest entry is a working thunk', () => {
     // The manifest entry is the only place that decision is recorded, so the
     // guard reads the source of every registrar and pins the arity.
     //
-    // 66, not 68: `swarm3meta` and `moodexpand` take no second parameter at
-    // all, so they are in neither the 66 nor the stats.fm one. See
+    // 67, not 69: `swarm3meta` and `moodexpand` take no second parameter at
+    // all, so they are in neither the 67 nor the stats.fm one. See
     // `ModuleRegistrar` in annotations.ts, which states the same decomposition
     // — three registrars take no client, one takes a `StatsfmClient`.
     const client = new SpotifyClient();
