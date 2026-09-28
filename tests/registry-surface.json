@@ -267,6 +267,9 @@
     "backupdelete": [
       "delete_backup"
     ],
+    "backupcleanup": [
+      "clean_backup_artifacts"
+    ],
     "restore": [
       "restore_library_snapshot"
     ],
@@ -775,6 +778,7 @@
     "check_playlist_following",
     "checkpoint_playback",
     "clean_all_playlists",
+    "clean_backup_artifacts",
     "clone_playlist_cover",
     "collab_density_report",
     "collab_mix_from_followed",

@@ -422,11 +422,15 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // surface, with headroom", not "the default".
   //
   // WARRANT #1592: +1,898B for `clean_backup_artifacts`, measured on the
-  // merged origin/main this branch cut from (559 tools / 601,469B default,
-  // 570 tools / 611,457B with SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1). The tool
-  // is 744B of description and 1,009B of inputSchema, 1,786B per-module, and
-  // +1,898B on the aggregate including the name/annotation/execution metadata
-  // the aggregate charges and the per-module figure does not.
+  // merged origin/main this branch cut from, and measured as a DELTA — the
+  // absolute tool counts live in the generated `aggregate-budget` block in
+  // docs/schema-budgets.md, which the census re-measures on every --check, and
+  // are not restated here. The tool is 744B of description and 1,009B of
+  // inputSchema, and +1,898B on the aggregate including the
+  // name/annotation/execution metadata the aggregate charges and the per-module
+  // figure does not. The per-module figure is deliberately not written here: it
+  // is a live baseline in this same file, and a comment that quotes a live
+  // constant is a comment that reads as a fact long after it stops being one.
   //
   // What those bytes buy, in the order a caller needs them: which four name
   // shapes this tool owns and under which directory; that library backups and
