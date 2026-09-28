@@ -58,8 +58,9 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_LANES_FILE` | `~/.spotify-mcp/lanes.json` | The lane registry (#727): a JSON object mapping a short label you choose to a Spotify playlist. Read by the `*_lane` inputs on `batch_add_to_playlist` and `move_items_between_playlists`, and by `list_lanes` / `lane_status`. Not created by this server — you write it. See [Lanes](#lanes). |
 | `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist and playlist-health call sites, and — when `SPOTIFY_MCP_TASTE_FEEDBACK_FILE` is unset — by the taste-feedback store; also by the persisted read cache when `SPOTIFY_MCP_CACHE_PERSIST` is on. The watchlist default no longer depends on the process working directory. |
 | `SPOTIFY_MCP_CACHE_PERSIST` | unset (off) | Set to `1` to also persist the read cache to disk, so a host that restarts the server per session does not re-walk the same catalog. Only **resource identities** are written — tracks, albums, artists, shows, episodes, audiobooks, genres, and the public `/users/{id}` profile. **Your own data (`/me/*`), playlists, and everything below a public profile are never persisted** (`/users/{id}/top/artists`, and the stats.fm listening data that sits under the same path shape): a second process would serve them without ever having seen the mutation that changed them. The allowlist is keyed on the path *shape* and its depth, not on the root alone, so widening a resource's path cannot silently widen what is stored. Each entry keeps the expiry it had in memory and is re-checked on load, so persisting never extends an entry's life. The file is written owner-only (0600) and atomically, and named after the same profile as the token file (`cache.json`, or `cache.<profile>.json`) so two profiles never share one cache. A burst of reads is debounced into one write, so a short session can end before that write is due; the pending save is flushed when the process exits, is stopped by SIGINT/SIGTERM/SIGHUP/SIGQUIT, or throws, so a per-session host still persists what it read. What that does **not** cover, and what is done about it instead, is set out under [When a pending save is lost](#when-a-pending-save-is-lost). An entry too large for the remaining budget is skipped rather than truncating the file, and the count of skipped entries is reported by the doctor tool. Default off, because a cache that outlives the process can outlive the invalidation meant to govern it. |
-| `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
+| `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots, and for the non-library files that share it — see below. |
 | `SPOTIFY_MCP_BACKUP_RETENTION_DAYS` | `30` | Whole days a `backup_library` snapshot is kept before it is pruned. `0` disables pruning entirely. Any unusable value (empty, non-numeric, negative, fractional) falls back to the default, never to "keep forever"; the smallest enabled window is `1` day. |
+| `SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS` | `14` | Whole days a **non-library** file in the same directory — a closed listening session, a playlist write pre-image, a legacy or migrated playback bookmark — is kept before `clean_backup_artifacts` will delete it. Separate from the library window above; neither tool reads the other's. `0` disables age-based expiry; unusable values fall back to the default, never to "keep forever". |
 | `SPOTIFY_MCP_EXPORT_DIR` | `~/.spotify-mcp/exports` | Output root for `export_playlist` and `export_profile_state`. |
 | `SPOTIFY_MCP_PORTABILITY_DIR` | `~/.spotify-mcp/portability` | Default output directory for library/history portability exports; also the output root for four `export_*` tools — `export_library_json`, `export_followed_artists`, `export_listening_history` and `export_all_playlists`. |
 | `SPOTIFY_MCP_ALLOW_PATHS` | unset | Extra directories `import_playlist` may read from, `:`-separated. The default read roots are `SPOTIFY_MCP_PORTABILITY_DIR`, `SPOTIFY_MCP_BACKUP_DIR` and `SPOTIFY_MCP_EXPORT_DIR`. |
@@ -325,6 +326,38 @@ reports `dir_bytes`, `oldest_created`, and the oldest survivor's `oldest_retenti
 
 To remove one snapshot ahead of its window, use the `delete_backup` tool, which is
 confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP_DIR`.
+
+### The rest of the backup directory
+
+`SPOTIFY_MCP_BACKUP_DIR` is shared by four writers, and only one of them is a library
+backup. Alongside the `backup-YYYY-MM-DD-N.json` snapshots and their `.meta.json`
+sidecars, the same directory holds closed listening sessions
+(`listening-session-<id>.json`), the pre-image a mutating playlist tool writes before it
+writes (`playlistops-pre-<id>-<stamp>.json`), and playback bookmarks from before the
+position store consolidated them (`playback-bookmark-<id>.json`, which this release only
+reads, imports, and deletes — `migrate_playback_positions` renames them to `.migrated`
+rather than removing them). The library retention sweep filters on the backup name shape
+alone, so it never lists, expires, or reports any of the others, and `delete_backup`
+refuses them by name.
+
+`SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS` is the window for **those** families, and it
+is deliberately not the same variable as `SPOTIFY_MCP_BACKUP_RETENTION_DAYS`: neither tool
+reads the other's. **Default 14 days**, because what a discarded file costs to get back is
+what the window should be priced against. A library snapshot is the only copy of your saves
+until the library is re-walked, so it gets 30. A closed session is a spent log, a pre-image
+is a hand-undo copy whose durable undo path is the receipt ledger, and a legacy bookmark is
+a leftover the migration already superseded — none of which is worth a month. `0` disables
+the age-based expiry; unusable values (empty, non-numeric, negative, fractional) fall back
+to the default rather than to "keep forever", exactly as for the library window, and the
+floor for an enabled window is 1 day.
+
+`clean_backup_artifacts` applies that window. It previews by default, always asks for
+confirmation (it deletes local files unrecoverably, so it prompts even for one, the same as
+`delete_backup`), never touches a library backup or its sidecar, and leaves files it cannot
+name alone. Pass `older_than_days` for a one-off floor, or `files` for exact names. Note that
+`list_backups`' `dir_bytes` counts library-backup files and their sidecars **only**; this
+tool reports its own `directory_bytes`, measured over every regular file in the directory,
+alongside the library half, and says which is which in the result.
 
 ### Toolsets and registration keys
 

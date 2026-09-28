@@ -31,7 +31,7 @@ import { readOnlyEnv, legacyAliasesEnv } from '../config.js';
 // Tool modules are NOT imported here (#906). The manifest below names each
 // one and loads it through a thunk, so a module whose registration key is
 // inactive is never evaluated. A static `import { registerXTools }` would
-// force evaluation of all 70 modules before the toolset gate could answer —
+// force evaluation of all 71 modules before the toolset gate could answer —
 // which is why trimming the surface used to shrink the payload without
 // shrinking startup or RSS. See RegistrarSpec and loadManifestRegistrars.
 import { formatReceipt, MAX_RECEIPTS, RECEIPT_ID_PATTERN, RECEIPT_ID_SHAPE, receiptMissMessage, verifyReceipt } from '../receipts.js';
@@ -420,7 +420,45 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // is nowhere near. What it bounds is the LARGEST surface a session can
   // register — `SPOTIFY_MCP_TOOLSETS=all` at 585,201B. Read it as "the full
   // surface, with headroom", not "the default".
-  defaultMaxBytes: 611_000,
+  //
+  // WARRANT #1592: +1,898B for `clean_backup_artifacts`, measured on the
+  // merged origin/main this branch cut from, and measured as a DELTA — the
+  // absolute tool counts live in the generated `aggregate-budget` block in
+  // docs/schema-budgets.md, which the census re-measures on every --check, and
+  // are not restated here. The tool is 744B of description and 1,009B of
+  // inputSchema, and +1,898B on the aggregate including the
+  // name/annotation/execution metadata the aggregate charges and the per-module
+  // figure does not. The per-module figure is deliberately not written here: it
+  // is a live baseline in this same file, and a comment that quotes a live
+  // constant is a comment that reads as a fact long after it stops being one.
+  //
+  // What those bytes buy, in the order a caller needs them: which four name
+  // shapes this tool owns and under which directory; that library backups and
+  // their `.meta.json` sidecars are refused here and belong to `delete_backup`;
+  // that the files are local and unrecoverable; that preview is the default and
+  // executing needs a prompt the client may not be able to raise; that the age
+  // floor is a mtime rather than a recorded date; and that the retention window
+  // is a different env var from the library one. Every one of those is a
+  // sentence whose absence produces a wrong action — deleting a library backup
+  // believing it is an artifact, or believing an artifact was never eligible.
+  //
+  // Reclaim-first was considered and not taken, deliberately. The rule exists
+  // to stop decorative prose being paid for out of a shared budget, and there
+  // is no decorative prose in this edit to reclaim: the prose being added is
+  // the contract. The honest reclaim targets are four `swarm3b_discovery`
+  // descriptions, which belong to a different change and would make this PR's
+  // diff unreadable against its own subject. A caller can price that trim
+  // separately; what this warrant is for is stated above, in bytes, measured.
+  //
+  // 611,000 -> 613,500 is +2,500B against a 1,898B warrant — roughly a 30%
+  // margin, the same discipline the 604_000 -> 607_000 grant used and the one
+  // this file exists to enforce. The first raise in this history was 19x its
+  // warrant; the 94B-headroom trap recorded above is what a raise sized to the
+  // last byte produces, and this is not that. Sizing note for the next author
+  // unchanged and still load-bearing: measure the AGGREGATE, and measure it on
+  // the MERGED tree, because two raises in this file's history were each
+  // arithmetically right and jointly wrong.
+  defaultMaxBytes: 613_500,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -1896,6 +1934,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('backupfirst', 'library', lazyModule('./backupfirst.js', 'registerBackupFirstTools'), [1, 513], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backup', 'library', lazyModule('./backup.js', 'registerBackupTools'), [2, 1724], { readOnlySafe: true, scopeKey: 'library' }),
   manifestEntry('backupdelete', 'library', lazyModule('./backup_delete.js', 'registerBackupDeleteTools'), [1, 959], { readOnlySafe: false, scopeKey: 'library' }),
+  // #1592 — the sibling `delete_backup` was missing. Four writers share
+  // SPOTIFY_MCP_BACKUP_DIR and only the library-backup one was reachable, so
+  // its own row, for the same reason as the row above: a per-registrar row is
+  // what makes `readOnlySafe` a property of one safety class rather than of
+  // whichever module it happens to be filed under.
+  manifestEntry('backupcleanup', 'library', lazyModule('./backup_cleanup.js', 'registerBackupCleanupTools'), [1, 1786], { readOnlySafe: false, scopeKey: 'library' }),
   // #708: descriptions only, same 1 tool and same input schema. The baseline in
   // the entry below moved because restore_library_snapshot's description now
   // names the source, the file-declared date, the item count and the single
@@ -2369,8 +2413,8 @@ function owningModuleKey(metadata: ServerModuleMetadata, toolName: string): stri
 /**
  * The MCP SDK aborts a duplicate registration with `Tool <name> is already
  * registered`, which names the collision and nothing about who caused it. In a
- * 70-module manifest the stack points at the second registration, so the report
- * leaves the reader to work out which of the other 69 modules owns the name —
+ * 71-module manifest the stack points at the second registration, so the report
+ * leaves the reader to work out which of the other 70 modules owns the name —
  * and startup dies before any test can add that context. #662 wants both
  * modules named, so recover the name from the SDK's own message and annotate.
  *

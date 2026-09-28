@@ -3125,6 +3125,11 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/playlistops.ts',
   'src/tools/restore.ts',
   'src/tools/backup_delete.ts',
+  // #1592 — every return path goes through `shapeResult`, which attaches
+  // `structuredContent` on success AND on each refusal, so a declaration
+  // would be safe. It is pending on the same budget grounds as the two rows
+  // above it, not on behaviour.
+  'src/tools/backup_cleanup.ts',
   'src/tools/saveddedupe.ts',
   'src/tools/libraryhygiene.ts',
   // #727. Verified prose-safe: both tools return `structuredContent` on every

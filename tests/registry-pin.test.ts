@@ -23,7 +23,7 @@
  *      "expected **608 tools**" — a stale number from a two-releases-old
  *      issue — not the tool that vanished.
  *   2. **Only 64 of 592 names are pinned.** The core-first sequence covers the
- *      first four manifest modules; the other 66 modules' names are unasserted
+ *      first four manifest modules; the other 67 modules' names are unasserted
  *      anywhere, so a rename outside that prefix is silent.
  *   3. **Duplicates abort, but opaquely.** The SDK throws
  *      `Tool search is already registered` before any assertion runs, naming
@@ -205,8 +205,8 @@ describe('registry pin: no duplicate names', () => {
 
   it('a duplicate registration fails naming both modules that own the name', async () => {
     // The SDK aborts on a re-registration before any assertion can run, and its
-    // own message names only the tool. In a 70-module manifest that leaves the
-    // reader to guess which of the other 69 modules owns the name, so
+    // own message names only the tool. In a 71-module manifest that leaves the
+    // reader to guess which of the other 70 modules owns the name, so
     // `registerManifestModule` annotates the failure with both owners.
     const server = new McpServer({ name: 'duplicate-probe', version: '0.0.0' });
     const client = new SpotifyClient();

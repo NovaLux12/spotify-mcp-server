@@ -354,14 +354,15 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // The same four deltas as the `playback` figure above, measured on the full
     // surface: 570 -> 571 (#598), 571 -> 572 (#846), 572 -> 566 (#847), and
     // 566 -> 556 (#848, the same ten), then 556 -> 558 (#727, the two lane
-    // reads) and 558 -> 559 (#726, `statsfm_jukebox`). Each is a registration
-    // count, and the forwarding aliases add no line here.
+    // reads), 558 -> 559 (#726, `statsfm_jukebox`) and 559 -> 560 (#1592,
+    // `clean_backup_artifacts`). Each is a registration count, and the
+    // forwarding aliases add no line here.
     //
     // The message says "full surface", not "default surface": since #889 an
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    assert.equal(full.toolCount, 559, 'the full (TOOLSETS=all) surface must be unchanged');
+    assert.equal(full.toolCount, 560, 'the full (TOOLSETS=all) surface must be unchanged');
     const missing = REGISTRAR_MANIFEST
       .map((module) => module.file.replace(/^src\/tools\//, '').replace(/\.ts$/, ''))
       .filter((stem) => !full.toolModules.includes(stem));
@@ -406,7 +407,7 @@ describe('#906 every manifest entry is a working thunk', () => {
 
   it('never hands a module a client it did not ask for', async () => {
     // Every registrar is called as `registrar(server, client)`. That is right
-    // for the 66 modules taking a `SpotifyClient`, and wrong for the one that
+    // for the 67 modules taking a `SpotifyClient`, and wrong for the one that
     // does not: `registerStatsfmTools(server, client: StatsfmClient = new
     // StatsfmClient())`. Passing Spotify's client there would send every
     // stats.fm request to api.spotify.com, and no schema comparison can see
@@ -414,8 +415,8 @@ describe('#906 every manifest entry is a working thunk', () => {
     // The manifest entry is the only place that decision is recorded, so the
     // guard reads the source of every registrar and pins the arity.
     //
-    // 66, not 68: `swarm3meta` and `moodexpand` take no second parameter at
-    // all, so they are in neither the 66 nor the stats.fm one. See
+    // 67, not 69: `swarm3meta` and `moodexpand` take no second parameter at
+    // all, so they are in neither the 67 nor the stats.fm one. See
     // `ModuleRegistrar` in annotations.ts, which states the same decomposition
     // — three registrars take no client, one takes a `StatsfmClient`.
     const client = new SpotifyClient();

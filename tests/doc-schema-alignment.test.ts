@@ -34,6 +34,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TOOL_SURFACE_BUDGET, AGGREGATE_SURFACE_LIMITS } from '../src/tools/annotations.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const GATE = 'scripts/check-doc-tool-names.mjs';
@@ -326,19 +327,49 @@ describe('documented constants agree with the live code (#1476)', () => {
     assert.match(output, /a caller who omits the field gets the other one/);
   });
 
+/**
+ * The two aggregate ceilings, read live rather than typed.
+ *
+ * #1592 moved `TOOL_SURFACE_BUDGET.defaultMaxBytes`, and these two tests plant
+ * a figure the gate must reject. A typed fixture outlives the constant it was
+ * written against: the test then fails on `anchor not found` — which reads as
+ * the gate being broken when the gate is fine and the fixture is stale. So the
+ * fixture is derived, and the 1,000B gap the assertions below check is the
+ * part that is deliberately still a literal.
+ */
+function liveCeiling(): number {
+  return TOOL_SURFACE_BUDGET.defaultMaxBytes;
+}
+
+/** The enforced limit: the ceiling plus the annotation allowance. */
+function liveEnforcedCeiling(): number {
+  return AGGREGATE_SURFACE_LIMITS.maxBytes;
+}
+
+/** The documents write these figures with a thousands separator, not bare. */
+function group(n: number): string {
+  return n.toLocaleString('en-US');
+}
+
   it('rejects a documented byte figure that contradicts a live constant', () => {
-    // The shipped line said 620,000B where `TOOL_SURFACE_BUDGET.defaultMaxBytes`
-    // is 611,000. The direction is the point: the document overstated the
-    // headroom by 9,000B, so the reader who trusted it believed a raise was
-    // available that the startup gate would have refused.
+    // The shipped line overstated the ceiling by 9,000B. The direction is the
+    // point: the document claimed headroom that the startup gate would have
+    // refused, so a reader who trusted it believed a raise was available.
+    // #1592 moved the constant, so both figures are read from the live value
+    // rather than typed here — a fixture naming a superseded ceiling tests
+    // that the anchor still exists, not that the gate compares correctly.
+    const live = liveCeiling();
     const output = gateRejects(
       'SPEC.md',
       (source) => replaceOnce(
         source,
-        '(`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 611,000B)',
-        '(`TOOL_SURFACE_BUDGET.defaultMaxBytes`, 620,000B)',
+        `(\`TOOL_SURFACE_BUDGET.defaultMaxBytes\`, ${group(live)}B)`,
+        `(\`TOOL_SURFACE_BUDGET.defaultMaxBytes\`, ${group(live + 9000)}B)`,
       ),
-      /documents `TOOL_SURFACE_BUDGET\.defaultMaxBytes` as 620,000B, but the live constant is 611,000B/,
+      new RegExp(
+        'documents `TOOL_SURFACE_BUDGET\\.defaultMaxBytes` as '
+        + `${group(live + 9000)}B, but the live constant is ${group(live)}B`,
+      ),
     );
     assert.match(output, /wrong by 9,000B/);
   });
@@ -350,7 +381,15 @@ describe('documented constants agree with the live code (#1476)', () => {
     // constant nothing currently states is what keeps it from being a
     // one-name special case written around the defect that shipped.
     for (const [name, wrong, expected] of [
-      ['AGGREGATE_SURFACE_LIMITS.maxBytes', '613,000B', /documents `AGGREGATE_SURFACE_LIMITS\.maxBytes` as 613,000B, but the live constant is 612,000B/],
+      [
+        'AGGREGATE_SURFACE_LIMITS.maxBytes',
+        `${group(liveEnforcedCeiling() + 1000)}B`,
+        new RegExp(
+          'documents `AGGREGATE_SURFACE_LIMITS\\.maxBytes` as '
+          + `${group(liveEnforcedCeiling() + 1000)}B, `
+          + `but the live constant is ${group(liveEnforcedCeiling())}B`,
+        ),
+      ],
       ['MAX_RESPONSE_BYTES', '65,000B', /documents `MAX_RESPONSE_BYTES` as 65,000B, but the live constant is 64,000B/],
     ] as const) {
       const output = gateRejects(

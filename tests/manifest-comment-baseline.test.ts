@@ -358,18 +358,18 @@ function bumpClaimNumber(source: string, claim: CountClaim, to: number): string 
  *
  * This is a different population from the manifest row count, and conflating
  * them is the trap this file is most careful about. `lazy-module-loading.test.ts`
- * describes "the 62 modules taking a `SpotifyClient`", and that is neither
- * `total` (70) nor `total - 1` (69): it is 66. `statsfm` takes a
+ * describes "the 67 modules taking a `SpotifyClient`", and that is neither
+ * `total` (71) nor `total - 1` (70): it is 67. `statsfm` takes a
  * `StatsfmClient`; `swarm3meta` and `moodexpand` take no second parameter at
  * all; `receipts` is a local registrar with no exported signature to read. So
- * 66 + 2 + 1 + 1 = 70. Applying the row-count grammar here would demand 69 and
- * force a CORRECT 66 to be "fixed" into a wrong 69.
+ * 67 + 2 + 1 + 1 = 71. Applying the row-count grammar here would demand 70 and
+ * force a CORRECT 67 to be "fixed" into a wrong 70.
  *
  * `annotations.ts` states the same decomposition independently — "three
  * registrars take no client at all … and one takes a `StatsfmClient`" — which
- * is the cross-check that 66 is the right number and not 68. Counting the two
+ * is the cross-check that 67 is the right number and not 69. Counting the two
  * no-client modules as client-takers, which the loop's `else` branch does if
- * read as a tally rather than as a predicate, yields 68 and is wrong: a
+ * read as a tally rather than as a predicate, yields 69 and is wrong: a
  * registrar that takes no client does not take a SpotifyClient.
  *
  * So this population gets its own assertion and its own rule, and
@@ -533,7 +533,7 @@ test('the registrar-arity claim counts its own population, not manifest rows', (
               `${c.file}:${c.line} states ${c.stated} modules take a \`SpotifyClient\`, but ${expected} do — ${c.text}`,
           )
           .join('\n') +
-        `\n\nThis population is NOT a manifest row count: \`statsfm\` takes a \`StatsfmClient\` and \`receipts\` is a local registrar with no signature, so ${expected} + 1 + 1 = ${MODULE_COUNT}. Applying the row-count rule here would force a correct number to be rewritten.`
+        `\n\nThis population is NOT a manifest row count: \`statsfm\` takes a \`StatsfmClient\`, \`swarm3meta\` and \`moodexpand\` take no second parameter, and \`receipts\` is a local registrar with no signature, so ${expected} + 2 + 1 + 1 = ${MODULE_COUNT}. Applying the row-count rule here would force a correct number to be rewritten.`
       : '',
   );
 });
