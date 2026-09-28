@@ -1422,6 +1422,42 @@ export function getConfig(): SpotifyMcpConfig {
 }
 
 /**
+ * The hard ceiling on `fetch_all` pagination, read live from the process-wide
+ * snapshot rather than captured at import time.
+ *
+ * #1625: this lived as three byte-identical module-scope arrow-consts — one each
+ * in `playlists.ts`, `playlistops.ts` and `playlistbatch.ts` — so the name
+ * `FETCH_ALL_CAP` named both the environment variable and a local re-binding of
+ * it, and a reader of any one module could not tell which the file meant. The
+ * declaration is the load-bearing part: a captured `const FETCH_ALL_CAP =
+ * getConfig().fetchAllCap` at module scope is a snapshot taken when the module
+ * was first imported, which is also why these had to be thunks.
+ *
+ * It is a function rather than a constant for that reason — the env family is
+ * read once at startup, but `initConfig` re-binds `current` and tests do it
+ * repeatedly, so a module-scope capture is stale by construction. One
+ * declaration, live in the module that owns the setting.
+ */
+export function fetchAllCap(): number {
+  return getConfig().fetchAllCap;
+}
+
+/**
+ * The cap a caller actually gets: their `scan_cap` request, clamped to the
+ * configured ceiling. A request above the ceiling is not an error, it is a
+ * ceiling — `SPOTIFY_MCP_FETCH_ALL_CAP` is documented as a hard cap, and
+ * clamping is what makes it one.
+ *
+ * Shared rather than written out per call site, because the expression was
+ * repeated seven times across three modules and the repetition is what let the
+ * accessor drift in the first place. A helper that both expresses the rule and
+ * is the only way to reach it leaves no room for a fourth spelling of it.
+ */
+export function scanCapFloor(requested?: number): number {
+  return Math.min(requested ?? fetchAllCap(), fetchAllCap());
+}
+
+/**
  * The variables `--help` and `.env.example` are generated from (#621).
  *
  * ## Why a registry rather than prose in two files

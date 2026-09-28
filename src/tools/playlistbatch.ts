@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { capFor, runChunkedPlaylistWrite, chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import { getConfig } from '../config.js';
+import { fetchAllCap, scanCapFloor } from '../config.js';
 import { trustedCustomIssue } from '../custom-issues.js';
 import { issueReceipt, formatReceipt } from '../receipts.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
@@ -21,7 +21,6 @@ export const BATCH_ADD_ELICIT_THRESHOLD = 100;
 // move tools (`move_tracks_between_playlists`, `balance_playlist_pairs`) gate
 // on this same number instead of a second constant that would drift from it.
 export const MOVE_ELICIT_THRESHOLD = 50;
-const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
 const BATCH_WALK_FIELDS = {
   limit: z.number().int().min(1).max(100).optional().describe('Source page size, 1–100. Default: 100'),
   scan_cap: z.number().int().min(1).max(10_000).optional().describe('Maximum source rows to scan; bounded by SPOTIFY_MCP_FETCH_ALL_CAP'),
@@ -39,7 +38,7 @@ async function fetchPlaylistItems(
   options: { limit?: number; scan_cap?: number } = {},
 ): Promise<{ items: PlaylistItemObject[]; truncated: boolean }> {
   const id = encodeURIComponent(normalizePlaylistReference(playlistRef));
-  const cap = Math.min(options.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+  const cap = scanCapFloor(options.scan_cap);
   const pageLimit = Math.min(options.limit ?? 100, 100);
   const walked = await client.getAllPages<PlaylistItemObject>(`/playlists/${id}/items`, { limit: String(pageLimit) }, { maxItems: cap + 1 });
   const truncated = walked.length > cap;
@@ -57,12 +56,12 @@ interface AlbumTrackRef { uri?: string | null; is_playable?: boolean; }
 export async function expandAlbumToTracks(
   client: SpotifyClient,
   album: SavedAlbumRef,
-  maxItems = FETCH_ALL_CAP(),
+  maxItems = fetchAllCap(),
 ): Promise<string[]> {
   const parsedAlbum = album.uri ? parseSpotifyUri(album.uri) : null;
   const albumId = album.id ?? parsedAlbum?.id;
   if (!albumId) throw new Error('Saved album is missing a valid Spotify album ID or URI');
-  const cap = Math.min(FETCH_ALL_CAP(), Math.max(0, Math.floor(maxItems)));
+  const cap = Math.min(fetchAllCap(), Math.max(0, Math.floor(maxItems)));
   if (cap === 0) return [];
 
   const items = await client.getAllPages<AlbumTrackRef>(
@@ -177,7 +176,7 @@ async function resolveSourceUris(
     if (parsed.type === 'episode') { resolved.push(`spotify:episode:${parsed.id}`); resolvedPerSource.episode++; continue; }
     if (parsed.type === 'album') {
       try {
-        const tracks = await expandAlbumToTracks(client, { id: parsed.id }, options.scan_cap ?? FETCH_ALL_CAP());
+        const tracks = await expandAlbumToTracks(client, { id: parsed.id }, options.scan_cap ?? fetchAllCap());
         if (tracks.length > 0) { resolved.push(...tracks); resolvedPerSource.album += tracks.length; continue; }
         // expandAlbumToTracks already filtered to playable URIs, so an empty
         // result is either genuinely empty or every track came back with
@@ -299,7 +298,7 @@ export function registerPlaylistBatchTools(server: McpServer, client: SpotifyCli
     // #864: the target walk is a cap+1 probe, so `targetTruncated` is exact —
     // but the commit path below reported neither flag, so a batch deduped
     // against a truncated read came back looking like a clean dedupe.
-    const scanCap = Math.min(args.scan_cap ?? FETCH_ALL_CAP(), FETCH_ALL_CAP());
+    const scanCap = scanCapFloor(args.scan_cap);
     const notice = targetTruncated
       ? walkTruncationNotice(scanCap, scanCap, true)
       : sourceTruncated

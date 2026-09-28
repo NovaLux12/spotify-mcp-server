@@ -3,7 +3,7 @@ import { issueReceipt, formatReceipt } from '../receipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
-import { getConfig } from '../config.js';
+import { fetchAllCap, scanCapFloor } from '../config.js';
 import { trustedCustomIssue } from '../custom-issues.js';
 import { fetchCoverJpeg, validateCoverJpegBuffer } from '../cover-image.js';
 import {
@@ -127,18 +127,13 @@ interface PlaylistRead {
 // here is now `duplicateKey(item, 'name_artist')` in ../playlistmatch.js, so
 // the read-only and the mutating duplicate tools group on one function.
 
-// Hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
-const FETCH_ALL_CAP = () => getConfig().fetchAllCap;
-/**
- * The effective source-walk ceiling. The walk clamps `scan_cap` to the
- * configured FETCH_ALL_CAP, so every payload must report THIS value rather than
- * the raw request: a caller passing scan_cap: 5000 against a 500 ceiling would
- * otherwise be told the walk stopped at 5000, which is the figure the
- * destructive-impact arithmetic and the confirmation prompt were derived from.
- */
-function effectiveScanCap(args: { scan_cap?: number }): number {
-  return Math.min(args.scan_cap ?? getConfig().fetchAllCap, getConfig().fetchAllCap);
-}
+// The hard cap for fetch_all pagination loops (SPOTIFY_MCP_FETCH_ALL_CAP, #55)
+// and the clamp that applies it are both `scanCapFloor` in ../config.js (#1625).
+// This module used to hold its own `FETCH_ALL_CAP` thunk and its own copy of
+// the `Math.min` clamp, and so did two of its siblings; the ceiling is one
+// number with one meaning, and a walk that reported a cap other than the one it
+// applied would be reporting a figure the destructive-impact arithmetic and the
+// confirmation prompt were derived from.
 
 /**
  * Truncation disclosure for a capped playlist walk (#864). One wording for
@@ -335,7 +330,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe(
-          `Fetch every playlist (up to ${getConfig().fetchAllCap}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
+          `Fetch every playlist (up to ${fetchAllCap()}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
         ),
     },
     async (args) => {
@@ -349,19 +344,19 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       let total = result.total;
       const items = [...result.items];
-      if (args.fetch_all && items.length < Math.min(total, FETCH_ALL_CAP())) {
+      if (args.fetch_all && items.length < Math.min(total, fetchAllCap())) {
         // Resume from the absolute position we have already collected rather
         // than restarting at offset 0; pagination logic lives in the client.
         const rest = await client.getAllPages<SpotifyPlaylistSimple>(
           '/me/playlists',
           { limit },
           {
-            maxItems: FETCH_ALL_CAP() - items.length,
+            maxItems: fetchAllCap() - items.length,
             initialOffset: (args.offset ?? 0) + items.length,
           },
         );
         items.push(...rest);
-        if (items.length > FETCH_ALL_CAP()) items.length = FETCH_ALL_CAP();
+        if (items.length > fetchAllCap()) items.length = fetchAllCap();
       }
 
       // #53: render at most max_results listings regardless of how many the
@@ -443,7 +438,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe(
-          `Fetch all items across pages (up to ${getConfig().fetchAllCap}), continuing FROM offset. limit is the page size. Note: library tools' fetch_all ignores offset — contracts differ between modules (#110).`,
+          `Fetch all items across pages (up to ${fetchAllCap()}), continuing FROM offset. limit is the page size. Note: library tools' fetch_all ignores offset — contracts differ between modules (#110).`,
         ),
     },
     async (args) => {
@@ -472,18 +467,18 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         // from the real number of rows collected — not from `offset` itself,
         // which is what the old loop's `collected.length` was silently
         // assuming when a caller passed both.
-        if (collected.length < Math.min(firstPage.total, FETCH_ALL_CAP())) {
+        if (collected.length < Math.min(firstPage.total, fetchAllCap())) {
           const rest = await client.getAllPages<PlaylistItemObject>(
             `/playlists/${id}/items`,
             itemParams,
             {
-              maxItems: FETCH_ALL_CAP() - collected.length,
+              maxItems: fetchAllCap() - collected.length,
               initialOffset: (args.offset ?? 0) + collected.length,
             },
           );
           collected.push(...rest);
         }
-        if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
+        if (collected.length > fetchAllCap()) collected.length = fetchAllCap();
         items = { ...firstPage, items: collected };
       }
 
@@ -565,7 +560,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         .boolean()
         .optional()
         .describe(
-          `Fetch every item across pages (up to ${getConfig().fetchAllCap}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
+          `Fetch every item across pages (up to ${fetchAllCap()}), continuing FROM offset rather than restarting at 0. limit is the page size. Note: library tools' fetch_all instead ignores offset — contracts differ between modules (#110).`,
         ),
     },
     async (args) => {
@@ -583,7 +578,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let total = page.total;
       if (args.fetch_all && page) {
         const collected = [...page.items];
-        while (collected.length < Math.min(page.total, FETCH_ALL_CAP())) {
+        while (collected.length < Math.min(page.total, fetchAllCap())) {
           const nextPage = await client.get<PlaylistItemsResponse>(`/playlists/${id}/items`, {
             limit: String(args.limit ?? 100),
             offset: String(collected.length),
@@ -591,7 +586,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
           if (!nextPage || nextPage.items.length === 0) break;
           collected.push(...nextPage.items);
         }
-        if (collected.length > FETCH_ALL_CAP()) collected.length = FETCH_ALL_CAP();
+        if (collected.length > fetchAllCap()) collected.length = fetchAllCap();
         items = collected;
       }
 
@@ -820,7 +815,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       if (args.dry_run) {
         let wouldAdd = args.uris;
         if (args.check_duplicates) {
-          scanCap = getConfig().fetchAllCap;
+          scanCap = fetchAllCap();
           const existing = await client.getAllPagesWithTruncation<PlaylistItemObject>(
             `/playlists/${id}/items`,
             { limit: '100' },
@@ -858,7 +853,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       let toAdd = args.uris;
       let skipped = 0;
       if (args.check_duplicates) {
-        scanCap = getConfig().fetchAllCap;
+        scanCap = fetchAllCap();
         const existing = await client.getAllPagesWithTruncation<PlaylistItemObject>(
           `/playlists/${id}/items`,
           { limit: '100' },
@@ -1376,7 +1371,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // and the prose rather than reporting a clean bill of health for rows
       // nobody read.
       const scanTruncated = scan.truncated;
-      const scanCap = getConfig().fetchAllCap;
+      const scanCap = fetchAllCap();
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
       // #885: one grouping function, shared with playlist_health_check,
@@ -1528,7 +1523,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // both the removals it planned and the "nothing to remove" verdict it
       // did NOT reach are only statements about the rows it actually read.
       const scanTruncated = scan.truncated;
-      const scanCap = getConfig().fetchAllCap;
+      const scanCap = fetchAllCap();
       const notice = walkTruncationNotice(items.length, scanCap, scanTruncated);
 
       const { ordered, groups } = collectDuplicateRemovals(items, matchBy);
@@ -1729,7 +1724,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         });
       }
 
-      const scanCap = getConfig().fetchAllCap;
+      const scanCap = fetchAllCap();
       const scanTruncated = playlistsTruncated || truncatedPlaylists > 0;
       // One line naming every short walk, so the report below cannot be read
       // as a whole-account verdict when it was not one.
@@ -1871,7 +1866,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
    * boundary rather than saying "some rows were missed".
    */
   async function getPlaylistRows(playlistId: string, options: { limit?: number; scan_cap?: number } = {}): Promise<PlaylistRead> {
-    const cap = Math.min(options.scan_cap ?? getConfig().fetchAllCap, getConfig().fetchAllCap);
+    const cap = scanCapFloor(options.scan_cap);
     const pageLimit = Math.min(options.limit ?? 100, 100);
     // One row past the cap is what lets the walk SEE the row that overflows it
     // and prove the truncation happened. A `length >= cap` test reports
@@ -2308,7 +2303,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const impactNote = targetImpact
         ? `; target impact: ${targetImpact.removed} removed, ${targetImpact.added} added${targetImpact.reordered ? ', reordered' : ''}`
         : '';
-      const text = planWithNotice(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists${impactNote}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]), refuseNotice);
+      const text = planWithNotice(describeDryRun('union playlists', args.target_playlist_id ?? args.target_name!, [`Would union ${union.length} uri(s) from ${input.values.length} playlists${impactNote}${sourceTruncated ? `; source walk reached the configured cap of ${scanCapFloor(args.scan_cap)} rows; totals may be incomplete` : ''}`]), refuseNotice);
       const payload = withPlaylistInputMetadata({
         ok: true,
         dry_run: true,
@@ -2318,7 +2313,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         returned: unionView.items.length,
         uris: unionView.items,
         limit: args.limit ?? null,
-        scan_cap: effectiveScanCap(args),
+        scan_cap: scanCapFloor(args.scan_cap),
         target_existing_rows: target?.rowCount ?? 0,
         target_unrepresentable: targetUnrepresentable,
         target_read_whole: targetReadWhole,
@@ -2351,7 +2346,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         uris: unionView.items,
         created: false,
         limit: args.limit ?? null,
-        scan_cap: effectiveScanCap(args),
+        scan_cap: scanCapFloor(args.scan_cap),
         source_truncated: sourceTruncated,
       }, input);
       return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote(`Union target already contains all ${union.length} URI(s); nothing was changed.`, input), payload);
@@ -2370,7 +2365,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       // Without this the operator is shown a definitive-looking set difference
       // computed from a partial read — the one case where the prompt is the
       // only place the incompleteness can still be disclosed.
-      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${effectiveScanCap(args)} rows; the union is incomplete, so items missing from it would be removed.`);
+      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${scanCapFloor(args.scan_cap)} rows; the union is incomplete, so items missing from it would be removed.`);
       const verdict = await confirmViaElicitation(server, {
         message: describeConfirmation('replace playlist items', args.target_playlist_id!, changes),
       });
@@ -2421,7 +2416,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       uris: unionView.items,
       created: creatingNew,
       limit: args.limit ?? null,
-      scan_cap: effectiveScanCap(args),
+      scan_cap: scanCapFloor(args.scan_cap),
       source_truncated: sourceTruncated,
       snapshot_id: snap ?? null,
       emptied,
@@ -2469,7 +2464,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
     // promising a prompt.
     const refuseNotice = unavailableRowNotice(basePlaylistId, base.unavailablePositions, { truncated: base.truncated, remedy: UNAVAILABLE_REMEDY });
     if (args.dry_run) {
-      const text = planWithNotice(describeDryRun('subtract playlists', basePlaylistId, [`Would remove ${removed} item(s), keep ${remaining.length}${sourceTruncated ? `; source walk reached the configured cap of ${effectiveScanCap(args)} rows; totals may be incomplete` : ''}`]), refuseNotice);
+      const text = planWithNotice(describeDryRun('subtract playlists', basePlaylistId, [`Would remove ${removed} item(s), keep ${remaining.length}${sourceTruncated ? `; source walk reached the configured cap of ${scanCapFloor(args.scan_cap)} rows; totals may be incomplete` : ''}`]), refuseNotice);
       const payload = withPlaylistInputMetadata({
         ok: true,
         dry_run: true,
@@ -2483,7 +2478,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         kept_total: remaining.length,
         uris: keptView.items,
         limit: args.limit ?? null,
-        scan_cap: effectiveScanCap(args),
+        scan_cap: scanCapFloor(args.scan_cap),
         base_existing_rows: base.rowCount,
         base_unrepresentable: unrepresentable,
         base_read_whole: readWholePlaylist,
@@ -2501,7 +2496,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const changes = [
         `Overwrite ALL ${base.rowCount} existing item(s) with ${remaining.length} URI(s), removing ${removed} URI(s) from subtraction sources.`,
       ];
-      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${effectiveScanCap(args)} rows; the removal set may be incomplete.`);
+      if (sourceTruncated) changes.push(`Source walk reached the configured cap of ${scanCapFloor(args.scan_cap)} rows; the removal set may be incomplete.`);
       // No "drop the rows with no URI" line: #860 refuses above, so a prompt
       // can no longer arrive carrying one.
       if (!readWholePlaylist) changes.push(`Only ${base.rowCount} of ${total ?? 'an unknown number of'} existing row(s) could be read, so the true impact may be larger.`);
@@ -2531,7 +2526,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
         kept_total: remaining.length,
         uris: keptView.items,
         limit: args.limit ?? null,
-        scan_cap: effectiveScanCap(args),
+        scan_cap: scanCapFloor(args.scan_cap),
         source_truncated: false,
       }, input);
       return textResult(args.response_format === 'json' ? jsonText(payload) : withPlaylistInputNote('Subtraction sources remove nothing; the playlist was not changed.', input), payload);
@@ -2572,7 +2567,7 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       uris: keptView.items,
       source_truncated: sourceTruncated,
       limit: args.limit ?? null,
-      scan_cap: effectiveScanCap(args),
+      scan_cap: scanCapFloor(args.scan_cap),
       snapshot_id: snap ?? null,
       emptied,
       ...(unconfirmed ? { reason: 'clear_unconfirmed', snapshot_read: false } : {}),

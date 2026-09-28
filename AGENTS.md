@@ -586,6 +586,18 @@ explicitly, because MCP's default is `true` and silence would advertise
 `save_to_library` as dangerous as `remove_from_library`. Do not add `title`
 keys; hosts fall back to the tool name and duplicating it cost ~25 KB.
 
+A verb prefix is only an allowlist in the safe direction when it is a VERB. A
+product prefix is not one, so a family named for the thing it talks to rather
+than what it does cannot be granted read-only by name — `statsfm_*` was, which
+meant a future stats.fm writer inherited the grant and nothing had to notice
+(#1600). That family is instead positively enumerated in `STATSFM_READ_ONLY`
+and consulted **before** the verb prefixes, so a name outside the set is a write
+and a name added to the set is a read. Note the ordering requirement if you
+extend it: the `stats` alternative alone already matches every `statsfm_*`
+string, so a family check placed after the prefix test could never fire and
+would look like a fix while changing nothing. The same `^`-anchoring shadows the
+destructive verbs too — strip the family prefix before testing for one.
+
 ---
 
 ## 5. Confirmation, deprecation, releases

@@ -70,6 +70,18 @@ jobs:
         # Root every mkdtemp under tests/ at os.tmpdir().
         run: node scripts/check-no-repo-root-fixtures.mjs
 
+      - name: Config-accessor guard (one home per setting)
+        # #1625. `getConfig()` is the single source of truth for the
+        # SPOTIFY_MCP_* family, and three tool modules each declared their own
+        # module-scope `const FETCH_ALL_CAP = () => getConfig().fetchAllCap` —
+        # byte-identical, so the name meant the environment variable AND a local
+        # re-binding of it. The suite could not catch a fourth: the ~10 test
+        # files that mention FETCH_ALL_CAP all reference the environment VARIABLE
+        # in a string, never the constant. This walks src/ for a module-scope
+        # binding of a config field, so the next one is a failure here instead of
+        # a fourth comment claiming it is the same as the other three.
+        run: node scripts/check-no-duplicate-config-accessors.mjs
+
       - name: Script syntax and import guard
         # #644. The test glob is `tests/*.test.ts`, so a `.mjs` under `scripts/`
         # is never loaded by a test that did not already know about it — and the

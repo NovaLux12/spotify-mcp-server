@@ -586,9 +586,19 @@ function applyStableListDefaults(toolName: string, schema: Record<string, unknow
 /**
  * Reads can only start with one of these. Being an allowlist is the point: a new
  * mutating tool whose name we failed to anticipate defaults to "write".
+ *
+ * #1600: `statsfm` is deliberately NOT an alternative here, and the omission is
+ * load-bearing. The family used to be granted read-only by NAME, which was
+ * fail-OPEN in the one direction that matters: the next stats.fm tool to mutate
+ * anything would inherit the grant and be advertised to hosts as a read, with
+ * nothing in the tree obliged to notice. Note also that the `stats` alternative
+ * alone still matches every `statsfm_*` string, so deleting the `statsfm`
+ * alternative from this regex is a no-op on its own — the family is governed by
+ * STATSFM_READ_ONLY below, which is consulted first and is a closed set. Keeping
+ * `statsfm` listed here would have read as a second, live source of truth.
  */
 export const READ_ONLY_PREFIXES =
-  /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|statsfm|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
+  /^(get|list|search|check|inspect|find|show|describe|report|count|is|has|read|lookup|compare|diff|history|stats|summary|summarize|summarise|analyze|analyse|validate|estimate|diagnose|resolve|quiz|census|audit|review|coverage|timeline|heatmap|trends?|insights?|distribution|breakdown|matrix|explorer|probe|digest|briefing|radar|where)/;
 
 /**
  * Writes. Bare `plan` is deliberately NOT in this list: a `_plan` suffix alone
@@ -621,19 +631,37 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   canonicalize_spotify_uri: { readOnlyHint: true, idempotentHint: true },
   spotify_uri_stats: { readOnlyHint: true, idempotentHint: true },
 
-  // #908: only the canonical name needs a row now. The `record_feedback` entry
-  // that sat beside it was there because the alias was a second REGISTRATION
-  // and this table is keyed by registered name; with the alias gone the row was
-  // unreachable. A stale row here is not harmless — `classifyToolAnnotations`
-  // never consults it, so a future tool that happens to be named
-  // `record_feedback` would silently inherit someone else's annotation.
+  // #726/#1600: `statsfm_record_feedback` writes a bounded local sidecar. It
+  // never reached Spotify, so no write scope covers it, and it must not be
+  // advertised as a read.
+  //
+  // #1600: this row is now REDUNDANT and kept only as an explicit statement of
+  // intent. The family rule in `classifyToolAnnotations` classifies every
+  // `statsfm_*` name outside STATSFM_READ_ONLY as a write, so this name would be
+  // a write with or without the row. It is left in place because a reader
+  // arriving at the name deserves to find the reasoning rather than infer it,
+  // and because a row that is currently doing nothing is a row someone can read
+  // before deleting.
+  //
+  // #908 note, still true and still the reason there is no `record_feedback`
+  // alias row: this table is keyed by REGISTERED name, and a stale row is not
+  // harmless — `classifyToolAnnotations` consults OVERRIDES first, so an
+  // unreachable row for a name that later comes back to life would silently
+  // inherit someone else's annotation.
   statsfm_record_feedback: { destructiveHint: false },
   // #726: `statsfm_jukebox` reads a stats.fm account AND, on `dry_run: false`,
-  // removes playlist rows and adds others. The `statsfm` verb prefix is
-  // allowlisted as a READ, so without this row the classifier advertises a
-  // writer as read-only and a host that auto-approves on `readOnlyHint` waves a
-  // playlist mutation through with no prompt at all. The name is not a plan, so
+  // removes playlist rows and adds others. A host that auto-approves on
+  // `readOnlyHint` waves a playlist mutation through with no prompt at all, so
+  // this tool must not be advertised as a read. The name is not a plan, so
   // NEVER_MUTATING_PLANS is the wrong table — that set makes names read-only.
+  //
+  // #1600 supersedes the mechanism this row used to need. It read: "the
+  // `statsfm` verb prefix is allowlisted as a READ, so without this row the
+  // classifier advertises a writer as read-only" — which was true, and which
+  // is also exactly the fail-open shape the issue was filed about: a hand list
+  // was the only thing between the family prefix and a write advertised as a
+  // read. The family is now governed by STATSFM_READ_ONLY, so this row is
+  // redundant and is kept for the reason given on the row above.
   //
   // `destructiveHint: false`, not `true`, and the reason is the NAME rather than
   // the behaviour: #726 specifies `statsfm_jukebox` and the naming policy
@@ -921,6 +949,80 @@ export const NEVER_MUTATING_PLANS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * #1600: the `statsfm_` family, positively enumerated.
+ *
+ * Every other read is admitted by a verb prefix, which is an allowlist in the
+ * fail-closed direction — a name nobody anticipated is a write. The stats.fm
+ * family was the exception, and the exception was backwards. `statsfm_` is a
+ * PRODUCT prefix, not a verb: a future `statsfm_mark_jukebox_replayed` or
+ * `statsfm_sync_playlists` is a write whose name would still have been granted
+ * read-only by the allowlist. The only thing standing between such a tool and a
+ * host that trusts `readOnlyHint: true` was a hand-listing in OVERRIDES, and a
+ * hand list nobody has to consult does not fail anything.
+ *
+ * So the polarity is inverted for this family only: a `statsfm_*` tool is
+ * read-only if and only if its name is in this set, and anything unclassified is
+ * classified as a write. A new stats.fm tool is therefore a write until someone
+ * reads its handler and adds it here — the cost of that mistake is a tool
+ * hidden from a `SPOTIFY_MCP_READONLY` session, not a write advertised as a
+ * read.
+ *
+ * The 37 names are the read-only half of the 39-tool family as measured from the
+ * live registry. The two writes are `statsfm_jukebox` and
+ * `statsfm_record_feedback`, and both carry OVERRIDES rows — but those rows
+ * exist to un-apply a grant, which is the fail-open shape; they are now
+ * redundant and are kept only as explicit statements of intent.
+ *
+ * Exported so the test can assert this set against the live registry in both
+ * directions. Without that, a new stats.fm tool would silently classify as a
+ * write and nobody would find out until a user asked why it vanished from
+ * read-only mode.
+ */
+export const STATSFM_READ_ONLY: ReadonlySet<string> = new Set([
+  'statsfm_album_date_stats',
+  'statsfm_album_stats',
+  'statsfm_artist_affinity',
+  'statsfm_artist_date_stats',
+  'statsfm_artist_stats',
+  'statsfm_catalog_album',
+  'statsfm_catalog_artist',
+  'statsfm_catalog_track',
+  'statsfm_charts_albums',
+  'statsfm_charts_artists',
+  'statsfm_charts_tracks',
+  'statsfm_charts_users',
+  'statsfm_exposure_check',
+  'statsfm_forgotten_favorites',
+  'statsfm_friend_count',
+  'statsfm_friends',
+  'statsfm_genre_artists',
+  'statsfm_listening_eras',
+  'statsfm_listening_sessions',
+  'statsfm_now_playing',
+  'statsfm_recaps',
+  'statsfm_recent_streams',
+  'statsfm_records_artists',
+  'statsfm_resolve_user',
+  'statsfm_search',
+  'statsfm_streams_stats',
+  'statsfm_taste_profile',
+  'statsfm_taste_recommendations',
+  'statsfm_top_albums',
+  'statsfm_top_albums_from_artist',
+  'statsfm_top_artists',
+  'statsfm_top_genres',
+  'statsfm_top_tracks',
+  'statsfm_top_tracks_from_album',
+  'statsfm_top_tracks_from_artist',
+  'statsfm_track_date_stats',
+  'statsfm_track_stats',
+]);
+
+/** The product prefix, as opposed to the verb prefixes in READ_ONLY_PREFIXES. */
+const STATSFM_FAMILY_PREFIX = 'statsfm_';
+const STATSFM_FAMILY = new RegExp(`^${STATSFM_FAMILY_PREFIX}`);
+
+/**
  * Classify one tool. Returns only the fields worth putting on the wire:
  * non-default values plus an explicit `destructiveHint` for every write (MCP
  * defaults it to true, so silence means "may destroy").
@@ -934,6 +1036,26 @@ export function classifyToolAnnotations(toolName: string): ToolAnnotations {
   const override = OVERRIDES[toolName];
   if (override) return { ...override };
   if (NEVER_MUTATING_PLANS.has(toolName)) return { readOnlyHint: true, idempotentHint: true };
+
+  // #1600: consulted before the verb prefixes, because `statsfm_` names are
+  // admitted by the `stats` alternative regardless — a check placed after the
+  // prefix test could never fire, and would look like a fix while changing
+  // nothing. Explicit OVERRIDES and audited plans still win above, so the two
+  // known writers keep their hand-stated annotations.
+  if (STATSFM_FAMILY.test(toolName)) {
+    if (STATSFM_READ_ONLY.has(toolName)) return { readOnlyHint: true, idempotentHint: true };
+    // Falling out of the family is a statement about read-only-ness, not about
+    // how much damage the tool can do, so the destructive test still runs — and
+    // it has to run on the name WITH the family prefix stripped. The regexes
+    // are `^`-anchored, so `DESTRUCTIVE_PREFIXES.test('statsfm_delete_x')` is
+    // false however obviously destructive the name is: `statsfm_` shadows the
+    // verb exactly the way it shadowed the read grant. Testing the remainder
+    // keeps the verb the author actually chose.
+    const verb = toolName.slice(STATSFM_FAMILY_PREFIX.length);
+    return DESTRUCTIVE_PREFIXES.test(verb)
+      ? { destructiveHint: true }
+      : { destructiveHint: false };
+  }
 
   const mutating = MUTATING_PREFIXES.test(toolName);
   const readOnly = !mutating && READ_ONLY_PREFIXES.test(toolName);
