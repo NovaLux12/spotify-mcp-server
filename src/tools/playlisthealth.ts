@@ -18,7 +18,7 @@ import {
 } from './confirm.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
-import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { isMissingFileRefusal, ownStoreRoots, readLocalFile } from '../paths.js';
 import { textResult, jsonText } from '../result.js';
 import { spotifyRef } from '../refs.js';
 
@@ -333,15 +333,33 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     },
     async (args) => {
       const filePath = snapshotPath(args.playlist_id, args.snapshot_id);
-      let snapshot: SnapshotData;
+      let raw: string;
       // "not found" is what makes this a client error the caller can act on
       // (a wrong or expired snapshot id), but the ids themselves must not be
       // echoed: one is a caller-supplied URL and the other a local path.
       // #623: the snapshot path is built from caller-supplied ids, so it is
       // confined to the snapshot directory, must be a regular file, and is
-      // size-capped. A refusal is reported as "not found" — the same class of
-      // answer as a wrong id, and the file's own path is never echoed.
-      try { snapshot = JSON.parse(await readLocalFile({ roots: ownStoreRoots(filePath), tool: 'playlist_health', target: filePath })) as SnapshotData; } catch { throw new Error('Snapshot not found for the requested playlist.'); }
+      // size-capped. The file's own path is never echoed.
+      //
+      // #1617: the `try` covers the READ ONLY, and only an absent file is
+      // reported as "not found". The guard's three refusals are a different
+      // diagnosis — reporting one as "not found" sent the caller looking
+      // elsewhere for a file the server had just declined to open — so they
+      // rethrow with the reason and the roots they checked. Parsing sits
+      // outside the `try` on purpose: a SyntaxError carries no errno, so
+      // inside it, a corrupt snapshot would be indistinguishable from a refusal.
+      try {
+        raw = await readLocalFile({ roots: ownStoreRoots(filePath), tool: 'playlist_health', target: filePath });
+      } catch (err) {
+        if (!isMissingFileRefusal(err)) throw err;
+        throw new Error('Snapshot not found for the requested playlist.');
+      }
+      let snapshot: SnapshotData;
+      try {
+        snapshot = JSON.parse(raw) as SnapshotData;
+      } catch {
+        throw new Error('Snapshot not found for the requested playlist.');
+      }
       const encId = encodeURIComponent(args.playlist_id);
       const current = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
       // Multiset semantics, not set membership: a playlist that gains or loses
@@ -636,14 +654,37 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       let jsonFiles = files.filter((f) => f.endsWith('.json'));
       if (args.playlist_id) { const prefix = `${sanitizeId(args.playlist_id)}__`; jsonFiles = jsonFiles.filter((f) => f.startsWith(prefix)); }
       const snapshots: Array<{ snapshot_id: string; playlist_id: string; created_at: string; total: number; file: string }> = [];
+      const unreadable: Array<{ file: string; reason: string }> = [];
       // #623: same guard per file — a snapshot name is server-listed, but the
       // bytes behind it are still confined, regular-file-only and size-capped,
       // so a FIFO under a snapshot name is skipped rather than opened.
-      for (const f of jsonFiles) { try { const raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'playlist_snapshots', target: join(dir, f) }); const data = JSON.parse(raw) as SnapshotData; snapshots.push({ snapshot_id: data.snapshot_id, playlist_id: data.playlist_id, created_at: data.created_at, total: data.total, file: join(dir, f) }); } catch { /* skip */ } }
+      //
+      // #1617: skipped, but no longer SILENTLY. One unreadable snapshot must
+      // not hide the others, so it stays out of the listing — and its reason
+      // is disclosed, the way `find_exact_duplicates` in this module already
+      // discloses an unreadable playlist. A bare skip made a guard refusal
+      // indistinguishable from a corrupt file, and a listing that reads as
+      // complete is exactly the #803 shape.
+      for (const f of jsonFiles) {
+        let raw: string;
+        try {
+          raw = await readLocalFile({ roots: ownStoreRoots(dir), tool: 'playlist_snapshots', target: join(dir, f) });
+        } catch (err) {
+          unreadable.push({ file: f, reason: err instanceof Error ? err.message : String(err) });
+          continue;
+        }
+        try {
+          const data = JSON.parse(raw) as SnapshotData;
+          snapshots.push({ snapshot_id: data.snapshot_id, playlist_id: data.playlist_id, created_at: data.created_at, total: data.total, file: join(dir, f) });
+        } catch (err) {
+          unreadable.push({ file: f, reason: err instanceof Error ? err.message : String(err) });
+        }
+      }
       snapshots.sort((a, b) => a.created_at.localeCompare(b.created_at));
-      const structured = { snapshots, count: snapshots.length };
-      const text = snapshots.length === 0 ? 'No snapshots found.' : `Found ${snapshots.length} snapshot(s):\n${snapshots.map((s) => `  ${s.playlist_id}/${s.snapshot_id} — ${s.total} items @ ${s.created_at}`).join('\n')}`;
-      return textResult(text, structured);
+      const structured = { snapshots, count: snapshots.length, ...(unreadable.length > 0 ? { unreadable, unreadable_count: unreadable.length } : {}) };
+      const lines = snapshots.length === 0 ? ['No snapshots found.'] : [`Found ${snapshots.length} snapshot(s):`, ...snapshots.map((s) => `  ${s.playlist_id}/${s.snapshot_id} — ${s.total} items @ ${s.created_at}`)];
+      for (const u of unreadable) lines.push(`  unreadable: "${u.file}" — ${u.reason}`);
+      return textResult(lines.join('\n'), structured);
     },
   );
 }

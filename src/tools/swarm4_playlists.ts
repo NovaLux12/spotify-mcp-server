@@ -60,7 +60,7 @@ import type {
 import type { LibraryBackup } from './backup.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
-import { ownStoreRoots, readLocalFile } from '../paths.js';
+import { isMissingFileRefusal, ownStoreRoots, readLocalFile } from '../paths.js';
 import { positionDesc, positionSchema } from '../positionbase.js';
 import { consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 import { emit } from '../result.js';
@@ -607,10 +607,15 @@ async function readSnapshot(file: string): Promise<LibraryBackup> {
   try {
     // #623: `file` is a snapshot name the caller may have supplied, and the
     // path is built from the backup dir. Confined, regular-file-only and
-    // size-capped. A refusal falls into the "not found" branch below, which
-    // is the honest report for a name that is not a readable snapshot.
+    // size-capped.
     raw = await readLocalFile({ roots: ownStoreRoots(path), tool: 'library backup snapshot', target: path });
-  } catch {
+  } catch (err) {
+    // #1617: only a genuinely ABSENT file is "not found". The guard's three
+    // refusals — outside the read roots, not a regular file, over the size cap
+    // — are a different diagnosis, and reporting them as "not found" is what
+    // told a caller to go looking somewhere else. Each carries the reason and
+    // the roots it checked, so it rethrows unchanged.
+    if (!isMissingFileRefusal(err)) throw err;
     const all = await listSnapshotFiles();
     const hint = all.length > 0
       ? ` Available snapshots: ${all.slice(0, 8).join(', ')}${all.length > 8 ? '…' : ''}`

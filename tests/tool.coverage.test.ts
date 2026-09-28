@@ -170,11 +170,11 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm3snapshots',
     reason:
-      'The snapshot family is 18/24 untested and includes prune_old_snapshots, which deletes files with no test at all. Largest untested block in the tree (epic #575). apply_snapshot_changes and restore_playlist_from_snapshot left this list in #708, which drives both and asserts the purpose + provenance record they publish — two of the three destructive operations this reason named are now covered.',
+      'The snapshot family is 17/24 untested and includes prune_old_snapshots, which deletes files with no test at all. Largest untested block in the tree (epic #575). apply_snapshot_changes and restore_playlist_from_snapshot left this list in #708, which drives both and asserts the purpose + provenance record they publish — two of the three destructive operations this reason named are now covered. read_playlist_snapshot left this list in #1617, which drives the module and asserts that each of the read guard\'s three refusals (outside the read roots, not a regular file, over the size cap) reaches the caller as a path refusal rather than as "not found".',
     tools: [
       'delete_playlist_snapshot', 'export_snapshot_bundle',
       'find_lost_since_snapshot', 'find_new_since_snapshot', 'list_saved_snapshots',
-      'merge_snapshot_changes_plan', 'prune_old_snapshots', 'read_playlist_snapshot',
+      'merge_snapshot_changes_plan', 'prune_old_snapshots',
       'snapshot_added_at_report', 'snapshot_diff_summary',
       'snapshot_disk_usage', 'snapshot_integrity_check', 'snapshot_integrity_report',
       'snapshot_new_tracks', 'snapshot_registry_report', 'snapshot_removed_tracks',
@@ -184,9 +184,9 @@ const KNOWN_UNTESTED: readonly {
   {
     module: 'swarm4playlists',
     reason:
-      'The fourth-wave playlist family is 2/18 untested: the two read-only observers (history, snapshot detail). The ten tools that commit one atomic full-content replace are covered by tests/tools.swarm4-truncated-rewrite.test.ts (#1362); playlist_balance — the non-destructive split, which creates new playlists and leaves the source untouched — by tests/tools.swarm4-truncated-balance.test.ts (#1388); playlist_clone_snapshot by #708, which drives it and asserts the provenance record it publishes; playlist_diff, which joined the covered set with #1422 (tests/untrusted-prose.test.ts drives it with a hostile name); and the rest by tests/tools.swarm4-playlists.test.ts and the chunk-preview coverage on main (epic #575).',
+      'The fourth-wave playlist family is 1/18 untested: playlist_history, the read-only observer. The ten tools that commit one atomic full-content replace are covered by tests/tools.swarm4-truncated-rewrite.test.ts (#1362); playlist_balance — the non-destructive split, which creates new playlists and leaves the source untouched — by tests/tools.swarm4-truncated-balance.test.ts (#1388); playlist_clone_snapshot by #708, which drives it and asserts the provenance record it publishes; playlist_diff, which joined the covered set with #1422 (tests/untrusted-prose.test.ts drives it with a hostile name); and the rest by tests/tools.swarm4-playlists.test.ts and the chunk-preview coverage on main (epic #575). playlist_snapshot_detail left this list in #1617, which drives the module and asserts that a path outside the read roots, a directory and an over-cap file each surface as a path refusal naming the constraint — while a genuinely absent snapshot still reports "not found" with its available-snapshots hint (epic #575).',
     tools: [
-      'playlist_history', 'playlist_snapshot_detail',
+      'playlist_history',
     ],
   },
 ];
