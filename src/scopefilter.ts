@@ -64,17 +64,21 @@ export function moduleBlockedByScopes(key: string, granted: Set<string>): boolea
   return !required.some((scope) => granted.has(scope));
 }
 
-/**
- * Modules that can mutate user state (#111 item 6): hidden entirely when
- * SPOTIFY_MCP_READONLY=1 is set, independent of granted scopes.
+/*
+ * Do not re-add a write-module set here (#1572). One did, and its doc comment
+ * claimed it was the `SPOTIFY_MCP_READONLY` gate. It is not: that gate reads
+ * the registrar manifest's own `readOnlySafe` flag
+ * (`readOnly && module.readOnlySafe !== true`), which tools/doctortool.ts
+ * re-derives from the manifest precisely because a hand-copied list drifts.
  *
- * Derived from WRITE_SCOPE_REQUIREMENTS so the two lists cannot drift —
- * any module added there automatically becomes write-classified here.
+ * A key-level set also cannot express it. `readOnlySafe` is a per-ROW flag —
+ * `playlists`, `library` and `following` each have both a read-only-safe row
+ * and a hidden one — so one registration key is not one answer. And a key is
+ * the wrong unit for the scope table above regardless: `playlistfollow` is a
+ * `scopeKey` with no manifest row of its own, so it is reachable through this
+ * module while the READONLY gate never sees it.
+ *
+ * This file is the SCOPE gate. The two are independent: a module can pass
+ * scopes and still be hidden by READONLY, and (per the fail-open branch
+ * above) pass READONLY's silence while a scope would have blocked it.
  */
-export const WRITE_MODULES: ReadonlySet<string> = new Set(
-  Object.keys(WRITE_SCOPE_REQUIREMENTS),
-);
-
-export function isWriteModule(key: string): boolean {
-  return WRITE_MODULES.has(key);
-}

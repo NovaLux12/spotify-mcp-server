@@ -18,7 +18,6 @@
   "ignoreIssues": {
     "src/config.ts": ["exports", "types"],
     "src/tools/annotations.ts": ["exports", "types"],
-    "src/scopefilter.ts": ["exports", "types"],
     "src/tools/confirm.ts": ["exports", "types"]
   }
 }
