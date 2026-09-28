@@ -71,12 +71,20 @@ export function moduleBlockedByScopes(key: string, granted: Set<string>): boolea
  * (`readOnly && module.readOnlySafe !== true`), which tools/doctortool.ts
  * re-derives from the manifest precisely because a hand-copied list drifts.
  *
- * A key-level set also cannot express it. `readOnlySafe` is a per-ROW flag —
- * `playlists`, `library` and `following` each have both a read-only-safe row
- * and a hidden one — so one registration key is not one answer. And a key is
- * the wrong unit for the scope table above regardless: `playlistfollow` is a
- * `scopeKey` with no manifest row of its own, so it is reachable through this
- * module while the READONLY gate never sees it.
+ * A key-level set also cannot express it. `readOnlySafe` is a per-ROW flag
+ * and the gate keys on `module.registrationKey`, so one registration key is
+ * not one answer: `playlistdna` is `readOnlySafe` while its sibling
+ * `playlists` is not, `freshness` is while `following` is not, and under
+ * `library` it is `backup`/`backupfirst`/`showradar` but not
+ * `backupdelete`/`restore`/`undo`. A set keyed by registration key would
+ * have to call each of those three keys both safe and unsafe.
+ *
+ * And a key is the wrong unit for the scope table above regardless:
+ * `playlistfollow` is a key of THAT table, but its manifest row registers
+ * under the toolset key `playlistmisc`
+ * (`manifestEntry('playlistfollow', 'playlistmisc', …, { scopeKey:
+ * 'playlistfollow' })`). The string `playlistfollow` therefore scopes
+ * through this module while the READONLY gate never sees it.
  *
  * This file is the SCOPE gate. The two are independent: a module can pass
  * scopes and still be hidden by READONLY, and (per the fail-open branch
