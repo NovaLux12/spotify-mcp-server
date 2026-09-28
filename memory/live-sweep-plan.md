@@ -58,7 +58,41 @@ FAIL — that is correct.
 
 `memory/live-sweep-report.json` — per tool: `tool`, `class` (SAFE/MUTATING),
 `status` (PASS/FAIL/SKIP), `latency_ms`, `gated` flag, `reason`, plus summary
-counts, mutation proof, and `mode` (batch/resume).
+counts, mutation proof, `mode` (batch/resume), and a `coverage` block.
+
+### The committed report is a partial sweep, not a clean bill of health
+
+**Read this before citing `memory/live-sweep-report.md` for anything.**
+
+The committed run (2026-08-27) discovered 224 tools and **exercised 61 of
+them — 27.2%**. The other **163 (72.8%) were skipped**, and a skipped tool
+carries no verdict: it was never called. `fail 0` means *zero of the 61
+exercised tools failed*; the 163 skips are not in that denominator at all.
+
+The filename and the old commit subject both said otherwise. The commit read
+`chore(sweep): live sweep report (224 tools, 0 fails)`, which reads as 224
+tools verified. #1619 fixed the generators that produced that phrasing and
+added the `coverage` block so the JSON cannot be misread on its own — but the
+honest statement of the evidence is the 27.2%, not the filename.
+
+Two further limits on the 224:
+
+- **`tools_discovered` is not a registry size.** It is what `tools/list`
+  returned on that run. A tool added since is absent from the report rather
+  than passing it, and one removed before the run was never reachable. The
+  registry is larger now; the report is not a measurement of it.
+- **The skips are not random.** 131 of the 163 are
+  `missing prereq from seed reads` and 24 are `mutating; not in
+  --include-mutating allowlist`. The unexercised set is therefore the part of
+  the surface that most needs a live key and a populated account, not the part
+  that is known-good. Full skip reasons with counts are in the `coverage`
+  block under `skip_reasons` and are rendered in the report header.
+
+**This cannot be fixed without re-running the sweep, which needs a live
+credential.** Do not reconstruct, estimate, or back-fill the missing calls, and
+do not present a computed figure as a measurement. Re-running with
+`--include-mutating` and a richer seed set is the only way to raise the
+exercised fraction.
 
 Follow-up analysis: compare PASS-per-tool against the documented tool list
 (SPEC.md), eyeball `gated: true` entries (real 403s vs graceful explanations),

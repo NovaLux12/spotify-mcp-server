@@ -28,19 +28,60 @@
  *
  * On the thresholds in the issue (< 180 ms, < 110 MB with
  * `SPOTIFY_MCP_TOOLSETS=playback`): those are absolute figures from the
- * reporter's machine and are not asserted here. Measured on the host this
- * landed on, the PRE-change baseline for that toolset was ~246 ms — the
- * thresholds were never reachable here, before or after — and on a shared host
- * the same A/B re-run minutes later moves by 5× with load, so a test that
- * encodes another machine's milliseconds goes red for reasons that have nothing
- * to do with this change. What is asserted instead is the machine-independent
- * fact those thresholds were a proxy for: how many tool modules the process
- * evaluates. Measured on both dists of the same tree, that is 18 under
- * `playback` where it was 69, for the identical 100 tools.
+ * reporter's machine and are not asserted here, and on a shared host the same
+ * A/B re-run minutes later moves by 5× with load, so a test that encodes
+ * another machine's milliseconds goes red for reasons that have nothing to do
+ * with this change. What is asserted instead is the machine-independent fact
+ * those thresholds were a proxy for: how many tool modules the process
+ * evaluates.
+ *
  * `scripts/measure-startup.mjs` is the harness for the wall-clock and RSS
- * numbers; ARCHITECTURE.md records the interleaved A/B, including the part
- * that does not flatter the change (peak RSS rises under a trimmed toolset,
- * and the millisecond figures are one sample on a loaded host, not a promise).
+ * numbers, and it is a harness, not a gate — it prints and it never asserts.
+ *
+ * #1611 removed a claim that was not true. The previous version of this
+ * comment said "ARCHITECTURE.md records the interleaved A/B, including the
+ * part that does not flatter the change". There is no such record: ARCHITECTURE.md
+ * describes lazy loading and cites #906, but carries no benchmark of any kind.
+ * A pointer to a document that does not exist is worse than no pointer, because
+ * the next reader either spends the search or trusts that the claim was once
+ * checked. It has been re-measured instead, from the pre-#906 tree
+ * (`6f830dab^`, built to a separate dist) against this one, alternating arms
+ * within each round rather than running one arm then the other:
+ *
+ *   - MODULE COUNT (the asserted fact, and the only number here that is both
+ *     reproducible and the point of the change). Measured through the same
+ *     ESM `resolve` hook this file uses, against both dists:
+ *
+ *         pre-#906   playback  106 tools / 69 modules      all  592 tools / 69 modules
+ *         HEAD       playback   92 tools / 21 modules      all  560 tools / 77 modules
+ *
+ *     The load-bearing part is the first row: before the change the trimmed
+ *     surface evaluated exactly as many modules as the full one, because the
+ *     manifest's static imports did not care which toolset was asked for.
+ *     That is the whole defect #906 fixed, and it is a count rather than a
+ *     timing, so it does not move with the machine.
+ *
+ *     The "69" the previous version of this comment quoted was correct. The
+ *     "18" beside it was stale — it is 21 today — and "for the identical 100
+ *     tools" was wrong in both directions (106 before, 92 after). Neither
+ *     number was a tripwire; only the bound below is asserted.
+ *
+ *   - LATENCY: not reportable. The same arm measured 405 ms in one run and
+ *     3852 ms in the next on this host, which is a property of the box, not
+ *     of the code. No speedup is claimed here, because on this evidence none
+ *     is measurable.
+ *   - PEAK RSS: the part that does not flatter the change, and the one timing
+ *     figure that did reproduce. Under `playback` RSS is flat (111.2 MB before,
+ *     107.7 MB after). Under `all` it RISES, 161.9 MB to 175.8 MB — the
+ *     surface that registers every module pays for the manifest indirection
+ *     with a larger resident set than the one that used to import everything
+ *     eagerly. The previous comment said RSS rises "under a trimmed toolset",
+ *     which is backwards: it rises under the untrimmed one.
+ *
+ * The latencies above are 11 interleaved rounds on a host whose load average
+ * was 23 on 12 cores, which is exactly the condition the sentence about 5× is
+ * warning about. Treat them as unmeasured rather than as a regression, or as
+ * a win. Re-run the harness on an idle box before quoting any of them.
  *
  * Run: node --import tsx --test tests/lazy-module-loading.test.ts
  */
@@ -288,11 +329,12 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
   it('serves the same tools from a fraction of the tool modules', async () => {
     const playback = await recordStartup('playback');
 
-    // 18 measured on the machine this landed on; 69 before the change, for the
-    // identical 100-tool surface. The bound is deliberately loose so an
+    // 69 before the change, 21 today — see the header for both rows of that
+    // measurement. Before, this was 69 whatever the toolset, which is the
+    // defect; a revert to static imports puts all of them back (77 on the full
+    // surface today). The bound is deliberately loose so an
     // unrelated future transitive import does not redden the build, while
-    // still failing loudly if the gate stops gating — a revert to static
-    // imports puts every one of the 66 back.
+    // still failing loudly if the gate stops gating.
     //
     // 106 -> 107 is #846's one added name, `migrate_playback_positions`,
     // registered under `playbackext` and so in scope here. It is the only

@@ -1577,5 +1577,54 @@
       "latency_ms": 0,
       "reason": "needs a receipt id from a prior mutation; skip in safe sweep"
     }
-  ]
+  ],
+  "coverage": {
+    "note": "Added by #1619 without re-running the sweep. Every figure below is arithmetic on the `results` array already in this file; no result was added, removed, or altered.",
+    "derived_at": "2026-09-28T05:55:24.096Z",
+    "tools_discovered": 224,
+    "tools_exercised": 61,
+    "tools_skipped": 163,
+    "tools_recorded": 224,
+    "pct_of_discovered_exercised": 27.2,
+    "pct_of_discovered_skipped": 72.8,
+    "fail_meaning": "0 of 61 exercised tools failed; 163 of 224 discovered were skipped and are not evidence of anything",
+    "skip_reasons": [
+      {
+        "reason": "missing prereq from seed reads",
+        "count": 131
+      },
+      {
+        "reason": "mutating; not in --include-mutating allowlist",
+        "count": 24
+      },
+      {
+        "reason": "MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep",
+        "count": 2
+      },
+      {
+        "reason": "no chapter in seeds",
+        "count": 1
+      },
+      {
+        "reason": "mutating adjacent — requires device; covered by list_all_chapters instead",
+        "count": 1
+      },
+      {
+        "reason": "needs a saved scene; covered by list_scenes/save_scene instead",
+        "count": 1
+      },
+      {
+        "reason": "MUTATING-ADJACENT (arms timers + volume changes)",
+        "count": 1
+      },
+      {
+        "reason": "no active wind-down during gauntlet",
+        "count": 1
+      },
+      {
+        "reason": "needs a receipt id from a prior mutation; skip in safe sweep",
+        "count": 1
+      }
+    ]
+  }
 }

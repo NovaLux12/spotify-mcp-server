@@ -1,6 +1,30 @@
 # Live sweep report — 2026-08-27T12:21:54.005Z
 
-**224 tools discovered** · pass 61 · fail 0 · skip 163 · gated 13 · mode {"batch_limit":40,"resumed_from":"memory/live-sweep-report.json"}
+**61 of 224 discovered tools exercised** (27.2%) · pass 61 · fail 0 · **163 skipped (72.8%)** · gated 13 · mode {"batch_limit":40,"resumed_from":"memory/live-sweep-report.json"}
+
+> **This is a partial sweep, not a clean bill of health.** Of the
+> 224 tools this run discovered,
+> **61 were actually called**
+> (27.2%) and
+> **163 were skipped**
+> (72.8%). `fail 0` means
+> 0 of the 61 exercised tools failed — the
+> 163 skips are excluded from that count entirely, and a
+> skipped tool is not a passing tool. `tools_discovered` is what
+> `tools/list` returned on this run; it is not the registry, so a tool added
+> since is absent from it rather than passing.
+
+> Why the rest was skipped:
+>
+> - 131× missing prereq from seed reads
+> - 24× mutating; not in --include-mutating allowlist
+> - 2× MUTATING-ADJACENT (writes sidecar); not exercised by the safe sweep
+> - 1× no chapter in seeds
+> - 1× mutating adjacent — requires device; covered by list_all_chapters instead
+> - 1× needs a saved scene; covered by list_scenes/save_scene instead
+> - 1× MUTATING-ADJACENT (arms timers + volume changes)
+> - 1× no active wind-down during gauntlet
+> - …and 1 more reason, 1 skipped
 
 > **How to read `PASS (gated)`.** The tool made the call, received a 403
 > from Spotify, and reported the refusal instead of degrading. That is the
@@ -258,4 +282,4 @@
 - `grow_playlist` (PASS) — tool answered but snippet suggests app-registration gating (403/Forbidden/removed)
 
 ## Verdict
-All tested tools passed (or are classified SKIP/gated) — no tool bugs found.
+61 of 224 discovered tools (27.2%) were exercised against the live API; 163 (72.8%) were skipped and carry no verdict at all. "No failures" is a statement about the first number only.

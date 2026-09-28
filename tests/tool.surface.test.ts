@@ -1,16 +1,22 @@
 /**
  * Tool-surface budget + annotation gate (#565 / A0-001, A0-002, A4-005).
  *
- * The default surface advertises every registered tool, and each schema is paid
- * for by the host on every session (~170k tokens today). Nothing stopped that
- * from growing. This test pins three contracts:
+ * There are THREE surfaces here, and since #889 they are three different
+ * numbers, so a test that says "the surface" without naming which one is
+ * asserting nothing (#1613). Every registered tool is paid for by the host on
+ * every `SPOTIFY_MCP_TOOLSETS=all` session, a default session pays for the
+ * curated subset, and `core` pays for less again. What each one costs is
+ * measured — the figures live in the generated `surface-census` block of
+ * README.md, and the ceiling this file reads is the live constant rather than a
+ * copy of it. This test pins three contracts:
  *
  *   1. annotations — every tool carries a title and an explicit readOnlyHint, and
  *      no destructive verb is ever advertised as read-only;
- *   2. budget — the default surface and the `core` preset stay inside ceilings,
- *      so a new module cannot silently triple the payload;
+ *   2. budget — the `all` surface, the default surface and the `core` preset
+ *      each stay inside their ceilings, so a new module cannot silently triple
+ *      the payload;
  *   3. the `core` preset actually covers the daily loop (search, playback,
- *      playlist writes, library, portability export, stats.fm).
+ *      playlist writes, library, portability export).
  *
  * Spawns the real server over stdio; no Spotify traffic (initialize/tools/list
  * are served locally).
@@ -21,6 +27,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -54,8 +61,14 @@ import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.j
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
-const DEFAULT_MAX_TOOLS = AGGREGATE_SURFACE_LIMITS.maxTools;
-const DEFAULT_MAX_BYTES = AGGREGATE_SURFACE_LIMITS.maxBytes;
+// Named for the surface the ceiling is sized against, not for a toolset.
+// `AGGREGATE_SURFACE_LIMITS` is what `src/index.ts` enforces at startup, and
+// it is sized against `SPOTIFY_MCP_TOOLSETS=all`. Calling these `DEFAULT_*`
+// is what #1613 was: a reader who took the name at face value would conclude
+// the default session was budgeted, when in fact the default surface sits at
+// roughly a quarter of this ceiling and nothing was watching it.
+const AGGREGATE_MAX_TOOLS = AGGREGATE_SURFACE_LIMITS.maxTools;
+const AGGREGATE_MAX_BYTES = AGGREGATE_SURFACE_LIMITS.maxBytes;
 // Read the ceilings production enforces at startup; a literal copy here would
 // keep passing after a ceiling is lowered and fail after one is raised.
 const PER_TOOL_MAX_BYTES = TOOL_SURFACE_BUDGET.perToolMaxBytes;
@@ -510,7 +523,19 @@ describe('tool surface: annotations', () => {
 });
 
 describe('tool surface: budget', () => {
-  it('default surface stays inside the tool-count and byte ceilings', async () => {
+  it('the `all` surface stays inside the tool-count and byte ceilings', async () => {
+    // #1613: this test was named "default surface" and was not one.
+    // `listTools` defaults `SPOTIFY_MCP_TOOLSETS` to `'all'`, so it measured
+    // the full surface and asserted it against the aggregate ceiling — the
+    // one pairing that is real, but not the one the name promised. It is
+    // renamed rather than retargeted, and the reason is the measurement:
+    // the ceiling is sized for `all`, and that is where it is nearly full
+    // (the census reports `verdict: "tight"` on it). Pointing this assertion
+    // at the default surface instead would leave the tightest budget in the
+    // repo unwatched and replace it with a check sitting at roughly a
+    // quarter of the ceiling — a test that cannot fail, which §6 of AGENTS.md
+    // calls out as worse than no test. The default surface gets its own
+    // test below, cross-checked against the census instead of a ceiling.
     const tools = await listTools({});
     // `Buffer.byteLength(..., 'utf8')`, not `JSON.stringify(tools).length`:
     // the startup gate in src/index.ts budgets UTF-8 bytes via
@@ -524,12 +549,12 @@ describe('tool surface: budget', () => {
     // assertions below are what re-derive them.
     const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
     assert.ok(
-      tools.length <= DEFAULT_MAX_TOOLS,
-      `default surface grew to ${tools.length} tools (ceiling ${DEFAULT_MAX_TOOLS}) — trim or raise the ceiling deliberately`,
+      tools.length <= AGGREGATE_MAX_TOOLS,
+      `all surface grew to ${tools.length} tools (ceiling ${AGGREGATE_MAX_TOOLS}) — trim or raise the ceiling deliberately`,
     );
     assert.ok(
-      bytes <= DEFAULT_MAX_BYTES,
-      `default tools/list grew to ${bytes} bytes (ceiling ${DEFAULT_MAX_BYTES}) — the host pays this every session`,
+      bytes <= AGGREGATE_MAX_BYTES,
+      `all tools/list grew to ${bytes} bytes (ceiling ${AGGREGATE_MAX_BYTES}) — the host pays this whenever a session asks for everything`,
     );
 
     const oversized = tools.filter((t) => bytesOf(t) > PER_TOOL_MAX_BYTES).map((t) => `${t.name} (${bytesOf(t)}B)`);
@@ -610,6 +635,64 @@ describe('tool surface: budget', () => {
     assert.ok(
       names.size < all.length / 2,
       `core must be materially smaller than the full surface (${names.size} of ${all.length})`,
+    );
+  });
+
+  it('the default surface is the size the census measures, not a ceiling nobody watches (#1613)', async () => {
+    // The default surface had no budget test. #1613's mis-named test claimed to
+    // cover it and did not, so the number a real session actually pays was
+    // asserted nowhere while the generated census block in README.md quoted it
+    // to the reader.
+    //
+    // The expected count and the expected name set both come from
+    // `scripts/surface-census.mjs`, run here rather than typed in. A literal
+    // would rot silently: the census is the thing `--write` regenerates the
+    // README block from, so a hand-typed copy and the block would drift apart
+    // and nothing would fail. Reading the same source the docs read is what
+    // makes the two statements one statement instead of two.
+    const census = JSON.parse(
+      execFileSync(process.execPath, ['scripts/surface-census.mjs'], {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        maxBuffer: 32 * 1024 * 1024,
+      }),
+    ) as { tools: number; defaultTools: number; defaultBytes: number; defaultToolNames: string[] };
+
+    const tools = await listTools({ SPOTIFY_MCP_TOOLSETS: undefined });
+    const names = tools.map((t) => t.name).sort();
+
+    assert.equal(
+      tools.length,
+      census.defaultTools,
+      `default surface is ${tools.length} tools, census measures ${census.defaultTools} — one of the two is lying about what a no-env session registers`,
+    );
+    assert.deepEqual(
+      names,
+      [...census.defaultToolNames].sort(),
+      'default surface names differ from the census; a toolset gate or a manifest entry moved without the census being re-run',
+    );
+    // The census measures the default surface through its own handshake, and
+    // this one just measured a second. The byte figures are asserted against
+    // the aggregate ceiling for the same reason the `all` test above uses it:
+    // the ceiling is a real, enforced number, and a default surface that ever
+    // reached it would abort startup. It sits far below it, which is a fact
+    // about today, not a reason to omit the bound.
+    const bytes = Buffer.byteLength(JSON.stringify(tools), 'utf8');
+    assert.ok(
+      bytes <= AGGREGATE_MAX_BYTES,
+      `default tools/list grew to ${bytes} bytes (aggregate ceiling ${AGGREGATE_MAX_BYTES})`,
+    );
+    // If the default ever stops being a strict subset of the full surface the
+    // toolset gate has stopped gating, and every "trimmed payload" claim in
+    // the docs is wrong at once. Cheap, and it is the direction that broke
+    // once before (#889).
+    const all = await listTools({ SPOTIFY_MCP_TOOLSETS: 'all' });
+    const allNames = new Set(all.map((t) => t.name));
+    const outside = names.filter((n) => !allNames.has(n));
+    assert.deepEqual(outside, [], `default surface registers tools the \`all\` surface does not: ${outside.join(', ')}`);
+    assert.ok(
+      tools.length < all.length,
+      `default surface (${tools.length}) must be a strict subset of the full surface (${all.length})`,
     );
   });
 
