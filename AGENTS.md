@@ -148,8 +148,24 @@ the next section before reading one as "never wrapped":
 | `GET /browse/featured-playlists` | Blocked for post-Nov-2024 apps |
 | ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them. The family still has live callers — see the registration-dependent section below before concluding the path is dead |
 | `GET /browse/new-releases` | **REMOVED Feb 2026**, not a Nov-2024 restriction — do not use |
-| `GET /recommendations/available-genre-seeds` | **Not on the Nov 2024 list.** That post names Recommendations, not this operation; the schema marks it `deprecated: true` and no removal list names it. Do not wrap it either |
+| `GET /recommendations/available-genre-seeds` | **Deprecated, same family as Recommendations** (`get-recommendation-genres`, `deprecated: true` in the OpenAPI schema). Whether the Nov 2024 restriction reaches it has not been established from Spotify's own changelog — see below. Do not wrap it |
 | Lyrics endpoints | Not available via the Web API — do not use |
+
+**One row above is an open question, not a settled fact.**
+`GET /recommendations/available-genre-seeds` is `deprecated: true` in the
+OpenAPI schema, and the schema also marks `/recommendations`,
+`/artists/{id}/related-artists`, `/audio-features/{id}` and
+`/browse/featured-playlists` the same way — so the schema alone does not
+distinguish "restricted since Nov 2024" from "deprecated at some point". The
+`get-recommendations` and `get-recommendation-genres` reference pages both say
+only "Deprecated" and name no date or scope. An earlier draft of this file
+asserted the Nov 2024 post excludes genre-seeds by name; that could not be
+confirmed, because the changelog entry is not reachable at a stable URL and the
+`references/changes` index is client-rendered. **Do not resolve it from this
+file, from `src/tools/moodexpand.ts` (which repeats the same unverified
+claim), or from memory** — read the changelog entry itself, then correct all
+three places together. Until then the conservative reading stands: treat it as
+restricted, and do not wrap it.
 
 ### February 2026: two different states, and the label is not one of them
 

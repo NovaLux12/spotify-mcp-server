@@ -52,8 +52,11 @@ export interface StaticExpansion {
  *
  * Every value in `genres` is a real string from Spotify's genre-seed
  * vocabulary — the canonical list behind `GET /recommendations/
- * available-genre-seeds`, which is itself deprecated for post-Nov-2024 apps
- * (AGENTS.md §2) and so cannot be consulted at runtime to check a spelling.
+ * available-genre-seeds`, which the OpenAPI schema marks `deprecated: true` and
+ * which is therefore not something to consult at runtime to check a spelling.
+ * (Whether Spotify's Nov 2024 restriction reaches this operation specifically is
+ * unestablished — AGENTS.md §2 records the open question. Do not resolve it from
+ * this comment.)
  * That is why the vocabulary was verified once, out of band, rather than being
  * invented here: `pop`, `indie`, `indie-pop`, `alternative`, `alt-rock`,
  * `ambient`, `new-age`, `piano`, `classical`, `electronic`, `edm`, `house`,
