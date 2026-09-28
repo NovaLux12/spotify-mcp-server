@@ -80,9 +80,9 @@ Spotify's [February 2026 changelog](https://developer.spotify.com/documentation/
 
 These are absent from the registry because absence is the honest answer: there is no request to make and no 403 to explain.
 
-**A tool calls it and explains the 403.** `GATED_FAMILIES` in [`src/gating.ts`](src/gating.ts) is the authoritative list — `/browse/categories*`, `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` profile reads, the per-type `/me/{type}/contains` checks, `/playlists/{id}/followers/contains`, and the `Get Several` batch paths. Their wrappers stay registered, read a documented replacement where one exists, and return a plain-English explanation rather than crashing. The census's `checkGatedEndpointTruth` holds the classifier and the docs to that array, and the README table is generated from it.
+**A tool calls it and explains the 403.** `GATED_FAMILIES` in [`src/gating.ts`](src/gating.ts) is the authoritative list — `/browse/categories*`, `/browse/new-releases`, `/markets`, `/artists/{id}/top-tracks`, `/users/{id}` profile reads, the per-type `/me/{type}/contains` checks, `/playlists/{id}/followers/contains`, and the `Get Several` batch paths. Their wrappers stay registered, read a documented replacement where one exists, and return a plain-English explanation rather than crashing. The census's `checkGatedEndpointTruth` holds the classifier and the docs to that array, and the README table is generated from it.
 
-Two families in the array — `browse-new-releases` and `playlist-followers-contains` — have no live call site left, because the tools that used them moved to replacements. Their patterns are retained so a future caller stays covered by the 403 contract rather than silently losing it. An entry in the array is a runtime classifier, not a claim that a tool calls it.
+Three families in the array — `browse-new-releases`, `me-type-contains` and `playlist-followers-contains` — have no live call site left, because the tools that used them moved to replacements. Their patterns are retained so a future caller stays covered by the 403 contract rather than silently losing it. An entry in the array is a runtime classifier, not a claim that a tool calls it.
 
 So "removed" and "gated" are different answers with different code shapes. Check which class an endpoint is in before writing a handler, and check it in the source of truth rather than from memory: the OpenAPI schema still publishes many removed paths as `deprecated: true`, so the schema alone will not tell you, and neither will the changelog alone.
 
@@ -180,9 +180,9 @@ matrix of `22.x` and `24.x` with `fail-fast: false`. So the two checks a pull re
 twice, not two pipelines. Do not rename them — the check name is what a required-check list
 matches on.
 
-That job has **sixteen** steps. Three are preparation (the Node setup, `npm ci`, and
-`git fetch --tags`), one writes the artifact two of the gates read, and **twelve gate the
-run**:
+That job has **seventeen** steps. Four are preparation (the checkout, the Node setup,
+`npm ci`, and `git fetch --tags`), one writes the artifact two of the gates read, and
+**twelve gate the run**:
 
 | Step in `ci.yml` | Run it yourself with | Failing means |
 |---|---|---|
@@ -289,8 +289,8 @@ ref whose `tag` input matches that ref exactly, so nothing publishes.
 The dispatch is not a workaround, it is the mechanism. release-please creates
 the tag with the repository's `GITHUB_TOKEN`, and a tag pushed with
 `GITHUB_TOKEN` does not start a push-triggered workflow — so `publish.yml`
-would otherwise never run. Both workflow files say so in their own header
-comments.
+would otherwise never run. Both workflow files say so in a comment of their
+own, above the trigger and above the dispatch step.
 
 `publish.yml` still carries a `push: tags: ["v*"]` trigger, and it does fire
 when the tag is created by something other than `GITHUB_TOKEN`. So a tag can
