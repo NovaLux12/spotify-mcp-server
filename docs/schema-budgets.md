@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 613,500B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 614,500B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 603,487B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Measured `tools/list` payload | 603,491B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
 | Of which outside the per-module table | 65,406B | 10.8% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 11,013B | 1.8% of the enforced limit |
+| Headroom | 11,009B | 1.8% of the enforced limit |
 
-Headroom is **11,013B** of the 614,500B enforced limit — 1.8% — so the aggregate budget is **tight**.
+Headroom is **11,009B** of the 614,500B enforced limit — 1.8% — so the aggregate budget is **tight**.
 
 The limit above is enforced at startup against whichever surface the process
 registered, so the figure that matters is the one for the surface you run.
@@ -135,11 +135,11 @@ With `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` set, that is:
 
 | Opted-in surface (`tools/list`) | Value | Where it comes from |
 |---|---:|---|
-| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 613,475B | 571 tools — the same measurement, registered with the opt-in on |
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 613,479B | 571 tools — the same measurement, registered with the opt-in on |
 | Added by the opt-in | 9,988B | +11 tools over the default surface, measured rather than summed (see below) |
-| Headroom with the opt-in | 1,025B | 0.2% of the enforced limit — **effectively exhausted** |
+| Headroom with the opt-in | 1,021B | 0.2% of the enforced limit — **effectively exhausted** |
 
-The default surface reports 10.74× as much room — 11,013B against the opt-in's 1,025B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
+The default surface reports 10.78× as much room — 11,009B against the opt-in's 1,021B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
 
 The byte figure is measured, not derived from the manifest. The per-module `gatedSurface` byte deltas sum to **8,683B** against a measured **9,988B**, a 1,305B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and `_meta` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares 11 and the measurement finds 11 — so it is cross-checked rather than measured twice.
 
@@ -234,7 +234,7 @@ than maintained.
 | exhaustmisc | 10 | 8,291 | 10 | 8,291 | 11 | 9,121 |
 | exhaust2catalog | 19 | 19,443 | 19 | 19,443 | 20 | 21,388 |
 | exhaust2enggating | 0 | 0 | 0 | 0 | 1 | 0 |
-| exhaust2playback | 18 | 14,279 | 18 | 14,279 | 19 | 15,707 |
+| exhaust2playback | 18 | 14,283 | 18 | 14,283 | 19 | 15,712 |
 | exhaust2playlists | 18 | 24,403 | 18 | 24,403 | 19 | 26,844 |
 | exhaust2misc | 27 | 24,664 | 27 | 24,664 | 28 | 27,131 |
 | exhaust2extra | 3 | 4,092 | 3 | 4,092 | 4 | 4,502 |
