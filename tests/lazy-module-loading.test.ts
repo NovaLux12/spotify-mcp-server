@@ -47,7 +47,7 @@
 import './helpers/hermetic.js';
 
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -72,6 +72,7 @@ import {
   registerManifestModules,
   type RegistrarManifestContext,
 } from '../src/tools/annotations.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const RECORDER = join(REPO_ROOT, 'tests/fixtures/record-module-loads.mjs');
@@ -106,6 +107,32 @@ const UNRELATED_TO_PLAYBACK = [
 interface RecordedRun {
   toolCount: number;
   toolModules: string[];
+}
+
+/**
+ * Reap a child and release every stdio handle it registered.
+ *
+ * `SIGTERM` first so a healthy server can exit on its own, an unref'd
+ * escalation to `SIGKILL`, and then all three streams destroyed.
+ *
+ * The escalation timer is `unref`'d, which is the same reasoning as
+ * `armFileDeadline`'s and it matters for the same reason: a file that finishes
+ * normally must never wait on it, and a file whose loop is being held open by a
+ * leaked `PipeWrap` is precisely the case where it *must* still fire. An
+ * unref'd timer runs in both of those and blocks in neither.
+ */
+function reapChild(child: ChildProcess): void {
+  child.kill('SIGTERM');
+  const escalate = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }, 2_000);
+  escalate.unref();
+  // Destroying the stream is what unrefs the `PipeWrap`. Unconditional and
+  // idempotent, and it runs whether or not the child had already exited — which
+  // is exactly the case the inherited-descriptor leak survives.
+  for (const stream of [child.stdin, child.stdout, child.stderr]) {
+    if (stream && !stream.destroyed) stream.destroy();
+  }
 }
 
 /**
@@ -151,7 +178,27 @@ function recordStartup(toolsets: string): Promise<RecordedRun> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      child.kill();
+      // SIGTERM, then SIGKILL, then release every stdio handle — in that order,
+      // and all three of them (#1569).
+      //
+      // This was the last hand-rolled copy of the pattern the `stdio-child.ts`
+      // header calls the #1365 bug: a bare `child.kill()` and nothing else.
+      // Reaping the child is not the same as reaping its handles. Node keeps a
+      // `PipeWrap` registered for every stdio stream it hands out, and that
+      // handle stays in the event loop until the *stream* is destroyed — not
+      // until the process that wrote the last byte closes its end. This child
+      // runs under `tsx/esm`, so a transform-service grandchild can still be
+      // holding an inherited write end at the moment the child dies; the read
+      // end then never reaches EOF, the handle never unrefs, and this file
+      // cannot drain. That is a silent, unbounded hang, and it is racy by
+      // construction, which is what makes it intermittent.
+      //
+      // `StdioJsonRpcChild.dispose()` is the maintained spelling of this and is
+      // what the other 33 spawn-capable files go through. The teardown stays
+      // hand-rolled here only because this file spawns with two `--import`
+      // hooks and its own env, which the helper does not take; the three
+      // release steps below are the part that must not be forgotten.
+      reapChild(child);
       const toolModules = existsSync(record)
         ? [...new Set(readFileSync(record, 'utf8')
           .split('\n')
@@ -219,6 +266,23 @@ function recordStartup(toolsets: string): Promise<RecordedRun> {
     child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }) + '\n');
   });
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/lazy-module-loading.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
   it('serves the same tools from a fraction of the tool modules', async () => {

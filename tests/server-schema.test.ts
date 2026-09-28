@@ -58,6 +58,7 @@ import type { TestContext } from 'node:test';
 
 import { checkManifest, fetchSchema, formatAjvErrors, readJson } from '../scripts/registry-schema.mjs';
 import { runServerSchemaCheck } from '../scripts/check-server-schema.mjs';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -144,6 +145,23 @@ function liveSchemaOrSkip(t: TestContext, live: LiveSchema, reason: string): Rec
   t.diagnostic(`live registry schema not fetched (${live.reason || reason}); the hermetic cases below still ran`);
   return null;
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/server-schema.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('server.json against the registry schema it declares (#655)', () => {
   it('validates the committed manifest against the schema its $schema names', async (t) => {

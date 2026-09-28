@@ -41,6 +41,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const TESTS = join(ROOT, 'tests');
@@ -117,6 +118,23 @@ function runWithPristineHome(args: string[], home: string) {
   if (res.error) throw res.error;
   return res;
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/hermetic-home.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('#1274 the test suite does not write into the real $HOME', () => {
   let scratch: string;

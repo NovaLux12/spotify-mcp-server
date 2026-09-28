@@ -46,6 +46,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { hermeticServerEnv } from './helpers/stdio-child.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -58,6 +59,23 @@ const SPOTIFY_REFRESH_TOKEN = 'spotify-refresh-token-DO-NOT-LEAK-d4e5f6';
 
 let home: string;
 let tokenFile: string;
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/http.security.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 before(async () => {
   home = await mkdtemp(path.join(tmpdir(), 'x599-http-'));
@@ -180,11 +198,24 @@ async function awaitExit(server: Started, ms = 20_000): Promise<{ code: number |
   return result;
 }
 
-/** Reap a child by the PID we recorded. Never a pattern match — see the header. */
+/**
+ * Reap a child by the PID we recorded. Never a pattern match — see the header.
+ *
+ * All **three** stdio streams are destroyed, and that includes `stdin` (#1569).
+ * Destroying only the read ends leaves a `PipeWrap` registered for the write
+ * end: Node keeps a handle per stream it hands out, and that handle stays in
+ * the event loop until the stream is destroyed — not until the process that
+ * wrote the last byte closes its end. `rawRequest` above writes request bytes
+ * into this child's stdin, so this is a stream with a real writer behind it and
+ * a real reason to leak. `StdioJsonRpcChild.dispose()` fixed the same class for
+ * the stdio harness; this file spawns over TCP, so it has to do it by hand.
+ */
 function stop(server: Started | null): void {
-  server?.child.kill('SIGKILL');
-  server?.child.stdout.destroy();
-  server?.child.stderr.destroy();
+  if (!server) return;
+  server.child.kill('SIGKILL');
+  for (const stream of [server.child.stdin, server.child.stdout, server.child.stderr]) {
+    if (!stream.destroyed) stream.destroy();
+  }
 }
 
 /**

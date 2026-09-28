@@ -185,6 +185,23 @@ function sandbox(prefix: string): string {
   return dir;
 }
 
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/gauntlet-mutation-proof.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
+
 before(async () => {
   LIVE_ROWS = await liveRegistryRows();
   LIVE_AUDIT = core.auditClassification(LIVE_ROWS);
@@ -749,6 +766,7 @@ describe('the mutation proof', () => {
   });
 });
 
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 // =====================================================================
 // 4. End to end: the REAL script, against a stub MCP server
 // =====================================================================

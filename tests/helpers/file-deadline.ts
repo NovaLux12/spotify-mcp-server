@@ -109,6 +109,42 @@ export interface DeadlineChild {
   killNow(): void;
 }
 
+/**
+ * The budget every ordinary spawn-capable test file gets (#1569).
+ *
+ * ## Why one number, and why this one
+ *
+ * A per-file deadline has to clear two requirements that pull against each
+ * other. It must be **above** the file's real duration, or it converts a slow
+ * run into a red one. And it must be **below** the job's `timeout-minutes`, or
+ * the runner is killed before the report is ever written and the run dies
+ * exactly as anonymously as it does today.
+ *
+ * The upper anchor is measured, not guessed. The slowest spawn-capable file on
+ * a box running load 40–72 against 12 cores — far worse pressure than CI ever
+ * applies — measured **71 s** (`doc-prose-integrity.test.ts`); the whole Node 24
+ * suite completes in **~7 min** in CI (`~6.5 min` locally, Node 24.21.0). A
+ * single test file therefore cannot legitimately exceed the suite's own wall
+ * time, so 8 minutes sits above every possible honest run.
+ *
+ * The lower anchor is CI's `timeout-minutes: 20`. 8 min leaves 12 minutes of
+ * margin, so the breach report is always written and always read.
+ *
+ * ## What this is and is not
+ *
+ * It is **not** a claim that a leak has been found. #1569 reports a Node 24 CI
+ * leg that wedges on ~25 % of runs, dies at a clean suite boundary, and then
+ * says nothing for ~17 minutes until `timeout-minutes` kills it. Which file
+ * leaks has not been identified, and this number does not identify it either —
+ * what it does is make the *next* occurrence say which file, which handles were
+ * still registered, and what the host was doing, instead of saying nothing at
+ * all. That is the defect this fixes: the silence, not the wedge.
+ *
+ * A file that is merely slow does not trip it. The timer is `unref`'d, so it
+ * fires only when something else is holding the loop open — see the header.
+ */
+export const FLEET_FILE_BUDGET_MS = 8 * 60_000;
+
 export interface FileDeadlineOptions {
   /** The file, as it should read in a CI log. */
   readonly label: string;
@@ -153,8 +189,16 @@ export function describeFileDeadlineBreach(
   options: Omit<BreachOptions, 'onBreach'>,
   signalledPids: ReadonlySet<number | undefined>,
 ): string {
+  // An empty list means this file did not REGISTER its children, which is not
+  // the same as there being none. Most armed files pass `children: () => []`,
+  // so the previous wording here — "the handle outliving the child is not one
+  // of ours" — asserted at the moment the report matters that a leak belonged
+  // to the harness, on the strength of a list the file never populated. The
+  // report is the artifact this whole issue exists to produce; it must not
+  // guess. Say what is known, name the gap, and let the handle line below carry
+  // the evidence that is actually in hand.
   const children = options.children.length === 0
-    ? '  (this file had no live children registered — the handle outliving the child is not one of ours)'
+    ? '  (this file registered no children with the deadline, so the handles below cannot be attributed to one — pass a real `children` accessor to name them)'
     : options.children.map((c) => childLine(c, signalledPids.has(c.pid))).join('\n');
   // The smoking gun. `getActiveResourcesInfo()` names the *kind* of handle that
   // refused to let the loop drain, which is the one fact that separates "a child

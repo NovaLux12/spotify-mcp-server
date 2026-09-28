@@ -26,6 +26,7 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
 import { StdioJsonRpcChild, hermeticServerEnv } from './helpers/stdio-child.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const REPO_ROOT = join(import.meta.dirname, '..');
 
@@ -88,6 +89,23 @@ async function surfaceWith(
   cache.set(key, promise);
   return promise;
 }
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/analytics-optin-registry.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 after(async () => {
   // Nothing to reap — `dispose()` is awaited inside each boot — but draining

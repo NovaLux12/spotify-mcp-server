@@ -45,6 +45,7 @@ import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { parseDiagnostics } from '../scripts/check-tests-typecheck.mjs';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const GATE = join(ROOT, 'scripts', 'check-tests-typecheck.mjs');
@@ -116,6 +117,23 @@ function runGateOnRealTree() {
 // node:test runs sibling describes concurrently, so a per-describe tmpdir would
 // be a second set of shared mutable state to reason about for no benefit.
 let dir: string;
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/tests-typecheck-budget-gate.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 before(() => {
   dir = mkdtempSync(join(tmpdir(), 'typecheck-budget-'));

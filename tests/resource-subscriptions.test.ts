@@ -88,6 +88,7 @@ import {
 } from '../src/resources/subscriptions.js';
 import type { ResourceReadRegistry } from '../src/resources/subscriptions.js';
 import type { SpotifyClient } from '../src/client.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 // ---------------------------------------------------------------- the stub
 
@@ -248,6 +249,23 @@ function makeManager(reads: ResourceReadRegistry, pollMs = POLL_MS, send?: (uri:
 }
 
 // ---------------------------------------------------------------- the tests
+
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/resource-subscriptions.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 describe('#597 change detection', () => {
   it('a poll that finds no change sends nothing; one that finds a change sends exactly one', async () => {

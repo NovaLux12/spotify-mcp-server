@@ -40,6 +40,7 @@ import { initConfig } from '../src/config.js';
 // and the suite stayed green. Imported as a type — it is only ever a type
 // position here (#1408).
 import type { SpotifyClient } from '../src/client.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.playlists-following.test.ts)
@@ -219,6 +220,22 @@ let sidecarDir: string;
 let sidecarPath: string;
 const savedEnv = process.env.SPOTIFY_MCP_GENRE_TAGS_FILE;
 
+/**
+ * The whole-file bound (#1569).
+ *
+ * This file spawns real child processes, so a child whose tree still holds an
+ * inherited stdio write end can keep this process's `PipeWrap` registered and the
+ * loop undrainable — the #1365 failure, which is silent and unbounded because the
+ * runner is invoked with no `--test-timeout`. See `helpers/file-deadline.ts`.
+ *
+ * Armed at module scope, above every hook, because a bound a teardown can clear is
+ * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
+ */
+armFileDeadline({
+  label: 'tests/tools.libraryinsights.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 beforeEach(() => {
   sidecarDir = mkdtempSync(join(tmpdir(), 'genre-tags-'));
   sidecarPath = join(sidecarDir, 'genre-tags.json');

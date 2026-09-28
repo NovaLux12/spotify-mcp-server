@@ -74,7 +74,7 @@ import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -551,16 +551,24 @@ describe('a breach reports what it killed, by signal (#1365)', () => {
     assert.match(report, /not a product failure/, 'a resource failure must not read as a defect');
   });
 
-  it('says so plainly when the handle outliving the child is not one of ours', () => {
-    // The report's own blind spot. A breach with no tracked children means the
-    // leak is in the harness, not in a server — and a report that listed nothing
-    // would read as "no children, nothing wrong".
+  it('does not claim a leaked handle is not the file\'s own when it cannot know', () => {
+    // The report's own blind spot, and the direction it is allowed to err in. An
+    // empty child list means the file never REGISTERED its children — most
+    // armed files pass `children: () => []` while genuinely spawning servers —
+    // so the report must not conclude from that silence that the leak belongs
+    // to the harness. It states the gap instead. The previous wording did
+    // conclude, and at the one moment the report is read.
     const report = describeFileDeadlineBreach(
       { label: 'tests/empty.test.ts', budgetMs: 1000, children: [] },
       new Set(),
     );
-    assert.match(report, /no live children registered/, 'an empty child list must be stated, not shown as blank');
-    assert.match(report, /not one of ours/, 'and it must say where the leak therefore is');
+    assert.match(report, /registered no children/, 'an unregistered child list must be stated, not shown as blank');
+    assert.match(report, /cannot be attributed/, 'and it must say the handles cannot be attributed to a child');
+    assert.doesNotMatch(
+      report,
+      /not one of ours/,
+      'the report must not assert where the leak is when the child list is simply unpopulated',
+    );
   });
 
   it('quotes a signal-killed child\'s empty stderr rather than leaving a blank', () => {
@@ -836,4 +844,135 @@ describe('the sandbox is still airtight (#1365)', () => {
     const { home } = hermeticServerEnv({}, 'breach-sandbox');
     assert.ok(home.startsWith(HERMETIC_ROOT), `every child home must be disposable, got ${home}`);
   });
+});
+
+// ---------------------------------------------------------------------------
+// #1569 — the bound is fleet-wide, not three files
+// ---------------------------------------------------------------------------
+
+/**
+ * A test file is *spawn-capable* when its code spawns an **asynchronous** child.
+ *
+ * Read from **stripped** code, so a file cannot qualify by mentioning
+ * `StdioJsonRpcChild.spawn` in a comment — the AGENTS.md §6 trap one level
+ * down, where an assertion ends up checking its own explanation.
+ *
+ * `execFileSync` and `spawnSync` are deliberately **not** in this set. A
+ * synchronous child holds the event loop for the whole of its life and releases
+ * its pipes before the call returns, so it cannot leave an undrained
+ * `PipeWrap` behind and cannot produce this wedge. The helper's own header says
+ * the same thing from the other direction — a timer cannot bound a synchronous
+ * child, which is why `execFileBoundedSync` bounds those by their own
+ * `timeout`/`killSignal` instead. Including them here would make the guard
+ * claim a coverage it does not have.
+ *
+ * The `\s*` between `spawn(` and `process.execPath` is load-bearing, and it was
+ * missing here first. `tests/cache.test.ts` writes that call across two lines —
+ *
+ * ```
+ * const child = spawn(
+ *   process.execPath,
+ * ```
+ *
+ * — so a same-line `spawn\(process\.execPath` matched nothing, the file fell out
+ * of the population, and it stayed unarmed while holding five `stdio: ['ignore',
+ * 'pipe', 'pipe']` children: exactly the `PipeWrap` geometry this whole issue is
+ * about. The guard was green and blind at the same time. The membership
+ * assertion for that file below is what stops the next reformat from reopening
+ * the hole.
+ */
+const SPAWN_CAPABLE =
+  /StdioJsonRpcChild\.spawn|spawn\s*\(\s*process\.execPath|execFile\s*\(|fork\s*\(/;
+
+const SPAWN_CAPABLE_EXEMPT = new Set(['file-deadline.test.ts']);
+
+function spawnCapableFiles(): string[] {
+  const dir = join(import.meta.dirname);
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.test.ts') && name !== 'file-deadline.test.ts')
+    .filter((name) => SPAWN_CAPABLE.test(stripCommentsAndLiterals(readFileSync(join(dir, name), 'utf8'))))
+    .sort();
+}
+
+describe('every spawn-capable file is bounded, not just three of them (#1569)', () => {
+  it('classifies a real population, and a file that spawns nothing', () => {
+    // Anti-vacuity. A predicate that matched nothing would make the guard below
+    // pass for the wrong reason — which is worse than not having the guard,
+    // because it reads as coverage.
+    const files = spawnCapableFiles();
+    // 15 as of #1569. The floor is well under that on purpose: it is there to
+    // catch the predicate silently matching nothing, not to pin the list, which
+    // should grow as files are added. The two membership assertions below are
+    // what make the population mean something.
+    assert.ok(files.length >= 12, `expected the spawn-capable population to be real, got ${files.length}: ${files.join(', ')}`);
+    assert.ok(
+      files.includes('server-instructions.test.ts'),
+      'the file the #1569 CI log parks on must be in the population, or the guard is not looking at it',
+    );
+    // The line-break case, named rather than implied. A predicate that only
+    // matches same-line call shapes passes every assertion above while missing
+    // a file that genuinely spawns piped children — which is what the first
+    // version of this regex did.
+    assert.ok(
+      files.includes('cache.test.ts'),
+      'a file whose spawn() call is wrapped across lines must still be classified spawn-capable',
+    );
+    assert.ok(
+      !files.includes('tools.search.test.ts'),
+      'a file that spawns nothing must not be swept into the population',
+    );
+  });
+
+  it('exempts exactly one file, and names why', () => {
+    // `file-deadline.test.ts` is the mechanism's own test: it spawns
+    // deliberately-leaking probes inside sandboxes and asserts on their output,
+    // so bounding *it* from a module-scope call would be meaningless. That is a
+    // real reason and it is the only one — so the exemption list is itself
+    // asserted, and a second exemption added later fails here first.
+    const dir = join(import.meta.dirname);
+    const all = readdirSync(dir).filter((n) => n.endsWith('.test.ts'));
+    const spawners = all.filter((name) =>
+      SPAWN_CAPABLE.test(stripCommentsAndLiterals(readFileSync(join(dir, name), 'utf8'))));
+    const exempt = spawners.filter((name) => SPAWN_CAPABLE_EXEMPT.has(name));
+    assert.deepEqual(
+      exempt,
+      ['file-deadline.test.ts'],
+      'only the deadline helper\'s own test may be exempt, and the list must not grow silently',
+    );
+  });
+
+  for (const name of spawnCapableFiles()) {
+    it(`bounds ${name}`, () => {
+      const code = stripCommentsAndLiterals(readFileSync(join(import.meta.dirname, name), 'utf8'));
+      const arm = code.indexOf('armFileDeadline(');
+      assert.notEqual(arm, -1, `${name} spawns a child process and must arm a whole-file deadline. `
+        + 'A child whose tree still holds an inherited stdio write end keeps this file\'s PipeWrap '
+        + 'registered and its loop undrainable — silent, unbounded, and killed by timeout-minutes '
+        + 'with nothing in the log. See helpers/file-deadline.ts and #1569.');
+      // Anchored to a real bare call, and deliberately not `indexOf('it(')`. A
+      // substring search for `it(` also matches inside `exit(`, `wait(`,
+      // `split(` and `submit(`, so the first draft of this guard reported a
+      // placement failure in a file that was armed correctly — a red for the
+      // wrong reason, which is the failure mode §6 is about.
+      //
+      // The negative lookbehind is load-bearing rather than tidy. `\b` alone
+      // does NOT exclude a method call: `.` is a non-word character, so
+      // `row.test(next)` and `x.it(` both satisfy `\b(?:it|test)\s*\(`. That
+      // over-match errs toward an earlier `firstHook`, which makes the
+      // `arm < firstHook` assertion stricter — so it cannot let a real
+      // regression through, but it can reject a correctly armed file for
+      // naming a method `it`. Excluding the preceding `.` removes the class.
+      const firstHook = (() => {
+        const m = /(?<![.\w])(?:before|beforeEach|after|afterEach|describe|test|it)\s*\(/.exec(code);
+        return m ? m.index : -1;
+      })();
+      assert.notEqual(firstHook, -1, `${name} registers no hook or suite, so arming above one proves nothing`);
+      assert.ok(
+        arm < firstHook,
+        `${name} arms its deadline at ${arm} but registers its first hook at ${firstHook}. `
+        + 'A bound below the first hook is a bound a teardown can clear, and a bound nothing clears '
+        + 'is not a bound — the #1365 shape.',
+      );
+    });
+  }
 });
