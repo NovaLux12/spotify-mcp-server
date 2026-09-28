@@ -4959,7 +4959,7 @@
         "label": "Summary"
       },
       {
-        "hash": "9285b77a40401b0d",
+        "hash": "8c7fb4d0d436a23f",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5131,7 +5131,7 @@
         "label": "Runtime limits and requests"
       },
       {
-        "hash": "2542c5e7ab175db8",
+        "hash": "faf95763ca17b179",
         "label": "SPOTIFYREQUESTTIMEOUTMS applies an abort timer to every …"
       },
       {
@@ -7441,9 +7441,9 @@
     }
   ],
   "provenance": {
-    "head": "85c9ff8c95759285fc909e603d4b5fbed60065b7",
-    "base": "9ded7ce111cdf0e9d9b8c4704a89798b041f0713",
-    "upstream": "9ded7ce111cdf0e9d9b8c4704a89798b041f0713",
+    "head": "2024531eb38617c2557f3070d062c69a4c404453",
+    "base": "003babf38a0588d97a24c160c463b3ad04c17f49",
+    "upstream": "003babf38a0588d97a24c160c463b3ad04c17f49",
     "behind": false
   },
   "reanchored": [
@@ -7557,6 +7557,15 @@
     },
     {
       "file": "docs/configuration.md",
+      "hash": "2542c5e7ab175db8",
+      "label": "SPOTIFYREQUESTTIMEOUTMS applies an abort timer to every …",
+      "to": "faf95763ca17b179",
+      "toLabel": "SPOTIFYREQUESTTIMEOUTMS applies an abort timer to every …",
+      "reason": "#1603 extends the runtime-limits paragraph with the second per-playlist ceiling and the fact that raising the fetch-all cap alone does not lift it",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
       "hash": "3017d1532d72bdeb",
       "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "to": "1987a90e548e74ae",
@@ -7607,6 +7616,15 @@
       "to": "9285b77a40401b0d",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "SPOTIFY_MCP_BACKUP_DIR now also holds non-library families and SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS is new (#1592)",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "9285b77a40401b0d",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "8c7fb4d0d436a23f",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1603 adds the SPOTIFY_MCP_PLAYLIST_ITEMS_CAP row to the env-var table; every prior row is unchanged, so this is an extension rather than a reword of the table's contents",
       "date": "2026-09-28"
     },
     {
