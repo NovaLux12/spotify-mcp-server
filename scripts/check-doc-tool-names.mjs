@@ -5,7 +5,7 @@
  * scripts/surface-census.mjs, so count and name contracts share one source.
  */
 import { execFileSync } from 'node:child_process';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -854,6 +854,49 @@ function checkDocumentToolContracts(source, file, registry = census) {
   return collectDocumentToolContractErrors(source, file, registry);
 }
 
+/**
+ * Every retired name this gate allowlists must be NAMED by the 3.0 migration
+ * guide (#1630).
+ *
+ * The two allowlists above exist for one reason — "a migration table has to be
+ * able to name what it replaced" — and until now nothing checked that such a
+ * table existed or stayed complete. A retired name could sit in
+ * `retiredToolNames` with no document anywhere naming its replacement, and
+ * every gate in this repository would still be green: the census generates the
+ * guide's tables from `src/shaping.ts`, and the #638 batch is in NEITHER the
+ * shaping constants NOR the generated block, because those tools are simply
+ * absent from the registry and have no runtime table. That half of the guide is
+ * hand-written, and a hand-written list with nothing comparing it to the list
+ * it is supposed to be complete against is the failure AGENTS.md §6 records
+ * twice in this file.
+ *
+ * So the check runs here rather than in the guide's own generator, because
+ * THIS script owns the allowlists. A gate that let the document choose which
+ * names it must mention would be a gate with no claim. It reads the rendered
+ * file, so a name satisfied by the generated block and a name satisfied by
+ * prose count identically — which is the point: the reader does not care which
+ * half of the page a name landed in, only that the page has it.
+ */
+function checkMigrationGuideCoverage() {
+  const guide = join(ROOT, 'docs', 'migration-v3.md');
+  if (!existsSync(guide)) {
+    return ['docs/migration-v3.md is missing; the retired-name allowlists below exist so a migration table can name what it replaced, and there is no table to name it in'];
+  }
+  const source = readFileSync(guide, 'utf8');
+  const found = [];
+  for (const [label, names] of [['tool', retiredToolNames], ['parameter', retiredParameterNames]]) {
+    for (const name of [...names].sort()) {
+      // Backticked, because that is how every other name in this gate is
+      // matched: a bare occurrence of `sources` in a sentence is prose, and a
+      // page that merely mentioned the word would otherwise satisfy the check.
+      if (!source.includes(`\`${name}\``)) {
+        found.push(`docs/migration-v3.md: retired ${label} \`${name}\` is allowlisted for this gate but the migration guide never names it — a reader migrating off it has no row to read`);
+      }
+    }
+  }
+  return found;
+}
+
 if (process.argv.includes('--check-fixture')) {
   const fixturePath = process.argv[process.argv.indexOf('--check-fixture') + 1];
   const found = checkDocumentToolContracts(readFileSync(resolve(fixturePath), 'utf8'), fixturePath, census);
@@ -866,6 +909,8 @@ for (const file of markdownFiles) {
   const found = checkDocumentToolContracts(source, file);
   for (const error of found) errors.push(error);
 }
+
+for (const error of checkMigrationGuideCoverage()) errors.push(error);
 
 if (errors.length > 0) {
   console.error(`Documentation tool contract check failed (${errors.length} issue${errors.length === 1 ? '' : 's'}):\n${unique(errors).map((line) => `- ${line}`).join('\n')}`);

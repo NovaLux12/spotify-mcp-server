@@ -9,6 +9,14 @@ rests on, and the alternative a reader who wanted the feature should reach for
 instead. A proposal that contradicts one of these needs a decision recorded
 here, not a pull request that quietly re-opens it.
 
+**Renames live elsewhere.** This file records *decisions* — what was declined,
+impossible or prohibited, and why. The names 3.0 retired, what replaced each
+one, and the one operation with **no** replacement at all are catalogued in
+[docs/migration-v3.md](migration-v3.md), whose tables are generated from the
+runtime constants so a rename and the error a caller hits cannot disagree. A
+reader looking for "what do I send instead" wants that page; a reader looking
+for "why was this never built" wants this one.
+
 **How to read an entry.** A non-goal is *impossible* — Spotify or the MCP
 specification does not offer it — *declined* — it is available and this project
 chose not to ship it — or *prohibited*, where a term of service is the reason

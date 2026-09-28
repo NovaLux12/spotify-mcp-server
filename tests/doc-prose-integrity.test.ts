@@ -86,6 +86,9 @@ const EXPECTED_FILES = [
   'docs/distribution.md',
   'docs/schema-budgets.md',
   'docs/v3-roadmap.md',
+  // Added by #1630, which gave the 3.0 migration guide a generated block for
+  // its retirement tables — which is what made it a mixed document.
+  'docs/migration-v3.md',
   'docs/wave2-composites.md',
   'skills/spotify-exhaustive-feature-sweep/SKILL.md',
   'skills/spotify-mcp-competitor-comparison/SKILL.md',

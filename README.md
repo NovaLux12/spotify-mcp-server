@@ -225,6 +225,7 @@ gates that hid modules, and the granted scopes in one call.
 ## Docs
 
 - [docs/v3-roadmap.md](docs/v3-roadmap.md) — **what's coming in 3.0**, and the one bug underneath all of it
+- [docs/migration-v3.md](docs/migration-v3.md) — **every retired name in 3.0** and what replaced it, including the one operation with no replacement
 - [SPEC.md](SPEC.md) — every tool, resource & prompt
 - [ARCHITECTURE.md](ARCHITECTURE.md) — how it's built
 - [docs/configuration.md](docs/configuration.md) — all env vars
