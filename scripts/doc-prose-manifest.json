@@ -419,6 +419,14 @@
         "label": "Classification is name-driven and fail-closed: a tool is…"
       },
       {
+        "hash": "0a92a0a5811d4f7c",
+        "label": "A verb prefix is only an allowlist in the safe direction…"
+      },
+      {
+        "hash": "b1d2330f5b7798a1",
+        "label": "Note the ordering requirement if you extend it: the stat…"
+      },
+      {
         "hash": "9a486a6bb425827b",
         "label": "5. Confirmation, deprecation, releases"
       },
@@ -7583,9 +7591,9 @@
     }
   ],
   "provenance": {
-    "head": "5c682d5ac0dbf0adfa3a14221d5db6aec5777d31",
-    "base": "c9c81d3f87ae65fef3862f38191b2717b8febd65",
-    "upstream": "c9c81d3f87ae65fef3862f38191b2717b8febd65",
+    "head": "64a2b19a6d4683321b49c8e94d180bcb6d4ed355",
+    "base": "2ebba26e346c3a460c6a06a18c43e59c81178178",
+    "upstream": "2ebba26e346c3a460c6a06a18c43e59c81178178",
     "behind": false
   },
   "reanchored": [
