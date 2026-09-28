@@ -551,16 +551,24 @@ describe('a breach reports what it killed, by signal (#1365)', () => {
     assert.match(report, /not a product failure/, 'a resource failure must not read as a defect');
   });
 
-  it('says so plainly when the handle outliving the child is not one of ours', () => {
-    // The report's own blind spot. A breach with no tracked children means the
-    // leak is in the harness, not in a server — and a report that listed nothing
-    // would read as "no children, nothing wrong".
+  it('does not claim a leaked handle is not the file\'s own when it cannot know', () => {
+    // The report's own blind spot, and the direction it is allowed to err in. An
+    // empty child list means the file never REGISTERED its children — most
+    // armed files pass `children: () => []` while genuinely spawning servers —
+    // so the report must not conclude from that silence that the leak belongs
+    // to the harness. It states the gap instead. The previous wording did
+    // conclude, and at the one moment the report is read.
     const report = describeFileDeadlineBreach(
       { label: 'tests/empty.test.ts', budgetMs: 1000, children: [] },
       new Set(),
     );
-    assert.match(report, /no live children registered/, 'an empty child list must be stated, not shown as blank');
-    assert.match(report, /not one of ours/, 'and it must say where the leak therefore is');
+    assert.match(report, /registered no children/, 'an unregistered child list must be stated, not shown as blank');
+    assert.match(report, /cannot be attributed/, 'and it must say the handles cannot be attributed to a child');
+    assert.doesNotMatch(
+      report,
+      /not one of ours/,
+      'the report must not assert where the leak is when the child list is simply unpopulated',
+    );
   });
 
   it('quotes a signal-killed child\'s empty stderr rather than leaving a blank', () => {
@@ -857,9 +865,24 @@ describe('the sandbox is still airtight (#1365)', () => {
  * child, which is why `execFileBoundedSync` bounds those by their own
  * `timeout`/`killSignal` instead. Including them here would make the guard
  * claim a coverage it does not have.
+ *
+ * The `\s*` between `spawn(` and `process.execPath` is load-bearing, and it was
+ * missing here first. `tests/cache.test.ts` writes that call across two lines —
+ *
+ * ```
+ * const child = spawn(
+ *   process.execPath,
+ * ```
+ *
+ * — so a same-line `spawn\(process\.execPath` matched nothing, the file fell out
+ * of the population, and it stayed unarmed while holding five `stdio: ['ignore',
+ * 'pipe', 'pipe']` children: exactly the `PipeWrap` geometry this whole issue is
+ * about. The guard was green and blind at the same time. The membership
+ * assertion for that file below is what stops the next reformat from reopening
+ * the hole.
  */
 const SPAWN_CAPABLE =
-  /StdioJsonRpcChild\.spawn|spawn\(process\.execPath|execFile\(|fork\(/;
+  /StdioJsonRpcChild\.spawn|spawn\s*\(\s*process\.execPath|execFile\s*\(|fork\s*\(/;
 
 const SPAWN_CAPABLE_EXEMPT = new Set(['file-deadline.test.ts']);
 
@@ -885,6 +908,14 @@ describe('every spawn-capable file is bounded, not just three of them (#1569)', 
     assert.ok(
       files.includes('server-instructions.test.ts'),
       'the file the #1569 CI log parks on must be in the population, or the guard is not looking at it',
+    );
+    // The line-break case, named rather than implied. A predicate that only
+    // matches same-line call shapes passes every assertion above while missing
+    // a file that genuinely spawns piped children — which is what the first
+    // version of this regex did.
+    assert.ok(
+      files.includes('cache.test.ts'),
+      'a file whose spawn() call is wrapped across lines must still be classified spawn-capable',
     );
     assert.ok(
       !files.includes('tools.search.test.ts'),
@@ -918,14 +949,21 @@ describe('every spawn-capable file is bounded, not just three of them (#1569)', 
         + 'A child whose tree still holds an inherited stdio write end keeps this file\'s PipeWrap '
         + 'registered and its loop undrainable — silent, unbounded, and killed by timeout-minutes '
         + 'with nothing in the log. See helpers/file-deadline.ts and #1569.');
-      // Word-boundary anchored, and deliberately not `indexOf('it(')`. A
+      // Anchored to a real bare call, and deliberately not `indexOf('it(')`. A
       // substring search for `it(` also matches inside `exit(`, `wait(`,
       // `split(` and `submit(`, so the first draft of this guard reported a
       // placement failure in a file that was armed correctly — a red for the
-      // wrong reason, which is the failure mode §6 is about. `RegExp.exec`
-      // over the stripped code finds the real call sites.
+      // wrong reason, which is the failure mode §6 is about.
+      //
+      // The negative lookbehind is load-bearing rather than tidy. `\b` alone
+      // does NOT exclude a method call: `.` is a non-word character, so
+      // `row.test(next)` and `x.it(` both satisfy `\b(?:it|test)\s*\(`. That
+      // over-match errs toward an earlier `firstHook`, which makes the
+      // `arm < firstHook` assertion stricter — so it cannot let a real
+      // regression through, but it can reject a correctly armed file for
+      // naming a method `it`. Excluding the preceding `.` removes the class.
       const firstHook = (() => {
-        const m = /\b(?:before|beforeEach|after|afterEach|describe|test|it)\s*\(/.exec(code);
+        const m = /(?<![.\w])(?:before|beforeEach|after|afterEach|describe|test|it)\s*\(/.exec(code);
         return m ? m.index : -1;
       })();
       assert.notEqual(firstHook, -1, `${name} registers no hook or suite, so arming above one proves nothing`);

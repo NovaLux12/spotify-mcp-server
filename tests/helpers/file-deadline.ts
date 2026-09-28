@@ -189,8 +189,16 @@ export function describeFileDeadlineBreach(
   options: Omit<BreachOptions, 'onBreach'>,
   signalledPids: ReadonlySet<number | undefined>,
 ): string {
+  // An empty list means this file did not REGISTER its children, which is not
+  // the same as there being none. Most armed files pass `children: () => []`,
+  // so the previous wording here — "the handle outliving the child is not one
+  // of ours" — asserted at the moment the report matters that a leak belonged
+  // to the harness, on the strength of a list the file never populated. The
+  // report is the artifact this whole issue exists to produce; it must not
+  // guess. Say what is known, name the gap, and let the handle line below carry
+  // the evidence that is actually in hand.
   const children = options.children.length === 0
-    ? '  (this file had no live children registered — the handle outliving the child is not one of ours)'
+    ? '  (this file registered no children with the deadline, so the handles below cannot be attributed to one — pass a real `children` accessor to name them)'
     : options.children.map((c) => childLine(c, signalledPids.has(c.pid))).join('\n');
   // The smoking gun. `getActiveResourcesInfo()` names the *kind* of handle that
   // refused to let the loop drain, which is the one fact that separates "a child

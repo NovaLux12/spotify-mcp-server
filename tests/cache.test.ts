@@ -29,6 +29,7 @@ import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
 // The `SpotifyClient` DESTRUCTURED below is a value — it comes out of an
 // `await import(...)` that must stay below the env setup — so it cannot be
@@ -38,6 +39,18 @@ import type { SpotifyClient as SpotifyClientType } from '../src/client.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MB = 1024 * 1024;
+
+// Armed at module scope, above every hook, because a bound a teardown can clear
+// is not a bound (#1569). This file spawns five children with
+// `stdio: ['ignore', 'pipe', 'pipe']` — the `PipeWrap` geometry the fleet guard
+// exists to bound — and it was missed entirely: the guard's classifier required
+// `spawn(process.execPath` on one line, and every call here wraps the argument
+// onto the next. The timer is `unref`'d, so it cannot delay a file that finishes.
+armFileDeadline({
+  label: 'tests/cache.test.ts',
+  budgetMs: FLEET_FILE_BUDGET_MS,
+  children: () => [],
+});
 
 // ---------------------------------------------------------------------------
 // Env setup MUST precede anything that reads a token (getTokenFilePath()
