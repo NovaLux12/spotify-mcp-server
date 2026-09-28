@@ -159,14 +159,20 @@ describe('documented constraints agree with the live schemas (#929)', () => {
   // `1–40` form reads nothing here and protects nothing.
 
   it('rejects a documented array ceiling above the schema maxItems', () => {
+    // The anchor is `check_in_library`'s, not `save_to_library`'s: #1567 gave
+    // the save a table row, so the words-form line this fixture used to plant
+    // is gone. The shape under test is unchanged — a `max N` stated in words,
+    // above the live `maxItems` — and the words-form line that survives is the
+    // only one left in the document set, which is why the gate needs to parse
+    // it at all.
     const output = gateRejects(
       'SPEC.md',
       (source) => replaceOnce(
         source,
-        '`uris` (string[], required, max 40 — track, album, episode, show, audiobook, user, or playlist URIs)',
-        '`uris` (string[], required, max 400 — track, album, episode, show, audiobook, user, or playlist URIs)',
+        '`uris` (string[], required, max 40 — track, album, episode, show, audiobook, artist, user, or playlist URIs)',
+        '`uris` (string[], required, max 400 — track, album, episode, show, audiobook, artist, user, or playlist URIs)',
       ),
-      /`save_to_library`\.`uris` documents "max 400" but the live schema caps it at 40/,
+      /`check_in_library`\.`uris` documents "max 400" but the live schema caps it at 40/,
     );
     assert.match(output, /a caller copying the doc is rejected/);
   });

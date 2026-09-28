@@ -19,7 +19,6 @@ import {
   listStructuredContent,
   batchSummary,
   describeDryRun,
-  DryRun,
   DryRunDefault,
   isDryRun,
 } from '../shaping.js';
@@ -566,19 +565,32 @@ export function registerLibraryTools(server: McpServer, client: SpotifyClient): 
   // save_to_library (#37)
   server.tool(
     'save_to_library',
-    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Save one or more items to the user's library via Spotify's unified library endpoint. Max 40. Set dry_run=true to preview.",
+    "Preferred. Accepts the widest URI mix (track, album, episode, show, audiobook, user, playlist) in one request. Save one or more items to the user's library via Spotify's unified library endpoint. Max 40. PREVIEWS BY DEFAULT — pass dry_run=false to commit.",
     {
       uris: z
         .array(z.string())
         .min(1)
         .max(40)
         .describe('Spotify URIs to save (e.g. ["spotify:track:abc", "spotify:user:xyz"])'),
-      dry_run: DryRun,
+      // #1567: the save half of the /me/library pair, and the same defect
+      // #1550 fixed on the removal half one release earlier: this was the
+      // shared opt-in `DryRun` — no default — behind a handler that branched
+      // on `if (args.dry_run)`. An omitted flag was `undefined`, i.e. falsy,
+      // i.e. COMMIT, so one call could add 40 items to a user's library with
+      // no preview, and the published `tools/list` entry said nothing about a
+      // default either, so a host reading the schema could not see it coming.
+      // `DryRunDefault` fixes the schema half (it emits `default: true`);
+      // `isDryRun(args)` below fixes the decision half for a hand-built args
+      // object that skipped zod parsing, which is what the unit tests and any
+      // direct caller pass. Both halves are required: the schema alone would
+      // still commit for an unparsed call, the branch alone would still hide
+      // the default from a host.
+      dry_run: DryRunDefault,
       response_format: ResponseFormat,
     },
     async (args) => {
       const uris = canonicalLibraryUris(args.uris, LIBRARY_SAVE_TYPES);
-      if (args.dry_run) {
+      if (isDryRun(args)) {
         return dryRunOut(args.response_format, 'save_to_library', 'user library', uris);
       }
       await client.put(`/me/library?${new URLSearchParams(libraryUrisParam(uris)).toString()}`);

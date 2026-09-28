@@ -668,7 +668,7 @@ artist tool agrees on the track count for the same `include_featured`.
 ## 5. Tools
 
 <!-- BEGIN:generated tool-surface -->
-The full MCP registry exposes **559 tools** (all 559 attributed to the 70 files under `src/tools/`), organized by 49 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 146,283 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `lanes`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `tastejukebox`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
+The full MCP registry exposes **559 tools** (all 559 attributed to the 70 files under `src/tools/`), organized by 49 registration keys and 14 named toolsets; the curated default surface a server registers with no `SPOTIFY_MCP_TOOLSETS` is **128 tools** / 146,360 bytes (#889), and `SPOTIFY_MCP_TOOLSETS=all` restores the full one. Registration keys: `accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `lanes`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `tastejukebox`, `users`. `node scripts/surface-census.mjs` derives the authoritative inventory by starting the real `src/index.ts` stdio entry and calling `tools/list`, `resources/list`, `resources/templates/list`, and `prompts/list` after production gates and finalizers, without network access — twice, once for the full surface and once with `SPOTIFY_MCP_TOOLSETS` unset, so neither figure is inferred from the other.
 <!-- END:generated tool-surface -->
 
 ### Shared tool contract
@@ -1494,9 +1494,15 @@ All three also had a second defect that the replacement does not inherit: a read
 #### `save_to_library`
 Save one or more items to the user's library via Spotify's unified library endpoint — a single request for any mix of URI types.
 
-**Inputs:** `uris` (string[], required, max 40 — track, album, episode, show, audiobook, user, or playlist URIs)
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `uris` | string[] | yes | URIs to save (track, album, episode, show, audiobook, user, or playlist). Max 40. |
+| `dry_run` | boolean | no | **Defaults to `true`.** Preview exactly which URIs would be saved without calling the API; pass `dry_run=false` to commit. |
 
 Sends `PUT /me/library?uris=…`.
+
+**Preview by default (#1567).** `dry_run` is declared as the shared `DryRunDefault` fragment, so the emitted `tools/list` entry carries `"default": true` — a host reads the schema, not the source. Before the fix the property carried no default at all while the handler branched on `if (args.dry_run)`, so an omitted flag was `undefined`, i.e. falsy, i.e. commit: one call could add 40 items to a library with no preview and no way for the caller to have known. The handler branches on `isDryRun(args)` as well, so a hand-built args object that skipped zod parsing cannot turn an omission into a write. This is the save half of the pair; the removal half had the same defect and was fixed a release earlier (#1550).
 
 ---
 

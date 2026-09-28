@@ -2713,12 +2713,16 @@
         "label": "savetolibrary Save one or more items to the user's libra…"
       },
       {
-        "hash": "93b096dc1d471adb",
-        "label": "Inputs: uris (string[], required, max 40 — track, album,…"
+        "hash": "387b95bc4a36dabf",
+        "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
         "hash": "2c801524934fbf03",
         "label": "Sends PUT /me/library?uris=…."
+      },
+      {
+        "hash": "a770f54d69cb8e78",
+        "label": "Preview by default (#1567). dryrun is declared as the sh…"
       },
       {
         "hash": "f7c2ad7a97a7f9ab",
@@ -7148,6 +7152,13 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "93b096dc1d471adb",
+      "label": "Inputs: uris (string[], required, max 40 — track, album,…",
+      "date": "2026-09-28",
+      "reason": "#1567 replaced the one-line save_to_library Inputs summary with a per-field table plus a separate paragraph naming the new default. The old single line is gone from the file; both replacements are in the tree and are pinned by this same --prose-sync. This is a replacement, not a reword, so no successor hash is claimed."
+    },
+    {
+      "file": "SPEC.md",
       "hash": "991317132a97dccb",
       "label": "A playlist at or below the cap is unchanged: truncated: …",
       "date": "2026-09-27",
@@ -7302,9 +7313,9 @@
     }
   ],
   "provenance": {
-    "head": "b945408d83ab06d09dc77cd17e8d0419311cbd8a",
-    "base": "bd7d83b646a6a37987505459cad15bb45a430be6",
-    "upstream": "bd7d83b646a6a37987505459cad15bb45a430be6",
+    "head": "ec4dfb8e9dc681ad0ab12de2b23113ae50ce6f6e",
+    "base": "16f8338efc7da45a532b562942872e0830f8d99e",
+    "upstream": "16f8338efc7da45a532b562942872e0830f8d99e",
     "behind": false
   },
   "reanchored": [
