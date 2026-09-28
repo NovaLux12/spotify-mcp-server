@@ -2,7 +2,7 @@
 
 SpotifyMCP reads Spotify first. stats.fm rides alongside as a **second upstream** for long-range listening history, cross-range top lists, and taste aggregates that the Spotify Web API alone cannot provide. stats.fm keeps lifetime history after your imported streams are available.
 
-Stats.fm-backed calls never write to Spotify, with one exception: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default. It ships in the same `taste` toolset as everything below. The only taste tool with local state is `statsfm_record_feedback`: its entries are identity-free, never sent to stats.fm, and persisted to a local sidecar at `~/.spotify-mcp/taste-feedback.json` (`SPOTIFY_MCP_DATA_DIR` overrides the directory) — see [Local state](#local-state). Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
+Stats.fm-backed calls never write to Spotify, with two exceptions, both in the same `taste` toolset: `taste_to_playlist` reads its picks from stats.fm and then writes to Spotify — it creates a playlist and adds tracks when you pass `dry_run: false`, and previews by default — and [`statsfm_jukebox`](taste.md#step-7--keep-an-existing-playlist-fresh), which ranks an existing playlist against a stats.fm rotation and, on `dry_run: false`, removes the rows it proposed replacing and adds the picks it proposed appending. Every tool listed below is read-only. The only taste tool with local state is `statsfm_record_feedback`: its entries are identity-free, never sent to stats.fm, and persisted to a local sidecar at `~/.spotify-mcp/taste-feedback.json` (`SPOTIFY_MCP_DATA_DIR` overrides the directory) — see [Local state](#local-state). Pair stats.fm results with Spotify write tools to act on what you learn — see the [flagship taste-profile recipe](cookbook.md#1-taste-profile--playlist-flagship) and the [taste showcase](taste.md).
 
 ## Setup
 
@@ -14,7 +14,7 @@ There is no stats.fm OAuth dance: public profile data needs no token. Private pr
 
 ## Taste-tool naming
 
-The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_*`** names. Each also has a registered legacy alias pointing to the same handler; the complete pair-by-pair mapping is in the [taste showcase naming table](taste.md#tool-naming).
+The eight taste-intelligence tools in `src/tools/statsfm_taste.ts` use canonical **`statsfm_*`** names. Each also carries a bare-name alias — `taste_profile`, `artist_affinity` and their siblings — that is **no longer registered**: `tools/list` advertises only the `statsfm_*` spelling. The alias is not gone, though. `LEGACY_TOOL_ALIASES` still resolves it, and the CallTool boundary rewrites a legacy name onto its canonical handler when `SPOTIFY_MCP_LEGACY_ALIASES=1`, so an old call keeps working without being advertised. The complete pair-by-pair mapping is in the [taste showcase naming table](taste.md#tool-naming).
 
 The separate wave-2 composite tools are registered under the `taste` toolset with canonical `taste_*` names. They are live tools, not planned tools; see [taste composites](wave2-composites.md).
 
