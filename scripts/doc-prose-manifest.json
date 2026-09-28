@@ -551,7 +551,7 @@
         "label": "A breaking change is a ! after the type/scope plus a BRE…"
       },
       {
-        "hash": "269978a816a6fcef",
+        "hash": "786a9a0a6e1afbf6",
         "label": "Merging the release PR with CI green creates the vX.Y.Z …"
       },
       {
@@ -5971,7 +5971,7 @@
         "label": "Distribution is a two-stage release. The Release Please …"
       },
       {
-        "hash": "f48a5bda5e9607aa",
+        "hash": "7fadc3618dfe8d18",
         "label": "Merging the release PR is the last human step. The tag i…"
       },
       {
@@ -7341,12 +7341,21 @@
     }
   ],
   "provenance": {
-    "head": "3c4f6c83d9c462473d902f8e1bc7aa1d0b3c5b04",
-    "base": "2a58bce637452eade6a87682d93ad841f4311453",
-    "upstream": "2a58bce637452eade6a87682d93ad841f4311453",
+    "head": "eb10f7471af54522be48cdf406e0c25b6984f4bf",
+    "base": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
+    "upstream": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
     "behind": false
   },
   "reanchored": [
+    {
+      "file": "AGENTS.md",
+      "hash": "269978a816a6fcef",
+      "label": "Merging the release PR with CI green creates the vX.Y.Z …",
+      "to": "786a9a0a6e1afbf6",
+      "toLabel": "Merging the release PR with CI green creates the vX.Y.Z …",
+      "reason": "#1576 reworded the tag-push paragraph in place; the rebase took the upstream manifest, so the branch's own pin is restored against the text still in the tree",
+      "date": "2026-09-28"
+    },
     {
       "file": "AGENTS.md",
       "hash": "c28b86d583b5ead2",
@@ -7390,6 +7399,15 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/distribution.md",
+      "hash": "f48a5bda5e9607aa",
+      "label": "Merging the release PR is the last human step. The tag i…",
+      "to": "7fadc3618dfe8d18",
+      "toLabel": "Merging the release PR is the last human step. The tag i…",
+      "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
       "date": "2026-09-28"
     },
     {
