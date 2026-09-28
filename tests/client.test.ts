@@ -132,10 +132,18 @@ describe('parseRetryAfter', () => {
     //
     // What the function owes here is the delta against `now`, so the
     // expectation is derived from the parse that defines the instant rather
-    // than restated from UTC. This is not a tautology: it still fails if the
-    // form stops being read, because an unrecognised instant takes the
-    // `RETRY_AFTER_FALLBACK_SEC` path and returns 1 (measured), not 30.
+    // than restated from UTC.
+    //
+    // That derivation is only worth anything if the string is known to BE a
+    // date, because `parseRetryAfter` returns `RETRY_AFTER_FALLBACK_SEC` for
+    // any input it cannot read -- measured, a header whose instant will not
+    // parse comes back as 1. An expectation derived from a function that
+    // answers 1 to everything is a tautology, so the parse is asserted first
+    // and the reader can see the input was understood before the delta is
+    // believed. Without this line the assertion below would pass just as
+    // happily over a string the function had thrown away.
     const asctime = 'Sun Nov  6 08:50:07 1994';
+    assert.ok(Number.isFinite(Date.parse(asctime)), 'the asctime form parses to an instant');
     assert.equal(parseRetryAfter(asctime, Date.parse(asctime) - 30_000), 30);
   });
 

@@ -2116,7 +2116,11 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // Re-measured, bytes fell by 3,034 — the largest per-module share of the
   // collapse. The timer/ramp family stayed here because a scheduled ramp is a
   // different operation, not a differently-spelled one.
-  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [18, 14279], { scopeKey: 'playback' }),
+  // #1638: `weekday_heatmap`'s description now names the frame it buckets in
+  // ("UTC weekday"), so this module's measured schema bytes moved. The figure
+  // on the line below is a measurement -- take it from
+  // `node scripts/surface-census.mjs`, never from the length of the edit.
+  manifestEntry('exhaust2playback', 'exhaust2playback', lazyModule('./exhaust2_playback.js', 'registerExhaust2PlaybackTools'), [18, 14283], { scopeKey: 'playback' }),
   // --- from the #848 branch ---
 
   // --- from origin/main (#846/#847) ---

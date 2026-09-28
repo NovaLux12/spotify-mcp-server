@@ -46,6 +46,7 @@ import {
 } from '../shaping.js';
 import type { ResponseFormatValue } from '../shaping.js';
 import { detectSessions, loadPlaybackExt } from './playbackext.js';
+import { utcDayIndex, utcHour } from '../timeframe.js';
 import {
   listPositions,
   newPositionRecord,
@@ -993,7 +994,7 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
   // 16. weekday_heatmap (#373) — weekday × daypart buckets
   server.tool(
     'weekday_heatmap',
-    'Plays bucketed by weekday × daypart (morning/afternoon/evening/night) — the hour-of-day histogram counterpart, when derived analytics are enabled; this adds the weekly dimension. Quota: 1-2 reads, local compute.',
+    'Plays bucketed by UTC weekday × daypart (morning/afternoon/evening/night) — the hour-of-day histogram counterpart, when derived analytics are enabled; this adds the weekly dimension. Quota: 1-2 reads, local compute.',
     {
       pages: z.number().int().min(1).max(10).optional().default(2).describe('Recently-played pages to walk (default 2)'),
       response_format: ResponseFormat,
@@ -1007,8 +1008,13 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const grid = new Map<string, number>();
       const partOf = (h: number): (typeof parts)[number] => (h >= 5 && h < 12 ? 'morning' : h < 17 ? 'afternoon' : h < 22 ? 'evening' : 'night');
       for (const row of items) {
-        const d = new Date(row.played_at);
-        const cell = `${days[d.getDay()]} ${partOf(d.getHours())}`;
+        // #1638. `getDay()`/`getHours()` read the HOST's zone, so on any
+        // machine not set to UTC this bucketed the same rows differently from
+        // `listening_clock_heatmap`, which has read the UTC frame since #824.
+        // Both now read the one primitive in src/timeframe.ts, so a fourth
+        // idiom cannot reintroduce the split. `days` stays Sun-first: that is
+        // this tool's published cell label and is not part of the frame fix.
+        const cell = `${days[utcDayIndex(row.played_at)]} ${partOf(utcHour(row.played_at))}`;
         grid.set(cell, (grid.get(cell) ?? 0) + 1);
       }
       let busiest = { cell: '', plays: 0 };
