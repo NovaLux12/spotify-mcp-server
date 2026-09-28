@@ -106,7 +106,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (146,283 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **559 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 70 files under `src/tools/`.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (146,360 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **559 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 70 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
@@ -202,7 +202,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 2,672 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. (1 registered tool) | 1,322 |
 | `src/tools/lanes.ts` | Lane registry tools (#727). (2 registered tools) | 1,824 |
-| `src/tools/library.ts` | Runtime module for src/tools/library.ts. (13 registered tools) | 13,018 |
+| `src/tools/library.ts` | Runtime module for src/tools/library.ts. (13 registered tools) | 13,095 |
 | `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (3 registered tools) | 2,498 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 804 |
 | `src/tools/libraryinsights.ts` | Runtime module for src/tools/libraryinsights.ts. (3 registered tools) | 2,751 |
