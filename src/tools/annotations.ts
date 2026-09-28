@@ -1205,8 +1205,9 @@ export function declaredGatedToolDelta(): number {
  * A module's registration function.
  *
  * `client` is optional because three registrars take no client at all
- * (`registerSwarm3MetaTools`, and the local receipts registrar) and one takes
- * a `StatsfmClient` rather than a `SpotifyClient` — see `lazyModule`'s `adapt`.
+ * (`registerSwarm3MetaTools`, `registerMoodExpandTools`, and the local receipts
+ * registrar) and one takes a `StatsfmClient` rather than a `SpotifyClient` —
+ * see `lazyModule`'s `adapt`.
  * `registerManifestModule` always passes it; the type only says a module is
  * not required to consume it.
  */
