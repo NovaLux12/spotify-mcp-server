@@ -963,9 +963,25 @@ export const NEVER_MUTATING_PLANS: ReadonlySet<string> = new Set([
  * So the polarity is inverted for this family only: a `statsfm_*` tool is
  * read-only if and only if its name is in this set, and anything unclassified is
  * classified as a write. A new stats.fm tool is therefore a write until someone
- * reads its handler and adds it here — the cost of that mistake is a tool
- * hidden from a `SPOTIFY_MCP_READONLY` session, not a write advertised as a
+ * reads its handler and adds it here — and the cost of getting that wrong is
+ * the nuisance one, not the dangerous one. A read left out is classified as a
+ * non-destructive write, so it loses `readOnlyHint`/`idempotentHint` and a host
+ * that keys confirmation off those hints may ask a human to approve a harmless
  * read.
+ *
+ * What that mistake does NOT cost is VISIBILITY, which is the part a reader
+ * naturally assumes it does. `SPOTIFY_MCP_READONLY` is enforced per manifest
+ * MODULE and never per tool: `registerManifestModule` returns
+ * `read_only_hidden` when `readOnly && module.readOnlySafe !== true`, and
+ * nothing anywhere filters `tools/list` by `readOnlyHint`. The two writes
+ * demonstrate the split directly — both are absent from this set and both
+ * classify as writes, yet `statsfm_record_feedback` (in the `readOnlySafe`
+ * `taste` module) still registers under a read-only session while
+ * `statsfm_jukebox` (in `tastejukebox`, which is not `readOnlySafe`) does not.
+ * Identical set-membership, opposite visibility, so the module flag — not this
+ * set — is what decides. #1600 closed a real fail-open grant; the guarantee
+ * that survives it is the module flag, and a comment implying otherwise makes
+ * a real fix look load-bearing when it is not.
  *
  * The 37 names are the read-only half of the 39-tool family as measured from the
  * live registry. The two writes are `statsfm_jukebox` and
@@ -975,8 +991,8 @@ export const NEVER_MUTATING_PLANS: ReadonlySet<string> = new Set([
  *
  * Exported so the test can assert this set against the live registry in both
  * directions. Without that, a new stats.fm tool would silently classify as a
- * write and nobody would find out until a user asked why it vanished from
- * read-only mode.
+ * write and nobody would find out until a user reported a read-only tool
+ * asking them to confirm something harmless.
  */
 export const STATSFM_READ_ONLY: ReadonlySet<string> = new Set([
   'statsfm_album_date_stats',

@@ -30,6 +30,11 @@
  * a rule that could not tell the two apart would be a gate nobody could keep
  * green.
  *
+ * SCOPE: this walk covers `src/` only. A re-binding staged in `scripts/`, or in
+ * a top-level directory added later, is NOT policed — `--guarded-dir` can
+ * point the walk elsewhere by hand, but nothing in CI does. Stated here because
+ * the alternative is a reader assuming a coverage the walk does not have.
+ *
  * The remedy is a shared accessor in `src/config.ts` — `fetchAllCap()` for the
  * value, `scanCapFloor(requested)` for the clamp that applies it.
  *
@@ -90,6 +95,142 @@ const MODULE_SCOPE_CONFIG_BINDING =
   /^(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]+)?=\s*(?:\(\s*\)\s*=>\s*)?getConfig\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/gm;
 
 /**
+ * Destructuring the whole config object: `const { fetchAllCap: CAP } = getConfig()`.
+ *
+ * The most idiomatic way a fourth author would re-bind the setting, and the one
+ * the pattern above cannot see: there is no `.field` on the right-hand side to
+ * anchor to, so the first version of this gate matched it only if the author
+ * happened to write a member access. Same column-0 scoping, same reason.
+ */
+const MODULE_SCOPE_CONFIG_DESTRUCTURE =
+  /^(?:export\s+)?(?:const|let|var)\s*\{([^}]*)\}\s*(?::[^=\n]+)?=\s*getConfig\s*\(\s*\)/gm;
+
+/**
+ * A bare module-scope assignment: `let CAP; … CAP = getConfig().maxItems;`.
+ *
+ * No declaration on the line, so the declaration pattern cannot reach it. Kept
+ * to a bare identifier with no `.` before the `=`, which is what keeps
+ * `someObject.cap = getConfig().x` — a property write on someone else's object,
+ * which names no config field of its own — out of the results.
+ */
+const MODULE_SCOPE_CONFIG_ASSIGNMENT =
+  /^([A-Za-z_$][\w$]*)\s*=\s*(?:\(\s*\)\s*=>\s*)?getConfig\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/gm;
+
+/**
+ * Column-0 openers whose BODY is module scope even though its members are
+ * indented: an object literal bound to a module-scope name, and a class body.
+ * Without this, `{ cap: () => getConfig().x }` is a re-binding that is indented
+ * and therefore invisible to every `^`-anchored rule above.
+ */
+const MODULE_SCOPE_CONTAINER =
+  /^(?:export\s+)?(?:const|let|var)\s+[A-Za-z_$][\w$]*\s*(?::[^=\n]+)?=\s*\{|^(?:export\s+)?(?:abstract\s+)?class\s+[A-Za-z_$][\w$]*/gm;
+
+/**
+ * A direct member of such a container whose value reads a config field, as two
+ * patterns rather than one.
+ *
+ * They have to be two. A single pattern with an optional type annotation
+ * (`: Type =`) cannot also allow a thunk value (`: () => getConfig().x`),
+ * because the annotation's `[^=\n]` happily swallows ` () ` and then matches
+ * the `=` of the arrow — leaving `>` where `getConfig` was expected, so the
+ * exact shape this gate exists to catch is the one shape it silently missed.
+ * The thunk form is therefore tried first, and neither pattern may contain a
+ * bare `=` ahead of `getConfig` for the other to trip over.
+ */
+const CONTAINER_MEMBER_THUNK =
+  /^\s*(?:readonly\s+)?(?:["'][^"']*["']|[A-Za-z_$][\w$]*)\s*:\s*(?:\(\s*\)\s*=>\s*)?getConfig\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/;
+
+/** The assigned form: a class field, or a member with an explicit type. */
+const CONTAINER_MEMBER_ASSIGNED =
+  /^\s*(?:(?:public|private|protected|readonly|declare|static)\s+)*#?[A-Za-z_$][\w$]*\s*(?::[^=\n>]+)?=\s*(?:\(\s*\)\s*=>\s*)?getConfig\s*\(\s*\)\s*\.\s*([A-Za-z_$][\w$]*)/;
+
+/**
+ * The config property each destructured element reads, or `null` for a rest
+ * element (`...rest`), which names no single setting and so cannot be reported
+ * as one. The line is reported either way — the reader sees the declaration.
+ */
+function destructuredFields(body) {
+  return body
+    .split(',')
+    .map((part) => {
+      const key = part.trim().replace(/^\.\.\./, '').split(':')[0].split('=')[0].trim();
+      return /^["']?([A-Za-z_$][\w$]*)["']?$/.exec(key)?.[1] ?? null;
+    })
+    .filter((field) => field !== null);
+}
+
+/** The index just past the `}` matching the `{` at `open`, or -1. */
+function closingBrace(code, open) {
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    if (code[i] === '{') depth += 1;
+    else if (code[i] === '}') {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * The DIRECT members of a container body — the ones a `{` or `,` or `;` at
+ * depth 0 separates. Members nested inside a function body or a sub-object sit
+ * at depth ≥ 1 and are deliberately excluded: those are the ~40 legitimate
+ * function-local reads this gate exists not to fire on.
+ */
+function directMembers(body) {
+  const members = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < body.length; i += 1) {
+    const ch = body[i];
+    if (ch === '{' || ch === '(' || ch === '[') depth += 1;
+    else if (ch === '}' || ch === ')' || ch === ']') depth -= 1;
+    else if (depth === 0 && (ch === ',' || ch === ';')) {
+      members.push({ text: body.slice(start, i), offset: start });
+      start = i + 1;
+    }
+  }
+  members.push({ text: body.slice(start), offset: start });
+  return members;
+}
+
+/**
+ * Every module-scope config-accessor re-binding in one blanked source file, as
+ * `{ index, fields }` — `index` into the blanked text (which preserves offsets
+ * and newlines, so it resolves to a line in the original), `fields` the config
+ * settings it re-bound.
+ *
+ * Computed once and consumed by both exported collectors, so the error list and
+ * the field list cannot disagree about what was found — the failure mode where
+ * the gate names a line and the field report names a different setting.
+ */
+function findDuplicateConfigAccessors(code) {
+  const found = [];
+  for (const match of code.matchAll(MODULE_SCOPE_CONFIG_BINDING)) {
+    found.push({ index: match.index, fields: [match[2]] });
+  }
+  for (const match of code.matchAll(MODULE_SCOPE_CONFIG_DESTRUCTURE)) {
+    const fields = destructuredFields(match[1]);
+    if (fields.length > 0) found.push({ index: match.index, fields });
+  }
+  for (const match of code.matchAll(MODULE_SCOPE_CONFIG_ASSIGNMENT)) {
+    found.push({ index: match.index, fields: [match[2]] });
+  }
+  for (const match of code.matchAll(MODULE_SCOPE_CONTAINER)) {
+    const open = code.indexOf('{', match.index);
+    if (open < 0) continue;
+    const close = closingBrace(code, open);
+    if (close < 0) continue;
+    for (const member of directMembers(code.slice(open + 1, close))) {
+      const read = CONTAINER_MEMBER_THUNK.exec(member.text) ?? CONTAINER_MEMBER_ASSIGNED.exec(member.text);
+      if (read) found.push({ index: open + 1 + member.offset, fields: [read[1]] });
+    }
+  }
+  return found.sort((a, b) => a.index - b.index);
+}
+
+/**
  * Every module-scope config-accessor re-binding in one source file, as
  * `file:line: text`. Returns `[]` when the file is clean — that empty array is
  * the comparison the gate turns on, so it is computed by the collector rather
@@ -104,8 +245,8 @@ const MODULE_SCOPE_CONFIG_BINDING =
 export function collectDuplicateConfigAccessorErrors(source, file) {
   const code = blankNonCode(source);
   const found = [];
-  for (const match of code.matchAll(MODULE_SCOPE_CONFIG_BINDING)) {
-    const line = code.slice(0, match.index).split('\n').length;
+  for (const hit of findDuplicateConfigAccessors(code)) {
+    const line = code.slice(0, hit.index).split('\n').length;
     const text = source.split('\n')[line - 1]?.trim() ?? '';
     found.push(`${file}:${line}: ${text}`);
   }
@@ -115,8 +256,7 @@ export function collectDuplicateConfigAccessorErrors(source, file) {
 /** The field names this gate has seen re-bound, as `file:field` strings. */
 export function collectReboundFields(source, file) {
   const code = blankNonCode(source);
-  return [...code.matchAll(MODULE_SCOPE_CONFIG_BINDING)]
-    .map((match) => `${file}:${match[2]}`);
+  return findDuplicateConfigAccessors(code).flatMap((hit) => hit.fields.map((field) => `${file}:${field}`));
 }
 
 function walk(directory) {
