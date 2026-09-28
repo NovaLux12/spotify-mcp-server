@@ -57,7 +57,7 @@ import {
   toolNamingMetadata,
 } from '../src/tools/annotations.js';
 import { SpotifyClient } from '../src/client.js';
-import { LEGACY_TOOL_ALIASES, LEGACY_TOOL_ALIAS_NAMES, RETIRED_QUEUE_TOOLS, RETIRED_QUEUE_TOOL_NAMES } from '../src/shaping.js';
+import { LEGACY_TOOL_ALIASES, LEGACY_TOOL_ALIAS_NAMES, RETIRED_QUEUE_TOOLS, RETIRED_QUEUE_TOOL_NAMES, RETIRED_TOOL_FORWARD_NAMES } from '../src/shaping.js';
 import { hermeticServerEnv, StdioJsonRpcChild } from './helpers/stdio-child.js';
 import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
@@ -789,6 +789,31 @@ describe('tool surface: budget', () => {
       canonical.length,
       'the manifest baseline and the alias table disagree on how many tools the module has',
     );
+  });
+
+  it('registers no retired transfer or volume name and both survivors (#848, #1615)', async () => {
+    const names = new Set((await listTools({})).map((t) => t.name));
+    // AGENTS.md §5: retiring a tool name means pinning its absence here, not
+    // only deleting the registration. These ten stopped being rows the moment
+    // the two families collapsed, but until #1615 nothing here said so — a
+    // name could come back through any manifest entry and the queue pin above
+    // was the only family with a witness. The absence is now what makes the
+    // table in `shaping.ts` a retirement record rather than a live dispatch.
+    for (const retired of RETIRED_TOOL_FORWARD_NAMES) {
+      assert.ok(!names.has(retired), `retired transfer/volume tool ${retired} is still registered`);
+    }
+    for (const survivor of ['transfer_playback', 'set_volume']) {
+      assert.ok(names.has(survivor), `${survivor} is not registered, so a retired name's \`fix\` would be a dead end`);
+    }
+    // And the refusals those names now serve have to name a tool THIS session
+    // registered. `RETIRED_TOOL_FORWARDS` is a static table and the registry is
+    // per-session, so a `fix` pointing at a trimmed module is possible in
+    // principle; the two survivors above are `alwaysActive`, which is what
+    // makes it not one.
+    const trimmed = new Set((await listTools({ SPOTIFY_MCP_TOOLSETS: 'playback' })).map((t) => t.name));
+    for (const survivor of ['transfer_playback', 'set_volume']) {
+      assert.ok(trimmed.has(survivor), `${survivor} must survive the toolset that owns the retired names`);
+    }
   });
 
   it('production aggregate gate fails closed on an injected overage', () => {

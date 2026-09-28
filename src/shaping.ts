@@ -788,206 +788,158 @@ export function retiredToolAliasMessage(name: string, canonical: string): string
 }
 
 // ---------------------------------------------------------------------------
-// Retired tools that still FORWARD (#848)
+// Retired tools that used to FORWARD (#848)
 // ---------------------------------------------------------------------------
 
 /**
- * The release that stops answering these names. Named once here for the same
+ * The release that stopped answering these names. Named once here for the same
  * reason {@link RETIRED_PLAYLIST_INPUTS_REMOVED_IN} is named once: the notice
  * in a refusal, the SPEC table and the census must not be able to disagree
  * about when the name goes away.
  */
 export const RETIRED_TOOL_FORWARDS_REMOVED_IN = 'v3.0';
 
-export interface RetiredToolForward {
-  /** The surviving tool the call dispatches to. */
+/**
+ * One retired tool name and the call that replaced it.
+ *
+ * The `rewrite` half this record used to carry is gone, and the removal is the
+ * reason: #848 promised a one-release forwarding window, the notice on every
+ * forwarded call said so in those words, and v3.0 is the release it named. What
+ * survived the removal is the migration, because a name that stops answering
+ * with nothing left to read is not a deprecation, it is a dead end — the same
+ * lesson #1287 recorded when a notice outlived the promise.
+ *
+ * `note` therefore still carries the flag translation the rewriter used to
+ * perform, phrased as the caller's next step. Several of those facts are not
+ * guessable from the survivor's schema: `switch_device` defaulted `play` to
+ * true where `transfer_playback` does not, both volume planners read an
+ * omitted device list as EVERY volume-capable device where `set_volume` reads
+ * it as the active one, and `plan_volume_level_across_devices` was a planner
+ * that refused to commit. A migration note that dropped them would send a
+ * caller to the right tool and get different behaviour.
+ */
+export interface RetiredToolRecord {
+  /** The surviving tool that answers the same question. */
   readonly tool: string;
-  /**
-   * Translate the retired tool's arguments into the survivor's.
-   *
-   * This is the reason #848 needed a new mechanism rather than
-   * {@link LEGACY_TOOL_ALIASES}. That table is a name→name map because every
-   * alias it carries has an IDENTICAL schema to its target — the eight
-   * stats.fm `taste_*` names were the same tool registered twice. #848's names
-   * are not the same tool twice; `handoff` is `transfer_playback` plus
-   * `preserve_position`, and `apply_device_presets` is `set_volume` plus
-   * `op: 'preset'`. A name-only map would forward the arguments unchanged and
-   * the canonical tool would refuse them as unknown parameters, which is a
-   * worse outcome for the caller than the name simply disappearing: they would
-   * get a schema error instead of the behaviour they asked for.
-   *
-   * A rewriter returns the survivor's arguments with no `undefined` values —
-   * `compact` below drops them — so the boundary's unknown-parameter check
-   * then runs against the SURVIVOR's schema, which is where a mistranslation
-   * is caught, before any Spotify request.
-   */
-  readonly rewrite: (args: Readonly<Record<string, unknown>>) => Record<string, unknown>;
   /** One line naming what to send instead, shown to the caller on every call. */
   readonly note: string;
 }
 
-/** Drop keys whose value is `undefined`, so a rewriter cannot invent a key. */
-function compact(args: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(args).filter(([, v]) => v !== undefined));
-}
-
-/** Carry the arguments a retired tool did not reinterpret, unchanged. */
-function passthrough(
-  args: Readonly<Record<string, unknown>>,
-  known: readonly string[],
-): Record<string, unknown> {
-  return compact(Object.fromEntries(Object.entries(args).filter(([k]) => !known.includes(k))));
-}
-
 /**
- * Retired tool name → the surviving tool and the flag translation (#848).
+ * Retired tool name → the surviving tool and what to send it (#848).
  *
- * Ten names go away: three of the four transfer tools and seven of the volume
- * family. Every one of them keeps working for one release through this table,
- * and the caller's result carries `deprecated_inputs` / `deprecation_note` so
- * the migration is announced rather than silent.
+ * Ten names went away: three of the four transfer tools and seven of the volume
+ * family. #848 never re-registered them — the rows came out of `tools/list`
+ * when the families collapsed — but the NAMES stayed callable at the CallTool
+ * boundary for one release, with their arguments translated into the survivor's,
+ * which is what made a caller who upgraded before the collapse a working caller
+ * rather than a broken one.
+ *
+ * **v3.0 is that release.** The forwarding is gone and so is the `rewrite` each
+ * entry used to carry; a call on one of these names is now refused the same way
+ * a call on a retired queue-read name is, naming the replacement. What this
+ * table still holds is the migration — the same reason the retired names sit in
+ * `retiredToolNames` in `scripts/check-doc-tool-names.mjs`, and the same reason
+ * the table was not deleted along with the code: a name that stops answering
+ * with nothing left to read is a dead end, and the four facts below that the
+ * survivor's schema does not imply are exactly what a caller cannot re-derive.
  *
  * It lives beside {@link LEGACY_TOOL_ALIASES} for the reason that table's header
  * gives: the consumer is the CallTool boundary in `tools/annotations.ts`, and
- * that module must never statically import a tool registrar. A table of
- * argument mappings costs nothing to import; the alternative would evaluate
+ * that module must never statically import a tool registrar. A table of ten
+ * strings costs nothing to import; the alternative would evaluate
  * `playback.js` — and with it the `core` toolset's whole surface — in every
  * process.
  */
-export const RETIRED_TOOL_FORWARDS: Readonly<Record<string, RetiredToolForward>> = Object.freeze({
+export const RETIRED_TOOL_FORWARDS: Readonly<Record<string, RetiredToolRecord>> = Object.freeze({
   // --- transfer family → transfer_playback ---------------------------------
+  // `handoff`'s whole reason for existing was carrying the track and position
+  // over instead of restarting at 0:00 on the target, and
+  // `transfer_playback` does not do that unless asked.
   handoff: {
     tool: 'transfer_playback',
-    note: 'handoff forwards to transfer_playback with preserve_position: true.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['device_id', 'play', 'volume']),
-      device: args.device_id,
-      play: args.play,
-      volume: args.volume,
-      // handoff's whole reason for existing: carry the track and position over
-      // instead of restarting it at 0:00 on the target.
-      preserve_position: true,
-    }),
+    note: 'add preserve_position: true — the track and position carry over instead of restarting at 0:00 on the target.',
   },
+  // switch_device defaulted `play` to true and transfer_playback does not, so a
+  // caller who meant "transfer paused" has to send play: false themselves.
   switch_device: {
     tool: 'transfer_playback',
-    note: 'switch_device forwards to transfer_playback; pass the device as `device`.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['device_name', 'play']),
-      device: args.device_name,
-      // switch_device defaulted `play` to true and transfer_playback does not;
-      // forwarding without it would silently change "transfer paused" callers
-      // into "starts playing" callers.
-      play: args.play ?? true,
-    }),
+    note: 'pass the device as `device`; it defaulted play to true and the replacement does not, so send play: false to transfer paused.',
   },
   transfer_playback_with_state: {
     tool: 'transfer_playback',
-    note: 'transfer_playback_with_state forwards to transfer_playback with preserve_position and restore_shuffle_repeat both true.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['target_device', 'play']),
-      device: args.target_device,
-      play: args.play ?? true,
-      preserve_position: true,
-      restore_shuffle_repeat: true,
-    }),
+    note: 'add preserve_position: true and restore_shuffle_repeat: true; it defaulted play to true.',
   },
 
   // --- volume family → set_volume ------------------------------------------
   volume_step: {
     tool: 'set_volume',
-    note: 'volume_step forwards to set_volume with the same step as delta_step.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['step', 'device_id']),
-      delta_step: args.step,
-      device_id: args.device_id,
-    }),
+    note: 'pass the same step as delta_step.',
   },
   mute: {
     tool: 'set_volume',
-    note: 'mute forwards to set_volume with op: mute.',
-    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'mute', device_id: args.device_id }),
+    note: "op: 'mute'.",
   },
   unmute: {
     tool: 'set_volume',
-    note: 'unmute forwards to set_volume with op: unmute.',
-    rewrite: (args) => compact({ ...passthrough(args, ['device_id']), op: 'unmute', device_id: args.device_id }),
+    note: "op: 'unmute', which restores the level mute kept.",
   },
+  // No volume_percent, which is what makes `level` copy the active device's
+  // level to the others rather than set a new one.
   room_level: {
     tool: 'set_volume',
-    note: 'room_level forwards to set_volume with op: level and no volume_percent, which copies the active device\'s level to the others.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['exclude_device_id']),
-      op: 'level',
-      exclude_device_id: args.exclude_device_id,
-    }),
+    note: "op: 'level' and no volume_percent, which copies the active device's level to the others.",
   },
   apply_device_presets: {
     tool: 'set_volume',
-    note: 'apply_device_presets forwards to set_volume with op: preset.',
-    rewrite: (args) => compact({ ...passthrough(args, []), op: 'preset' }),
+    note: "op: 'preset'.",
   },
+  // An OMITTED device list meant "every volume-capable device" here, where
+  // set_volume's own default is the active device — so a caller who relied on
+  // the fan-out has to send all_devices: true or the write covers one speaker
+  // and reports success for the others it skipped.
   apply_volume_plan: {
     tool: 'set_volume',
-    note: 'apply_volume_plan forwards to set_volume with op: level and the plan\'s volume as volume_percent.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['volume', 'device_ids']),
-      op: 'level',
-      volume_percent: args.volume,
-      device_ids: args.device_ids,
-      // An OMITTED selection meant "every volume-capable device" to
-      // apply_volume_plan. set_volume's own default is the active device, so
-      // without this the forward would turn a four-speaker write into a
-      // one-speaker one and report success for the three it skipped.
-      ...(args.device_ids === undefined ? { all_devices: true } : {}),
-    }),
+    note: "op: 'level' and the plan's volume as volume_percent; an omitted device list meant every volume-capable device, which is all_devices: true.",
   },
+  // Same "omitted means all" contract as apply_volume_plan, and it was a
+  // PLANNER: it listed every device it would have hit and never committed, so
+  // dry_run has to stay true on the replacement.
   plan_volume_level_across_devices: {
     tool: 'set_volume',
-    note: 'plan_volume_level_across_devices forwards to set_volume with op: level and dry_run: true.',
-    rewrite: (args) => compact({
-      ...passthrough(args, ['volume', 'device_ids', 'dry_run']),
-      op: 'level',
-      volume_percent: args.volume,
-      device_ids: args.device_ids,
-      // Same "omitted means all" contract as apply_volume_plan, and for the
-      // same reason: this planner listed every device it would have hit.
-      ...(args.device_ids === undefined ? { all_devices: true } : {}),
-      // Forced LAST, and not merely defaulted: this was a read-only planner, and
-      // a caller that passes dry_run: false must still get a plan rather than a
-      // volume write it never asked for. A retired read-only tool must not
-      // become a mutator on the way out.
-      dry_run: true,
-    }),
+    note: "op: 'level', volume_percent, all_devices: true when no device list was given, and dry_run: true — it was a planner and never committed.",
   },
 });
 
-/** Every retired name that still forwards, sorted, for gates and docs. */
+/** Every retired name in this family, sorted, for gates and docs. */
 export const RETIRED_TOOL_FORWARD_NAMES: readonly string[] = Object.freeze(
   Object.keys(RETIRED_TOOL_FORWARDS).sort(),
 );
 
 /**
- * The forward record for a retired name, or `undefined` when `name` was never
- * one. `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias}
+ * The retirement record for a retired name, or `undefined` when `name` was
+ * never one. `Object.hasOwn` for the same reason {@link resolveLegacyToolAlias}
  * guards its lookup: a tool name reaches here from the wire, and the table is a
  * frozen object literal that still carries `Object.prototype`.
  */
-export function resolveRetiredToolForward(name: string): RetiredToolForward | undefined {
+export function resolveRetiredToolForward(name: string): RetiredToolRecord | undefined {
   if (!Object.hasOwn(RETIRED_TOOL_FORWARDS, name)) return undefined;
   return RETIRED_TOOL_FORWARDS[name];
 }
 
 /**
- * The one-line migration note for a forwarded call.
+ * The one-line migration note for a call on a retired name.
  *
- * It states the release the name disappears in as well as the replacement,
+ * It states the release the name went away in as well as the replacement,
  * because a note that only names the replacement leaves a caller with no way to
  * tell a deprecation from a permanent rename — and that notice-and-code
- * disagreement is what #1287 and #1099 were both filed for.
+ * disagreement is what #1287 and #1099 were both filed for. Past tense, because
+ * it is now served by a refusal rather than by a forwarded result: a caller who
+ * reads "stops being callable" off a name that no longer is has been told to
+ * plan around a promise this release kept.
  */
-export function retiredToolForwardNote(alias: string, forward: RetiredToolForward): string {
-  return `${alias} is deprecated and stops being callable in ${RETIRED_TOOL_FORWARDS_REMOVED_IN}. ${forward.note}`;
+export function retiredToolForwardNote(alias: string, record: RetiredToolRecord): string {
+  return `${alias} was removed in ${RETIRED_TOOL_FORWARDS_REMOVED_IN}; use ${record.tool} instead — ${record.note}`;
 }
 
 /** The release that stopped registering the six queue-read tool names (#847). */

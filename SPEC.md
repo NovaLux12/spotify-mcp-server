@@ -45,7 +45,7 @@ issues, so the absence of a line here is not read as a decision either way.
 - **Multi-tenant or hosted operation** — one process serves one user's credentials, and the loopback-only OAuth callback cannot complete a hosted login.
 - **Sharing one user's credentials across users** — no token pooling and no caller-supplied credentials; a process holding several people's tokens could not say whose library a call touched.
 - **Lyrics** — the public API has no lyrics endpoint, so `lyric_snippet_search` matches a remembered phrase against track metadata instead.
-- **The Spotify Connect SDK and native client integration** — the Web API is the only surface spoken; `get_devices`, `switch_device` and `transfer_playback` are the device control it does expose.
+- **The Spotify Connect SDK and native client integration** — the Web API is the only surface spoken; `get_devices` and `transfer_playback` are the device control it does expose.
 - **Voice control** — capturing audio is a different product with a different consent surface; a host's own voice layer can call this server with ordinary text.
 - **Training a model on Spotify data, or exporting derived profiles** — prohibited by Spotify's Developer Terms, and already restated in this repository's [End User Agreement](END_USER_AGREEMENT.md) and [Privacy Notice](PRIVACY.md).
 - **A second third-party upstream, ad-tech, or monetization egress** — stats.fm is the only non-Spotify API called, and a new recipient is a disclosure change before it is a code change.
