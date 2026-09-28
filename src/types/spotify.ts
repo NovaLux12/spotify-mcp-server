@@ -661,3 +661,44 @@ export function playlistItemTotal(
   const legacy = playlist?.tracks?.total;
   return typeof legacy === 'number' ? legacy : undefined;
 }
+
+/**
+ * The truncation verdict a playlist item walk returns, as
+ * `getAllPagesWithTruncation` reports it (#864).
+ */
+export interface PlaylistWalkVerdict {
+  /** Rows the walk actually collected — bounded by the cap, so NOT a size. */
+  readonly fetched: number;
+  /** Rows are missing from this walk, for whatever reason. */
+  readonly truncated: boolean;
+  /** The cap is specifically what ended the walk (#718). */
+  readonly truncatedByCap: boolean;
+  /** The server's own count for this page, or null when it sent none. */
+  readonly reportedTotal: number | null;
+}
+
+/**
+ * How many items a playlist holds, as Spotify states it — never as a walk
+ * counted them.
+ *
+ * Precedence, in one place because four call sites had each derived this
+ * differently (#1555): the walk's own `reportedTotal` first, because it comes
+ * from the very `/items` page the caller read and cannot disagree with it;
+ * then the playlist object's canonical `items.total`, with the pre-Feb-2026
+ * `tracks.total` as its fallback (`playlistItemTotal`).
+ *
+ * `null` when neither source states a number. A length Spotify did not state is
+ * not zero, and it is emphatically not `verdict.fetched` — that figure is
+ * bounded by `SPOTIFY_MCP_FETCH_ALL_CAP` (500 by default), so publishing it
+ * under the name of a playlist's size states a wrong number with no marker
+ * that it was capped (#803's shape: well-formed, plausible, and wrong).
+ */
+export function playlistTotalFromWalk(
+  verdict: PlaylistWalkVerdict,
+  playlist: SpotifyPlaylistPage | null | undefined,
+): number | null {
+  const fromWalk = verdict.reportedTotal;
+  if (typeof fromWalk === 'number' && Number.isFinite(fromWalk)) return fromWalk;
+  const fromMeta = playlistItemTotal(playlist);
+  return typeof fromMeta === 'number' && Number.isFinite(fromMeta) ? fromMeta : null;
+}

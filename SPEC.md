@@ -2105,6 +2105,20 @@ A whole read is unchanged — `items_truncated: false`, `truncated_by_cap: false
 
 **Not a migration.** No call that succeeded before fails now, and no call over a whole read produces different numbers. What changes is that a partial answer says so. `total_tracks` widens from `number` to `number | null`: a caller that reads a capped export of a playlist whose count was unreadable now gets `null` where it used to get a number bounded by the cap. That is a contract change, and it is why the field is documented here rather than left to the payload.
 
+##### The same rule, generalised (#1555)
+
+`#1533` fixed one tool and the rule with it, but the precedence above was still written out by hand at each site, in enough orders that a later edit had four places to land. It is now `playlistTotalFromWalk(verdict, playlist)` in `src/types/spotify.ts` — the table above, returning `null` rather than a number Spotify did not state — and every site goes through it. `playlistItemTotal` remains the metadata-only half, for callers that never walked the items page.
+
+Two tools publish a playlist's **size**, and both did it from a capped walk:
+
+**`playlist_staleness_score`.** `items` was `items.length` — a number bounded by `SPOTIFY_MCP_FETCH_ALL_CAP` under the playlist's name — while the canonical `items.total` sat in the same handler, already fetched, unread. `items` is now that size, `null` when Spotify states none. The walked count moves to `items_examined` under the name it deserves, and `items_truncated` / `truncated_by_cap` ride beside it. The grade itself was computed from the walked rows, so a capped read bounds it too: `grade_bounded_by_walk` says so, because the rows past the cap are exactly the ones whose age might have moved the grade.
+
+**`playlist_health_check`.** Same miscount, and worse for what it feeds. `healthy` was derived entirely from the rows the walk returned, so a playlist whose 501st track was the duplicate reported `healthy: true` on the strength of the 500 that were examined — a bounded read publishing an unbounded verdict. **`healthy` widens to `boolean | null`**, and `null` is the load-bearing value: not clean, not faulty, **not established**. A caller must be able to tell "audited and clean" from "audited a prefix and found nothing", and a boolean cannot. A completed read still answers `true`/`false` exactly as before. The prose stops claiming health it could not establish and names the remedy: how many rows were examined, how many exist, whether the cap or a short page ended the read, and that raising `SPOTIFY_MCP_FETCH_ALL_CAP` is what widens the audit. A read that DID find a fault reports `false` whatever the cap did, with the shortfall stated beside it.
+
+`playlist_chunk_preview` reached for the same number and is already correct for a different reason: it calls `assertPlaylistReadWhole`, so a truncated walk is refused outright rather than answered from a prefix. It is named here because it reads like a fourth instance of this bug and is not one — the defence is refusal, not disclosure.
+
+**Migration.** `playlist_staleness_score`'s `items` widens from `number` to `number | null`, as `total_tracks` did. `playlist_health_check`'s `total` does the same, and its `healthy` from `boolean` to `boolean | null` — **a caller branching on `healthy === true` is unaffected; a caller branching on `if (healthy)` now also sees a third state and must handle it.** That is the intended cost of not answering a question the read could not answer. Over a whole read, no number changes.
+
 ---
 
 #### `move_items_between_playlists`

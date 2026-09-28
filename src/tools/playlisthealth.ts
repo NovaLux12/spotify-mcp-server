@@ -8,7 +8,8 @@ import { getConfig, storePath } from '../config.js';
 import { SpotifyApiError } from '../client.js';
 import { DryRun, ResponseFormat, readString, playlistRowItem, playlistRowUris } from '../shaping.js';
 import { DuplicateMatchByParam, groupDuplicates, matchableFromPlaylistItems, resolveMatchBy } from '../playlistmatch.js';
-import type { PlaylistItemObject } from '../types/spotify.js';
+import type { PlaylistItemObject, SpotifyPlaylistPage } from '../types/spotify.js';
+import { playlistTotalFromWalk } from '../types/spotify.js';
 import {
   confirmViaElicitation,
   describeConfirmation,
@@ -99,12 +100,34 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
     async (args) => {
       const playlistId = args.playlist_id;
       const encId = encodeURIComponent(playlistId);
-      const items = await client.getAllPages<PlaylistItemObject>(`/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap });
+      // #1555: this walk is capped by fetchAllCap, and `healthy` is derived
+      // entirely from the rows it returns — so the rows the cap excluded are
+      // exactly the rows that might have carried the fault. Take the verdict
+      // with the rows, and the playlist's real length from the metadata read
+      // rather than from the walk's row count.
+      const walk = await client.getAllPagesWithTruncation<PlaylistItemObject>(
+        `/playlists/${encId}/items`, { limit: '100' }, { maxItems: getConfig().fetchAllCap },
+      );
+      const items = walk.items;
+      // The walk's own page total is the canonical source; the playlist object
+      // is the fallback. Null, not 0, when Spotify states neither.
+      const meta = await client.get<SpotifyPlaylistPage>(`/playlists/${encId}`);
+      const total = playlistTotalFromWalk(
+        { fetched: items.length, truncated: walk.truncated, truncatedByCap: walk.truncatedByCap, reportedTotal: walk.reportedTotal },
+        meta,
+      );
       const issues: Array<{ type: string; count: number; positions: number[]; description: string }> = [];
+      // Disclosed on every return path, healthy or not: a caller reading `total`
+      // alone cannot otherwise tell a complete audit from a bounded one.
+      const auditScope = {
+        items_examined: items.length,
+        items_truncated: walk.truncated,
+        truncated_by_cap: walk.truncatedByCap,
+      };
       if (items.length === 0) {
         issues.push({ type: 'empty', count: 1, positions: [], description: 'Playlist is empty' });
         const text = `Health check for playlist ${playlistId}: 1 issue — empty playlist.`;
-        return textResult(text, { playlist_id: playlistId, total: 0, issues, healthy: false });
+        return textResult(text, { playlist_id: playlistId, total, ...auditScope, issues, healthy: false });
       }
       const unavailablePositions: number[] = [];
       const localPositions: number[] = [];
@@ -144,13 +167,33 @@ export function registerPlaylistHealthTools(server: McpServer, client: SpotifyCl
       if (dupPositions.length > 0) {
         issues.push({ type: 'duplicate', count: dupGroups.length, positions: dupPositions, description: `${dupGroups.length} duplicate group(s) under match_by=${matchBy} across ${dupPositions.length} positions` });
       }
-      const healthy = issues.length === 0;
-      const structured = { playlist_id: playlistId, match_by: matchBy, total: items.length, issues, duplicate_groups: dupGroups, healthy };
+      // #1555: a capped read cannot support `healthy: true`. The verdict is
+      // derived entirely from the rows that came back, so a playlist whose
+      // 501st track is the duplicate reports "healthy" on the strength of the
+      // 500 that were examined. `null` is the honest third value — not clean,
+      // not faulty, simply not established — and it is what a caller must be
+      // able to tell apart from a real pass. A completed read still answers
+      // true/false exactly as before.
+      const healthy: boolean | null = issues.length > 0 ? false : walk.truncated ? null : true;
+      const structured = { playlist_id: playlistId, match_by: matchBy, total, ...auditScope, issues, duplicate_groups: dupGroups, healthy };
+      const sizePhrase = total === null
+        ? `length unknown (${items.length} row(s) examined)`
+        : `${total} track(s)`;
       let text: string;
-      if (healthy) text = `Playlist ${playlistId} is healthy: ${items.length} tracks, no issues.`;
-      else {
+      if (healthy === true) text = `Playlist ${playlistId} is healthy: ${sizePhrase}, no issues.`;
+      else if (healthy === null) {
+        // "Healthy, of the 500 rows I looked at" is a weaker claim than the
+        // old one and is the true one. Name what was not examined.
+        text = `Playlist ${playlistId}: no issues in the ${items.length} row(s) examined, `
+          + `but the read stopped short of all ${total ?? 'stated'} — health NOT established `
+          + `(${walk.truncatedByCap ? `the fetch-all cap ended the read` : 'the read ended short of the end'}). `
+          + `Raise SPOTIFY_MCP_FETCH_ALL_CAP to audit the whole playlist.`;
+      } else {
         const summary = issues.map((iss) => `${iss.type}(${iss.count})`).join(', ');
-        text = `Health check for playlist ${playlistId}: ${items.length} tracks, ${issues.length} issue type(s): ${summary}.\n${jsonText(structured)}`;
+        const boundedNote = walk.truncated
+          ? ` (audit bounded: ${items.length} of ${total ?? 'stated'} row(s) examined)`
+          : '';
+        text = `Health check for playlist ${playlistId}: ${sizePhrase}, ${issues.length} issue type(s): ${summary}${boundedNote}.\n${jsonText(structured)}`;
       }
       return textResult(text, structured);
     },

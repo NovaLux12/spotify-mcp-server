@@ -3625,6 +3625,34 @@
         "label": "Not a migration. No call that succeeded before fails now…"
       },
       {
+        "hash": "f472250ab622af10",
+        "label": "The same rule, generalised (#1555)"
+      },
+      {
+        "hash": "da14f42ff30cdfb9",
+        "label": "#1533 fixed one tool and the rule with it, but the prece…"
+      },
+      {
+        "hash": "917967bb40d4f447",
+        "label": "Two tools publish a playlist's size, and both did it fro…"
+      },
+      {
+        "hash": "5bd0d38bc51db319",
+        "label": "playliststalenessscore. items was items.length — a numbe…"
+      },
+      {
+        "hash": "70c5665f28099746",
+        "label": "playlisthealthcheck. Same miscount, and worse for what i…"
+      },
+      {
+        "hash": "afa7074eb6eff2b5",
+        "label": "playlistchunkpreview reached for the same number and is …"
+      },
+      {
+        "hash": "febfaa6ad90025b3",
+        "label": "Migration. playliststalenessscore's items widens from nu…"
+      },
+      {
         "hash": "7576077206abbd74",
         "label": "moveitemsbetweenplaylists Bulk rehome items between play…"
       },
@@ -7313,9 +7341,9 @@
     }
   ],
   "provenance": {
-    "head": "ec4dfb8e9dc681ad0ab12de2b23113ae50ce6f6e",
-    "base": "16f8338efc7da45a532b562942872e0830f8d99e",
-    "upstream": "16f8338efc7da45a532b562942872e0830f8d99e",
+    "head": "3c4f6c83d9c462473d902f8e1bc7aa1d0b3c5b04",
+    "base": "2a58bce637452eade6a87682d93ad841f4311453",
+    "upstream": "2a58bce637452eade6a87682d93ad841f4311453",
     "behind": false
   },
   "reanchored": [

@@ -361,6 +361,13 @@ function fakeClient() {
     get: async (path: string) =>
       path === '/playlists/p1' ? { id: 'p1', name: 'No Dates' } : undefined,
     getAllPages: async (path: string) => (path.includes('/items') ? UNDATED_PLAYLIST.items : []),
+    // #1555: the playlist walk now goes through the verdict-returning method,
+    // so a fake that stubs only `getAllPages` fails before the validation this
+    // file exists to inspect is ever reached. Reports a complete read.
+    getAllPagesWithTruncation: async (path: string) => {
+      const items = path.includes('/items') ? UNDATED_PLAYLIST.items : [];
+      return { items, truncated: false, truncatedByCap: false, reportedTotal: items.length };
+    },
     getWithGating: async () => undefined,
     post: NO_WRITE('POST'),
     put: NO_WRITE('PUT'),

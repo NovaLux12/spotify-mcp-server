@@ -220,6 +220,17 @@ const parameterAllowlist = new Set([
   // not request parameters. `truncated_by_cap` is allowlisted below with
   // `fetch_all_cap` — one entry each for a key more than one PR reports.
   'item_count', 'items_truncated',
+  // #1555: the same disclosure, generalised to the two tools that publish a
+  // playlist's SIZE rather than a walk's length. `items_examined` is the walked
+  // row count under the name it deserves, beside the size that is now the
+  // playlist's real total (`items`, and `total` on playlist_health_check);
+  // `items_truncated` is the SOURCE walk's verdict, as above.
+  'items_examined',
+  // #1555: playlist_staleness_score's grades are computed from the walked rows,
+  // so a capped read bounds the grade itself. This says the grade was reached
+  // from a sample — the rows past the cap are exactly the ones whose age might
+  // have moved it. A payload key on that tool, not a tool and not an argument.
+  'grade_bounded_by_walk',
   // #1423: the neighbours of the bounded-read disclosure that are NOT part of
   // it, named in SPEC.md §5 so a new tool does not reinvent one of them as a
   // fourth spelling. All four are structuredContent keys naming a result the
