@@ -49,12 +49,15 @@ const EXPECTED_FILES = [
   'docs/configuration.md',
   'docs/cookbook.md',
   'docs/distribution.md',
+  // Added by #1630, which gave the 3.0 migration guide's retirement tables a
+  // generated block so the guide cannot drift from the runtime constants.
+  // Sorted into place, not appended: this list is compared deep-equal against
+  // a sorted walk of the real tree, so a new marked file has to land where its
+  // name sorts or the guard fails on ordering rather than on coverage.
+  'docs/migration-v3.md',
   'docs/schema-budgets.md',
   // Added with the 3.0 roadmap, whose headline figures are measured by the census.
   'docs/v3-roadmap.md',
-  // Added by #1630, which gave the 3.0 migration guide's retirement tables a
-  // generated block so the guide cannot drift from the runtime constants.
-  'docs/migration-v3.md',
   'docs/wave2-composites.md',
   'skills/spotify-exhaustive-feature-sweep/SKILL.md',
   'skills/spotify-mcp-competitor-comparison/SKILL.md',
