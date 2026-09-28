@@ -207,12 +207,16 @@
         "label": "Blocked for post-Nov-2024 apps — deliberately not wrappe…"
       },
       {
-        "hash": "ccc0d97c7fa28b4e",
+        "hash": "70bf23cebb99cf0c",
         "label": "These fail at runtime on app registrations created after…"
       },
       {
-        "hash": "60536e3074f7fc34",
-        "label": "| Endpoint | Status | |---|---| | GET /recommendations, …"
+        "hash": "5dcae56c9eae5c73",
+        "label": "| Endpoint | Status | |---|---| | GET /recommendations |…"
+      },
+      {
+        "hash": "96c516ada21d15ef",
+        "label": "One row above is an open question, not a settled fact. G…"
       },
       {
         "hash": "540b0347909c2431",
@@ -391,8 +395,8 @@
         "label": "src/tools/annotations.ts owns REGISTRARMANIFEST — the si…"
       },
       {
-        "hash": "8ebcb93deac7877c",
-        "label": "src/index.ts iterates the manifest and then runs, in ord…"
+        "hash": "e827afc9d7f8a6dc",
+        "label": "src/server.ts registers the manifest in order and then r…"
       },
       {
         "hash": "1551a76a827618e9",
@@ -631,7 +635,7 @@
         "label": "A test that cannot fail is worse than no test. A schema-…"
       },
       {
-        "hash": "48b6971908ebb8e5",
+        "hash": "07d890d82b403ba4",
         "label": "A guard's scope is part of its contract, and widening it…"
       },
       {
@@ -715,7 +719,7 @@
         "label": "Conventional Commit title; a Closes #NNN footer per issu…"
       },
       {
-        "hash": "f364d79543ac27a8",
+        "hash": "973c91d934cc758a",
         "label": "After merging, scripts/close-issues-from-pr.sh <pr> has …"
       }
     ],
@@ -6711,7 +6715,7 @@
         "label": "src/tools/.ts — tool implementations and graceful endpoi…"
       },
       {
-        "hash": "5a579702f7c296ae",
+        "hash": "4677a0c2db260d05",
         "label": "src/resources/index.ts and src/resources/templates.ts — …"
       },
       {
@@ -6765,11 +6769,11 @@
         "label": "2. Re-audit optional or unsupported protocol features fr…"
       },
       {
-        "hash": "90679dcab5080457",
+        "hash": "17df20e1f5dca800",
         "label": "| Claim | Current proof to inspect | |---|---| | stdio t…"
       },
       {
-        "hash": "13d64793a2713b77",
+        "hash": "b91f01d5dbab9dab",
         "label": "For completion, verify the protocol path rather than inf…"
       },
       {
@@ -7377,9 +7381,9 @@
     }
   ],
   "provenance": {
-    "head": "f026d3e5a1d70bffcb510ad12d42d5ae7f842a8f",
-    "base": "2e4276a414fa96ef5f8f94cb6bc37e607153756b",
-    "upstream": "2e4276a414fa96ef5f8f94cb6bc37e607153756b",
+    "head": "77a74e4c8f1b2cb5a493bf72dfcacce0c876b159",
+    "base": "781184b1a5206ab353afb6f38d82ca25402d3e32",
+    "upstream": "781184b1a5206ab353afb6f38d82ca25402d3e32",
     "behind": false
   },
   "reanchored": [
@@ -7394,11 +7398,65 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "48b6971908ebb8e5",
+      "label": "A guard's scope is part of its contract, and widening it…",
+      "to": "07d890d82b403ba4",
+      "toLabel": "A guard's scope is part of its contract, and widening it…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "60536e3074f7fc34",
+      "label": "| Endpoint | Status | |---|---| | GET /recommendations, …",
+      "to": "e028cd63776169d0",
+      "toLabel": "| Endpoint | Status | |---|---| | GET /recommendations |…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "8ebcb93deac7877c",
+      "label": "src/index.ts iterates the manifest and then runs, in ord…",
+      "to": "e827afc9d7f8a6dc",
+      "toLabel": "src/server.ts registers the manifest in order and then r…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "c28b86d583b5ead2",
       "label": "Changing or deleting prose needs --prose-sync. That comm…",
       "to": "2045ad170ec882aa",
       "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
       "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "ccc0d97c7fa28b4e",
+      "label": "These fail at runtime on app registrations created after…",
+      "to": "70bf23cebb99cf0c",
+      "toLabel": "These fail at runtime on app registrations created after…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "e028cd63776169d0",
+      "label": "| Endpoint | Status | |---|---| | GET /recommendations |…",
+      "to": "5dcae56c9eae5c73",
+      "toLabel": "| Endpoint | Status | |---|---| | GET /recommendations |…",
+      "reason": "the sweep asserted the Nov 2024 post excludes available-genre-seeds by name, which could not be confirmed against Spotify changelog; the row now states only the schema deprecated flag and points at the open question recorded below it",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "f364d79543ac27a8",
+      "label": "After merging, scripts/close-issues-from-pr.sh <pr> has …",
+      "to": "973c91d934cc758a",
+      "toLabel": "After merging, scripts/close-issues-from-pr.sh <pr> has …",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
       "date": "2026-09-28"
     },
     {
@@ -7561,6 +7619,33 @@
       "to": "742fd50cae55cba1",
       "toLabel": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
       "reason": "The stats.fm opt-in row hard-coded 49, a number nothing re-derives. The census measures 50 across the four keys in STATSFM_REGISTRATION_KEYS; the row now names tastejukebox and the two Spotify writers (taste_to_playlist, statsfm_jukebox)",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "skills/spotify-exhaustive-feature-sweep/SKILL.md",
+      "hash": "5a579702f7c296ae",
+      "label": "src/resources/index.ts and src/resources/templates.ts — …",
+      "to": "4677a0c2db260d05",
+      "toLabel": "src/resources/index.ts and src/resources/templates.ts — …",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "skills/spotify-mcp-competitor-comparison/SKILL.md",
+      "hash": "13d64793a2713b77",
+      "label": "For completion, verify the protocol path rather than inf…",
+      "to": "b91f01d5dbab9dab",
+      "toLabel": "For completion, verify the protocol path rather than inf…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "skills/spotify-mcp-competitor-comparison/SKILL.md",
+      "hash": "90679dcab5080457",
+      "label": "| Claim | Current proof to inspect | |---|---| | stdio t…",
+      "to": "17df20e1f5dca800",
+      "toLabel": "| Claim | Current proof to inspect | |---|---| | stdio t…",
+      "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
       "date": "2026-09-28"
     },
     {

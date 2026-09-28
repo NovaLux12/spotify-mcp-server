@@ -133,20 +133,39 @@ variants are the legacy path; every playlist tool here already uses `/items`.
 
 ### Blocked for post-Nov-2024 apps — deliberately not wrapped
 
-These fail at runtime on app registrations created after November 2024. This
-server ships no tools for them and you should not add any. A struck-through row
-is the exception: it is a different state (removed outright, or gated) and its
-Status cell says so — see the next section before reading one as "never
-wrapped":
+These fail at runtime on app registrations created after November 2024, and on
+existing apps still in **development mode** without a pending extension request
+— the restriction is not only about app age. This server ships no tools for them
+and you should not add any. A struck-through row is the exception: it is a
+different state (removed outright, or gated) and its Status cell says so — see
+the next section before reading one as "never wrapped":
 
 | Endpoint | Status |
 |---|---|
-| `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
+| `GET /recommendations` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
+| `GET /browse/featured-playlists` | Blocked for post-Nov-2024 apps |
 | ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them. The family still has live callers — see the registration-dependent section below before concluding the path is dead |
-| `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
+| `GET /browse/new-releases` | **REMOVED Feb 2026**, not a Nov-2024 restriction — do not use |
+| `GET /recommendations/available-genre-seeds` | **Deprecated, same family as Recommendations** (`get-recommendation-genres`, `deprecated: true` in the OpenAPI schema). Whether the Nov 2024 restriction reaches it has not been established from Spotify's own changelog — see below. Do not wrap it |
 | Lyrics endpoints | Not available via the Web API — do not use |
+
+**One row above is an open question, not a settled fact.**
+`GET /recommendations/available-genre-seeds` is `deprecated: true` in the
+OpenAPI schema, and the schema also marks `/recommendations`,
+`/artists/{id}/related-artists`, `/audio-features/{id}` and
+`/browse/featured-playlists` the same way — so the schema alone does not
+distinguish "restricted since Nov 2024" from "deprecated at some point". The
+`get-recommendations` and `get-recommendation-genres` reference pages both say
+only "Deprecated" and name no date or scope. An earlier draft of this file
+asserted the Nov 2024 post excludes genre-seeds by name; that could not be
+confirmed, because the changelog entry is not reachable at a stable URL and the
+`references/changes` index is client-rendered. **Do not resolve it from this
+file, from `src/tools/moodexpand.ts` (which repeats the same unverified
+claim), or from memory** — read the changelog entry itself, then correct all
+three places together. Until then the conservative reading stands: treat it as
+restricted, and do not wrap it.
 
 ### February 2026: two different states, and the label is not one of them
 
@@ -527,9 +546,13 @@ ceilings. The same manifest drives startup registration, the census
 attribution, the CI audit, and the per-module table `toolset_report` returns.
 **Tests must not maintain a second registrar list.**
 
-`src/index.ts` iterates the manifest and then runs, in order: the tool naming
-policy, the per-module schema budget gate, annotation application, the tool
-error boundary, and the aggregate surface budget gate. A budget breach fails
+`src/server.ts` registers the manifest in order and then runs, in order: the
+tool naming policy, output-schema publication, the per-module schema budget
+gate, annotation application, task-support stamping, the tool error boundary,
+and the aggregate surface budget gate. Output schemas are published **before**
+either budget gate on purpose — both measure `outputSchema`, so a declaration
+made after them would be free. (`src/index.ts` only calls `buildMcpServer`.)
+A budget breach fails
 server startup, not just CI.
 
 Per module the budget is measured as tool count plus UTF-8 bytes of compact
@@ -885,11 +908,14 @@ The fix pattern for both: make the test exercise the comparison, then revert
 the source change and confirm the test actually fails.
 
 **A guard's scope is part of its contract, and widening it is a measurement
-before it is a fix.** `scripts/check-error-param-names.mjs` walks `src/tools`
+before it is a fix.** `scripts/check-error-param-names.mjs` walked `src/tools`
 and nothing else, so a message naming a parameter that does not exist could sit
 in `shaping.ts`, `result.ts` or `accounts.ts` with the gate green — the modules
 that own the shared error paths. Widening the walk turned the gate **red**, and
-that is the part worth reading: the fix was never "change a glob". Measured on
+that is the part worth reading: the fix was never "change a glob". What shipped
+is a partition, not a wider glob — the two registration-keyed rules are still
+asserted over `src/tools` and nothing else, and a third, module-scope rule runs
+over all of `src/`. Measured on
 the tree the guard was written against, the findings ran 15 → 11 → 4 → 0, one
 decision at a time — four were the shipped CLI's own flags, seven were the
 guard's own vocabulary being incomplete (`playlist_a` and `playlist_b` reach
@@ -1059,5 +1085,6 @@ rediscovering it the hard way.
 - Conventional Commit title; a `Closes #NNN` footer per issue you actually
   fixed. The changelog is generated — do not write it.
 - After merging, `scripts/close-issues-from-pr.sh <pr>` has been run and every
-  issue it names is verifiably closed. See §5.5 — a squash-merged PR does not
+  issue it names is verifiably closed. See §5, *Closing the issue is a separate
+  step from landing the fix* — a squash-merged PR does not
   close what its subject only *references*.
