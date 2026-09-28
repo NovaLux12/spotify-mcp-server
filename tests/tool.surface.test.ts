@@ -155,6 +155,16 @@ const OUTPUT_FIELD_NAMES = new Set<string>([
   // back about its own result. #786's list_all_chapters names the same key
   // for the same reason, so this stays one entry with two provenance comments.
   'truncated_by_cap',
+  // #1533: export_playlist_json's description names the two keys that keep a
+  // capped playlist total honest — `total_tracks` is the playlist's own
+  // server-stated length (`null` when Spotify states none) and
+  // `items_truncated` is the SOURCE walk's verdict beside it, so a caller
+  // reading the returned rows as a size can tell a complete read from a
+  // capped one. `truncated_by_cap` above is the same pair's other half and
+  // already allowlisted. Both are keys the tool reports about its own
+  // result, not tools it routes to.
+  'items_truncated',
+  'total_tracks',
   // #757: restore_library_snapshot documents the snapshot schema version it
   // now refuses on. A key inside the file it reads, not a tool or parameter.
   'schema_version',
