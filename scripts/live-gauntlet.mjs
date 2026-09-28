@@ -622,10 +622,57 @@ console.log(`calls this run: ${calls} sweep + ${seedCalls} seed + ${stateProbeCa
 for (const line of renderProofLines(proof)) console.log(line);
 if (dryRunVerified.length) console.log(`dry-run verified (no mutation): ${dryRunVerified.join(', ')}`);
 
+// #1619. Every count above is a count of rows this run produced, and a reader
+// of the committed report had no way to see that. `tools_discovered` against a
+// registry larger than itself, and a `summary` whose `fail: 0` sits next to
+// 163 skips with nothing joining them, read as full coverage with nothing
+// found. This block is the join, and it is derived only from `allResults` —
+// arithmetic on rows already recorded, never a claim about a run that did not
+// happen. `exercised` is what a reader means by "tested": tools that were
+// actually called. A skip is not a pass and is not counted as one here.
+const coverage = (() => {
+  const discovered = tools.length;
+  const recorded = allResults.length;
+  const exercised = allResults.filter((r) => r.status === 'PASS' || r.status === 'FAIL').length;
+  const skipped = allResults.filter((r) => r.status === 'SKIP').length;
+  const pct = (n) => (discovered === 0 ? null : Math.round((n / discovered) * 1000) / 10);
+  return {
+    // What `tools/list` returned on THIS run. It is not the registry: a tool
+    // added after the run is absent from it, and one removed before the run
+    // was never reachable. Do not read it as a registry size.
+    tools_discovered: discovered,
+    tools_registered_then: audit.total,
+    // The number that matters, and the one the filename implied was higher.
+    tools_exercised: exercised,
+    tools_skipped: skipped,
+    tools_recorded: recorded,
+    pct_of_discovered_exercised: pct(exercised),
+    pct_of_discovered_skipped: pct(skipped),
+    // '0 fails' means zero of the exercised tools failed. Stated in words so
+    // the JSON alone carries it — a consumer reading summary.fail without this
+    // block is exactly the misreading #1619 is about.
+    fail_meaning: `${counts.FAIL} of ${exercised} exercised tools failed; ${skipped} of ${discovered} discovered were skipped and are not evidence of anything`,
+    // Skips are not random. The dominant reason is a missing prerequisite from
+    // the seed reads, which means the skipped set is the part of the surface
+    // that most needs testing, not the part that is known-good.
+    skip_reasons: Object.entries(
+      allResults.filter((r) => r.status === 'SKIP').reduce((acc, r) => {
+        const why = r.reason ?? 'unspecified';
+        acc[why] = (acc[why] ?? 0) + 1;
+        return acc;
+      }, {}),
+    ).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+  };
+})();
+
+console.log(`coverage: ${coverage.tools_exercised}/${coverage.tools_discovered} discovered tools exercised ` +
+  `(${coverage.pct_of_discovered_exercised}%), ${coverage.tools_skipped} skipped, ${counts.FAIL} of ${coverage.tools_exercised} exercised failed`);
+
 const report = {
   generated_at: new Date().toISOString(),
   tools_discovered: tools.length,
   mode: { batch_limit: batchLimit === Infinity ? null : batchLimit, resumed_from: resumePath ?? null },
+  coverage,
   summary: {
     pass: counts.PASS, fail: counts.FAIL, skip: counts.SKIP,
     gated: allResults.filter((r) => r.gated).length,

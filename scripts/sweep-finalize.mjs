@@ -24,6 +24,56 @@ const results = report.results ?? [];
 const summary = report.summary ?? {};
 const discovered = report.tools_discovered ?? results.length;
 
+// #1619. The counts are RECOMPUTED from `results` on every render rather than
+// read out of the report's `coverage` block. The block is written by the
+// gauntlet from the same rows, so the two agree at write time — but a report
+// that was hand-edited, or merged from two runs, can carry a `coverage` block
+// that no longer describes its own `results`, and trusting it would render
+// confident numbers from a stale block. The narrative fields (`fail_meaning`,
+// `skip_reasons`) are taken from the block when present, since those are prose
+// rather than arithmetic; the counts never are. `exercised` is PASS + FAIL
+// only: a skip is a tool the sweep never called, and counting it as tested is
+// the specific misreading that made "224 tools, 0 fails" look like 224 tools
+// were verified.
+const passCount = results.filter((r) => r.status === 'PASS').length;
+const failCount = results.filter((r) => r.status === 'FAIL').length;
+const exercisedCount = passCount + failCount;
+const skippedCount = results.filter((r) => r.status === 'SKIP').length;
+const pctOf = (n) => (discovered === 0 ? null : Math.round((n / discovered) * 1000) / 10);
+const coverage = {
+  tools_discovered: discovered,
+  tools_exercised: exercisedCount,
+  tools_skipped: skippedCount,
+  pct_of_discovered_exercised: pctOf(exercisedCount),
+  pct_of_discovered_skipped: pctOf(skippedCount),
+  fail_meaning: report.coverage?.fail_meaning ??
+    `${failCount} of ${exercisedCount} exercised tools failed; ${skippedCount} of ${discovered} discovered were skipped and are not evidence of anything`,
+  // `summary` is recomputed alongside the coverage counts, for the same reason.
+  // A `summary` that disagrees with its own `results` would otherwise put two
+  // contradictory counts in one header line.
+  pass: passCount,
+  fail: failCount,
+  // Recomputed, never read back from the stored block. A `count` is arithmetic,
+  // not prose: `fail_meaning` above is a sentence a human wrote and may
+  // legitimately be carried, but a `skip_reasons` entry read from the block
+  // would render a fabricated tally directly beneath the headline that says
+  // how many were skipped, and the two would not have to agree with anything.
+  skip_reasons:
+    Object.entries(
+      results.filter((r) => r.status === 'SKIP').reduce((acc, r) => {
+        const why = r.reason ?? 'unspecified';
+        acc[why] = (acc[why] ?? 0) + 1;
+        return acc;
+      }, {}),
+    ).map(([reason, count]) => ({ reason, count })).sort((a, b) => b.count - a.count),
+};
+
+const headline =
+  `**${coverage.tools_exercised} of ${coverage.tools_discovered} discovered tools exercised** ` +
+  `(${coverage.pct_of_discovered_exercised}%) · pass ${coverage.pass} · fail ${coverage.fail} · ` +
+  `**${coverage.tools_skipped} skipped (${coverage.pct_of_discovered_skipped}%)** · gated ${summary.gated ?? 0} · ` +
+  `mode ${JSON.stringify(report.mode ?? {})}`;
+
 const TIMEOUT = /^timeout:/i;
 
 // --- tool -> issue-template family mapping (best effort; Other fallback) ---
@@ -79,7 +129,45 @@ const runStamp =
 const md = [
   `# Live sweep report — ${runStamp}`,
   '',
-  `**${discovered} tools discovered** · pass ${summary.pass} · fail ${summary.fail} · skip ${summary.skip} · gated ${summary.gated ?? 0} · mode ${JSON.stringify(report.mode ?? {})}`,
+  headline,
+  '',
+  // #1619: the standing statement of what this artefact is and is not. The
+  // filename says "live sweep report" and the commit subject said "224 tools,
+  // 0 fails", and both read as a clean bill for 224 tools. Neither is
+  // evidence about tools this run skipped. The skip reasons are the load
+  // -bearing half: most skips are a missing prerequisite, which means the
+  // unexercised set is the part of the surface that most needs a live key.
+  `> **This is a partial sweep, not a clean bill of health.** Of the`,
+  `> ${coverage.tools_discovered} tools this run discovered,`,
+  `> **${coverage.tools_exercised} were actually called**`,
+  `> (${coverage.pct_of_discovered_exercised}%) and`,
+  `> **${coverage.tools_skipped} were skipped**`,
+  `> (${coverage.pct_of_discovered_skipped}%). \`fail ${coverage.fail}\` means`,
+  `> ${coverage.fail} of the ${coverage.tools_exercised} exercised tools failed — the`,
+  `> ${coverage.tools_skipped} skips are excluded from that count entirely, and a`,
+  `> skipped tool is not a passing tool. \`tools_discovered\` is what`,
+  `> \`tools/list\` returned on this run; it is not the registry, so a tool added`,
+  `> since is absent from it rather than passing.`,
+  '',
+  '> Why the rest was skipped:',
+  '>',
+  ...(() => {
+    const all = coverage.skip_reasons ?? [];
+    const shown = all.slice(0, 8);
+    const rest = all.slice(8);
+    const restCount = rest.reduce((n, s) => n + (s.count ?? 0), 0);
+    return [
+      ...shown.map((s) => `> - ${s.count}× ${s.reason}`),
+      // A silent truncation here made the bullets sum to 162 against a header
+      // stating 163: nine reasons, eight rendered, the ninth dropped with no
+      // marker. In the one block whose whole job is the honest accounting, a
+      // partial list reads as a complete one — so the remainder is named, and
+      // the counts add up to the total the headline claims.
+      ...(rest.length
+        ? [`> - …and ${rest.length} more reason${rest.length === 1 ? '' : 's'}, ${restCount} skipped`]
+        : []),
+    ];
+  })(),
   '',
   // #1338: the standing note that stops this report being read as the evidence
   // it cannot be. `PASS (gated)` means the tool made the call, took a 403, and
@@ -110,9 +198,11 @@ const md = [
   ...(gatedRows.map((r) => `- \`${r.tool}\` (${r.status}) — ${r.reason ?? ''}`)),
   '',
   `## Verdict`,
-  fails.length === 0
-    ? 'All tested tools passed (or are classified SKIP/gated) — no tool bugs found.'
-    : `${fails.length} tool(s) failed and have issues filed.`,
+  (fails.length === 0 ? '' : `${fails.length} tool(s) failed and have issues filed. `) +
+  `${coverage.tools_exercised} of ${coverage.tools_discovered} discovered tools ` +
+  `(${coverage.pct_of_discovered_exercised}%) were exercised against the live API; ` +
+  `${coverage.tools_skipped} (${coverage.pct_of_discovered_skipped}%) were skipped and ` +
+  `carry no verdict at all. "No failures" is a statement about the first number only.`,
   '',
 ].join('\n');
 writeFileSync(REPORT_MD, md);
@@ -192,7 +282,7 @@ try {
   appendFileSync(
     daily,
     `\n## Live sweep completed (${new Date().toISOString()}) <!-- project: github.com/novalux12/spotify-mcp-server -->\n` +
-    `- ${discovered} tools discovered · pass ${summary.pass} · fail ${summary.fail} · skip ${summary.skip} · gated ${summary.gated ?? 0}\n` +
+    `- ${coverage.tools_exercised}/${coverage.tools_discovered} tools discovered were exercised (${coverage.pct_of_discovered_exercised}%) · pass ${coverage.pass} · fail ${coverage.fail} · ${coverage.tools_skipped} skipped (${coverage.pct_of_discovered_skipped}%) · gated ${summary.gated ?? 0}\n` +
     `- issues filed this sweep: ${filed}; deduped: ${fails.length - filed}; quota timeouts: ${timeouts.length}; gated 403s: ${gatedRows.length}\n` +
     `- evidence: memory/live-sweep-report.md + memory/live-sweep-report.json\n`,
   );
@@ -201,7 +291,12 @@ try {
 try {
   execSync(
     'git add memory/live-sweep-report.md memory/live-sweep-report.json memory/sweep-loop.log && ' +
-    `git commit -q -m "chore(sweep): live sweep report (${discovered} tools, ${fails.length} fails)" && ` +
+    // #1619: the old subject was `live sweep report (224 tools, 0 fails)`, which
+    // reads as 224 tools verified. It is the committed history of this repo
+    // that a reader scans, so the convention has to carry the coverage
+    // fraction or the summary line is the only accurate statement in the
+    // commit. Exercised/discovered first, skips named, fails last.
+    `git commit -q -m "chore(sweep): live sweep report (${coverage.tools_exercised}/${coverage.tools_discovered} tools exercised, ${coverage.tools_skipped} skipped, ${fails.length} fails)" && ` +
     `git push -q origin main 2>/dev/null || true`,
     { stdio: 'ignore' },
   );
