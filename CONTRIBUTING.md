@@ -166,11 +166,55 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `chore`, `ci`.
 - **Tool contract changes need SPEC.md updates.** If you change what a tool accepts or returns (inputs, outputs, endpoint mapping, pagination behavior), update the matching section of [SPEC.md](SPEC.md).
 - **Changelog is automated.** Release notes/version bumps are handled by release automation from Conventional Commit messages — do not edit CHANGELOG entries manually.
 - **Tool surface growth is budgeted.** Registration order, per-module schema baselines, and ceilings are defined by the shared manifest in `src/tools/annotations.ts`; see [schema budgets](docs/schema-budgets.md). Do not raise a ceiling without updating its measured baseline and documenting the host-payload impact in that page or the PR rationale.
-- **Two doc gates run in CI and have no local command of their own.** `npm run check:docs-counts` and `npm run check:doc-tool-names` must both pass. `check:docs-counts` fails when a generated block is stale, so after anything that changes the registry, run `npm run build && npm run count:tools -- --write` and commit what it rewrites — `--check` reads the working tree, so an uncommitted regeneration looks green locally and red in CI. It also fails when a hand-written paragraph outside the generated blocks has gone missing from a mixed document ([#1384](https://github.com/NovaLux12/spotify-mcp-server/issues/1384)); adding prose does not fail it, but `npm run count:tools -- --prose-report` exits 1 and names any paragraph the pin has never seen, and changing or deleting prose needs `npm run count:tools -- --prose-sync`, which refuses to drop a pinned paragraph unless you pass `--retire "<reason>"`. It also refuses when it cannot attest the tree it is syncing against ([#1440](https://github.com/NovaLux12/spotify-mcp-server/issues/1440)): a pinned document with uncommitted changes, or a branch that does not contain `origin/main` — in which case the prose a docs PR reworded is simply absent from your tree, and a retirement recorded now would be a reason describing a change your branch never saw. Rebase or merge `origin/main` and re-run; if your tree is genuinely the right one, `--allow-stale "<why>"` records the acknowledgement in the manifest alongside the retirement. `check:doc-tool-names` fails when a doc names a tool or argument the registry does not have.
+- **Two doc gates run in CI, and both are npm scripts you can run locally.** `npm run check:docs-counts` and `npm run check:doc-tool-names` must both pass. What neither has is a config file to read — each is a self-contained script rather than a linter reading a `.*rc`. `check:docs-counts` fails when a generated block is stale, so after anything that changes the registry, run `npm run build && npm run count:tools -- --write` and commit what it rewrites — `--check` reads the working tree, so an uncommitted regeneration looks green locally and red in CI. It also fails when a hand-written paragraph outside the generated blocks has gone missing from a mixed document ([#1384](https://github.com/NovaLux12/spotify-mcp-server/issues/1384)); adding prose does not fail it, but `npm run count:tools -- --prose-report` exits 1 and names any paragraph the pin has never seen, and changing or deleting prose needs `npm run count:tools -- --prose-sync`, which refuses to drop a pinned paragraph unless you pass `--retire "<reason>"`. It also refuses when it cannot attest the tree it is syncing against ([#1440](https://github.com/NovaLux12/spotify-mcp-server/issues/1440)): a pinned document with uncommitted changes, or a branch that does not contain `origin/main` — in which case the prose a docs PR reworded is simply absent from your tree, and a retirement recorded now would be a reason describing a change your branch never saw. Rebase or merge `origin/main` and re-run; if your tree is genuinely the right one, `--allow-stale "<why>"` records the acknowledgement in the manifest alongside the retirement. `check:doc-tool-names` fails when a doc names a tool or argument the registry does not have.
 - **Script edits are gated too.** The test glob is `tests/*.test.ts`, so a `.mjs` under `scripts/` is never loaded by a test that did not already know about it. `npm run lint:scripts` runs `node --check` over every `scripts/**/*.mjs` and import-smokes `scripts/lib/`, and it fails closed — zero files found, or a check it could not run, is an error rather than a pass. Edit a harness script and run it before pushing; the live harnesses are the ones a broken script hurts most, because their failure mode is a timeout that names no file.
 - **Write `Closes #N`, not `fix(#N)` or `Refs #N`.** Only `Closes` / `Fixes` / `Resolves` close an issue. The other two read like a closing reference and are not, so the fix lands and the issue stays open — silently, because `gh pr merge` prints no issue lines when it matched nothing. After merging, run `scripts/close-issues-from-pr.sh <pr-number> [issue ...]`, passing the issue numbers explicitly; it closes whatever is still open and exits non-zero unless every issue it was given is verifiably closed. Check the fix is in the merged tree before you close, not just that the merge succeeded.
 - **Never resolve a conflict in a mixed document with `--ours` or `--theirs`.** `README.md`, `ARCHITECTURE.md`, `SPEC.md` and the rest of the generated-block list mix hand-written prose with generated regions, so taking a whole side discards prose the generator cannot restore, with both gates still green. Take the merge base of the file and run `npm run count:tools -- --write`. The full rule is in [AGENTS.md §3](AGENTS.md#resolving-a-conflict-in-a-file-that-mixes-both-1384).
 - Keep PRs focused: one logical change per PR. Update the PR template checklist before submitting.
+
+### Every gate CI runs
+
+`ci.yml` defines a single job, `Typecheck & test (Node ${{ matrix.node-version }})`, over a
+matrix of `22.x` and `24.x` with `fail-fast: false`. So the two checks a pull request shows,
+`Typecheck & test (Node 22.x)` and `Typecheck & test (Node 24.x)`, are the same gates run
+twice, not two pipelines. Do not rename them — the check name is what a required-check list
+matches on.
+
+That job has **sixteen** steps. Three are preparation (the Node setup, `npm ci`, and
+`git fetch --tags`), one writes the artifact two of the gates read, and **twelve gate the
+run**:
+
+| Step in `ci.yml` | Run it yourself with | Failing means |
+|---|---|---|
+| Typecheck | `npx tsc --noEmit` | `src/` has a type error. `tsconfig.json` includes only `src`, so this never sees a test file — that is the next gate's job. |
+| Test-tree typecheck budget | `npm run check:tests-typecheck` | The measured `tests/` error count differs from `tsconfig.tests-baseline.json`, and it fails in **both** directions: above the baseline is a regression, below it is slack nobody reclaimed. Re-baseline with `--write`; raising a ceiling takes `--allow-increase "<reason>"`. |
+| Payload-shape guard (no `as any` under src/tools) | `node scripts/check-no-explicit-any.mjs` | An `as any` under `src/tools/` — the cast that lets a Spotify field rename compile clean and arrive as `undefined`. Widen the shared shape in `src/types/spotify.ts`; do not silence the cast. |
+| Test debug-output guard (no stray prints in tests) | `node scripts/check-no-test-debug-output.mjs` | `console.log`, `.debug`, `.info`, `.trace` or a `debugger` statement in a test. `console.error` / `console.warn`, and the assign-and-restore idiom a test uses to capture output, are allowed on purpose. |
+| Test fixture-location guard (no fixtures inside the repository) | `node scripts/check-no-repo-root-fixtures.mjs` | A test roots a `mkdtemp` inside the repository instead of at `os.tmpdir()`. A leaked fixture directory leaves `git status --porcelain` dirty, and a clean `git status` is how this repo decides a generated block is stale — so the leak reads as a documentation problem and points you at the one thing that must never be hand-edited. |
+| Script syntax and import guard | `npm run lint:scripts` | A `.mjs` under `scripts/` will not parse, or a `scripts/lib/` import will not resolve. It fails closed: zero files found, or a check it could not spawn, is an error rather than a pass. |
+| Documentation link guard | `node --import tsx/esm scripts/check-doc-links.mjs` | A relative Markdown link names a missing file or heading, or the graceful-403 message in `src/gating.ts` points at a README section that does not exist. Remote URLs are out of scope by design — a flaky network check is worse than none. |
+| Release-history check (every tag has a CHANGELOG section) | `node scripts/check-release-history.mjs` | A release tag has no `CHANGELOG.md` section, a section has no tag, or `package.json` is ahead of the changelog. CI runs `git fetch --tags` first, because `actions/checkout` fetches no tags at its default depth and the gate exits non-zero rather than comparing an empty list — so run `git fetch --tags` yourself, or it fails for the wrong reason. |
+| Check generated documentation inventory | `npm run check:docs-counts` | A `BEGIN:generated` block is stale, or a pinned hand-written paragraph has gone missing from a mixed document. Fix it with `npm run count:tools -- --write`; never by hand. |
+| Check documented tool names | `npm run check:doc-tool-names` | A document names a tool, argument, constraint or live constant that the finalized registry does not have. |
+| Registry schema conformance gate | `node scripts/check-server-schema.mjs` | `server.json` does not conform to the registry schema its own `$schema` names. The schema is fetched live from that URL rather than vendored, so an outage of `static.modelcontextprotocol.io` turns this red too — the failure names the host, and re-running once it recovers is the whole remedy. |
+| Test with count and coverage gates | `npm run test:coverage` | Not only a failing test. The step also asserts `test_count >= 100`, `pass_count == test_count`, `fail_count == 0`, and that a coverage report was emitted at all, under `--test-coverage-lines=75 --test-coverage-functions=70 --test-coverage-branches=60`. A *drop* in coverage fails CI while every test still passes. |
+
+Two things make a local run disagree with CI, so read the log before you read your diff.
+Both doc gates read the working tree, so an uncommitted
+`npm run count:tools -- --write` is green locally and red in CI. And the later steps carry
+`!cancelled()`, so a documentation failure above does not silence a correctness gate below
+it — one real cause can produce several reds, and a step that was skipped can read as a
+gate that failed.
+
+A green **PR Labeler** check on the same SHA is not one of the twelve: that is a separate
+`pull_request_target` workflow which typechecks nothing and runs no tests (see
+[Releasing](#2-publish-the-tag)).
+
+One further gate has neither a `ci.yml` step nor an npm script:
+`node scripts/check-doc-tool-counts.mjs` fails if a registry-scale tool count is hand-typed
+into a document or a `src/` comment, and it reaches CI through
+`tests/doc-figures.test.ts` rather than a step of its own. The full command table, with
+each gate's flags, is in [AGENTS.md §3](AGENTS.md#3-commands).
 
 ## Releasing
 
@@ -184,9 +228,23 @@ version-bump and changelog change; do not edit `CHANGELOG.md` or
    `feat:` merge produces a minor release, while `fix:` and other patch-level
    changes produce a patch release.
 2. Wait for the **Release Please** workflow to open its
-   `chore(main): release X.Y.Z` pull request. Review the generated version in
-   `package.json`, `.github/release-please-manifest.json`, and `server.json`,
-   plus the new `CHANGELOG.md` section. The configured changelog sections are
+   `chore(main): release X.Y.Z` pull request. That commit touches **five**
+   files and the version has to agree in every one of them:
+
+   | File | Fields release-please rewrites |
+   |---|---|
+   | `package.json` | `version` |
+   | `package-lock.json` | `version` and `packages[""].version` |
+   | `.github/release-please-manifest.json` | the `["."]` anchor |
+   | `server.json` | `version` and `packages[0].version` |
+   | `CHANGELOG.md` | a new section (not a version) |
+
+   The two `server.json` fields come from the `extra-files` list in
+   [.release-please-config.json](.release-please-config.json); the other three
+   are what the `node` release type bumps by itself. `package-lock.json` is the
+   one a reviewer is most likely to skip — the test suite never reads it — and
+   release-please still bumps it, so read it rather than assume it followed
+   `package.json`. The configured changelog sections are
    Features, Bug Fixes, Performance Improvements, Dependencies, Reverts,
    Documentation, Tests, Code Refactoring, Styles, Miscellaneous Chores, and
    Continuous Integration.
