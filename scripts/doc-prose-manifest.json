@@ -5669,7 +5669,7 @@
         "label": "Risk: bulk-saves missing album tracks to your library an…"
       },
       {
-        "hash": "f53aa41512aab591",
+        "hash": "83be75faa468ab15",
         "label": "1. Call libraryhygiene and librarygenrereport. When a sp…"
       },
       {
@@ -5789,7 +5789,7 @@
         "label": "Undo tools"
       },
       {
-        "hash": "9131bcd6c45d4ee6",
+        "hash": "3b30a81ccdb95f5f",
         "label": "Receipt-bearing mutations of items — playlist adds and r…"
       },
       {
@@ -7408,6 +7408,24 @@
       "to": "7fadc3618dfe8d18",
       "toLabel": "Merging the release PR is the last human step. The tag i…",
       "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "9131bcd6c45d4ee6",
+      "label": "Receipt-bearing mutations of items — playlist adds and r…",
+      "to": "3b30a81ccdb95f5f",
+      "toLabel": "Receipt-bearing mutations of items — playlist adds and r…",
+      "reason": "#1578: the undo section named three playlist_meta issuers as a closed list; create_smart_playlist is a fourth and those four are the whole set, since ReceiptKind is a closed union and every other issueReceipt site passes playlist_items or library",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/cookbook.md",
+      "hash": "f53aa41512aab591",
+      "label": "1. Call libraryhygiene and librarygenrereport. When a sp…",
+      "to": "83be75faa468ab15",
+      "toLabel": "1. Call libraryhygiene and librarygenrereport. When a sp…",
+      "reason": "#1578: the recipe glossed an orphaned single as a track whose album isn't saved; the predicate is three conditions (single release, no other liked track on that release, every credited artist has exactly one liked track overall) and every finding is low-confidence",
       "date": "2026-09-28"
     },
     {
