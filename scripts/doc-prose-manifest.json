@@ -3625,12 +3625,52 @@
         "label": "A move addresses the source by playlist position ({ uri,…"
       },
       {
-        "hash": "b6e5ffee93f0616c",
+        "hash": "5f496cb757f0f4fa",
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
         "hash": "39c13ded0cc1be81",
         "label": "Returns: transferred (items copied to the target), remov…"
+      },
+      {
+        "hash": "dc6069c8dda801c1",
+        "label": "Lanes (#727)"
+      },
+      {
+        "hash": "97f1991bffe4c8f3",
+        "label": "A lane is a short label the operator chooses for a playl…"
+      },
+      {
+        "hash": "c4d7212b4903c1ac",
+        "label": "The host re-derivation this removes is not cosmetic. Two…"
+      },
+      {
+        "hash": "e8790db1d7740ba0",
+        "label": "listlanes and lanestatus are read-only and issue no writ…"
+      },
+      {
+        "hash": "8f440d8c70333a99",
+        "label": "| Tool | Inputs | Returns | |---|---|---| | listlanes | …"
+      },
+      {
+        "hash": "608005a32b64e04f",
+        "label": "A failed playlist read is reported as a failed read. A l…"
+      },
+      {
+        "hash": "13168fa392e96a55",
+        "label": "Drift is null where it is unknown. A lane with no playli…"
+      },
+      {
+        "hash": "ff2510ce645ce807",
+        "label": "An unknown lane is an error, never a silent fallback. A …"
+      },
+      {
+        "hash": "8189547e19d9b2bf",
+        "label": "targetlane is an alternative to targetplaylistid, not an…"
+      },
+      {
+        "hash": "7ad0890004d31024",
+        "label": "The registry is a local store: it is in LOCALSTORES (src…"
       },
       {
         "hash": "1b839a6c6073fa74",
@@ -3819,6 +3859,46 @@
       {
         "hash": "c1d26611547af75d",
         "label": "action=list takes an optional limit (default 20, max 500…"
+      },
+      {
+        "hash": "dfc3e5bf0fb807bb",
+        "label": "statsfmjukebox (tastejukebox key; src/tools/statsfmjukeb…"
+      },
+      {
+        "hash": "0e6924acb459c27f",
+        "label": "One tool that refreshes a Spotify playlist from a stats.…"
+      },
+      {
+        "hash": "ee85253c2e4538a8",
+        "label": "| Input | Meaning | |---|---| | playlistid | Spotify pla…"
+      },
+      {
+        "hash": "c5ee0c7a49f91576",
+        "label": "replacements and appends draw from disjoint pools by con…"
+      },
+      {
+        "hash": "39899eb88716d483",
+        "label": "Staleness is a claim about the sampled page, and says so…"
+      },
+      {
+        "hash": "1be7117836439f8b",
+        "label": "A value that could not be read is counted, never absorbe…"
+      },
+      {
+        "hash": "e97d25c42cbf1421",
+        "label": "| Count | What it holds, and what the module does instea…"
+      },
+      {
+        "hash": "bfa487fa945a4619",
+        "label": "A failed read is a failed read: a playlist read that thr…"
+      },
+      {
+        "hash": "b085096ef1423bb7",
+        "label": "The write half. dryrun: false removes the stale rows by …"
+      },
+      {
+        "hash": "e77e5db347635d3c",
+        "label": "Two receipts are issued, not one: the removals and the a…"
       },
       {
         "hash": "28b962c0b0edd48d",
@@ -4763,7 +4843,7 @@
         "label": "Summary"
       },
       {
-        "hash": "3017d1532d72bdeb",
+        "hash": "1987a90e548e74ae",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5377,6 +5457,42 @@
       {
         "hash": "e407a8c6b303aab4",
         "label": "Two stores are named per account rather than per environ…"
+      },
+      {
+        "hash": "37d076db7985c8b6",
+        "label": "Lanes"
+      },
+      {
+        "hash": "cbf6364f3f96924b",
+        "label": "A lane is a short label you choose for a playlist — OSM,…"
+      },
+      {
+        "hash": "3ba16cd02e0b12f7",
+        "label": "{ \"OSM\": { \"playlist\": \"spotify:playlist:37i9dQZF1DXcTsa…"
+      },
+      {
+        "hash": "9497a1818bab6299",
+        "label": "playlist accepts a bare id, a spotify:playlist: URI, or …"
+      },
+      {
+        "hash": "1da37f9aca38d6a1",
+        "label": "Read the registry with listlanes (each lane's resolved p…"
+      },
+      {
+        "hash": "19f6a67f12907571",
+        "label": "Then name it on a write: batchaddtoplaylist takes target…"
+      },
+      {
+        "hash": "4bd5512a1823e315",
+        "label": "Lane names are matched case-insensitively. An unknown la…"
+      },
+      {
+        "hash": "9845f7506f3eddba",
+        "label": "With no manifest, every explicit-targetplaylistid call b…"
+      },
+      {
+        "hash": "eca5af84d0630cc8",
+        "label": "This server never writes the file — you create and edit …"
       },
       {
         "hash": "9e4472659de4fa75",
@@ -7182,9 +7298,9 @@
     }
   ],
   "provenance": {
-    "head": "9705c1fbb4caf7d1bf83cc8d7a6acdcd9862d2f0",
-    "base": "4895340dcad9c59697b3c3f30b7e1c23aa3087a3",
-    "upstream": "4895340dcad9c59697b3c3f30b7e1c23aa3087a3",
+    "head": "e2e154a100b4a540e5122d2b620159d10ce26c28",
+    "base": "4305a067f67cefdfd4025e99aef9c8ede5fb0ec8",
+    "upstream": "4305a067f67cefdfd4025e99aef9c8ede5fb0ec8",
     "behind": false
   },
   "reanchored": [
@@ -7195,7 +7311,16 @@
       "to": "2045ad170ec882aa",
       "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
       "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "3017d1532d72bdeb",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "1987a90e548e74ae",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#727 extends the env-var table rather than replacing it: measured on this tree, 70 data rows, adding SPOTIFY_MCP_LANES_FILE with no row lost.",
+      "date": "2026-09-28"
     },
     {
       "file": "docs/configuration.md",
@@ -7204,7 +7329,7 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7213,7 +7338,7 @@
       "to": "c0be5e8d0a5e09dd",
       "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
       "reason": "The #1550 change reworded the remove_from_library Inputs row in place: dry_run moved from opt-in to defaulting to true, so the row now states the default and how to commit.",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7222,7 +7347,7 @@
       "to": "985d30f963b54c8c",
       "toLabel": "Returns: id, name, description, track count, ispublic, i…",
       "reason": "#1556: get_user_playlists substituted 0 for a count Spotify never stated; the paragraph now says which of the two a read produced",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7231,7 +7356,16 @@
       "to": "68c3e9ff9ff5e7d3",
       "toLabel": "/artists/{id}/top-tracks status (#901). The two platform…",
       "reason": "The #1550 change reworded the remove_from_library row of the endpoint summary in place: dry_run now defaults to true and a removal of 10 or more URIs requires elicitation confirmation. Same paragraph, new words.",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "b6e5ffee93f0616c",
+      "label": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "to": "5f496cb757f0f4fa",
+      "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
+      "reason": "#727 extends the move_items_between_playlists Inputs table rather than replacing it: measured on this tree, 10 data rows against 8 on main, with source_lane and target_lane added and all 8 originals still present. No row was dropped.",
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7240,7 +7374,7 @@
       "to": "1bd9ce1b66814558",
       "toLabel": "Row cap and emit-once (#895) — capRowSections and emitOn…",
       "reason": "rebase onto 76aad008: 1 missing / 1 unpinned, same file, same label, 1 reword; the row occurs once on main and once on the branch",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7249,7 +7383,7 @@
       "to": "ec0396fd5de80042",
       "toLabel": "Returns: grouped results by type. Each item includes URI…",
       "reason": "#1556: search's PLAYLISTS rows rendered a 0 for a count Spotify never stated, so the paragraph now names which of the two arrived",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     },
     {
       "file": "SPEC.md",
@@ -7258,7 +7392,7 @@
       "to": "232a046a29a1468e",
       "toLabel": "Returns: playlist name, owner, track count, ID, URI; plu…",
       "reason": "#1556: get_user_playlists_by_id substituted 0 for a count Spotify never stated; the paragraph now points at the shared rendering",
-      "date": "2026-09-27"
+      "date": "2026-09-28"
     }
   ]
 }

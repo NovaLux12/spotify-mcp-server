@@ -203,6 +203,9 @@
     "tasteplaylist": [
       "taste_to_playlist"
     ],
+    "tastejukebox": [
+      "statsfm_jukebox"
+    ],
     "doctor": [
       "spotify_doctor"
     ],
@@ -354,6 +357,10 @@
     ],
     "playlistdna": [
       "grow_playlist"
+    ],
+    "lanes": [
+      "lane_status",
+      "list_lanes"
     ],
     "export": [
       "export_playlist"
@@ -908,6 +915,7 @@
     "jump_to_chapter",
     "label_discography_explorer",
     "label_explorer",
+    "lane_status",
     "last_heard",
     "library_coverage_report",
     "library_genre_report",
@@ -921,6 +929,7 @@
     "list_all_chapters",
     "list_backups",
     "list_device_presets",
+    "list_lanes",
     "list_playback_bookmarks",
     "list_playback_states",
     "list_playlist_snapshots",
@@ -1175,6 +1184,7 @@
     "statsfm_friend_count",
     "statsfm_friends",
     "statsfm_genre_artists",
+    "statsfm_jukebox",
     "statsfm_listening_eras",
     "statsfm_listening_sessions",
     "statsfm_now_playing",

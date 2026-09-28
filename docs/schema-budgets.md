@@ -123,11 +123,11 @@ until it merges, the honest scope of this gate is the field list above.
 | `TOOL_SURFACE_BUDGET.defaultMaxTools` | 620 tools | code constant, `src/tools/annotations.ts` |
 | `TOOL_SURFACE_BUDGET.defaultMaxBytes` | 611,000B | code constant, `src/tools/annotations.ts` |
 | `AGGREGATE_SURFACE_LIMITS.maxBytes` (enforced) | 612,000B | the ceiling plus 1,000B of post-registration annotation metadata |
-| Measured `tools/list` payload | 596,208B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
-| Of which outside the per-module table | 64,967B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
-| Headroom | 15,792B | 2.6% of the enforced limit |
+| Measured `tools/list` payload | 601,392B | `collectAggregateSurfaceMeasurement` over the finalized registry, after annotations |
+| Of which outside the per-module table | 65,294B | 10.9% of the payload — tool names, titles, annotations and boundary metadata |
+| Headroom | 10,608B | 1.7% of the enforced limit |
 
-Headroom is **15,792B** of the 612,000B enforced limit — 2.6% — so the aggregate budget is **tight**.
+Headroom is **10,608B** of the 612,000B enforced limit — 1.7% — so the aggregate budget is **tight**.
 
 The limit above is enforced at startup against whichever surface the process
 registered, so the figure that matters is the one for the surface you run.
@@ -135,11 +135,11 @@ With `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` set, that is:
 
 | Opted-in surface (`tools/list`) | Value | Where it comes from |
 |---|---:|---|
-| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 606,196B | 567 tools — the same measurement, registered with the opt-in on |
+| `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS=1` | 611,380B | 570 tools — the same measurement, registered with the opt-in on |
 | Added by the opt-in | 9,988B | +11 tools over the default surface, measured rather than summed (see below) |
-| Headroom with the opt-in | 5,804B | 0.9% of the enforced limit — **effectively exhausted** |
+| Headroom with the opt-in | 620B | 0.1% of the enforced limit — **effectively exhausted** |
 
-The default surface reports 2.72× as much room — 15,792B against the opt-in's 5,804B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
+The default surface reports 17.11× as much room — 10,608B against the opt-in's 620B. Neither surface breaches the limit today; an opted-in install is simply the one with less room to grow.
 
 The byte figure is measured, not derived from the manifest. The per-module `gatedSurface` byte deltas sum to **8,683B** against a measured **9,988B**, a 1,305B shortfall: the per-module budget charges description + input schema + output schema, while the aggregate charges every tool's name, title, annotations, execution and `_meta` as well. A derived ceiling would under-report by more than a kilobyte. The tool count has no such gap — the manifest declares 11 and the measurement finds 11 — so it is cross-checked rather than measured twice.
 
@@ -187,7 +187,7 @@ than maintained.
 | audiobookcopilot | 3 | 1,985 | 3 | 1,985 | 4 | 2,184 |
 | playlists | 26 | 26,562 | 26 | 26,562 | 27 | 29,219 |
 | playlistops | 3 | 4,392 | 3 | 4,392 | 4 | 4,832 |
-| playlistbatch | 3 | 4,896 | 3 | 4,896 | 4 | 5,386 |
+| playlistbatch | 3 | 5,558 | 3 | 5,558 | 4 | 6,114 |
 | playlistfollow | 4 | 3,807 | 4 | 3,807 | 5 | 4,188 |
 | playlistmisc | 1 | 1,089 | 1 | 1,089 | 2 | 1,198 |
 | personalization | 3 | 2,532 | 3 | 2,532 | 4 | 2,786 |
@@ -196,6 +196,7 @@ than maintained.
 | taste | 8 | 8,308 | 8 | 8,308 | 9 | 9,139 |
 | tastecomposites | 10 | 10,362 | 10 | 10,362 | 11 | 11,399 |
 | tasteplaylist | 1 | 1,896 | 1 | 1,896 | 2 | 2,086 |
+| tastejukebox | 1 | 2,371 | 1 | 2,371 | 2 | 2,609 |
 | doctor | 1 | 825 | 1 | 825 | 2 | 908 |
 | accounts | 2 | 1,644 | 2 | 1,644 | 3 | 1,809 |
 | swarm3meta | 3 | 2,248 | 3 | 2,248 | 4 | 2,473 |
@@ -225,6 +226,7 @@ than maintained.
 | scenes | 7 | 4,514 | 7 | 4,514 | 8 | 4,966 |
 | playlisthealth | 8 | 5,713 | 8 | 5,713 | 9 | 6,285 |
 | playlistdna | 1 | 1,310 | 1 | 1,310 | 2 | 1,442 |
+| lanes | 2 | 1,824 | 2 | 1,824 | 3 | 2,007 |
 | export | 1 | 1,363 | 1 | 1,363 | 2 | 1,500 |
 | import | 1 | 1,322 | 1 | 1,322 | 2 | 1,455 |
 | smart | 1 | 2,364 | 1 | 2,364 | 2 | 2,601 |

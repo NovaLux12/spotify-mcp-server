@@ -55,6 +55,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_FANOUT_CONCURRENCY` | unset (falls back to `SPOTIFY_MCP_MAX_CONCURRENCY`, default `3`) | How many requests a freshness-radar fan-out keeps in flight at once: the per-show lookups in `show_new_episodes`, the per-artist album lookups in `check_artist_releases` and `artist_release_digest`, and the per-type walks in `search_deep`. Bounds burst size, not request count — the number of requests a scan makes is unchanged. `1` restores the old strictly-serial walk. Every affected payload reports the width it used as `fanout_concurrency` / `fanout_concurrency_source`. **Yields to `SPOTIFY_MCP_MAX_CONCURRENCY`**: that request-funnel knob (#892) takes precedence for these tools, so the two can never disagree about how much is in flight. |
 | `SPOTIFY_MCP_SCENES_FILE` | `~/.spotify-mcp/scenes.json` | Playback scene sidecar. |
 | `SPOTIFY_MCP_GENRE_TAGS_FILE` | `~/.spotify-mcp/genre-tags.json` | Artist-to-genre-tags sidecar. |
+| `SPOTIFY_MCP_LANES_FILE` | `~/.spotify-mcp/lanes.json` | The lane registry (#727): a JSON object mapping a short label you choose to a Spotify playlist. Read by the `*_lane` inputs on `batch_add_to_playlist` and `move_items_between_playlists`, and by `list_lanes` / `lane_status`. Not created by this server — you write it. See [Lanes](#lanes). |
 | `SPOTIFY_MCP_DATA_DIR` | `~/.spotify-mcp` for watchlists; `~/.spotify-mcp/playlist-snapshots` for playlist-health snapshots | Data directory read by the artist-watchlist, portability-watchlist, and playlist-health call sites, and by the persisted read cache when `SPOTIFY_MCP_CACHE_PERSIST` is on. The watchlist default no longer depends on the process working directory. |
 | `SPOTIFY_MCP_CACHE_PERSIST` | unset (off) | Set to `1` to also persist the read cache to disk, so a host that restarts the server per session does not re-walk the same catalog. Only **resource identities** are written — tracks, albums, artists, shows, episodes, audiobooks, genres, and the public `/users/{id}` profile. **Your own data (`/me/*`), playlists, and everything below a public profile are never persisted** (`/users/{id}/top/artists`, and the stats.fm listening data that sits under the same path shape): a second process would serve them without ever having seen the mutation that changed them. The allowlist is keyed on the path *shape* and its depth, not on the root alone, so widening a resource's path cannot silently widen what is stored. Each entry keeps the expiry it had in memory and is re-checked on load, so persisting never extends an entry's life. The file is written owner-only (0600) and atomically, and named after the same profile as the token file (`cache.json`, or `cache.<profile>.json`) so two profiles never share one cache. A burst of reads is debounced into one write, so a short session can end before that write is due; the pending save is flushed when the process exits, is stopped by SIGINT/SIGTERM/SIGHUP/SIGQUIT, or throws, so a per-session host still persists what it read. What that does **not** cover, and what is done about it instead, is set out under [When a pending save is lost](#when-a-pending-save-is-lost). An entry too large for the remaining budget is skipped rather than truncating the file, and the count of skipped entries is reported by the doctor tool. Default off, because a cache that outlives the process can outlive the invalidation meant to govern it. |
 | `SPOTIFY_MCP_BACKUP_DIR` | `~/.spotify-mcp/backups` | Directory for `backup_library` snapshots. |
@@ -340,7 +341,7 @@ confirmation-gated, dry-run by default, and path-confined to `SPOTIFY_MCP_BACKUP
 `SPOTIFY_MCP_ENABLE_TOOLS` and `SPOTIFY_MCP_DISABLE_TOOLS` take registration keys, not individual tool names. The complete key list is:
 
 <!-- BEGIN:generated env-registration-keys -->
-`accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `users`
+`accounts`, `artistwatch`, `audiobooks`, `browse`, `catalog`, `doctor`, `episodemgmt`, `exhaust2catalog`, `exhaust2enggating`, `exhaust2extra`, `exhaust2misc`, `exhaust2playback`, `exhaust2playlists`, `following`, `lanes`, `library`, `libraryanalytics`, `moodexpand`, `personalization`, `playback`, `playbackext`, `playbackintel`, `playlistbatch`, `playlisthealth`, `playlistmisc`, `playlists`, `portability`, `prompts`, `queueops`, `receipts`, `resources`, `search`, `searchhistory`, `statsfm`, `swarm3analytics`, `swarm3bdiscovery`, `swarm3discovery`, `swarm3library`, `swarm3meta`, `swarm3playback`, `swarm3playlistops`, `swarm3refs`, `swarm3shows`, `swarm3snapshots`, `swarm4playlists`, `taste`, `tastecomposites`, `tastejukebox`, `users`
 <!-- END:generated env-registration-keys -->
 
 `disable` wins over `enable`, and both are layered on top of set membership. Unknown keys are reported and ignored. `spotify_doctor` and the discovery metadata tools remain available independently of the trim.
@@ -441,6 +442,53 @@ A sidecar that exists but cannot be read is never reset. The file is left exactl
 Every local store's path and its default are listed in one place in the source — `LOCAL_STORES` in `src/config.ts` — and each module that owns a store resolves it from there rather than restating it. This document is the human-readable view of that list, not a second copy of it: a store added to the server is added to `LOCAL_STORES`, and a test fails if a store path is spelled anywhere else in `src/`, if a store is missing from `logout`'s erasure list, or if a row here stops matching what the resolver returns. The rows above are checked against the resolvers, so if one drifts, the suite is what notices.
 
 Two stores are named per account rather than per environment, because their file name carries the account key: the mutation ledger and the write-receipt store keep `mutations.jsonl` / `receipts.jsonl` for the default account and `mutations.<profile>.jsonl` / `receipts.<profile>.jsonl` for a named profile. `SPOTIFY_MCP_HISTORY_DIR` and `SPOTIFY_MCP_RECEIPTS_DIR` set the DIRECTORY for all of them; the account segment is not configurable.
+
+### Lanes
+
+A **lane** is a short label you choose for a playlist — `OSM`, `HH`, `car` — so a
+host can name the playlist in a call instead of carrying a playlist id around.
+The mapping lives in one file, `~/.spotify-mcp/lanes.json` (override the path
+with `SPOTIFY_MCP_LANES_FILE`):
+
+```json
+{
+  "OSM": { "playlist": "spotify:playlist:37i9dQZF1DXcTsaiRwM1LE", "description": "commute" },
+  "HH":  { "playlist": "https://open.spotify.com/playlist/1Xk4PqM7Z0dNoR9cVvYt6Ab" }
+}
+```
+
+`playlist` accepts a bare id, a `spotify:playlist:` URI, or an open.spotify.com
+URL — the same three forms every playlist argument already takes, normalized by
+the same rule, so a lane is not a fourth way to write a playlist id.
+
+Read the registry with `list_lanes` (each lane's resolved playlist id and
+current track count) or `lane_status` (adds drift against the last
+playlist-health snapshot). Both are read-only and perform no write, so checking
+a mapping is always free and never a side effect.
+
+Then name it on a write: `batch_add_to_playlist` takes `target_lane`, and
+`move_items_between_playlists` takes `source_lane` and `target_lane`. Each is an
+**alternative** to the matching `*_playlist_id` argument, not an addition to it:
+pass exactly one of the pair. Passing both is refused, naming both fields,
+rather than silently preferring one — a caller who set both would otherwise
+believe the lane was honoured when the id won. Passing neither is refused too.
+Both checks happen before any request to Spotify, so a bad target costs nothing.
+
+Lane names are matched case-insensitively. An unknown lane is **refused** with
+the known lane names and the manifest path — never silently treated as "no lane
+given" and never guessed at. Two entries differing only by case
+(`OSM` and `osm`) are also refused, naming both, because picking one would
+return a different playlist run to run. A `playlist` value that is not a valid
+reference fails the whole load with the offending lane named, so a typo is
+visible on the first call rather than the first write that uses it; a missing
+file is a first run, not a corruption, and reads as an empty registry.
+
+With no manifest, every explicit-`target_playlist_id` call behaves exactly as it
+did before lanes existed. The registry is additive.
+
+This server never writes the file — you create and edit it — but `logout` moves
+it aside with the other local sidecars, because a lane label is a record of your
+playlists and a disconnecting user should not find it left behind.
 
 ### When a pending save is lost
 

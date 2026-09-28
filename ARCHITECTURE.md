@@ -106,7 +106,7 @@ Resources are registered through `server.resource(...)` as fixed `spotify://` UR
 ## Module map
 
 <!-- BEGIN:generated surface-census -->
-A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (145,621 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **556 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 68 files under `src/tools/`.
+A server started with no `SPOTIFY_MCP_TOOLSETS` registers **128 tools** (146,283 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **559 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers. The tool surface is attributed to 70 files under `src/tools/`.
 <!-- END:generated surface-census -->
 
 The table is generated from every TypeScript file recursively under `src/`, including nested `lib/`, `resources/`, `prompts/`, `tools/`, and `types/` modules. Tool counts come from real registrations (including loop factories). `Schema bytes` is what that file's tools add to a host's `tools/list` payload — the same per-module measurement `docs/schema-budgets.md` gates, and `—` for a runtime module that registers no tools.
@@ -149,6 +149,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/history.ts` | Opt-in mutation history JSONL (#64, hardened in #628). (0 registered tools) | — |
 | `src/http.ts` | The opt-in Streamable HTTP transport (#599). (0 registered tools) | — |
 | `src/index.ts` | Runtime module for src/index.ts. (0 registered tools) | — |
+| `src/lanes.ts` | The server-side lane registry (#727). (0 registered tools) | — |
 | `src/lib/statsfm-client.ts` | The one stats.fm HTTP client (#907). (0 registered tools) | — |
 | `src/logout.ts` | `spotify-mcp logout` — disconnect this machine from a Spotify account (#704). (0 registered tools) | — |
 | `src/markets.ts` | Runtime module for src/markets.ts. (0 registered tools) | — |
@@ -200,6 +201,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/following.ts` | Runtime module for src/tools/following.ts. (3 registered tools) | 2,502 |
 | `src/tools/freshness.ts` | freshness radar (#112 idea 2): personal replacement for the removed /browse/new-releases surface. (1 registered tool) | 2,672 |
 | `src/tools/import.ts` | import_playlist (#165): the inverse of export_playlist. (1 registered tool) | 1,322 |
+| `src/tools/lanes.ts` | Lane registry tools (#727). (2 registered tools) | 1,824 |
 | `src/tools/library.ts` | Runtime module for src/tools/library.ts. (13 registered tools) | 13,018 |
 | `src/tools/libraryanalytics.ts` | Runtime module for src/tools/libraryanalytics.ts. (3 registered tools) | 2,498 |
 | `src/tools/libraryhygiene.ts` | Album completion & consolidation hygiene (#112 idea 5). (1 registered tool) | 804 |
@@ -210,7 +212,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/playbackext.ts` | playbackext (#197, #206, #198, #180, #181): local sidecar persistence for playback states, device naming/volume presets, listening sessions, smart rules, show digest. (13 registered tools) | 8,331 |
 | `src/tools/playbackintel.ts` | playbackintel — exhaustive playback/queue/player intel (#272-283 slice) 11 tools: play_on, queue_next, describe_listening_session, play_at, device_health, seek_relative, playback_timeline, repeat_queue_toggle, now_playing_history, playback_compare_states, peek_next #847 retired describe_queue into `get_queue` view='enriched'. + triage extras: get_playback_context, volume_step, market_availability Each tool states its quota cost in words in the description. (13 registered tools) | 10,315 |
 | `src/tools/playbackpositions.ts` | The canonical playback-position record (#846). (0 registered tools) | — |
-| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 4,896 |
+| `src/tools/playlistbatch.ts` | Playlist batch operations — Stream D (#183, #189, #200). (3 registered tools) | 5,558 |
 | `src/tools/playlistdna.ts` | Runtime module for src/tools/playlistdna.ts. (1 registered tool) | 1,310 |
 | `src/tools/playlistfollow.ts` | Playlist follow/unfollow (#1005, #1099), split out of playlistmisc.ts. (4 registered tools) | 3,807 |
 | `src/tools/playlisthealth.ts` | Runtime module for src/tools/playlisthealth.ts. (8 registered tools) | 5,713 |
@@ -232,6 +234,7 @@ That column replaced a per-file line count (#1398), and why is worth keeping: a 
 | `src/tools/showradar.ts` | show_new_episodes (#173): new-episode radar across saved podcast shows. (1 registered tool) | 2,125 |
 | `src/tools/smart.ts` | create_smart_playlist (#172): rule-based playlist generation from the user's OWN listening data — top tracks, recently played, or saved tracks — with optional artist filtering and per-artist uniqueness. (1 registered tool) | 2,364 |
 | `src/tools/statsfm.ts` | stats.fm tools (read-only): listening stats, tops, catalog and social lookups against the public stats.fm API. (30 registered tools) | 29,481 |
+| `src/tools/statsfm_jukebox.ts` | `statsfm_jukebox` — propose replacements and appends for a playlist from a stats.fm user's recent rotation, and (on an explicit commit) apply them (#726). (1 registered tool) | 2,371 |
 | `src/tools/statsfm_taste.ts` | stats.fm taste-intelligence slice (v2 taste track). (8 registered tools) | 8,308 |
 | `src/tools/swarm3_analytics.ts` | swarm3 analytics slice — 500-tool swarm v1.26.0 (issue #442). (15 registered tools) | 12,030 |
 | `src/tools/swarm3_discovery.ts` | swarm3 discovery slice — 500-tool swarm v1.26.0 (issue #442). (24 registered tools) | 22,483 |

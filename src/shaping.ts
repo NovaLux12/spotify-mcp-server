@@ -3127,10 +3127,29 @@ export const PENDING_OUTPUT_SCHEMA_MODULES: ReadonlySet<string> = new Set([
   'src/tools/backup_delete.ts',
   'src/tools/saveddedupe.ts',
   'src/tools/libraryhygiene.ts',
+  // #727. Verified prose-safe: both tools return `structuredContent` on every
+  // path (the prose and JSON branches build the same payload and both hand it
+  // to `textResult` / the content block), so there is no prose-only path for an
+  // output schema to break. It is absent on budget grounds like the rest of
+  // this set — and additionally because neither tool's payload is the `list`
+  // family: `list_lanes` publishes `lanes[]`, not `items[]`, so publishing
+  // `ListOutput` would declare a key no host receives while saying nothing
+  // about the two fields that matter here (`unreadable_lane_count` and
+  // `unresolved_lane_count`, the counts of what could NOT be read).
+  'src/tools/lanes.ts',
   'src/tools/export.ts',
   'src/tools/searchhistory.ts',
   'src/tools/showradar.ts',
   'src/tools/smart.ts',
+  // #726. Verified prose-safe on all five return paths — the plan, the applied
+  // summary, the read-only refusal, the confirmation refusal, and the no-op all
+  // attach `structuredContent` — so an output schema would not break a prose-only
+  // branch here. It is absent on budget grounds with the rest of this set, and
+  // additionally because the payload is a mutation shape, not a `list` one: the
+  // two arrays a host acts on are `proposed.replacements` and `proposed.appends`,
+  // and publishing `MutationOutput` would assert a commit that a dry run did not
+  // make. The three unreadable counts are the other reason not to declare one.
+  'src/tools/statsfm_jukebox.ts',
   'src/tools/undo.ts',
   'src/tools/swarm3_analytics.ts',
   'src/tools/swarm3_discovery.ts',

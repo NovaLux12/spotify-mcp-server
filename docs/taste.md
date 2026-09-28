@@ -83,6 +83,30 @@ Discovery candidates get cross-checked against lifetime tops — anything alread
 
 > 6 tracks, 3 genres: indie folk roots, ambient middle, alt-r&b edge. Anchors keep it yours; discoveries keep it alive. Late-night order — it follows the UTC clock signal from your profile.
 
+## Step 7 — keep an existing playlist fresh
+
+Steps 1–6 build a new playlist once. `statsfm_jukebox` does the recurring half: it ranks an existing playlist's rows against a stats.fm rotation and proposes swaps.
+
+```json
+{ "tool": "statsfm_jukebox", "statsfm_user": "<your-statsfm-user-id>", "playlist_id": "PLAYLIST_ID", "replacements": 5, "appends": 5 }
+```
+
+`dry_run` defaults to `true`, so the call above is a **plan** and writes nothing — the safe default for a tool a cron reaches. Each proposal carries its own rationale, so the plan is reviewable before anything moves:
+
+```
+Replacements (2 of 11 stale row(s)):
+  #7 spotify:track:… "Anchor One" — last played 2026-03-02 in the sampled page, outside the 90 days window
+  #9 spotify:track:… "Bridge Track" — absent from the stream page covering the last 90 days
+
+Appends (2 of 6 candidate(s)):
+  spotify:track:… "New Thing" — Fresh Face is #1 in the last 90 days rotation (14 streams)
+  spotify:track:… "Side Quest" — Fresh Face is #1 in the last 90 days rotation (14 streams)
+```
+
+Commit with `dry_run: false`. That asks for confirmation first — always, with no size threshold, because the removal half deletes rows — and returns **two** receipts, one for the removals and one for the additions, so `undo_mutation` reverses it in two calls, newest first.
+
+**Read the disclosure lines.** stats.fm returns a bounded recent page, not the whole account history, so "stale" means "absent from the rows this page carried". When the page cannot reach back to the start of the window, the response says so (`streams.page_may_not_cover_window`, with the page's own span) — a track played before that span is not distinguishable here from one never played at all. Counts that could not be read are reported as such (`streams.unreadable_timestamps`, `streams.unresolved_track_ids`, `playlist_rows_unreadable`) rather than absorbed into a confident-looking number, and a list shorter than requested names the shortfall instead of being padded.
+
 ## What this proves
 
 - stats.fm supplies the **evidence** (genres, anchors, UTC listening shape) that this flow uses.

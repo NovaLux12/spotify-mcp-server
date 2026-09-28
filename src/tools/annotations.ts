@@ -432,17 +432,24 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
     // decision to be visible, not to be routed around. The tool unlinks a file the user cannot
     // recover, so its name should say what it does.
     album: 8, apply: 4, artist: 35, check: 6, delete: 4, episode: 5, export: 10,
-    // `list` 11 -> 12 for `list_accounts` (#602). The budget table exists to
-    // make this decision visible rather than to route around it, and the
-    // decision is that the multi-account listing belongs in the `list` family
-    // with the eleven reads beside it: it IS a read, it answers "what is here",
-    // and a ninth verb family for two tools would cost a host two new prefixes
-    // to learn. It is a registry listing with no Spotify request beyond one
-    // `GET /me` for the acting account.
-    filter: 4, find: 11, get: 59, library: 8, list: 12, listening: 17,
+    // `list` 11 -> 12 for `list_accounts` (#602), then 12 -> 13 for
+    // `list_lanes` (#727). The budget table exists to make this decision
+    // visible rather than to route around it, and the decision is the same
+    // both times: a registry listing belongs in the `list` family with the
+    // other reads beside it. It IS a read, it answers "what is here", and a
+    // new verb family for one tool would cost a host a prefix to learn.
+    // `list_lanes` reads the lane manifest and issues one
+    // `GET /playlists/{id}` per lane — the same read cost as the
+    // `list_scenes` / `list_backups` registry listings above it.
+    // `statsfm` 38 -> 39 for `statsfm_jukebox` (#726). Same decision as the
+    // `list` raise above: the tool reads a stats.fm account and refreshes a
+    // Spotify playlist from it, so `statsfm_` is what it does and a new verb
+    // family for one tool would cost a host a prefix to learn. The budget table
+    // exists to make that choice visible, not to be routed around.
+    filter: 4, find: 11, get: 59, library: 8, list: 13, listening: 17,
     play: 4, playback: 4, playlist: 54, queue: 8, remove: 9, restore: 4,
     save: 11, saved: 11, search: 22, set: 4, show: 8, snapshot: 12,
-    split: 5, statsfm: 38, taste: 16, top: 6, track: 4, uri: 4,
+    split: 5, statsfm: 39, taste: 16, top: 6, track: 4, uri: 4,
   }),
 });
 
@@ -583,6 +590,24 @@ const OVERRIDES: Record<string, ToolAnnotations> = {
   // never consults it, so a future tool that happens to be named
   // `record_feedback` would silently inherit someone else's annotation.
   statsfm_record_feedback: { destructiveHint: false },
+  // #726: `statsfm_jukebox` reads a stats.fm account AND, on `dry_run: false`,
+  // removes playlist rows and adds others. The `statsfm` verb prefix is
+  // allowlisted as a READ, so without this row the classifier advertises a
+  // writer as read-only and a host that auto-approves on `readOnlyHint` waves a
+  // playlist mutation through with no prompt at all. The name is not a plan, so
+  // NEVER_MUTATING_PLANS is the wrong table — that set makes names read-only.
+  //
+  // `destructiveHint: false`, not `true`, and the reason is the NAME rather than
+  // the behaviour: #726 specifies `statsfm_jukebox` and the naming policy
+  // reserves `destructiveHint: true` for names a verb pattern already calls a
+  // write. Advertising a read-prefixed name as destructive would train hosts to
+  // distrust an annotation that is supposed to mean something. What actually
+  // carries the safety is in the handler, and it is not the annotation:
+  // `dry_run` defaults to true, the commit path elicits with NO threshold, and
+  // `requiredConfirmationRefusal` fails closed, so a client that never prompts
+  // gets zero writes rather than an unprompted one. The row is what stops the
+  // tool being advertised as a read, which is the half that was actually wrong.
+  statsfm_jukebox: { destructiveHint: false },
   export_playlist: { destructiveHint: false },
   // backup_library makes no Spotify write — every call is a GET, and the only
   // writes are to the local backup directory. Its name starts with `backup`,
@@ -1586,7 +1611,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // paying down. Measured, not derived.
   manifestEntry('playlists', 'playlists', lazyModule('./playlists.js', 'registerPlaylistTools'), [26, 26562]),
   manifestEntry('playlistops', 'playlists', lazyModule('./playlistops.js', 'registerPlaylistOpsTools'), [3, 4392]),
-  manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 4896], { scopeKey: 'playlists' }),
+  // #727: `batch_add_to_playlist` and `move_items_between_playlists` each gained
+  // a lane alternative to their target. Same 3 tools; the byte move is entirely
+  // the four new `*_lane` inputs and the reworded descriptions that name them.
+  // MEASURED by zeroing the baseline and reading the startup gate's own
+  // figure, not estimated.
+  manifestEntry('playlistbatch', 'playlistbatch', lazyModule('./playlistbatch.js', 'registerPlaylistBatchTools'), [3, 5558], { scopeKey: 'playlists' }),
   manifestEntry('playlistfollow', 'playlistmisc', lazyModule('./playlistfollow.js', 'registerPlaylistFollowTools'), [4, 3807], { scopeKey: 'playlistfollow' }),
   manifestEntry('playlistmisc', 'playlistmisc', lazyModule('./playlistmisc.js', 'registerPlaylistMiscTools'), [1, 1089], { scopeKey: 'playlists' }),
   manifestEntry('personalization', 'personalization', lazyModule('./personalization.js', 'registerPersonalizationTools'), [3, 2532], { readOnlySafe: true }),
@@ -1755,6 +1785,26 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `npm run count:tools` on 2026-09-27: 1884 B -> 1896 B (+12 B), tool count
   // unchanged at 1.
   manifestEntry('tasteplaylist', 'tastecomposites', lazyModule('./taste_playlist.js', 'registerTastePlaylistTools'), [1, 1896], { scopeKey: 'playlists' }),
+  // #726: `statsfm_jukebox` — one tool that proposes playlist replacements and
+  // appends from a stats.fm rotation, and applies them only on `dry_run=false`.
+  // `scopeKey: 'playlists'` because the commit path writes playlist items, so
+  // the playlists scope gate (and the read-only gate, via the module's
+  // non-readOnlySafe default) both apply. NOT `readOnlySafe`: the module holds a
+  // write, and a read-only session must not see it at all rather than see it and
+  // have it refuse.
+  //
+  // MEASURED, not estimated: the baseline below was zeroed, the server started,
+  // and the figure came from the startup budget gate's own report. Writing an
+  // estimate here would have set a ceiling that the first real `tools/list` on
+  // any host either clears by luck or breaches.
+  //
+  // #1514 moved the shared `statsfm_user` example handle to a placeholder
+  // (+10 B on the field's description). This tool spreads
+  // `StatsfmUserInputFields`, so it pays the same +12 B as `tasteplaylist`.
+  // RE-MEASURED on the rebased tree, not carried over: 2359 B -> 2371 B
+  // (+12 B), tool count unchanged at 1. Carrying the pre-#1514 figure forward
+  // would have set a ceiling the tree does not actually meet.
+  manifestEntry('tastejukebox', 'tastejukebox', lazyModule('./statsfm_jukebox.js', 'registerStatsfmJukeboxTools'), [1, 2371], { scopeKey: 'playlists' }),
   manifestEntry('doctor', 'doctor', lazyModule('./doctortool.js', 'registerDoctorTool'), [1, 825], { alwaysActive: true, readOnlySafe: true }),
   // #602. `readOnlySafe: true` is a claim about the MODULE, and the module
   // holds a write: what makes that safe is that `readOnlyToolServer` drops
@@ -1963,6 +2013,16 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   manifestEntry('scenes', 'playback', lazyModule('./scenes.js', 'registerScenesTools'), [7, 4514], { scopeKey: 'playback' }),
   manifestEntry('playlisthealth', 'playlisthealth', lazyModule('./playlisthealth.js', 'registerPlaylistHealthTools'), [8, 5713], { scopeKey: 'playlists' }),
   manifestEntry('playlistdna', 'playlists', lazyModule('./playlistdna.js', 'registerPlaylistDnaTools'), [1, 1310], { readOnlySafe: true, scopeKey: 'playlists' }),
+  // #727: the lane registry. Two READ-ONLY tools, so `readOnlySafe: true` —
+  // `list_lanes` and `lane_status` issue `GET /playlists/{id}` reads and no
+  // write of any kind, which is what keeps them visible in a read-only session.
+  // The lane→playlist RESOLUTION lives in `src/lanes.ts` and is called by the
+  // writing tools (playlistbatch), not here; this row is the read side.
+  // 1,824B is MEASURED — the baseline was zeroed and the startup gate printed
+  // `2 tools/1824B`, the same projection `tools/list` gives a host. No ceiling
+  // was hand-raised: the derived ceiling is 1 tool / 2,007B, so the next tool
+  // or description edit to this module has to come back through here.
+  manifestEntry('lanes', 'lanes', lazyModule('./lanes.js', 'registerLaneTools'), [2, 1824], { readOnlySafe: true, scopeKey: 'playlists' }),
   manifestEntry('export', 'playlists', lazyModule('./export.js', 'registerExportTools'), [1, 1363], { scopeKey: 'playlists' }),
   // #708: descriptions only, same 1 tool and same input schema. The baseline in
   // the entry below moved because import_playlist's description now names the

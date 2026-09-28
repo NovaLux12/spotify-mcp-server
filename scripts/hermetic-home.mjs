@@ -152,6 +152,7 @@ export function sandboxStorePins(storeDir) {
     SPOTIFY_MCP_TASKS_DIR: join(storeDir, 'tasks'),
     SPOTIFY_MCP_SCENES_FILE: join(storeDir, 'scenes.json'),
     SPOTIFY_MCP_GENRE_TAGS_FILE: join(storeDir, 'genre-tags.json'),
+    SPOTIFY_MCP_LANES_FILE: join(storeDir, 'lanes.json'),
     SPOTIFY_MCP_PLAYBACKEXT_FILE: join(storeDir, 'playback-ext.json'),
     SPOTIFY_MCP_SEARCH_HISTORY_FILE: join(storeDir, 'search-history.json'),
     // Shared by three rows with three different defaults. `storeDir` is what

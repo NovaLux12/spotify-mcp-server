@@ -54,6 +54,7 @@ import {
   type LogoutIo,
 } from '../src/logout.js';
 import { historyFilePath, historyFilePaths } from '../src/history.js';
+import { lanesFilePath } from '../src/lanes.js';
 import { receiptsFilePath } from '../src/receipts.js';
 import { resolveTokenFile } from '../src/config.js';
 import { accountsFile } from '../src/accounts.js';
@@ -165,6 +166,7 @@ function sandbox(): Box {
     SPOTIFY_MCP_RECEIPTS_DIR: join(data, 'receipts'),
     SPOTIFY_MCP_SCENES_FILE: join(data, 'scenes.json'),
     SPOTIFY_MCP_GENRE_TAGS_FILE: join(data, 'genre-tags.json'),
+    SPOTIFY_MCP_LANES_FILE: join(data, 'lanes.json'),
     SPOTIFY_MCP_PLAYBACKEXT_FILE: join(data, 'playback-ext.json'),
     SPOTIFY_MCP_SEARCH_HISTORY_FILE: join(data, 'search-history.json'),
     SPOTIFY_MCP_FRESHNESS_STATE: join(data, 'freshness.json'),
@@ -333,6 +335,7 @@ describe('the store registry is the only place a store path is spelled', () => {
       mutations: (env) => historyFilePath(env, resolveTokenFile(env)),
       receipts: (env) => receiptsFilePath(env, resolveTokenFile(env)),
       scenes: scenesFilePath,
+      lanes: lanesFilePath,
       'genre-tags': genreTagsPath,
       'playback-extensions': playbackExtFile,
       'search-history': searchHistoryFile,

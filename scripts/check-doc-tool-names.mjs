@@ -567,6 +567,14 @@ const documentedMetadata = new Set([
   // not a parameter — `saved_vs_playlist_coverage` has returned it since #732
   // and `playlist_staleness_report` now does too.
   'quota_hit_at_playlist',
+  // #727: the lane registry's per-lane row and its summary counts. These are
+  // structuredContent keys, and the SPEC contract is specifically about WHICH
+  // of them count lanes that were read and which count lanes that could NOT be
+  // — so a doc that could not name them would describe the payload without
+  // saying what the numbers mean. Not tools and not parameters.
+  'unreadable_reason', 'lane_count', 'unreadable_lane_count',
+  'snapshot_total', 'snapshot_taken_at', 'resolved_lane_count',
+  'unresolved_lane_count', 'no_snapshot_lane_count', 'drifted_lane_count',
   // #897: the two Spotify album fields the §5.3 `library_hygiene` contract has
   // to name, because the whole point of the change is WHERE they come from —
   // `album_type` and `total_tracks` are required members of the API's
@@ -590,6 +598,18 @@ const documentedMetadata = new Set([
   // Named here only so the contract can state the claim was removed; it is
   // neither a tool nor a parameter, and no code path produces this sidecar.
   'followed_artists',
+  // #726: `statsfm_jukebox`'s structuredContent keys that SPEC.md has to name
+  // in order to SAY THE THING they exist for — which values could not be read,
+  // and whether the after-count is a measurement. `playlist_rows_unreadable` is
+  // the count of playlist rows with no addressable URI; the two
+  // `playlist_walk_truncated*` keys say a playlist was only partly walked, so
+  // "stale" counts the rows that were read; and `playlist_total_after` with its
+  // `_unreadable` companion is the measured count or an explicit null, never a
+  // number computed from the plan. Response fields, not tools and not
+  // parameters — the same category as `unreadable_lane_count` above.
+  'playlist_rows_unreadable', 'playlist_walk_truncated',
+  'playlist_walk_truncated_reason', 'playlist_total_after',
+  'playlist_total_after_unreadable',
 ]);
 /**
  * Range vocabulary (#720). The JSON-example check already rejects a bad
