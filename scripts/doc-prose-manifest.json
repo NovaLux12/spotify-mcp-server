@@ -1529,7 +1529,7 @@
         "label": "Lyrics — the public API has no lyrics endpoint, so lyric…"
       },
       {
-        "hash": "68a7a2a7e4be9530",
+        "hash": "0451f4cbec553ab1",
         "label": "The Spotify Connect SDK and native client integration — …"
       },
       {
@@ -6217,7 +6217,7 @@
         "label": "Every retirement in this document refuses by name, befor…"
       },
       {
-        "hash": "f48a63471475c162",
+        "hash": "d967f61a7f0edc7e",
         "label": "| What you sent | kind | reason | error.param | Where to…"
       },
       {
@@ -6237,12 +6237,12 @@
         "label": "\"Removed in\" is the release constant the refusal message…"
       },
       {
-        "hash": "09eb7d42ceed6755",
+        "hash": "5b49592f78ae801d",
         "label": "\"Still callable in 3.0?\" is what the code in this tree d…"
       },
       {
-        "hash": "26fe9aae0fd3a050",
-        "label": "A name that still answers calls and carries a notice nam…"
+        "hash": "22e9b5bcc24051f5",
+        "label": "Every retired tool name in 3.0 refuses. Earlier releases…"
       },
       {
         "hash": "2573bde7322fe89d",
@@ -7591,9 +7591,9 @@
     }
   ],
   "provenance": {
-    "head": "64a2b19a6d4683321b49c8e94d180bcb6d4ed355",
-    "base": "2ebba26e346c3a460c6a06a18c43e59c81178178",
-    "upstream": "2ebba26e346c3a460c6a06a18c43e59c81178178",
+    "head": "4452d0fb690f66b84ccb20646f2b11051eea8cfa",
+    "base": "d5e37fd6ca44a4a9c8e0b338f99faf8a24d272a9",
+    "upstream": "d5e37fd6ca44a4a9c8e0b338f99faf8a24d272a9",
     "behind": false
   },
   "reanchored": [
@@ -7841,6 +7841,33 @@
       "date": "2026-09-28"
     },
     {
+      "file": "docs/migration-v3.md",
+      "hash": "09eb7d42ceed6755",
+      "label": "\"Still callable in 3.0?\" is what the code in this tree d…",
+      "to": "5b49592f78ae801d",
+      "toLabel": "\"Still callable in 3.0?\" is what the code in this tree d…",
+      "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/migration-v3.md",
+      "hash": "26fe9aae0fd3a050",
+      "label": "A name that still answers calls and carries a notice nam…",
+      "to": "22e9b5bcc24051f5",
+      "toLabel": "Every retired tool name in 3.0 refuses. Earlier releases…",
+      "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/migration-v3.md",
+      "hash": "f48a63471475c162",
+      "label": "| What you sent | kind | reason | error.param | Where to…",
+      "to": "d967f61a7f0edc7e",
+      "toLabel": "| What you sent | kind | reason | error.param | Where to…",
+      "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
+      "date": "2026-09-28"
+    },
+    {
       "file": "docs/v3-roadmap.md",
       "hash": "b23656edb5cc063c",
       "label": "The 2.0 playlist input spellings are gone. They were cal…",
@@ -7937,6 +7964,15 @@
       "to": "2c668176003913f0",
       "toLabel": "1566 and #1567 have now closed the /me/library inconsist…",
       "reason": "#1567 moved save_to_library onto DryRunDefault, so the split this paragraph described no longer exists",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "68a7a2a7e4be9530",
+      "label": "The Spotify Connect SDK and native client integration — …",
+      "to": "0451f4cbec553ab1",
+      "toLabel": "The Spotify Connect SDK and native client integration — …",
+      "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
       "date": "2026-09-28"
     },
     {
