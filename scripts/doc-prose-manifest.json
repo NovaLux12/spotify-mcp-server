@@ -2109,8 +2109,40 @@
         "label": "dryrun default on mutating tools (v2, #827) — a mutating…"
       },
       {
-        "hash": "1fe8e57ff768b53f",
+        "hash": "6ff321e0dbe1a3ea",
         "label": "dryrun default in the playback family (v2, #836) — BREAK…"
+      },
+      {
+        "hash": "4379a6dfd785f6e0",
+        "label": "There is no \"still unchanged\" state. #827's DryRunDefaul…"
+      },
+      {
+        "hash": "702cdfb8d7303070",
+        "label": "| Family (manifest scopeKey) | publish default: true | p…"
+      },
+      {
+        "hash": "86b109d3a259c3bb",
+        "label": "The podcast and audiobook families are too small to tabu…"
+      },
+      {
+        "hash": "1cf57aa738710028",
+        "label": "A missing schema default does not imply a commit, and it…"
+      },
+      {
+        "hash": "7e7ddf74861f94f0",
+        "label": "The tool names are deliberately not enumerated here. Eve…"
+      },
+      {
+        "hash": "316731223f79cc15",
+        "label": "1. The schema declares no default and the handler defaul…"
+      },
+      {
+        "hash": "2c668176003913f0",
+        "label": "1566 and #1567 have now closed the /me/library inconsist…"
+      },
+      {
+        "hash": "5cd0f6eb8ab4fb69",
+        "label": "dryrun defaults are counted from the finalized registry,…"
       },
       {
         "hash": "4eda7c0e9340583a",
@@ -7430,11 +7462,38 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "1f39fbdcdf9d606e",
+      "label": "1. The schema declares no default and the handler defaul…",
+      "to": "316731223f79cc15",
+      "toLabel": "1. The schema declares no default and the handler defaul…",
+      "reason": "#1571 review: the class-1 list hand-enumerated members and had already gone stale; the classification is the contract and the measured counts carry the instance",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "1fe8e57ff768b53f",
+      "label": "dryrun default in the playback family (v2, #836) — BREAK…",
+      "to": "6ff321e0dbe1a3ea",
+      "toLabel": "dryrun default in the playback family (v2, #836) — BREAK…",
+      "reason": "#1571 rewrote the paragraph's library/playlist/podcast claim: #827's DryRunDefault was rolled onto those families partially and by module, so each family now holds both conventions at once. A missing schema default implies neither a commit nor a preview.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "323d2f541fa48bcd",
       "label": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
       "to": "4a35a45eefb0eccc",
       "toLabel": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
       "reason": "rebase onto main after #1541: #585 reworded the hand-maintained 'tsconfig.json essentials' fence in SPEC.md to name the strict flags that measured clean; same fence, new text, old hash gone from the file",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "5415c2b35e7f136c",
+      "label": "1566 re-gated the /me/library removal half and left the …",
+      "to": "2c668176003913f0",
+      "toLabel": "1566 and #1567 have now closed the /me/library inconsist…",
+      "reason": "#1567 moved save_to_library onto DryRunDefault, so the split this paragraph described no longer exists",
       "date": "2026-09-28"
     },
     {

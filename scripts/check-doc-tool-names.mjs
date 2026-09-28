@@ -558,6 +558,14 @@ const documentedMetadata = new Set([
   // that verdict, so there is nothing to backtick. These two name the refusal
   // shape a host parses, not a tool, a parameter, or a metadata key.
   'elicitation_failed', 'confirmation_unavailable',
+  // #1571: `would_replace` is a structuredContent field of the
+  // `save_discover_weekly` / `save_release_radar` dry-run preview
+  // (portability.ts:396-397) — the count of existing archive items a commit
+  // would discard. SPEC.md names it when explaining why those two tools commit
+  // on an omitted flag. A payload field, so `documentedMetadata` and not
+  // `parameterAllowlist`: the latter is fed by the live registry, and adding
+  // it there would claim some tool accepts it as an input.
+  'would_replace',
   // #1287: the `reason` a refusal carries when a call sends a playlist input
   // spelling this server published under a deprecation notice and withdrew in
   // v3.0. A host routing on `kind` sees `validation`; this is the discriminator
