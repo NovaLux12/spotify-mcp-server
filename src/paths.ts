@@ -53,6 +53,62 @@ export function backupRetentionDays(env: NodeJS.ProcessEnv = process.env): numbe
 }
 
 /**
+ * Retention window for the NON-library families that share the backup
+ * directory — closed listening sessions, playlist write pre-images, and legacy
+ * or migrated playback bookmarks (#1592). Consumed by
+ * `clean_backup_artifacts`; nothing else reads it.
+ *
+ * NEW ENV VAR SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS — whole days an
+ * artifact is kept. Default 14. 0 disables age-based expiry. Unusable values
+ * (empty, non-numeric, negative, fractional) fall back to the default rather
+ * than to "keep forever", matching `backupRetentionDays` above; the floor for
+ * an ENABLED window is 1 day.
+ *
+ * WHY 14 AND NOT THE LIBRARY WINDOW'S 30. The two windows are separate because
+ * the two sets of files are not equally worth keeping, and the difference is
+ * not "size" — it is what a discarded file costs to get back.
+ *
+ * A library snapshot is a dated compilation of the user's entire saves. Losing
+ * one means re-walking the library to replace it, and until that walk is done
+ * there is no other copy of those rows anywhere. That is why its window is the
+ * long one and why `delete_backup` treats its removal as unrecoverable.
+ *
+ * None of the four artifact families is in that position:
+ *
+ *  • A closed listening session is a spent log. It is not a copy of anything
+ *    the user still lacks — the playback positions it captured live in the
+ *    position store, and the session's own value is the report, which is
+ *    rendered from the file at read time.
+ *  • A playlist pre-image is a hand-undo copy taken immediately before a
+ *    write. The durable undo path is the receipt ledger, not the file, and
+ *    nothing in `src/` reads a pre-image back. Its window should be long enough
+ *    to notice a bad write ("the agent rewrote my playlist yesterday"), and
+ *    not much longer — past that, the receipt is the record and the pre-image
+ *    is a second copy of a diff whose "before" state has itself since changed.
+ *  • Legacy and migrated bookmarks are, by construction, leftovers: #846 moved
+ *    the canonical record into the position store, and the only code that
+ *    touches a file under these names now is the migration that renamed it
+ *    and the delete that unlinks it. There is nothing left to recover.
+ *
+ * 14 days is therefore "long enough to notice and object, short enough that a
+ * directory taking a pre-image on every mutating playlist write does not grow
+ * without bound" — a fortnight covers the realistic lag between a bot rewriting
+ * a playlist and the owner noticing, and keeps the window deliberately shorter
+ * than the library one so the two rates do not drift together.
+ */
+const DEFAULT_BACKUP_ARTIFACT_RETENTION_DAYS = 14;
+const MIN_BACKUP_ARTIFACT_RETENTION_DAYS = 1;
+
+export function backupArtifactRetentionDays(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS;
+  if (raw === undefined || raw.trim() === '') return DEFAULT_BACKUP_ARTIFACT_RETENTION_DAYS;
+  const days = Number(raw);
+  if (!Number.isFinite(days) || days < 0 || !Number.isInteger(days)) return DEFAULT_BACKUP_ARTIFACT_RETENTION_DAYS;
+  if (days === 0) return 0;
+  return Math.max(MIN_BACKUP_ARTIFACT_RETENTION_DAYS, days);
+}
+
+/**
  * realpath() that tolerates a not-yet-created leaf: the deepest existing
  * ancestor is resolved and the missing tail re-attached, so a brand-new
  * directory is still compared by its real location. Any other errno (EACCES,
