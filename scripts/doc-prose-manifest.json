@@ -733,7 +733,7 @@
         "label": "Component map"
       },
       {
-        "hash": "213d591ede53e378",
+        "hash": "311ad8dc2251b38f",
         "label": "flowchart TD CLI[\"CLI dispatch (src/index.ts)<br/>auth /…"
       },
       {
@@ -773,8 +773,8 @@
         "label": "Every HTTP call funnels through one private path inside …"
       },
       {
-        "hash": "fb6f14435547de4c",
-        "label": "1. Serialization (two-lane) — get/post/put/putRaw/delete…"
+        "hash": "6bea1c6bfd5d469b",
+        "label": "1. Scheduling (two-lane, bounded concurrency) — get/post…"
       },
       {
         "hash": "88b152749022d554",
@@ -7302,9 +7302,9 @@
     }
   ],
   "provenance": {
-    "head": "ae784204a84973c687807dd690338b7676396bbc",
-    "base": "9ee5a5d069ee8597541da5a033fd49b4cedf9bb1",
-    "upstream": "9ee5a5d069ee8597541da5a033fd49b4cedf9bb1",
+    "head": "b945408d83ab06d09dc77cd17e8d0419311cbd8a",
+    "base": "bd7d83b646a6a37987505459cad15bb45a430be6",
+    "upstream": "bd7d83b646a6a37987505459cad15bb45a430be6",
     "behind": false
   },
   "reanchored": [
@@ -7315,6 +7315,24 @@
       "to": "2045ad170ec882aa",
       "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
       "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "ARCHITECTURE.md",
+      "hash": "213d591ede53e378",
+      "label": "flowchart TD CLI[\"CLI dispatch (src/index.ts)<br/>auth /…",
+      "to": "311ad8dc2251b38f",
+      "toLabel": "flowchart TD CLI[\"CLI dispatch (src/index.ts)<br/>auth /…",
+      "reason": "The client is a two-lane bounded-concurrency funnel, not a serial queue: src/client.ts dispatches while _inFlight is below _maxConcurrency (#892), so the component-map node claiming 'serialized queue' described a mechanism that is gone.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "ARCHITECTURE.md",
+      "hash": "fb6f14435547de4c",
+      "label": "1. Serialization (two-lane) — get/post/put/putRaw/delete…",
+      "to": "6bea1c6bfd5d469b",
+      "toLabel": "1. Scheduling (two-lane, bounded concurrency) — get/post…",
+      "reason": "The request-pipeline step 1 said requests are issued strictly one at a time and re-linked a promise chain; the drain loop dispatches bounded-concurrent and each task releases its permit in a finally, so there is no chain to re-link.",
       "date": "2026-09-28"
     },
     {
