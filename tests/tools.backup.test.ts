@@ -444,7 +444,7 @@ describe('backup_library', () => {
   // A 600-item playlist against a harness that serves 600, so "complete" and
   // "truncated at the per-playlist ceiling" are distinguishable by the item
   // count alone. The responder is shared by the three cases below.
-  const sixHundredItemPlaylist = (path: string, params: Record<string, unknown> | undefined) => {
+  const sixHundredItemPlaylist = (path: string, params?: Record<string, string>) => {
     if (path === '/me/playlists') {
       return {
         items: [{ id: 'large', name: 'Large Playlist', uri: 'spotify:playlist:large', items: { total: 600 } }],
