@@ -769,7 +769,7 @@ Beyond their endpoint-specific arguments, every tool shares this contract:
   | Family (manifest `scopeKey`) | publish `default: true` | publish `default: false` | publish **no** default |
   |---|---|---|---|
   | `playlists` | 49 | 1 (`import_playlist`) | 37 |
-  | `library` | 15 | 0 | 14 |
+  | `library` | 16 | 0 | 14 |
 
   The podcast and audiobook families are too small to tabulate and are split by module rather than by `scopeKey` — `archive_played_episodes` (`episodemgmt`) and `chapter_bookmarks` (`exhaust2misc`) preview by default, while `jump_to_chapter` (`audiobookcopilot`) and `start_podcast_session` (`podcastsession`, which the manifest files under `scopeKey: 'library'`) publish no default and commit on omission.
 
