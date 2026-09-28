@@ -2365,7 +2365,7 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "d9a5857680c4802a",
+        "hash": "ec0396fd5de80042",
         "label": "Returns: grouped results by type. Each item includes URI…"
       },
       {
@@ -2841,7 +2841,7 @@
         "label": "Inputs: limit (1–50, default 20), offset, fetchall (all …"
       },
       {
-        "hash": "6d7107f92d05e3df",
+        "hash": "985d30f963b54c8c",
         "label": "Returns: id, name, description, track count, ispublic, i…"
       },
       {
@@ -3709,7 +3709,7 @@
         "label": "Inputs: | Field | Type | Required | Description | |---|-…"
       },
       {
-        "hash": "dc10a1f069466aef",
+        "hash": "232a046a29a1468e",
         "label": "Returns: playlist name, owner, track count, ID, URI; plu…"
       },
       {
@@ -7146,9 +7146,9 @@
     }
   ],
   "provenance": {
-    "head": "beb6e7d74120cc0df2518da8e55fa8a9c1dbacd7",
-    "base": "ee364a8ade0db5fd88a2baa75f83aa3e1afb51be",
-    "upstream": "ee364a8ade0db5fd88a2baa75f83aa3e1afb51be",
+    "head": "9705c1fbb4caf7d1bf83cc8d7a6acdcd9862d2f0",
+    "base": "4895340dcad9c59697b3c3f30b7e1c23aa3087a3",
+    "upstream": "4895340dcad9c59697b3c3f30b7e1c23aa3087a3",
     "behind": false
   },
   "reanchored": [
@@ -7181,6 +7181,15 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "6d7107f92d05e3df",
+      "label": "Returns: id, name, description, track count, ispublic, i…",
+      "to": "985d30f963b54c8c",
+      "toLabel": "Returns: id, name, description, track count, ispublic, i…",
+      "reason": "#1556: get_user_playlists substituted 0 for a count Spotify never stated; the paragraph now says which of the two a read produced",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "8d91e983df3b8c08",
       "label": "/artists/{id}/top-tracks status (#901). The two platform…",
       "to": "68c3e9ff9ff5e7d3",
@@ -7195,6 +7204,24 @@
       "to": "1bd9ce1b66814558",
       "toLabel": "Row cap and emit-once (#895) — capRowSections and emitOn…",
       "reason": "rebase onto 76aad008: 1 missing / 1 unpinned, same file, same label, 1 reword; the row occurs once on main and once on the branch",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "d9a5857680c4802a",
+      "label": "Returns: grouped results by type. Each item includes URI…",
+      "to": "ec0396fd5de80042",
+      "toLabel": "Returns: grouped results by type. Each item includes URI…",
+      "reason": "#1556: search's PLAYLISTS rows rendered a 0 for a count Spotify never stated, so the paragraph now names which of the two arrived",
+      "date": "2026-09-27"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "dc10a1f069466aef",
+      "label": "Returns: playlist name, owner, track count, ID, URI; plu…",
+      "to": "232a046a29a1468e",
+      "toLabel": "Returns: playlist name, owner, track count, ID, URI; plu…",
+      "reason": "#1556: get_user_playlists_by_id substituted 0 for a count Spotify never stated; the paragraph now points at the shared rendering",
       "date": "2026-09-27"
     }
   ]

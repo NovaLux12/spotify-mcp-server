@@ -367,7 +367,17 @@ export interface SpotifyPlaylistSimple {
   uri: string;
   description: string | null;
   owner: { display_name: string | null; id: string };
-  items?: { total: number } | null;
+  /**
+   * The playlist's item page. `total` is optional because PagingObject makes
+   * it required only in the schema: a `/me/playlists` or `/search` row for a
+   * playlist whose page was never sent carries no page at all, and a caller
+   * that types this as `number` is asserting something the API does not
+   * guarantee (#1556 — the declared type contradicted a field the API may omit,
+   * the same failure as #803). Read the count through {@link playlistItemTotal}
+   * rather than reaching in here, so the legacy `tracks` spelling is handled
+   * once and an absent count stays absent.
+   */
+  items?: { total?: number } | null;
 }
 
 // Search response (GET /search)

@@ -43,6 +43,7 @@ import {
   batchSummary,
   playlistListFields,
   listStructuredContent,
+  playlistCountPhrase,
   ResponseFormat,
   normalizePlaylistReference,
   paginationInfo,
@@ -383,10 +384,14 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
 
       const lines = [`Your playlists (${total} total, showing ${shown.length}):`];
       for (const pl of shown) {
-        const trackCount = pl.items?.total ?? 0;
+        // #1556: a count Spotify did not state renders as unknown, never as 0.
+        // The `?? 0` this replaced claimed the playlist was empty on the strength
+        // of a page that was never read. The structured payload is untouched and
+        // stays raw (#110/#51), so the row itself still carries the difference.
+        const trackCount = playlistCountPhrase(playlistItemTotal(pl));
         const owner = pl.owner.display_name ?? pl.owner.id;
         lines.push(
-          `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`,
+          `  • "${pl.name}" by ${owner} (${trackCount}) | ID: ${pl.id} | URI: ${pl.uri}`,
         );
         if (fmt === 'detailed' && pl.description) lines.push(`    Description: ${pl.description}`);
       }

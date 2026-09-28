@@ -6,6 +6,7 @@ import type {
   SpotifyImage,
   SpotifyPlaylistRow,
 } from '../types/spotify.js';
+import { playlistItemTotal } from '../types/spotify.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -13,6 +14,7 @@ import {
   truncateItems,
   paginationInfo,
   listStructuredContent,
+  playlistCountPhrase,
 } from '../shaping.js';
 import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
 import { getConfig } from '../config.js';
@@ -166,11 +168,15 @@ export function registerUsersTools(server: McpServer, client: SpotifyClient): vo
 
       const detailed = args.response_format === 'detailed';
       const renderLine = (pl: SpotifyPlaylistRow): string => {
-        const trackCount = pl.items?.total ?? 0;
+        // #1556: a count Spotify did not state renders as unknown, never as 0.
+        // Same tolerance as the owner fallback below — degrade the rendering,
+        // do not invent the value. The structured payload is the raw row
+        // (#51/#52), so it keeps a stated 0 and an absent count apart already.
+        const trackCount = playlistCountPhrase(playlistItemTotal(pl));
         // #762: `owner` can arrive null; fall back to its id, then to a
         // placeholder, so one malformed row cannot fail the whole listing.
         const owner = pl.owner?.display_name ?? pl.owner?.id ?? 'unknown owner';
-        let line = `  • "${pl.name}" by ${owner} (${trackCount} tracks) | ID: ${pl.id} | URI: ${pl.uri}`;
+        let line = `  • "${pl.name}" by ${owner} (${trackCount}) | ID: ${pl.id} | URI: ${pl.uri}`;
         if (detailed && pl.description) line += ` | ${pl.description}`;
         return line;
       };
