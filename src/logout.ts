@@ -38,7 +38,9 @@
  * - **The token file is the exception.** A revoked-nowhere refresh token sitting
  *   readable in `~/.local/share/Trash/files/` is a live credential, which is the
  *   failure this whole command exists to prevent. It is overwritten and unlinked
- *   instead. This is one known file, not a recursive delete.
+ *   instead. Each one is a single file this module named, never a recursive
+ *   delete — and a machine with profiles has one token file per profile, so all
+ *   of them are named individually and shredded (#1591).
  *
  * `logout` is deliberately a CLI command and not an MCP tool: a destructive
  * tool would join the `tools/list` surface and every host would gain the
@@ -56,7 +58,7 @@ import { promisify } from 'node:util';
 
 import { accountsFile } from './accounts.js';
 import { cachePendingPath, cachePendingPaths, cachePersistPath, cachePersistPaths } from './cachepersist.js';
-import { resolveTokenFile } from './config.js';
+import { resolveTokenFile, tokenFilePaths } from './config.js';
 import { historyFilePath, historyLedgerPaths } from './history.js';
 import { exportRootDir, isInsideRoot, realpathAllowingMissing } from './paths.js';
 import { receiptsFilePath, receiptsFilePaths } from './receipts.js';
@@ -161,7 +163,28 @@ const STORE_DEFINITIONS: StoreDefinition[] = [
     kind: 'file',
     envVar: 'SPOTIFY_MCP_TOKEN_FILE',
     erasure: 'shred',
+    // `resolve` is the single-file answer, correct on a machine with one
+    // account; `expand` is what actually runs, and it is the same shape the
+    // mutation ledger and the receipt trail below already have (#1591).
+    //
+    // This store is the one that matters most when it is wrong. A profile's
+    // token file is a LIVE refresh token that Spotify publishes no way to
+    // revoke, and a token file the sweep leaves behind is not a leftover file —
+    // it is the exact outcome this command exists to prevent. With only
+    // `resolve`, `spotify-mcp logout` on a machine holding `tokens.json` and
+    // `tokens.work.json` shredded the first, never named the second, printed
+    // "Local stores cleared." and exited 0 while `tokens.work.json` sat on disk
+    // with a refresh token Spotify had no intention of invalidating. There is
+    // no honest way to print that: the report is the only evidence the user
+    // gets that anything was left, and it named one file.
+    //
+    // `--profile` never made this safe. It only chooses WHICH single file is
+    // the victim; the other profiles' tokens are equally unrevoked either way,
+    // so the flag could not be read as a workaround — and it must not become
+    // one, which is why `tokenFilePaths` enumerates across profiles rather
+    // than narrowing to the resolved answer.
     resolve: (env) => resolveTokenFile(env),
+    expand: (env) => tokenFilePaths(env),
   },
   {
     id: 'accounts',

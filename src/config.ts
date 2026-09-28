@@ -7,7 +7,9 @@
  * getConfig(); tests may re-bind it with initConfig(fakeEnv).
  */
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+
+import { accountFileNames } from './accountkey.js';
 
 export interface SpotifyMcpConfig {
   /** Default per-call truncation cap for list tools (#53). */
@@ -677,6 +679,47 @@ export function tokenFilePathForProfile(
  */
 export function resolveTokenFile(env: NodeJS.ProcessEnv = process.env): string {
   return tokenFilePathForProfile(validateProfileName(env.SPOTIFY_MCP_PROFILE), env);
+}
+
+/** The file name a profile's token file takes, for the DEFAULT account. */
+const TOKEN_FILE = 'tokens.json';
+
+/**
+ * EVERY token file on this machine, the resolved one first (#1591).
+ *
+ * `resolveTokenFile` is the single-file answer: correct on a machine with one
+ * account, and a partial answer on one with profiles, where the answer it
+ * gives is the *active* profile's file. For every other per-account store
+ * (the mutation ledger, the receipt trail, the read cache) logout enumerates
+ * across profiles — see `historyFilePaths`, `receiptsFilePaths`,
+ * `cachePersistPaths`, all of which walk the token directory by the same rule.
+ * The token file was the one that did not, so `logout` shredded exactly one of
+ * them, never named the others, and exited 0 reporting a clean sweep while
+ * another profile's refresh token stayed live and unrevoked. This is the list
+ * that closes that.
+ *
+ * The token FILE NAME is the only thing being enumerated, so the naming rule is
+ * `accountFileNames` rather than a private one: the store it derives is the
+ * token file itself, and every profile the server can act as is named
+ * `tokens.<profile>.json` by `tokenFilePathForProfile` above.
+ *
+ * ## The resolved file is included even when the naming rule would miss it
+ *
+ * `accountFileNames` derives names from the files PRESENT in a directory, and
+ * it cannot reach a token file outside that directory or under a name the
+ * profile rule does not produce — `SPOTIFY_MCP_TOKEN_FILE=/data/spotify-creds.json`
+ * names a real token file that no derivation from `dirname` would find. Dropping
+ * the resolved answer from the union would mean logout shredded a *different*
+ * file and left the live credential, so it is seeded first and the enumeration
+ * only ever adds to it. This is the one place the two halves can disagree, and it
+ * is resolved in favour of always naming what the server would read.
+ */
+export function tokenFilePaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const resolved = resolveTokenFile(env);
+  const dir = dirname(resolved);
+  const paths = new Set<string>([resolved]);
+  for (const name of accountFileNames(dir, TOKEN_FILE)) paths.add(join(dir, name));
+  return [...paths];
 }
 
 // ---------------------------------------------------------------------------

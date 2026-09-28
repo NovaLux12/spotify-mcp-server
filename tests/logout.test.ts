@@ -156,9 +156,14 @@ describe('localStorePaths', () => {
   it('resolves the token path through config.ts, not a retyped string', () => {
     const env = sandbox().env;
     const stores = localStorePaths({ env });
-    const token = stores.find((s) => s.id === 'token');
-    assert.ok(token);
-    assert.equal(token!.path, resolveTokenFile(env));
+    // The credential store `expand`s across profiles since #1591, so there is
+    // one store per token file and the id carries the file name. The RESOLVED
+    // path is the one the resolver names, and `tokenFilePaths` puts it first,
+    // so this asserts both: the single-file answer is still the answer, and it
+    // is not merely one of the enumerated ones by coincidence.
+    const tokens = stores.filter((s) => s.id.startsWith('token'));
+    assert.ok(tokens.length > 0, 'no token store in the registry');
+    assert.equal(tokens[0]!.path, resolveTokenFile(env));
   });
 
   it('places every store under the sandbox root, never under the real home', () => {
@@ -181,7 +186,10 @@ describe('localStorePaths', () => {
     process.env.HOME = box.root;
     try {
       const stores = localStorePaths({ env, profile: 'work' });
-      const token = stores.find((s) => s.id === 'token');
+      // `startsWith`, not equality: the credential store expands to one entry
+      // per token file (#1591) and each id carries the file name. The first is
+      // the resolved one, which is what `--profile` selects.
+      const token = stores.find((s) => s.id.startsWith('token'));
       assert.ok(token!.path.startsWith(box.root + '/'), token!.path);
       assert.ok(token!.path.endsWith('tokens.work.json'), token!.path);
     } finally {
@@ -193,7 +201,7 @@ describe('localStorePaths', () => {
   it('an explicit SPOTIFY_MCP_TOKEN_FILE outranks --profile', () => {
     const box = sandbox();
     const token = localStorePaths({ env: box.env, profile: 'work' }).find(
-      (s) => s.id === 'token',
+      (s) => s.id.startsWith('token'),
     );
     // This is resolveTokenFile's precedence, and logout must not invent its own:
     // pointing logout at a different file than the server reads would be a
@@ -204,7 +212,11 @@ describe('localStorePaths', () => {
   it('marks only the token store as overwritten rather than moved', () => {
     const stores = localStorePaths({ env: sandbox().env });
     const shredding = stores.filter((s) => s.erasure === 'shred');
-    assert.deepEqual(shredding.map((s) => s.id), ['token']);
+    // Base id, because the credential store expands to one store per token
+    // file since #1591 and each id then carries the file name. The claim being
+    // made is about WHICH STORE is irreversible, not about how many files this
+    // particular machine happens to have.
+    assert.deepEqual(shredding.map((s) => s.id.split(':')[0]), ['token']);
   });
 
   it('covers the stores issue #704 names', () => {
@@ -406,7 +418,7 @@ describe('planErasure', () => {
     assert.match(String(decision?.reason), /data directory itself/);
 
     // And the stores inside it are still erased individually.
-    assert.equal(decisions.find((d) => d.store.id === 'token')?.action, 'erase');
+    assert.equal(decisions.find((d) => d.store.id.startsWith('token'))?.action, 'erase');
     assert.equal(decisions.find((d) => d.store.id === 'search-history')?.action, 'erase');
   });
 });

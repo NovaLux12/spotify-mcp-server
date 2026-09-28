@@ -246,7 +246,10 @@ describe('a file-kind store that is a directory (#1309)', () => {
 
     const stores = localStorePaths({ env });
     const decisions = await planErasure(stores, { home: root });
-    const decision = decisions.find((d) => d.store.id === 'token');
+    // `startsWith`, not equality: the credential store expands to one entry per
+    // token file since #1591, and each id carries the file name. This sandbox
+    // has one, so the first is the planted path.
+    const decision = decisions.find((d) => d.store.id.startsWith('token'));
 
     assert.ok(decision);
     assert.equal(decision.action, 'refuse');
