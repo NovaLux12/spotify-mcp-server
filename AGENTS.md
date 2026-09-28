@@ -380,6 +380,7 @@ outcome.
 - `docs/distribution.md`: `surface-census`
 - `docs/cookbook.md`: `recipe-index`
 - `docs/v3-roadmap.md`: `v3-headline`
+- `docs/migration-v3.md`: `migration-tables`
 - `docs/configuration.md`: `env-toolsets`, `env-registration-keys`
 - `skills/spotify-exhaustive-feature-sweep/SKILL.md`: `surface-census`
 - `skills/spotify-mcp-competitor-comparison/SKILL.md`: `surface-census`

@@ -48,6 +48,12 @@ async function harness(): Promise<Client> {
   server.tool('auth_error', '401', throws(new SpotifyApiError(401, 'raw auth path /home/alice/.config/spotify/tokens.json')));
   server.tool('forbidden_error', '403', throws(new SpotifyApiError(403, 'private callback https://example.test/callback?code=secret')));
   server.tool('not_found_error', '404', throws(new SpotifyApiError(404, 'missing /home/alice/snapshots/private.json')));
+  // #1612: 400 and 422 are one arm of one classifier. They are registered as
+  // two tools with an IDENTICAL message on purpose — the only difference is the
+  // status — so the assertions below can hold them to the same class rather
+  // than to a class each was independently observed to produce.
+  server.tool('bad_request_error', '400', throws(new SpotifyApiError(400, 'Spotify rejected the request arguments')));
+  server.tool('unprocessable_error', '422', throws(new SpotifyApiError(422, 'Spotify rejected the request arguments')));
   server.tool('rate_limited_error', '429', throws(new SpotifyApiError(429, 'raw /tmp/archive.zip', 37, 'QUOTA_EXCEEDED')));
   server.tool('unavailable_error', '503', throws(new SpotifyApiError(503, 'raw /var/lib/spotify.snapshot')));
   server.tool('timeout_error', '408', throws(new SpotifyApiError(408, 'request timed out for Spotify')));
@@ -134,6 +140,11 @@ describe('production tool error contract (#921)', () => {
       { tool: 'auth_error', kind: 'auth', status: 401 },
       { tool: 'forbidden_error', kind: 'forbidden', status: 403 },
       { tool: 'not_found_error', kind: 'not_found', status: 404 },
+      // #1612 — the arm that was implemented and untested, and absent from
+      // SPEC.md's error table. `status` is the only thing that distinguishes
+      // these two rows, which is the claim the case below is built to make.
+      { tool: 'bad_request_error', kind: 'validation', status: 400 },
+      { tool: 'unprocessable_error', kind: 'validation', status: 422 },
       { tool: 'rate_limited_error', kind: 'rate_limited', status: 429, retryAfterSec: 37 },
       { tool: 'unavailable_error', kind: 'unavailable', status: 503 },
       { tool: 'timeout_error', kind: 'unavailable', status: 408 },
@@ -183,6 +194,79 @@ describe('production tool error contract (#921)', () => {
     const internal = envelope(await call(client, 'internal_error'));
     assert.equal(internal.tool, 'internal_error');
     assert.equal(internal.kind, 'internal');
+  });
+
+  it('classifies 400 and 422 identically, so one defect cannot split into two (#1612)', async () => {
+    // The regression this pins, stated as an EQUIVALENCE rather than as two
+    // expected values.
+    //
+    // `publicFailure` reaches these through ONE arm — `status === 400 || status
+    // === 422` — so there is exactly one class, one reason, one fix and one
+    // message shape available to them. Asserting `kind === 'validation'` twice
+    // would not notice the interesting failure: the two arms drifting apart the
+    // way a previous defect in this classifier drifted apart, where an
+    // UNANCHORED `required` in the message-regex fallback matched a
+    // server-side output-contract defect and split one bug into `validation`
+    // and `internal`, giving the caller two different pieces of advice about
+    // the same fault. A status-dependent branch is exactly where that shape
+    // reappears, so every field the caller reads is compared across the two
+    // statuses, and the two fields that are SUPPOSED to differ are named as
+    // such rather than skipped silently.
+    const client = await harness();
+    const badResult = await call(client, 'bad_request_error');
+    const unprocessableResult = await call(client, 'unprocessable_error');
+    const bad = envelope(badResult);
+    const unprocessable = envelope(unprocessableResult);
+
+    // The two fields that must differ, and why they are not a defect: the
+    // envelope names the tool that failed and carries the HTTP status the
+    // origin returned. Everything else is advice, and advice that differs
+    // between two spellings of the same status is a second answer to one
+    // question.
+    assert.equal(bad.status, 400);
+    assert.equal(unprocessable.status, 422);
+    assert.equal(bad.tool, 'bad_request_error');
+    assert.equal(unprocessable.tool, 'unprocessable_error');
+
+    for (const field of ['kind', 'reason', 'fix'] as const) {
+      assert.equal(
+        unprocessable[field],
+        bad[field],
+        `400 and 422 disagree on \`${field}\`: ${JSON.stringify(bad[field])} vs ${JSON.stringify(unprocessable[field])} — they are one arm of one classifier and must give the caller one answer`,
+      );
+    }
+
+    // Both land in the class the SPEC error table now documents, and the
+    // reason is the stable discriminator rather than the message text.
+    assert.equal(bad.kind, 'validation');
+    assert.equal(bad.reason, 'validation_failed');
+    // Not `unknown_param` and not `internal`: a wrong argument from the caller
+    // is a different act from a name the server never had, and a different act
+    // again from a crash. The regex fallback above the status arms can classify
+    // a plain `Error` into all three, so this is asserted on the typed path
+    // too.
+    assert.notEqual(bad.kind, 'internal');
+    assert.equal(unprocessable.kind, bad.kind);
+
+    // And neither carries a `param`: the status arms know the class, not which
+    // argument was wrong, so claiming one would be a guess. `param` is filled
+    // by the unknown-parameter path instead, which does know.
+    assert.equal(bad.param, undefined);
+    assert.equal(unprocessable.param, undefined);
+
+    // The prose, which is the half a caller in the default `text` format never
+    // reads `structuredContent` and therefore never sees the other half of.
+    // It opens with the tool name, so it is compared with that one
+    // substitution made — anything else differing is a second sentence of
+    // advice for the same fault.
+    const badText = (badResult.content[0]?.text ?? '').replace('bad_request_error', '<tool>');
+    const unprocessableText = (unprocessableResult.content[0]?.text ?? '').replace('unprocessable_error', '<tool>');
+    assert.equal(
+      unprocessableText,
+      badText,
+      `400 and 422 disagree on the prose a caller reads:\n  400: ${badText}\n  422: ${unprocessableText}`,
+    );
+    assert.ok(badText.length > 0, 'the classification prose is empty, so the comparison above proved nothing');
   });
 
   it('rejects unknown parameters before the handler and suggests real pagination names', async () => {

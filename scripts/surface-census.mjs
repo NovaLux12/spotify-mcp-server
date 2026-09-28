@@ -342,6 +342,23 @@ const { applyTaskSupport } = await import('../src/tasks.ts');
 // `tests/doc-figures.test.ts` fails on, and a cap that changes must move the
 // doc in the same commit.
 const { MAX_RESPONSE_BYTES } = await import('../src/shaping.ts');
+// #1630: the 3.0 retirement tables, rendered into `docs/migration-v3.md`. Read
+// from the same constants the runtime refusal messages are built from, so the
+// guide and the error text cannot describe two different retirements — a
+// migration table typed by hand is a second list of exactly the names these
+// tables already own, which is the failure mode AGENTS.md §6 records twice.
+const {
+  LEGACY_TOOL_ALIASES,
+  RETIRED_TOOL_ALIASES_REMOVED_IN,
+  RETIRED_TOOL_FORWARDS,
+  RETIRED_TOOL_FORWARDS_REMOVED_IN,
+  RETIRED_QUEUE_TOOLS,
+  RETIRED_QUEUE_TOOLS_REMOVED_IN,
+  RETIRED_PLAYLIST_INPUTS,
+  RETIRED_PLAYLIST_INPUTS_REMOVED_IN,
+  RETIRED_WALK_CAP_INPUTS,
+  RETIRED_WALK_CAP_INPUTS_REMOVED_IN,
+} = await import('../src/shaping.ts');
 // `module.name` is the registrar's export name, carried as data since the
 // loader is a thunk with no `.name` to read (#906). Two rows changed here:
 // `statsfm` and `receipts` used to print their module key because their
@@ -1535,6 +1552,130 @@ const cookbookIntro = `**${cookbook.count}** recipes you can paste to an agent (
  */
 const v3Headline = `Measured on this branch, just now: a default 3.0 session puts **${result.defaultTools} tools** in front of the model — ${result.defaultBytes.toLocaleString('en-US')} bytes of schema — drawn from **${result.tools}** this server knows how to register. The other ${result.tools - result.defaultTools} are one environment variable away, waiting behind \`SPOTIFY_MCP_TOOLSETS\` alongside **${result.resourceTemplates}** resource templates and **${result.prompts}** prompts.`;
 
+/**
+ * The 3.0 retirement tables, rendered for `docs/migration-v3.md` (#1630).
+ *
+ * Every name, every replacement and every version boundary in the block comes
+ * out of the constants in `src/shaping.ts` that the runtime refusal messages
+ * are themselves built from, so a guide and the error a migrating caller hits
+ * cannot describe two different retirements. Typing these tables is the exact
+ * failure AGENTS.md §6 records: a second hand-kept list of names the code
+ * already owns, going stale the moment a table gains a row.
+ *
+ * Three properties of the rendering, each load-bearing:
+ *
+ *  - **The runtime column is not the version column.** A row can carry
+ *    `v3.0` in "Removed in" and still forward in this tree — that is the
+ *    one-release window `RETIRED_TOOL_FORWARDS` exists to provide — so the two
+ *    are separate columns and neither is derived from the other. Collapsing
+ *    them would let a reader conclude that a name still answering calls has
+ *    not been retired, which is the notice/code disagreement AGENTS.md §5
+ *    calls "worse than no notice".
+ *  - **Replacement text is verbatim, not paraphrased.** The queue table prints
+ *    `RetiredQueueTool.call` exactly as the refusal puts it in `fix`, so the
+ *    string a reader copies is the string the server hands them.
+ *  - **Sorted within each family.** `Object.keys` order is an implementation
+ *    detail of where a row was typed; a table that reorders when an unrelated
+ *    row moves makes `--write` look like a real change.
+ */
+function migrationTables() {
+  const byName = (entries) => [...entries].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
+  const cell = (value) => `\`${value.replace(/\|/g, '\\|')}\``;
+  const table = (header, rows) => [
+    `| ${header.join(' | ')} |`,
+    `|${header.map(() => '---').join('|')}|`,
+    ...rows.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n');
+
+  const aliasRows = byName(Object.entries(LEGACY_TOOL_ALIASES)).map(([retired, canonical]) => [
+    cell(retired), cell(canonical), RETIRED_TOOL_ALIASES_REMOVED_IN,
+    'only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled',
+  ]);
+
+  const forwardRows = byName(Object.entries(RETIRED_TOOL_FORWARDS)).map(([retired, forward]) => [
+    cell(retired), cell(forward.tool), RETIRED_TOOL_FORWARDS_REMOVED_IN,
+    'yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note`',
+  ]);
+
+  const queueRows = byName(Object.entries(RETIRED_QUEUE_TOOLS)).map(([retired, entry]) => [
+    cell(retired), cell(entry.canonical), RETIRED_QUEUE_TOOLS_REMOVED_IN,
+    `no — refuses with the exact replacement call in \`fix\`: ${cell(entry.call)}`,
+  ]);
+
+  // The playlist shape carries a `kind` rather than a per-tool replacement, so
+  // the canonical is derived exactly as `canonicalFor()` derives it in
+  // `src/shaping.ts`. Both derive it the same way from the same value, which
+  // is the only reason a hand-copied `playlists` column would have been safe;
+  // it is derived here anyway so the guide has no independent spelling of it.
+  const playlistCanonical = (kind) => (kind === 'list' ? 'playlists' : 'playlist_a/playlist_b');
+  const playlistRows = byName(Object.entries(RETIRED_PLAYLIST_INPUTS)).flatMap(([tool, config]) =>
+    config.aliases.map((aliases) => [
+      cell(tool),
+      (Array.isArray(aliases) ? aliases : [aliases]).map(cell).join(' / '),
+      cell(playlistCanonical(config.kind)),
+      RETIRED_PLAYLIST_INPUTS_REMOVED_IN,
+      'no — refuses before any Spotify request, `kind: "validation"`, `reason: "retired_input"`',
+    ]));
+
+  const walkCapRows = byName(Object.entries(RETIRED_WALK_CAP_INPUTS)).map(([tool, entry]) => [
+    cell(tool), cell(entry.retired), cell(entry.canonical), RETIRED_WALK_CAP_INPUTS_REMOVED_IN,
+    'no — refuses before any Spotify request, `kind: "validation"`, `reason: "retired_input"`',
+  ]);
+
+  return [
+    '### Retired tool names',
+    '',
+    'These names are no longer advertised by `tools/list`. What a 3.0 caller',
+    'actually gets is stated per row, because the three families behave',
+    'differently and a single "removed" would misdescribe two of them.',
+    '',
+    '#### Legacy stats.fm aliases — removed in ' + RETIRED_TOOL_ALIASES_REMOVED_IN,
+    '',
+    'Each was the same tool registered twice: identical parameters, identical',
+    'handler, a description differing only by a suffix. The duplicate',
+    'registration is what went away, not the capability.',
+    '',
+    table(['Retired name', 'Canonical', 'Removed in', 'Still callable in 3.0?'], aliasRows),
+    '',
+    '#### Retired names that still forward — removed in ' + RETIRED_TOOL_FORWARDS_REMOVED_IN,
+    '',
+    'These are not the same tool twice, so a name-only rewrite would hand the',
+    'caller a schema error instead of the behaviour they asked for. Each call',
+    'is translated into its survivor\'s arguments first.',
+    '',
+    table(['Retired name', 'Forwards to', 'Removed in', 'Still callable in 3.0?'], forwardRows),
+    '',
+    '#### Retired queue-read names — removed in ' + RETIRED_QUEUE_TOOLS_REMOVED_IN,
+    '',
+    'Also not argument-compatible, and deliberately **not** rewritten by',
+    '`SPOTIFY_MCP_LEGACY_ALIASES=1`: the survivors take arguments the retired',
+    'tools did not, so a name-only rewrite would answer a different question',
+    'under a name that used to be right. The refusal names the exact call',
+    'instead — printed here verbatim, as the server sends it.',
+    '',
+    table(['Retired name', 'Canonical', 'Removed in', 'Still callable in 3.0?'], queueRows),
+    '',
+    '### Retired parameter names',
+    '',
+    'A call carrying one of these is refused **by name**, before any Spotify',
+    'request, with `kind: "validation"` and `reason: "retired_input"` — not with',
+    '`unknown_param`, which would claim the server never had the name. Both',
+    'names ride along in `error.param`.',
+    '',
+    '#### Retired playlist input spellings — removed in ' + RETIRED_PLAYLIST_INPUTS_REMOVED_IN,
+    '',
+    table(['Tool', 'Retired parameter', 'Send instead', 'Removed in', 'What a 3.0 caller gets'], playlistRows),
+    '',
+    '#### Retired walk caps — removed in ' + RETIRED_WALK_CAP_INPUTS_REMOVED_IN,
+    '',
+    'Both tools were durable-write tools, so lowering the retired name silently',
+    'truncated a snapshot or backup **on disk** while the response looked',
+    'normal. The caps now carry their own names.',
+    '',
+    table(['Tool', 'Retired parameter', 'Send instead', 'Removed in', 'What a 3.0 caller gets'], walkCapRows),
+  ].join('\n');
+}
+
 const blocks = [
   ['README.md', 'surface-census', shortSurface],
   ['README.md', 'gated-endpoints', gatedEndpointTable()],
@@ -1551,6 +1692,11 @@ const blocks = [
   ['docs/distribution.md', 'surface-census', distributionSurface(result)],
   ['docs/cookbook.md', 'recipe-index', cookbookIntro],
   ['docs/v3-roadmap.md', 'v3-headline', v3Headline],
+  // #1630: the 3.0 migration guide's retirement tables, rendered from the same
+  // `src/shaping.ts` constants the runtime refusals are built from. A
+  // hand-typed table here would be a second list of names the code already owns,
+  // which is the drift this gate exists to make impossible.
+  ['docs/migration-v3.md', 'migration-tables', migrationTables()],
   // #926: the two hand-typed name lists in the env reference. Both name what
   // `SPOTIFY_MCP_TOOLSETS` and `SPOTIFY_MCP_ENABLE_TOOLS`/`DISABLE_TOOLS`
   // accept, both are hand-maintained, and both had already drifted — see

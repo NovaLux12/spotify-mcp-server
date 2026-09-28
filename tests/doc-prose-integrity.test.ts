@@ -84,6 +84,12 @@ const EXPECTED_FILES = [
   'docs/configuration.md',
   'docs/cookbook.md',
   'docs/distribution.md',
+  // Added by #1630, which gave the 3.0 migration guide a generated block for
+  // its retirement tables — which is what made it a mixed document. Sorted
+  // into place rather than appended: both this list and the tree walk it is
+  // compared against are sorted, so a new mixed document lands where its name
+  // sorts, and the non-vacuity check only holds if the two orders agree.
+  'docs/migration-v3.md',
   'docs/schema-budgets.md',
   'docs/v3-roadmap.md',
   'docs/wave2-composites.md',
