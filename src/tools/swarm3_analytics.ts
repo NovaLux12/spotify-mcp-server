@@ -33,6 +33,7 @@ import {
 import type { ResponseFormatValue } from '../shaping.js';
 import { spotifyId } from '../refs.js';
 import { derivedAnalyticsToolServer } from '../derivedanalytics.js';
+import { utcDayIndex, utcHour } from '../timeframe.js';
 import { fetchArtistsPerId } from './catalog.js';
 import type {
   SpotifyPaged,
@@ -86,22 +87,11 @@ function playedAtMs(iso: string): number {
   return new Date(iso).getTime();
 }
 
-/** Hour-of-day in the UTC frame: the calendar hour written into played_at, not
- * the host's local one. Every hour/daypart/weekday bucket in this file reads
- * its calendar fields this way so a single payload never mixes UTC day metrics
- * with host-local hour metrics. */
-function utcHour(iso: string): number {
-  return Number.parseInt(iso.slice(11, 13), 10);
-}
-
 /** Weekday (Mon-Sun) of the UTC calendar date, from a full ISO instant or a
  * bare YYYY-MM-DD prefix. Parsed as a date, never as a local instant, so the
  * result cannot drift with the host time zone. */
 function utcWeekday(iso: string): string {
-  const y = Number.parseInt(iso.slice(0, 4), 10);
-  const m = Number.parseInt(iso.slice(5, 7), 10);
-  const d = Number.parseInt(iso.slice(8, 10), 10);
-  return WEEKDAYS[(new Date(Date.UTC(y, m - 1, d)).getUTCDay() + 6) % 7];
+  return WEEKDAYS[(utcDayIndex(iso) + 6) % 7];
 }
 
 /** The UTC day of an ISO instant: the raw date prefix, the frame the
@@ -947,7 +937,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
         top_tracks_window: args.time_range,
         history_plays: walk.items.length,
         buckets: rows,
-        note: 'Heuristic segmentation: daypart (local time) × whether the track is in your top-tracks window. Not an acoustic mood analysis.',
+        note: 'Heuristic segmentation: daypart (UTC) × whether the track is in your top-tracks window. Not an acoustic mood analysis.',
       };
       const topBucket = rows[0];
       return emit(rf, `Mood buckets: dominant ${topBucket?.bucket ?? '—'} (${topBucket?.plays ?? 0} plays, ${topBucket?.share ?? 0}%).`, payload);

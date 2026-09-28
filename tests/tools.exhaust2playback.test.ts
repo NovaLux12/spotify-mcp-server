@@ -810,6 +810,68 @@ test('weekday_heatmap buckets weekday × daypart and names the busiest slot', as
   assert.match(text(out), /Busiest slot: \w+ \w+ \(2 plays\)\./);
 });
 
+/** Run a body under a forced process time zone. Node re-reads TZ for Date's
+ * local-time accessors, so a host-local implementation cannot pass these.
+ * Mirrors the helper #823 added for the same defect class in
+ * tests/tools.swarm3analytics.test.ts. */
+async function inTimeZone<T>(tz: string, body: () => Promise<T>): Promise<T> {
+  const previous = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return await body();
+  } finally {
+    if (previous === undefined) delete process.env.TZ;
+    else process.env.TZ = previous;
+  }
+}
+
+test('weekday_heatmap buckets in the UTC frame whatever the host zone is (#1638)', async () => {
+  // Three plays straddling UTC midnight: the first two land on Sunday 2026-09-20
+  // in the late evening, the third on Monday 2026-09-21 just after midnight.
+  // Every one of them changes weekday or daypart under a non-UTC host zone, so
+  // a `getDay()`/`getHours()` implementation buckets all three differently and
+  // the busiest cell moves with it.
+  const straddling = {
+    items: [
+      recentRow('spotify:track:a', '2026-09-20T22:40:00Z', 'AAA'),
+      recentRow('spotify:track:b', '2026-09-20T23:50:00Z', 'BBB'),
+      recentRow('spotify:track:c', '2026-09-21T00:10:00Z', 'CCC'),
+    ],
+    next: null,
+  };
+
+  // The zone is set INSIDE the test, so this discriminates even when the suite
+  // runs pinned to UTC. That is the point: the assertion in the test above
+  // cannot tell a UTC implementation from a local one when TZ=UTC, because
+  // there the two agree. Reverting exhaust2_playback.ts to `getDay()` leaves
+  // the whole file green under UTC and only this loop red.
+  for (const tz of ['UTC', 'Pacific/Kiritimati', 'America/Los_Angeles', 'Asia/Kathmandu']) {
+    await inTimeZone(tz, async () => {
+      const h = makeHarness(registerExhaust2PlaybackTools, {
+        getResponse: (p) => (p === '/me/player/recently-played' ? straddling : undefined),
+      });
+      const out = (await h.invoke('weekday_heatmap', {})).structuredContent as {
+        grid: Record<string, number>;
+        busiest: { cell: string; plays: number };
+      };
+
+      // 22:40 and 23:50 are Sunday and both past the 22:00 daypart edge, so
+      // they share a cell; 00:10 is Monday. `partOf(0)` is 'afternoon' in this
+      // tool, which is its published edge and not what this test is about --
+      // the frame is, and the weekday half of the key is what moves without it.
+      assert.equal(out.grid['Sun night'], 2, `Sun night under TZ=${tz}`);
+      assert.equal(Object.values(out.grid).reduce((a, b) => a + b, 0), 3, `play total under TZ=${tz}`);
+      assert.deepEqual(out.busiest, { cell: 'Sun night', plays: 2 }, `busiest cell under TZ=${tz}`);
+
+      // The Monday play must be keyed on Monday under every zone, never on the
+      // Sunday or Saturday a local reading would give it at these offsets.
+      const mondayCell = Object.keys(out.grid).find((k) => k.startsWith('Mon'));
+      assert.ok(mondayCell, `a Monday cell exists under TZ=${tz}, got ${JSON.stringify(out.grid)}`);
+      assert.equal(out.grid[mondayCell], 1, `the Monday play is alone in its cell under TZ=${tz}`);
+    });
+  }
+});
+
 test('daily_pick is deterministic per date and seeded from the highlight pool', async () => {
   const h = makeHarness(registerExhaust2PlaybackTools, { getResponse: (p) => (p === '/me/player/recently-played' ? recentWindow() : undefined) });
   const a = await h.invoke('daily_pick', { date: '2026-08-27' });

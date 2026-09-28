@@ -17,6 +17,20 @@ jobs:
     name: Typecheck & test (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # #1629. The suite is TZ-pinned to UTC so the result is a property of the
+    # code rather than of the runner's clock. `ubuntu-latest` happens to default
+    # to UTC, so this block changes no outcome today -- which is the point. A
+    # green run was an accident of the runner's configuration, and a runner
+    # image or a self-hosted label that moved to any other zone would have
+    # turned it red with nothing in the diff to explain it. Declaring the
+    # invariant makes the dependency visible and removable.
+    #
+    # The two analytics suites (`tools.swarm3analytics`, `tools.libraryanalytics`)
+    # set `process.env.TZ` themselves and restore it, asserting identical output
+    # across zones on purpose. They are unaffected by this and were left alone:
+    # they test the timezone handling, this pins the harness that runs them.
+    env:
+      TZ: UTC
     strategy:
       fail-fast: false
       matrix:
@@ -202,3 +216,101 @@ jobs:
           test -n "$fail_count" && test "$fail_count" -eq 0
           grep -q '^# start of coverage report' test-results.tap
           grep -q '^# end of coverage report' test-results.tap
+
+      - name: Summarise test counts and coverage
+        # #1627. The step above enforced the coverage thresholds and then threw
+        # the numbers away: the two `grep`s stop at the report's sentinels and
+        # the percentages between them are never read, so a run that passed at
+        # 75.1% against a 75% floor and a run that passed at 99% are
+        # indistinguishable in the log. The counts had the same fate -- they
+        # existed only inside `sed` expressions and died with the shell.
+        #
+        # This publishes them instead. It is deliberately NOT a gate: deciding
+        # what a coverage drop should cost is a policy question, and adding an
+        # enforcement rule here would turn a reporting fix into a new gate that
+        # reddens main on the next unrelated refactor. Every value below is read
+        # from `test-results.tap`; none is recomputed, and a missing one prints
+        # as "unknown" rather than as a zero that would read like a real
+        # measurement.
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          set -uo pipefail
+          tap=test-results.tap
+          {
+            echo "### Test results (Node ${{ matrix.node-version }}, TZ=${TZ:-unset})"
+            echo
+            echo "| Metric | Value |"
+            echo "| --- | --- |"
+
+            # `field` prints "unknown" rather than nothing when the value is
+            # absent. It cannot lean on `|| echo unknown`: a `sed` that matches
+            # no line still exits 0, so the fallback never fires and the table
+            # gets an empty cell -- which reads as a measurement of nothing
+            # rather than as a measurement that was not taken. (Same shape as
+            # the two stats.fm bugs in AGENTS.md §6: a value that could not be
+            # read, rendered as a plausible one.)
+            field() {
+              local v
+              v="$(sed -n "s/^# $1 \\([0-9][0-9]*\\)\$/\\1/p" "$tap" 2>/dev/null | sed -n '$p')"
+              printf '%s' "${v:-unknown}"
+            }
+            echo "| Tests   | $(field tests) |"
+            echo "| Pass    | $(field pass) |"
+            echo "| Fail    | $(field fail) |"
+            echo "| Skipped | $(field skipped) |"
+            echo
+            echo "Thresholds: lines ≥75%, functions ≥70%, branches ≥60% (a breach fails the step above)."
+            echo
+
+            # The `all files` row is node's own roll-up, so this reports the
+            # measured aggregate rather than a number this workflow derived.
+            row="$(sed -n 's/^# all files | *\([0-9.]*\) *| *\([0-9.]*\) *| *\([0-9.]*\) *|.*/\1 \2 \3/p' "$tap" 2>/dev/null | sed -n '$p')"
+            if [ -n "$row" ]; then
+              echo "### Coverage (all files)"
+              echo
+              echo "| Metric | Measured | Floor |"
+              echo "| --- | --- | --- |"
+              echo "| Lines     | $(echo "$row" | cut -d' ' -f1)% | 75% |"
+              echo "| Branches  | $(echo "$row" | cut -d' ' -f2)% | 60% |"
+              echo "| Functions | $(echo "$row" | cut -d' ' -f3)% | 70% |"
+            else
+              echo "### Coverage"
+              echo
+              echo "_No \`all files\` coverage row was found in the TAP output._"
+            fi
+            echo
+            echo "Full TAP: \`test-results.tap\`, retained as a run artifact whether this run passed or failed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload TAP results
+        # #1627. `test-results.tap` was written and never retained: nothing in
+        # any workflow used `upload-artifact`, so the file died with the runner
+        # and a red run left no artifact to read. This is the whole of the
+        # "enforced then discarded" defect -- the coverage numbers existed for
+        # the length of one shell process.
+        #
+        # `if: ${{ !cancelled() }}` rather than the more obvious
+        # `if: always()`. The difference is only the cancelled case, and it is
+        # the difference that matters here: a cancelled job's steps are killed
+        # mid-write, so an upload from a cancelled run is a truncated file
+        # presented as a complete one. `!cancelled()` still covers every case
+        # this step exists for -- a red suite, a green suite, and a build that
+        # failed before the test step ever ran.
+        #
+        # It is also the only form this repository accepts. `tests/ci-cascade-
+        # guard.test.ts` defines "guarded" as literally carrying `!cancelled()`
+        # and asserts that every step from the first guard onward carries one;
+        # `always()` is a guard to Actions and invisible to that test, so it
+        # would have shipped a red build. Same tail as every gate below.
+        #
+        # `if-no-files-found: warn` because the file legitimately does not exist
+        # when the build fails before the test step, and a hard error there
+        # would add a second, misleading failure on top of the first.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-tap-node-${{ matrix.node-version }}
+          path: test-results.tap
+          if-no-files-found: warn
+          retention-days: 14
