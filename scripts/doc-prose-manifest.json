@@ -4911,7 +4911,7 @@
         "label": "Summary"
       },
       {
-        "hash": "a7437f9644cd4edf",
+        "hash": "8d977e2956f65028",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -4975,11 +4975,11 @@
         "label": "There are two separate things to undo when you stop usin…"
       },
       {
-        "hash": "4eee2add0cc61882",
+        "hash": "8000792d47bf77f8",
         "label": "Local stores. spotify-mcp logout erases the token file a…"
       },
       {
-        "hash": "bda6d9fe9104d905",
+        "hash": "dcefb05c88ef520a",
         "label": "Stores are moved, not deleted: to the freedesktop trash …"
       },
       {
@@ -5015,7 +5015,7 @@
         "label": "A refusal or a failure is a non-zero exit. Reporting suc…"
       },
       {
-        "hash": "33cf7c507a0e702f",
+        "hash": "40a927b29b3f9c7a",
         "label": "| Flag | Effect | |---|---| | --dry-run | List what woul…"
       },
       {
@@ -7377,9 +7377,9 @@
     }
   ],
   "provenance": {
-    "head": "eb10f7471af54522be48cdf406e0c25b6984f4bf",
-    "base": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
-    "upstream": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
+    "head": "0b8903d154ffddb9630485b4aaa9f47c3682fa5d",
+    "base": "36c20a9080e49dea471e73bf4953ff73148250ce",
+    "upstream": "36c20a9080e49dea471e73bf4953ff73148250ce",
     "behind": false
   },
   "reanchored": [
@@ -7421,11 +7421,38 @@
     },
     {
       "file": "docs/configuration.md",
+      "hash": "0e011f6278293caf",
+      "label": "To remove one snapshot ahead of its window, use the dele…",
+      "to": "8e9e67b89df0b0d0",
+      "toLabel": "To remove one snapshot ahead of its window, use the dele…",
+      "reason": "#1580 corrected the delete_backup sentence; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "1987a90e548e74ae",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "a7437f9644cd4edf",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1580 corrected a default in the env-var table; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
       "hash": "3017d1532d72bdeb",
       "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "to": "1987a90e548e74ae",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "#727 extends the env-var table rather than replacing it: measured on this tree, 70 data rows, adding SPOTIFY_MCP_LANES_FILE with no row lost.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "33cf7c507a0e702f",
+      "label": "| Flag | Effect | |---|---| | --dry-run | List what woul…",
+      "to": "40a927b29b3f9c7a",
+      "toLabel": "| Flag | Effect | |---|---| | --dry-run | List what woul…",
+      "reason": "#1591: --profile does not narrow the sweep, so the flag table row's 'that profile's token file' was wrong.",
       "date": "2026-09-28"
     },
     {
@@ -7438,12 +7465,57 @@
       "date": "2026-09-28"
     },
     {
-      "file": "docs/distribution.md",
-      "hash": "f48a5bda5e9607aa",
-      "label": "Merging the release PR is the last human step. The tag i…",
-      "to": "7fadc3618dfe8d18",
-      "toLabel": "Merging the release PR is the last human step. The tag i…",
-      "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
+      "file": "docs/configuration.md",
+      "hash": "4eee2add0cc61882",
+      "label": "Local stores. spotify-mcp logout erases the token file a…",
+      "to": "8000792d47bf77f8",
+      "toLabel": "Local stores. spotify-mcp logout erases the token file a…",
+      "reason": "#1591: logout now enumerates every profile's token file, so the paragraph's 'a store that is one file per account' list had to name the token files rather than only the read cache.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "546e404bd6606c08",
+      "label": "Every tool that writes a local file resolves its destina…",
+      "to": "6555776743433e73",
+      "toLabel": "Every tool that writes a local file resolves its destina…",
+      "reason": "#1580 corrected the write-root paragraph; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "9d265001651b66d2",
+      "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
+      "to": "06d6e0e506353873",
+      "toLabel": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
+      "reason": "#1580 corrected the receipts paragraph; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "a7437f9644cd4edf",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "8d977e2956f65028",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1591: the SPOTIFY_MCP_PROFILE row claimed logout --profile acts on that account alone; it erases every profile's stores, so the row now says so.",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "ba476774cb7634f6",
+      "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist, porta…",
+      "to": "b184356b04f402b4",
+      "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
+      "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "bda6d9fe9104d905",
+      "label": "Stores are moved, not deleted: to the freedesktop trash …",
+      "to": "dcefb05c88ef520a",
+      "toLabel": "Stores are moved, not deleted: to the freedesktop trash …",
+      "reason": "#1591: 'The token file is the single exception' became plural once one run shreds every profile's token file.",
       "date": "2026-09-28"
     },
     {
@@ -7462,6 +7534,15 @@
       "to": "83be75faa468ab15",
       "toLabel": "1. Call libraryhygiene and librarygenrereport. When a sp…",
       "reason": "#1578: the recipe glossed an orphaned single as a track whose album isn't saved; the predicate is three conditions (single release, no other liked track on that release, every credited artist has exactly one liked track overall) and every finding is low-confidence",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "docs/distribution.md",
+      "hash": "f48a5bda5e9607aa",
+      "label": "Merging the release PR is the last human step. The tag i…",
+      "to": "7fadc3618dfe8d18",
+      "toLabel": "Merging the release PR is the last human step. The tag i…",
+      "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
       "date": "2026-09-28"
     },
     {
@@ -7561,51 +7642,6 @@
       "to": "232a046a29a1468e",
       "toLabel": "Returns: playlist name, owner, track count, ID, URI; plu…",
       "reason": "#1556: get_user_playlists_by_id substituted 0 for a count Spotify never stated; the paragraph now points at the shared rendering",
-      "date": "2026-09-28"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "0e011f6278293caf",
-      "label": "To remove one snapshot ahead of its window, use the dele…",
-      "to": "8e9e67b89df0b0d0",
-      "toLabel": "To remove one snapshot ahead of its window, use the dele…",
-      "reason": "#1580 corrected the delete_backup sentence; re-pinned after the rebase",
-      "date": "2026-09-28"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "1987a90e548e74ae",
-      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "to": "a7437f9644cd4edf",
-      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "reason": "#1580 corrected a default in the env-var table; re-pinned after the rebase took the upstream manifest",
-      "date": "2026-09-28"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "546e404bd6606c08",
-      "label": "Every tool that writes a local file resolves its destina…",
-      "to": "6555776743433e73",
-      "toLabel": "Every tool that writes a local file resolves its destina…",
-      "reason": "#1580 corrected the write-root paragraph; re-pinned after the rebase",
-      "date": "2026-09-28"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "9d265001651b66d2",
-      "label": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
-      "to": "06d6e0e506353873",
-      "toLabel": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
-      "reason": "#1580 corrected the receipts paragraph; re-pinned after the rebase",
-      "date": "2026-09-28"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "ba476774cb7634f6",
-      "label": "SPOTIFYMCPDATADIR is read by the artist-watchlist, porta…",
-      "to": "b184356b04f402b4",
-      "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
-      "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
       "date": "2026-09-28"
     }
   ]
