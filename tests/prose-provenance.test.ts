@@ -79,6 +79,10 @@
  *    rather than git's behaviour.
  *  - **Nothing here writes to the checked-in manifest.** Every CLI run gets
  *    `--prose-manifest <copy>`, because `--prose-sync` *writes* that path.
+ *  - **The paragraph a retirement test deletes is derived, never named.** See
+ *    `retirementFixture` below for why, and for why the earlier version of these
+ *    tests — which hardcoded one paragraph of `ARCHITECTURE.md` — was a
+ *    documented trap rather than a simplification.
  */
 import './helpers/hermetic.js';
 
@@ -93,17 +97,20 @@ import { fileURLToPath } from 'node:url';
 
 import {
   contradictedByUpstream,
+  describeDocument,
   gitProvenanceIn,
   proseProvenanceVerdict,
   proseSyncRefusals,
   proseUnitHash,
   provenanceStampWarning,
+  readFilesAtRef,
   retirementKey,
   retirementStanding,
+  short,
   stampProvenance,
   syncProseManifest,
 } from '../scripts/prose-manifest.mjs';
-import type { ProseRetirement } from '../scripts/prose-manifest.mjs';
+import type { ProseManifest, ProseRetirement, ProseUnitPin } from '../scripts/prose-manifest.mjs';
 import { CLEAN_TREE, writeProvenanceFile } from './helpers/prose-tree.js';
 import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
 
@@ -226,6 +233,149 @@ function isAncestor(sha: string): boolean | null {
   return null;
 }
 
+/** The document every retirement fixture below deletes a paragraph from. */
+const FIXTURE_FILE = 'ARCHITECTURE.md';
+
+/**
+ * The real `origin/main` SHA, which the fixture reads `FIXTURE_FILE` at.
+ *
+ * A real ref rather than a fabricated SHA, deliberately: the evidence half of
+ * the refusal is read out of that ref, so a SHA git has never heard of would
+ * make the read fail and the check would pass for the wrong reason — the
+ * failure mode this whole file exists to test for. Nothing is written to the ref
+ * and no ref is moved.
+ */
+function originMain(): string {
+  return execFileSync('git', ['-C', ROOT, 'rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+}
+
+/** One paragraph a `--retire` run can drop, and the text to drop it from. */
+type RetirementFixture = {
+  /** The pin, as the live manifest records it. `label` is what the refusal prints. */
+  pin: ProseUnitPin;
+  /** The document with `pin`'s paragraph removed — what the refusal is staged against. */
+  truncated: string;
+};
+
+/**
+ * The paragraph a `--retire` refusal should be built from, chosen rather than
+ * named.
+ *
+ * ## Why this is derived and not hardcoded
+ *
+ * These tests used to delete "the line containing `Spotify is the system of
+ * record`" and assert the refusal named that phrase. That is a fixture that
+ * only works while a specific paragraph of a specific document keeps its
+ * specific opening words, and a documentation sweep is entitled to reword any
+ * of them.
+ *
+ * The damage was not cosmetic. `--prose-sync`'s evidence half
+ * (`contradictedByUpstream`) matches the pinned paragraph against the file at
+ * `origin/main` **by content hash**, so the moment a branch reworded that
+ * paragraph the live manifest pinned the new hash while `origin/main` still held
+ * the old one. The match failed, the "still present in their file at `<sha>`"
+ * line went absent, and the test went red — on a branch where the prose was
+ * entirely correct, blocking the sweep from ever getting a green run. A test
+ * that is a tripwire for the *repository* must not also be a tripwire for its
+ * own fixture.
+ *
+ * ## What the selection guarantees
+ *
+ * The precondition is now constructed rather than hoped for. A candidate must:
+ *
+ *  - **be pinned in the live manifest** — otherwise a retirement of it is not
+ *    the thing under test;
+ *  - **exist as a unit in the live document**, so deleting it drops a pinned
+ *    paragraph rather than deleting nothing;
+ *  - **be byte-identical at `origin/main`**, which is the precondition
+ *    `contradictedByUpstream` needs and the one that used to be assumed;
+ *  - **occupy exactly one line**, so it can be removed by line and the rest of
+ *    the document is untouched — a multi-line unit would have to be removed
+ *    whole, and removing part of it changes a different paragraph's text;
+ *  - **have a label at least `MIN_LABEL` characters long**, so the refusal the
+ *    assertions match on is a recognisable phrase rather than a two-word
+ *    heading that could plausibly appear anywhere in the output.
+ *
+ * ## Why it fails loudly
+ *
+ * No candidate means the document no longer has a paragraph of this shape, and
+ * that is worth stopping for: it is a real change to the fixture's
+ * preconditions, not something to skip past. A test that quietly declines to
+ * build its fixture is exactly the "a test that cannot fail" shape AGENTS.md §6
+ * warns about — it would report success while asserting nothing.
+ */
+const MIN_LABEL = 24;
+
+function retirementFixture(source: string, upstreamSha: string): RetirementFixture {
+  const manifest = JSON.parse(readFileSync(MANIFEST, 'utf8')) as ProseManifest;
+  const pins = manifest.files?.[FIXTURE_FILE] ?? [];
+
+  // The same read the census makes, through the same helper. Deriving the
+  // precondition from the implementation's own reader is the point: a second,
+  // hand-rolled `git show` would be a second thing that can disagree.
+  const upstream = readFilesAtRef(ROOT, upstreamSha, [FIXTURE_FILE])[FIXTURE_FILE];
+  assert.notEqual(
+    upstream,
+    undefined,
+    `${FIXTURE_FILE} could not be read at origin/main (${upstreamSha}), so no fixture paragraph can be `
+    + 'shown to be present upstream. The test cannot assert the evidence half without this read, and '
+    + 'failing here says why rather than passing for the wrong reason.',
+  );
+  const upstreamHashes = new Set(describeDocument(upstream).map((unit) => unit.hash));
+
+  const liveHashes = new Set(describeDocument(source).map((unit) => unit.hash));
+  const lines = source.split('\n');
+
+  const candidates = pins.filter((pin) => {
+    if (!upstreamHashes.has(pin.hash)) return false;
+    if (!liveHashes.has(pin.hash)) return false;
+    if (pin.label.length < MIN_LABEL) return false;
+    // Unique among this file's pins, so matching the refusal text on the label
+    // identifies *this* paragraph and cannot be satisfied by a neighbour the
+    // tool happened to list first.
+    if (pins.filter((other) => other.label === pin.label).length !== 1) return false;
+    // Exactly one line, so the removal below cannot take a neighbour with it.
+    return lines.filter((line) => proseUnitHash(line) === pin.hash).length === 1;
+  });
+
+  assert.ok(
+    candidates.length > 0,
+    `no pinned paragraph of ${FIXTURE_FILE} satisfies the retirement fixture: it must be pinned, present `
+    + `in the working tree, byte-identical at origin/main (${upstreamSha}), on a single line, and labelled `
+    + `with at least ${MIN_LABEL} characters. `
+    + `Checked ${pins.length} pin(s), ${[...upstreamHashes].length > 0 ? 'origin/main was readable' : 'origin/main was not readable'}. `
+    + 'This is a real change to the fixture preconditions, so the test stops here instead of skipping — '
+    + 'a skipped assertion is not a passing one.',
+  );
+
+  // Deterministic, so two runs on one tree pick the same paragraph and a
+  // failure is reproducible rather than a moving target.
+  const [pin] = candidates;
+
+  // Remove by content hash rather than by label prefix: a label is a truncated
+  // prefix, so two paragraphs can share one, and matching on it would delete
+  // whichever came first. The hash is the identity.
+  const truncated = lines.filter((line) => proseUnitHash(line) !== pin.hash).join('\n');
+
+  // The deletion has to have removed exactly the paragraph it claimed to, and
+  // nothing else. Without this the fixture could silently stage a refusal about
+  // a *different* paragraph than the one the assertions name.
+  const before = describeDocument(source);
+  const after = describeDocument(truncated);
+  assert.deepEqual(
+    before.filter((unit) => !after.some((kept) => kept.hash === unit.hash)).map((unit) => unit.hash),
+    [pin.hash],
+    'the fixture must retire exactly one paragraph, and it must be the one it selected',
+  );
+  assert.equal(
+    after.length,
+    before.length - 1,
+    `the fixture removed ${before.length - after.length} paragraph(s) rather than exactly one`,
+  );
+
+  return { pin, truncated };
+}
+
 /**
  * A real git repository under `dir`, with a real `refs/remotes/origin/main`.
  *
@@ -284,20 +434,19 @@ describe('prose pin provenance (#1440)', () => {
     // had never seen; the manifest copy below is asserted byte-identical, so a
     // fix that warns and writes anyway fails here.
     const repoBefore = await readFile(MANIFEST, 'utf8');
+    const source = await readFile(join(ROOT, FIXTURE_FILE), 'utf8');
+    const fixture = retirementFixture(source, originMain());
     await withScratchDir(async (dir) => {
       const copy = join(dir, 'manifest.json');
-      const truncated = join(dir, 'ARCHITECTURE.md');
-      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
-      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
-      assert.notEqual(kept.length, source.split('\n').length, 'the fixture paragraph was not found — this test would prove nothing');
+      const truncated = join(dir, FIXTURE_FILE);
       await writeFile(copy, repoBefore);
-      await writeFile(truncated, kept.join('\n'));
+      await writeFile(truncated, fixture.truncated);
       await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
 
       const run = runCensus([
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--prose-manifest', copy,
-        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-override', `${FIXTURE_FILE}=${truncated}`,
         '--prose-provenance', join(dir, 'provenance.json'),
       ]);
 
@@ -392,23 +541,23 @@ describe('prose pin provenance (#1440)', () => {
     // `--allow-stale` without reading anything.
     await withScratchDir(async (dir) => {
       const copy = join(dir, 'manifest.json');
-      const truncated = join(dir, 'ARCHITECTURE.md');
-      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
-      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      const truncated = join(dir, FIXTURE_FILE);
+      const source = await readFile(join(ROOT, FIXTURE_FILE), 'utf8');
+      const fixture = retirementFixture(source, originMain());
       await writeFile(copy, await readFile(MANIFEST, 'utf8'));
-      await writeFile(truncated, kept.join('\n'));
+      await writeFile(truncated, fixture.truncated);
       await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
 
       const run = runCensus([
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--prose-manifest', copy,
-        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-override', `${FIXTURE_FILE}=${truncated}`,
         '--prose-provenance', join(dir, 'provenance.json'),
       ]);
-      assert.match(
-        run.stderr,
-        /Spotify is the system of record/,
-        'the refusal must still say which paragraph is at stake, or the author cannot act on it',
+      assert.ok(
+        run.stderr.includes(fixture.pin.label),
+        'the refusal must still say which paragraph is at stake, or the author cannot act on it. '
+        + `Expected the label of the pinned paragraph the fixture retired:\n${run.stderr}`,
       );
     });
   });
@@ -424,34 +573,56 @@ describe('prose pin provenance (#1440)', () => {
     // `git show` — a fake SHA would make the read fail and the check would pass
     // for the wrong reason, which is the failure mode this file keeps testing
     // for. Nothing is written to the ref and no ref is moved.
+    //
+    // The paragraph is *derived* rather than named (see `retirementFixture`).
+    // It used to be "the line containing `Spotify is the system of record`",
+    // which made this test fail on any branch that reworded that one paragraph:
+    // the live manifest would pin the reworded hash, `origin/main` would still
+    // hold the old one, the hash match would fail, and the very line asserted
+    // below would go absent — a red run on a branch whose prose was entirely
+    // correct, which is what blocked a documentation sweep from getting green
+    // CI. The derived fixture is *selected* to be byte-identical at
+    // `origin/main`, so the precondition this assertion depends on is
+    // guaranteed rather than hoped for.
+    const upstream = originMain();
+    const source = await readFile(join(ROOT, FIXTURE_FILE), 'utf8');
+    const fixture = retirementFixture(source, upstream);
     await withScratchDir(async (dir) => {
-      const upstream = execFileSync('git', ['-C', ROOT, 'rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
       const copy = join(dir, 'manifest.json');
-      const truncated = join(dir, 'ARCHITECTURE.md');
-      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
-      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
-      assert.notEqual(kept.length, source.split('\n').length, 'the fixture paragraph was not found — this test would prove nothing');
+      const truncated = join(dir, FIXTURE_FILE);
       await writeFile(copy, await readFile(MANIFEST, 'utf8'));
-      await writeFile(truncated, kept.join('\n'));
+      await writeFile(truncated, fixture.truncated);
       await writeProvenanceFile(dir, { ...CLEAN_TREE, head: 'a'.repeat(40), upstream, behind: true });
 
       const run = runCensus([
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--prose-manifest', copy,
-        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-override', `${FIXTURE_FILE}=${truncated}`,
         '--prose-provenance', join(dir, 'provenance.json'),
       ]);
 
       assert.notEqual(run.status, 0, '--prose-sync retired a paragraph that is still present upstream');
-      assert.match(
-        run.stderr,
-        /still present in their file at d0b690f|still present in their file at [0-9a-f]{7}/,
-        `the refusal must cite the ref the paragraph is still present in:\n${run.stderr}`,
+      // The SHA is interpolated rather than matched against a pattern: the
+      // refusal has to cite *this* ref, and a `[0-9a-f]{7}` pattern would accept
+      // any commit-shaped string — the earlier `d0b690f|…` alternation accepted a
+      // hardcoded SHA that had not been the upstream tip for months.
+      const marker = `still present in their file at ${short(upstream)}`;
+      assert.ok(
+        run.stderr.includes(marker),
+        `the refusal must cite the ref the paragraph is still present in (${short(upstream)}):\n${run.stderr}`,
       );
-      assert.match(
-        run.stderr,
-        /Spotify is the system of record/,
-        'the contradiction must name the paragraph it is about — "something is wrong" is not actionable',
+      // Scoped to the contradiction block, not the whole refusal. The label is
+      // printed twice — once in the "this run would have retired" list and once
+      // under the marker above — so an unscoped `includes` is satisfied by the
+      // first list and would pass on a tool that named the paragraph nowhere
+      // near the contradiction. That is the same "an assertion that cannot
+      // fail" shape, one level down: this assertion is about *this* block, so it
+      // reads *this* block.
+      const contradiction = run.stderr.slice(run.stderr.indexOf(marker));
+      assert.ok(
+        contradiction.includes(fixture.pin.label),
+        'the contradiction must name the paragraph it is about — "something is wrong" is not actionable. '
+        + `Expected the label of the pinned paragraph the fixture retired:\n${run.stderr}`,
       );
       assert.equal(await readFile(copy, 'utf8'), await readFile(MANIFEST, 'utf8'), 'the manifest copy changed on a refusal');
     });
@@ -654,11 +825,11 @@ describe('prose pin provenance (#1440)', () => {
     // is the field that is already the thing that went wrong in #1439.
     await withScratchDir(async (dir) => {
       const copy = join(dir, 'manifest.json');
-      const truncated = join(dir, 'ARCHITECTURE.md');
-      const source = await readFile(join(ROOT, 'ARCHITECTURE.md'), 'utf8');
-      const kept = source.split('\n').filter((line) => !line.includes('Spotify is the system of record'));
+      const truncated = join(dir, FIXTURE_FILE);
+      const source = await readFile(join(ROOT, FIXTURE_FILE), 'utf8');
+      const fixture = retirementFixture(source, originMain());
       await writeFile(copy, await readFile(MANIFEST, 'utf8'));
-      await writeFile(truncated, kept.join('\n'));
+      await writeFile(truncated, fixture.truncated);
       const acknowledgement = 'the #1402 reword is already in this tree, verified by hand';
       await writeProvenanceFile(dir, { ...CLEAN_TREE, behind: true });
 
@@ -666,7 +837,7 @@ describe('prose pin provenance (#1440)', () => {
         '--prose-sync', '--retire', RETIREMENT_REASON,
         '--allow-stale', acknowledgement,
         '--prose-manifest', copy,
-        '--prose-override', `ARCHITECTURE.md=${truncated}`,
+        '--prose-override', `${FIXTURE_FILE}=${truncated}`,
         '--prose-provenance', join(dir, 'provenance.json'),
       ]);
       assert.equal(run.status, 0, `an acknowledged stale tree must be accepted:\n${run.stderr}`);
@@ -677,8 +848,11 @@ describe('prose pin provenance (#1440)', () => {
         acknowledgement,
         'the acknowledgement was not recorded, so a reviewer cannot tell that this retirement was written from a tree that could not vouch for itself',
       );
-      const entry = (manifest.retired ?? []).find((row: { label: string }) => row.label.startsWith('Spotify is the system of record'));
-      assert.ok(entry, 'the retirement itself was not recorded');
+      // Found by content hash, the same identity `retirementFixture` deleted by.
+      // The label is a truncated prefix and is not unique, so a `startsWith`
+      // lookup could be answered by a different record entirely.
+      const entry = (manifest.retired ?? []).find((row: ProseRetirement) => row.hash === fixture.pin.hash);
+      assert.ok(entry, `the retirement of ${fixture.pin.hash} itself was not recorded`);
       assert.equal(entry.reason, RETIREMENT_REASON, 'the override must not rewrite the reason — that is the field that was already wrong');
     });
   });
