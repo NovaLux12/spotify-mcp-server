@@ -29,6 +29,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_HTTP_ALLOW_NON_LOOPBACK` | unset | The second, separate opt-in required before `SPOTIFY_MCP_HTTP_BIND` may name a non-loopback address. Setting it alone changes nothing: the bind stays loopback. |
 | `SPOTIFY_MCP_MAX_ITEMS` | `50` | Default per-call item cap for list tools; `max_results` overrides per call. |
 | `SPOTIFY_MCP_FETCH_ALL_CAP` | `500` | Hard cap for `fetch_all=true` pagination walks. |
+| `SPOTIFY_MCP_PLAYLIST_ITEMS_CAP` | `500` | Per-playlist item ceiling inside a library backup, applied under the fetch-all cap. Raise it to back up a playlist with more than 500 items; truncation is recorded either way. |
 | `SPOTIFY_MCP_HISTORY` | unset | `1`, `true`, `yes`, or `on` logs one JSONL line per agent-driven mutation. |
 | `SPOTIFY_MCP_HISTORY_DIR` | `~/.spotify-mcp/history` | Directory containing `mutations.jsonl`. |
 | `SPOTIFY_MCP_HISTORY_MAX_BYTES` | `1048576` | Size in **bytes** at which `mutations.jsonl` rotates to `mutations.jsonl.1`. Only consulted when `SPOTIFY_MCP_HISTORY` is on. Unset, non-numeric, zero, and negative values fall back to the default rather than disabling rotation. Exactly one generation is kept, so the ledger on disk never exceeds twice this, and `spotify_doctor` reports the live and archive sizes against the cap plus the record count. |
@@ -180,7 +181,7 @@ Two things a profile does *not* promise. It decides what the consent screen **as
 
 ### Runtime limits and requests
 
-`SPOTIFY_REQUEST_TIMEOUT_MS` applies an abort timer to every outbound Spotify request and token refresh. `SPOTIFY_MCP_MAX_ITEMS` sets the default list truncation cap; a call can still pass its own `max_results`. `SPOTIFY_MCP_FETCH_ALL_CAP` bounds `fetch_all=true` pagination and related scan walks; page explicitly with `limit`/`offset` when the cap is reached.
+`SPOTIFY_REQUEST_TIMEOUT_MS` applies an abort timer to every outbound Spotify request and token refresh. `SPOTIFY_MCP_MAX_ITEMS` sets the default list truncation cap; a call can still pass its own `max_results`. `SPOTIFY_MCP_FETCH_ALL_CAP` bounds `fetch_all=true` pagination and related scan walks; page explicitly with `limit`/`offset` when the cap is reached. `SPOTIFY_MCP_PLAYLIST_ITEMS_CAP` is a second, smaller ceiling applied per playlist during a library backup: a walk may be allowed 5,000 items and a single playlist still stops at this value, so raising the fetch-all cap alone does not produce a complete backup of a large playlist.
 
 `SPOTIFY_MCP_FANOUT_CONCURRENCY` bounds how many of a scan's requests are outstanding at once. The freshness-radar tools used to issue them one at a time, so a 25-show `show_new_episodes` cost 25 serial round trips; they now overlap under this width. It is a concurrency bound and not a rate limiter — it never retries anything, and a 429 still stops the scan rather than being re-sent. The request count is the same either way, so raising it trades latency against burst size without changing what a call costs.
 

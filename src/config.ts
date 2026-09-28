@@ -17,6 +17,15 @@ export interface SpotifyMcpConfig {
   /** "Fetch everything" pagination cap (#55). */
   fetchAllCap: number;
   /**
+   * Per-playlist item ceiling inside a library backup (#1603). This is a
+   * SECONDARY limit: a backup walk still stops at `fetchAllCap`, but this is
+   * the smaller of the two applied per playlist. It is separate from
+   * `fetchAllCap` because a 5,000-item account and a 5,000-item single
+   * playlist are not the same request — raising one should not silently raise
+   * the other.
+   */
+  playlistItemsCap: number;
+  /**
    * Token file path. ENV-derived on purpose — this snapshot describes the
    * environment, so it knows nothing about `--profile`. Anything that must
    * honour the command line resolves through `getTokenFilePath()` in
@@ -115,6 +124,7 @@ export interface SpotifyMcpConfig {
 
 export const DEFAULT_MAX_ITEMS = 50;
 export const DEFAULT_FETCH_ALL_CAP = 500;
+export const DEFAULT_PLAYLIST_ITEMS_CAP = 500;
 export const DEFAULT_FRESHNESS_BUDGET = 25;
 
 /**
@@ -1290,6 +1300,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SpotifyMcpConf
   return {
     maxItems: positiveInt(env.SPOTIFY_MCP_MAX_ITEMS, DEFAULT_MAX_ITEMS),
     fetchAllCap: positiveInt(env.SPOTIFY_MCP_FETCH_ALL_CAP, DEFAULT_FETCH_ALL_CAP),
+    playlistItemsCap: positiveInt(
+      env.SPOTIFY_MCP_PLAYLIST_ITEMS_CAP,
+      DEFAULT_PLAYLIST_ITEMS_CAP,
+    ),
     tokenFile: resolveTokenFile(env),
     profile: validateProfileName(env.SPOTIFY_MCP_PROFILE),
     headless: truthyEnv(env.SPOTIFY_HEADLESS),
@@ -1553,6 +1567,13 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
     name: 'SPOTIFY_MCP_FETCH_ALL_CAP',
     summary: 'Hard cap for fetch_all=true pagination walks.',
     default: String(DEFAULT_FETCH_ALL_CAP),
+    inHelp: true,
+  },
+  {
+    name: 'SPOTIFY_MCP_PLAYLIST_ITEMS_CAP',
+    summary:
+      'Per-playlist item ceiling inside a library backup, applied under the fetch-all cap. Raise it to back up a playlist with more items than the default allows; the backup records truncation either way.',
+    default: String(DEFAULT_PLAYLIST_ITEMS_CAP),
     inHelp: true,
   },
   {

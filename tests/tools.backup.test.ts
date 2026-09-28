@@ -441,6 +441,82 @@ describe('backup_library', () => {
     assert.match(textOf(out), /Large Playlist.*fetched 500 of 600 items, cap 500 — TRUNCATED/);
   });
 
+  // A 600-item playlist against a harness that serves 600, so "complete" and
+  // "truncated at the per-playlist ceiling" are distinguishable by the item
+  // count alone. The responder is shared by the three cases below.
+  const sixHundredItemPlaylist = (path: string, params: Record<string, unknown> | undefined) => {
+    if (path === '/me/playlists') {
+      return {
+        items: [{ id: 'large', name: 'Large Playlist', uri: 'spotify:playlist:large', items: { total: 600 } }],
+        total: 1,
+        limit: 50,
+        offset: 0,
+        next: null,
+      };
+    }
+    if (path === '/playlists/large/items') {
+      const offset = Number(params?.offset ?? 0);
+      const size = Math.min(100, 600 - offset);
+      return {
+        items: Array.from({ length: size }, (_, index) => ({
+          item: { uri: `spotify:track:${offset + index}`, name: `Track ${offset + index}` },
+        })),
+        total: 600,
+        limit: 100,
+        offset,
+        next: offset + size < 600 ? 'next' : null,
+      };
+    }
+    return baseResponder(path, params);
+  };
+
+  it('SPOTIFY_MCP_PLAYLIST_ITEMS_CAP raises the per-playlist ceiling above 500 (#1603)', async () => {
+    // The pre-fix failure: a bare `const PLAYLIST_ITEMS_CAP = 500` with no
+    // setting able to reach it, so this assertion could not pass no matter
+    // what an operator configured. Revert the config plumbing and it drops
+    // back to 500 with items_truncated true.
+    //
+    // BOTH caps are raised because the applied limit is
+    // `Math.min(walkCap, playlistItemsCap)` — the walk cap defaults to 500,
+    // so a per-playlist cap of 600 alone is still bounded to 500. That is the
+    // whole reason the second variable is needed, and the next test pins it.
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '5000', SPOTIFY_MCP_PLAYLIST_ITEMS_CAP: '600' });
+    const h = harness(sixHundredItemPlaylist);
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(
+      await readFile((out.structuredContent as { file: string }).file, 'utf8'),
+    ) as LibraryBackup;
+    assert.equal(snap.playlists[0]!.items.length, 600, 'raising the cap must store every item');
+    assert.equal(snap.playlists[0]!.items_truncated, false, 'a raised cap is not truncation');
+    assert.equal(snap._meta.counts.playlists_truncated, 0);
+    assert.equal(snap._meta.snapshot_state, 'complete');
+  });
+
+  it('raising only SPOTIFY_MCP_FETCH_ALL_CAP does NOT lift the per-playlist ceiling (#1603)', async () => {
+    // This is the specific confusion the new variable exists to remove. The
+    // walk cap and the per-playlist cap are separate limits; a generous walk
+    // cap is not a licence to store a whole large playlist.
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '5000' });
+    const h = harness(sixHundredItemPlaylist);
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(
+      await readFile((out.structuredContent as { file: string }).file, 'utf8'),
+    ) as LibraryBackup;
+    assert.equal(snap.playlists[0]!.items.length, 500, 'the per-playlist cap is its own limit');
+    assert.equal(snap.playlists[0]!.items_truncated, true, 'and truncation is still reported honestly');
+  });
+
+  it('the smaller of the two caps wins when both are configured (#1603)', async () => {
+    initConfig({ SPOTIFY_MCP_FETCH_ALL_CAP: '100', SPOTIFY_MCP_PLAYLIST_ITEMS_CAP: '600' });
+    const h = harness(sixHundredItemPlaylist);
+    const out = await h.invoke('backup_library', { response_format: 'concise' });
+    const snap = JSON.parse(
+      await readFile((out.structuredContent as { file: string }).file, 'utf8'),
+    ) as LibraryBackup;
+    assert.equal(snap.playlists[0]!.items.length, 100, 'a walk cap below the item cap still bounds the walk');
+    assert.equal(snap.playlists[0]!.items_truncated, true);
+  });
+
   it('walks multi-page offset endpoints until next is null', async () => {
     const h = harness((path, params) =>
       path === '/me/playlists' ? offsetPages('/me/playlists', [

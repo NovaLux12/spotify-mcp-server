@@ -405,9 +405,16 @@ async function walkFollowedArtists(client: SpotifyClient, cap: number): Promise<
   return { rows: out, complete, truncated, reportedTotal };
 }
 
-/** Per-playlist item cap (#159): at most 500 valid items are stored. */
-const PLAYLIST_ITEMS_CAP = 500;
-
+/**
+ * Per-playlist item cap (#159), now configurable (#1603).
+ *
+ * This was a bare `const = 500` with no setting able to raise it, so a
+ * playlist with more than 500 items could never be backed up in full no
+ * matter what the operator configured. It is a function rather than a value
+ * because the config snapshot is read per call, matching how
+ * `getConfig().fetchAllCap` is used at the walk sites in this module.
+ */
+const playlistItemsCap = (): number => getConfig().playlistItemsCap;
 
 /** Page valid playlist items and report a true next-page cap crossing. */
 async function collectPlaylistItems(
@@ -415,7 +422,7 @@ async function collectPlaylistItems(
   playlistId: string,
   cap: number,
 ): Promise<WalkResult<BackupPlaylistRow['items'][number]>> {
-  const limit = Math.min(cap, PLAYLIST_ITEMS_CAP);
+  const limit = Math.min(cap, playlistItemsCap());
   const out: BackupPlaylistRow['items'] = [];
   let offset = 0;
   let complete = false;
@@ -551,7 +558,7 @@ async function collectSnapshotDetailed(client: SpotifyClient, cap: number): Prom
     collections: statuses,
     playlistItems: {
       fetched: playlistRows.reduce((n, p) => n + p.items.length, 0),
-      cap_per_playlist: Math.min(cap, PLAYLIST_ITEMS_CAP),
+      cap_per_playlist: Math.min(cap, playlistItemsCap()),
       truncated: playlistRows.some((p) => p.items_truncated),
       truncated_playlists: playlistRows.filter((p) => p.items_truncated).length,
     },
@@ -1009,7 +1016,7 @@ function stringArrayField(record: Record<string, unknown>, key: string): string[
 export function registerBackupTools(server: McpServer, client: SpotifyClient): void {
   server.tool(
     'backup_library',
-    'Snapshot your ENTIRE library to a local JSON file (read-only against Spotify): liked tracks, saved albums/shows/episodes/audiobooks, followed artists, and every playlist with its items. Walks capped at SPOTIFY_MCP_FETCH_ALL_CAP (default 500 per category). Files land in SPOTIFY_MCP_BACKUP_DIR (default ~/.spotify-mcp/backups), mode 0600.',
+    'Snapshot your ENTIRE library to a local JSON file (read-only against Spotify): liked tracks, saved albums/shows/episodes/audiobooks, followed artists, and every playlist with its items. Walks capped at SPOTIFY_MCP_FETCH_ALL_CAP (500/category) and each playlist at SPOTIFY_MCP_PLAYLIST_ITEMS_CAP (500); the smaller wins, so a full backup of a large playlist needs both raised. Files land in SPOTIFY_MCP_BACKUP_DIR (default ~/.spotify-mcp/backups), mode 0600.',
     {
       notes: z.string().optional().describe('Free-text note stored in the snapshot _meta block'),
       response_format: ResponseFormat,
@@ -1032,13 +1039,13 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
           audiobooks: cap,
           followed_artists: cap,
           playlists: cap,
-          playlist_items_cap: Math.min(cap, PLAYLIST_ITEMS_CAP),
+          playlist_items_cap: Math.min(cap, playlistItemsCap()),
         };
         const categories = 7;
         const estimatedRequests = categories * perCatPages + 10; // ~10 playlist item walks extra, rough
         const lines = [
           `[dry run] backup_library would walk ${categories} categories (tracks, albums, shows, episodes, audiobooks, followed_artists, playlists) capped at ${cap} per category (~${perCatPages} page(s) each at limit 50).`,
-          `Plus per-playlist item walks: up to ~10 playlists × ~${Math.ceil(Math.min(cap, PLAYLIST_ITEMS_CAP) / 100)} page(s) each.`,
+          `Plus per-playlist item walks: up to ~10 playlists × ~${Math.ceil(Math.min(cap, playlistItemsCap()) / 100)} page(s) each.`,
           `Estimated: ~${estimatedRequests}+ requests (varies with actual playlist count).`,
         ];
         const payload: Record<string, unknown> = {
@@ -1085,7 +1092,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
             },
             playlistItems: {
               fetched: 0,
-              cap_per_playlist: Math.min(cap, PLAYLIST_ITEMS_CAP),
+              cap_per_playlist: Math.min(cap, playlistItemsCap()),
               truncated: false,
               truncated_playlists: 0,
             },
