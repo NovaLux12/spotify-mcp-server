@@ -2109,8 +2109,36 @@
         "label": "dryrun default on mutating tools (v2, #827) — a mutating…"
       },
       {
-        "hash": "1fe8e57ff768b53f",
+        "hash": "6ff321e0dbe1a3ea",
         "label": "dryrun default in the playback family (v2, #836) — BREAK…"
+      },
+      {
+        "hash": "4379a6dfd785f6e0",
+        "label": "There is no \"still unchanged\" state. #827's DryRunDefaul…"
+      },
+      {
+        "hash": "702cdfb8d7303070",
+        "label": "| Family (manifest scopeKey) | publish default: true | p…"
+      },
+      {
+        "hash": "86b109d3a259c3bb",
+        "label": "The podcast and audiobook families are too small to tabu…"
+      },
+      {
+        "hash": "1cf57aa738710028",
+        "label": "A missing schema default does not imply a commit, and it…"
+      },
+      {
+        "hash": "1f39fbdcdf9d606e",
+        "label": "1. The schema declares no default and the handler defaul…"
+      },
+      {
+        "hash": "5415c2b35e7f136c",
+        "label": "1566 re-gated the /me/library removal half and left the …"
+      },
+      {
+        "hash": "5cd0f6eb8ab4fb69",
+        "label": "dryrun defaults are counted from the finalized registry,…"
       },
       {
         "hash": "4eda7c0e9340583a",
@@ -7341,9 +7369,15 @@
     }
   ],
   "provenance": {
+<<<<<<< HEAD
     "head": "eb10f7471af54522be48cdf406e0c25b6984f4bf",
     "base": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
     "upstream": "3a6d29c792d7a3c495f71bf22cf00eef039c01fe",
+=======
+    "head": "bd055b98863afcb0330b085b27debead93b1c6c3",
+    "base": "504a96371fa82e71567fa49c983d67a1cce5fce6",
+    "upstream": "504a96371fa82e71567fa49c983d67a1cce5fce6",
+>>>>>>> 19b53186 (chore(prose): re-pin #1571's SPEC.md paragraphs after the rebase onto 504a9637)
     "behind": false
   },
   "reanchored": [
@@ -7408,6 +7442,15 @@
       "to": "7fadc3618dfe8d18",
       "toLabel": "Merging the release PR is the last human step. The tag i…",
       "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
+      "date": "2026-09-28"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "1fe8e57ff768b53f",
+      "label": "dryrun default in the playback family (v2, #836) — BREAK…",
+      "to": "6ff321e0dbe1a3ea",
+      "toLabel": "dryrun default in the playback family (v2, #836) — BREAK…",
+      "reason": "#1571 rewrote the paragraph's library/playlist/podcast claim: #827's DryRunDefault was rolled onto those families partially and by module, so each family now holds both conventions at once. A missing schema default implies neither a commit nor a preview.",
       "date": "2026-09-28"
     },
     {
