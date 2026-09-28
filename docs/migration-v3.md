@@ -137,24 +137,27 @@ registration is what went away, not the capability.
 | `taste_profile` | `statsfm_taste_profile` | v3.0 | only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled |
 | `taste_recommendations` | `statsfm_taste_recommendations` | v3.0 | only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled |
 
-#### Retired names that still forward — removed in v3.0
+#### Retired transfer and volume names — removed in v3.0
 
 These are not the same tool twice, so a name-only rewrite would hand the
-caller a schema error instead of the behaviour they asked for. Each call
-is translated into its survivor's arguments first.
+caller a schema error instead of the behaviour they asked for. They are no
+longer forwarded either: a call on one is refused, and the refusal names
+the survivor plus the arguments the forwarding used to supply — several of
+which the survivor's own schema does not imply. The note column below is
+printed from the same constant the refusal message is built from.
 
-| Retired name | Forwards to | Removed in | Still callable in 3.0? |
+| Retired name | Replaced by | Removed in | Still callable in 3.0? |
 |---|---|---|---|
-| `apply_device_presets` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `apply_volume_plan` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `handoff` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `mute` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `plan_volume_level_across_devices` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `room_level` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `switch_device` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `transfer_playback_with_state` | `transfer_playback` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `unmute` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
-| `volume_step` | `set_volume` | v3.0 | yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note` |
+| `apply_device_presets` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'preset'. |
+| `apply_volume_plan` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level' and the plan's volume as volume_percent; an omitted device list meant every volume-capable device, which is all_devices: true. |
+| `handoff` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: add preserve_position: true — the track and position carry over instead of restarting at 0:00 on the target. |
+| `mute` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'mute'. |
+| `plan_volume_level_across_devices` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level', volume_percent, all_devices: true when no device list was given, and dry_run: true — it was a planner and never committed. |
+| `room_level` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'level' and no volume_percent, which copies the active device's level to the others. |
+| `switch_device` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: pass the device as `device`; it defaulted play to true and the replacement does not, so send play: false to transfer paused. |
+| `transfer_playback_with_state` | `transfer_playback` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `transfer_playback` instead: add preserve_position: true and restore_shuffle_repeat: true; it defaulted play to true. |
+| `unmute` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: op: 'unmute', which restores the level mute kept. |
+| `volume_step` | `set_volume` | v3.0 | no — refuses before any Spotify request, `kind: "unknown_tool"`, `reason: "retired_tool_alias"`; `fix` names the survivor — call `set_volume` instead: pass the same step as delta_step. |
 
 #### Retired queue-read names — removed in v3.0
 
