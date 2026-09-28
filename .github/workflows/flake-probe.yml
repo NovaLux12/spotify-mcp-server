@@ -1,0 +1,151 @@
+name: Flake probe (time zone / day boundary)
+
+# #1629. `ci.yml` pins `TZ: UTC` and runs the suite once per push. That is the
+# right default — it is what makes a red run mean "the code is wrong" — but it
+# also means the suite only ever sees one zone, at one time of day. Two classes
+# of bug cannot show up in such a run:
+#
+#   * Code that reads the host zone (`toLocaleString`, `getHours`, a bare
+#     `new Date(string)`) is correct at UTC and wrong elsewhere. #823 and #824
+#     were exactly this and were fixed by tests that pin the zone themselves,
+#     so the pattern is known to recur here.
+#   * Code that is correct at, say, 04:00 UTC and wrong within a minute of
+#     midnight — a day-bucketed rollup, a "recent 24h" window, a date-seeded
+#     pick. Running once at an arbitrary hour never lands there on purpose.
+#
+# So this workflow runs the suite at deliberately awkward clocks, on a schedule
+# and on demand, and stays out of the pull-request path entirely. A failure here
+# is a finding to investigate; it does not block a merge, and it is not
+# branch-protected.
+#
+# ## On the clock mechanism — read this before trusting a green run
+#
+# There is no faketime here, and that is a decision rather than an omission.
+# Three mechanisms were considered:
+#
+#   1. `libfaketime` via `LD_PRELOAD`. It is the only one that can move the
+#      clock to an arbitrary instant. It was rejected: it is not installed on
+#      GitHub-hosted runners (it needs an `apt-get install`, adding a network
+#      dependency and a root install to a test job), it is known to break
+#      Node's timers and its worker threads in ways that produce hangs rather
+#      than clean failures, and — decisively — I could not verify any of that
+#      here, because this box has no `faketime` binary and no permission to
+#      install one. Shipping an unverifiable clock-shim that could turn a real
+#      suite hang into a mysterious red is worse than not having it.
+#   2. Node's own `mock.timers`. Per-test and opt-in; it cannot be applied from
+#      outside a test file, so it would mean editing ~284 files to probe a
+#      hypothesis. Out of scope.
+#   3. **Choosing the real clock, and the real zone, to be awkward.** The suite
+#      runs for real, at whatever time the scheduler picks, with `TZ` set to
+#      deliberately extreme zones. This is what shipped.
+#
+# What (3) does and does not buy, stated plainly: it genuinely exercises the
+# zone-sensitivity class — a run under `Pacific/Kiritimati` (UTC+14) and one
+# under `Etc/GMT+12` (UTC-12) put the local day boundary at a different offset
+# from the UTC one, and `Asia/Kathmandu` (UTC+05:45) is a 45-minute offset that
+# no whole-hour assumption survives. It does NOT guarantee the run lands within
+# a minute of local midnight, which is the second class above; a scheduled run
+# is a crapshoot for that, and pretending otherwise would be a claim this file
+# cannot support. A green run here means "no zone-sensitivity bug today". It
+# does not mean "no day-boundary bug has ever existed".
+
+on:
+  schedule:
+    # 03:12 UTC daily, plus 17:53 UTC — deliberately not on the hour, because
+    # every scheduled workflow in the world is queued at :00 and a probe that
+    # competes for the same runners as everyone else's :00 job is a probe that
+    # gets delayed. Off-the-hour also means the local date differs between the
+    # two runs for at least one of the zones below.
+    - cron: '12 3 * * *'
+    - cron: '53 17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Never cancel one probe with another: a cancelled run produces no result,
+  # and two of these are scheduled close enough together to collide.
+  group: flake-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  boundary:
+    name: Suite under TZ ${{ matrix.tz }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      # Every zone must report. One red zone is the finding; cancelling the
+      # rest on it would hide which of them is affected.
+      fail-fast: false
+      matrix:
+        # Etc/GMT±N are POSIX signs: Etc/GMT+12 is twelve hours BEHIND UTC.
+        # Both extremes are past UTC+12/-12, so no zone's local date can agree
+        # with UTC's for the whole run. Kathmandu is the 45-minute offset.
+        tz: [UTC, Etc/GMT+12, Pacific/Kiritimati, Asia/Kathmandu]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Use Node.js 24.x
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24.x
+          cache: npm
+
+      # This job's whole reason to exist is the variable under test, so it is
+      # set at the step that runs the suite rather than as job `env:`. The job
+      # deliberately does NOT reuse `scripts/pin-tz.mjs` — that module exists to
+      # pin local runs to UTC, and using it here would pin the probe to the one
+      # zone it is trying to vary.
+      - name: Record the clock and zone under test
+        run: |
+          echo "TZ=${{ matrix.tz }}"
+          echo "UTC now:   $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          echo "Local now: $(TZ=${{ matrix.tz }} date '+%Y-%m-%dT%H:%M:%S%z (%Z)')"
+          # The local date differing from the UTC date is the property that
+          # makes this run worth its runner-minutes. Printed so a red run says
+          # which property was under test rather than leaving it to be guessed.
+          local_date="$(TZ=${{ matrix.tz }} date '+%Y-%m-%d')"
+          utc_date="$(date -u '+%Y-%m-%d')"
+          if [ "$local_date" = "$utc_date" ]; then
+            echo "Local and UTC dates agree today; this run still covers the zone's offset."
+          else
+            echo "Local date ($local_date) differs from UTC date ($utc_date) — day-bucketing code is under test."
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      # `npm test` cannot be used here, for the reason above: it now loads
+      # `scripts/pin-tz.mjs`, which would overwrite this step's `TZ` with UTC
+      # and make all four matrix legs the same run. It also reports to the
+      # default spec reporter and writes no file, so the run is invoked with
+      # the TAP reporter and tee'd to give the upload below something real.
+      #
+      # `pipefail` keeps the suite's exit status: without it a piped-to-`tee`
+      # failure exits 0 and every red zone would report green, which is the one
+      # thing a probe must never do. The build step is kept because `npm test`
+      # builds first, and a probe measuring a stale `dist/` measures the wrong
+      # tree.
+      - name: Run the suite under this zone
+        env:
+          TZ: ${{ matrix.tz }}
+        shell: bash
+        run: |
+          set -o pipefail
+          npm run build
+          node --import tsx --test-reporter=tap --test 'tests/*.test.ts' 2>&1 | tee test-results.tap
+
+      - name: Upload TAP results
+        # Retained per zone, because "which zone broke" is the whole question
+        # this workflow exists to answer, and a single merged artifact would
+        # answer it only by being read four times. `if-no-files-found: ignore`
+        # rather than `warn`: the file is absent only when the build itself
+        # failed, and that failure is already reported by the step above.
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: flake-probe-tap-${{ matrix.tz }}
+          path: test-results.tap
+          if-no-files-found: ignore
+          retention-days: 14
