@@ -677,12 +677,159 @@ describe('#1529 swarm3_playlistops reads the playlist total, never the row count
         assert.doesNotMatch(String(r.unmet), /NaN/, `chunk ${i} must not name a number arithmetic invented`);
         assert.match(String(r.unmet), /no baseline/, `chunk ${i} must name the missing baseline`);
       }
-      assert.equal(h.stub.playlists.get('src')?.uris.length, 0, 'both chunks landed');
+      // The write did land in both cases — the point of this line is that a
+      // non-zero remainder would be the #A6-003 ORDERING, not a chunk that
+      // failed to arrive. Under ascending positions the first chunk removes
+      // rows 0-99, the second chunk's positions then address shifted rows, and
+      // 50 of the 150 survive: a `50 !== 0` failure under a message about
+      // DELIVERY sends a maintainer to the chunking loop while the sort that
+      // broke is `doomedDesc`, in another file. #1616. The property itself is
+      // asserted directly in the `#A6-003` describe below.
+      assert.equal(
+        h.stub.playlists.get('src')?.uris.length,
+        0,
+        'all 150 rows are gone. A remainder here is the tail-first ordering, not chunk delivery: a chunk '
+        + 'that lands shifts every position after it, so the sends must run descending (doomedDesc in '
+        + 'src/tools/swarm3_playlistops.ts) for the later chunk to still address the rows it names.',
+      );
     } finally {
       if (priorConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
       else process.env.SPOTIFY_MCP_CONFIRM = priorConfirm;
       initConfig();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1616 — the tail-first ordering, asserted as the property it is
+// ---------------------------------------------------------------------------
+
+/**
+ * #A6-003 is a claim about ORDER, and nothing in the tree asserted it.
+ *
+ * `remove_playlist_range` deletes by POSITION, and a position is an index into
+ * the playlist *as it stands when the request lands*. So a chunk that lands
+ * shifts every position below it by the number of rows it removed, and any
+ * later request carrying a pre-shift index addresses a different row. Sending
+ * the doomed rows in descending order keeps every later index valid, because
+ * the rows a later chunk names all sit ABOVE the rows an earlier chunk removed.
+ * That is what the comment above `doomedDesc` in `swarm3_playlistops.ts` argues,
+ * and the only assertion anywhere that touches it read the FINAL ROW COUNT.
+ *
+ * A final-row-count assertion does catch the regression — but by accident, and
+ * it misnames the cause. Under ascending order the first chunk removes rows
+ * 0–99, the second chunk's positions then address shifted rows, 50 of the 150
+ * survive, and the failure reads `50 !== 0` under a message about chunk
+ * DELIVERY. A maintainer reading that is sent to the chunking loop, while the
+ * sort that actually broke sits in another file.
+ *
+ * So the property is stated here directly: the removals go out in strictly
+ * descending position order, and replaying that sequence against a model of
+ * the playlist shows every position was in range at the instant it was sent.
+ * The second half is what makes the first one mean something — descending is
+ * only correct relative to what the earlier chunks removed.
+ */
+describe('#A6-003 remove_playlist_range deletes tail-first', () => {
+  /**
+   * The positions one DELETE body carried, in the order the body listed them.
+   *
+   * `tracks[].positions` is the whole wire contract for a positional delete, so
+   * this is the level the property lives at — not the stub's spliced result,
+   * which is the thing under suspicion.
+   */
+  const positionsOf = (body: unknown): number[] => {
+    const tracks = (body as { tracks?: unknown } | null)?.tracks;
+    if (!Array.isArray(tracks)) return [];
+    return tracks.flatMap((t) => {
+      const positions = (t as { positions?: unknown } | null)?.positions;
+      return Array.isArray(positions) ? positions.map(Number) : [];
+    });
+  };
+
+  /** 150 rows, the size #1529 uses — two chunks at the 100-per-request cap. */
+  const wideSource = () => Array.from({ length: 150 }, (_, i) => trackUri(i));
+
+  async function deleteWholeRange() {
+    // Above REMOVE_ELICIT_THRESHOLD, so the commit asks. The documented
+    // automation bypass is what lets the write reach the two chunks; the gate
+    // itself is asserted from both sides in tests/tools.bulk-removal-gates.test.ts.
+    const priorConfirm = process.env.SPOTIFY_MCP_CONFIRM;
+    process.env.SPOTIFY_MCP_CONFIRM = 'never';
+    initConfig({ ...process.env, SPOTIFY_MCP_FETCH_ALL_CAP: '200' });
+    try {
+      const h = harness(registerSwarm3PlaylistopsTools, {
+        mutates: true,
+        playlists: [{ id: 'src', name: 'Source', uris: wideSource() }],
+      });
+      const out = await h.invoke('remove_playlist_range', {
+        playlist_id: 'src',
+        start: 0,
+        end: 150,
+        dry_run: false,
+        response_format: 'json',
+      });
+      const chunks = h.stub.writes
+        .filter((w) => w.method === 'DELETE' && w.id === 'src')
+        .map((w) => positionsOf(w.body));
+      return { h, chunks, out };
+    } finally {
+      if (priorConfirm === undefined) delete process.env.SPOTIFY_MCP_CONFIRM;
+      else process.env.SPOTIFY_MCP_CONFIRM = priorConfirm;
+      initConfig();
+    }
+  }
+
+  it('sends every removal in descending position order, so no chunk invalidates the next', async () => {
+    const { chunks } = await deleteWholeRange();
+    assert.equal(chunks.length, 2, '150 rows is two chunks at the playlist_writes cap of 100');
+
+    const sent = chunks.flat();
+    assert.equal(sent.length, 150, 'every doomed row is addressed exactly once');
+    for (const [i, position] of sent.entries()) {
+      const previous = i === 0 ? undefined : sent[i - 1]!;
+      assert.ok(
+        previous === undefined || position < previous,
+        `removal ${i} sent position ${position} after ${previous}. Positions are indices into the `
+        + 'playlist AS IT STANDS, so a chunk that lands shifts every later index down: sending them '
+        + 'ascending makes the second chunk address the wrong rows. The sort that has to be descending '
+        + 'is `doomedDesc` in src/tools/swarm3_playlistops.ts — not the chunking, and not delivery.',
+      );
+    }
+  });
+
+  it('keeps each chunk valid against the playlist as it stands when that chunk lands', async () => {
+    const { chunks } = await deleteWholeRange();
+
+    // Replay the requests against a model of the playlist, exactly as the
+    // endpoint would: each request's positions refer to the rows present when
+    // it lands, and a position that names a row already gone is a request the
+    // server would answer with a snapshot that deleted the wrong thing.
+    const model = wideSource();
+    const stale: number[] = [];
+    for (const chunk of chunks) {
+      for (const position of [...chunk].sort((a, b) => b - a)) {
+        if (position < 0 || position >= model.length) {
+          stale.push(position);
+          continue;
+        }
+        model.splice(position, 1);
+      }
+    }
+
+    assert.deepEqual(
+      stale,
+      [],
+      `these positions named no row at the moment they were sent: ${stale.join(', ')}. Every send is `
+      + 'an index into the CURRENT playlist, so the rows have to leave from the tail backwards '
+      + '(doomedDesc in src/tools/swarm3_playlistops.ts) for the later chunks to still be addressing '
+      + 'the rows they name.',
+    );
+    assert.equal(
+      model.length,
+      0,
+      'replaying the requests that were sent removes all 150 rows; any remainder is a position that '
+      + 'addressed a shifted row, which is the tail-first ordering failing, not a dropped write',
+    );
   });
 });
 
