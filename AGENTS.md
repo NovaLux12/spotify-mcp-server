@@ -133,19 +133,22 @@ variants are the legacy path; every playlist tool here already uses `/items`.
 
 ### Blocked for post-Nov-2024 apps — deliberately not wrapped
 
-These fail at runtime on app registrations created after November 2024. This
-server ships no tools for them and you should not add any. A struck-through row
-is the exception: it is a different state (removed outright, or gated) and its
-Status cell says so — see the next section before reading one as "never
-wrapped":
+These fail at runtime on app registrations created after November 2024, and on
+existing apps still in **development mode** without a pending extension request
+— the restriction is not only about app age. This server ships no tools for them
+and you should not add any. A struck-through row is the exception: it is a
+different state (removed outright, or gated) and its Status cell says so — see
+the next section before reading one as "never wrapped":
 
 | Endpoint | Status |
 |---|---|
-| `GET /recommendations`, `GET /recommendations/available-genre-seeds` | Blocked for post-Nov-2024 apps |
+| `GET /recommendations` | Blocked for post-Nov-2024 apps |
 | `GET /artists/{id}/related-artists` | Blocked for post-Nov-2024 apps |
 | `GET /audio-features/{id}`, `GET /audio-analysis/{id}` | Blocked for post-Nov-2024 apps |
+| `GET /browse/featured-playlists` | Blocked for post-Nov-2024 apps |
 | ~~`GET /browse/categories`~~ | **REMOVED Feb 2026** — `get_categories` / `get_category_playlists` were **deleted** (#638). No endpoint serves the browse category tree; nothing replaced them. The family still has live callers — see the registration-dependent section below before concluding the path is dead |
-| `GET /browse/new-releases`, `GET /browse/featured-playlists` | Blocked/removed — do not use |
+| `GET /browse/new-releases` | **REMOVED Feb 2026**, not a Nov-2024 restriction — do not use |
+| `GET /recommendations/available-genre-seeds` | **Not on the Nov 2024 list.** That post names Recommendations, not this operation; the schema marks it `deprecated: true` and no removal list names it. Do not wrap it either |
 | Lyrics endpoints | Not available via the Web API — do not use |
 
 ### February 2026: two different states, and the label is not one of them
@@ -885,11 +888,14 @@ The fix pattern for both: make the test exercise the comparison, then revert
 the source change and confirm the test actually fails.
 
 **A guard's scope is part of its contract, and widening it is a measurement
-before it is a fix.** `scripts/check-error-param-names.mjs` walks `src/tools`
+before it is a fix.** `scripts/check-error-param-names.mjs` walked `src/tools`
 and nothing else, so a message naming a parameter that does not exist could sit
 in `shaping.ts`, `result.ts` or `accounts.ts` with the gate green — the modules
 that own the shared error paths. Widening the walk turned the gate **red**, and
-that is the part worth reading: the fix was never "change a glob". Measured on
+that is the part worth reading: the fix was never "change a glob". What shipped
+is a partition, not a wider glob — the two registration-keyed rules are still
+asserted over `src/tools` and nothing else, and a third, module-scope rule runs
+over all of `src/`. Measured on
 the tree the guard was written against, the findings ran 15 → 11 → 4 → 0, one
 decision at a time — four were the shipped CLI's own flags, seven were the
 guard's own vocabulary being incomplete (`playlist_a` and `playlist_b` reach
@@ -1059,5 +1065,6 @@ rediscovering it the hard way.
 - Conventional Commit title; a `Closes #NNN` footer per issue you actually
   fixed. The changelog is generated — do not write it.
 - After merging, `scripts/close-issues-from-pr.sh <pr>` has been run and every
-  issue it names is verifiably closed. See §5.5 — a squash-merged PR does not
+  issue it names is verifiably closed. See §5, *Closing the issue is a separate
+  step from landing the fix* — a squash-merged PR does not
   close what its subject only *references*.

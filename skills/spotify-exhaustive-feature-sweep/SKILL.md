@@ -375,7 +375,8 @@ process are all standing state, not standing approval.
 - `src/toolsets.ts` — active-set and per-module override semantics.
 - `src/tools/*.ts` — tool implementations and graceful endpoint handling.
 - `src/resources/index.ts` and `src/resources/templates.ts` — live resource
-  and template registrations, including show/episode ID completions.
+  and template registrations, including show, episode and audiobook ID
+  completions.
 - `src/prompts/index.ts` — prompt registrations.
 - `src/client.ts`, `src/config.ts`, and `src/shaping.ts` — pagination, caps,
   and response shaping.

@@ -39,16 +39,19 @@ Current default production baseline: **559 tools**, **17 fixed resources**, **28
    |---|---|
    | stdio transport | `src/index.ts` imports and connects `StdioServerTransport`; no HTTP/SSE server entry is wired there |
    | OAuth is Authorization Code + PKCE, not server-side dynamic client registration | `src/auth.ts` builds an authorization request with `code_challenge_method=S256` and exchanges `authorization_code` plus `code_verifier` |
-   | resource argument completion is present | `src/resources/templates.ts` attaches `complete.id` to the bare `spotify://show/{id}` and `spotify://episode/{id}` templates; `tests/resources.templates.test.ts` exercises their suggesters |
+   | resource argument completion is present | `src/resources/templates.ts` attaches `complete.id` to the `spotify://show/{id}`, `spotify://episode/{id}` and `spotify://audiobook/{id}` templates; `tests/resources.templates.test.ts` exercises the show and episode suggesters |
    | no roots/sampling feature is exposed | Search `src/` for roots and sampling handlers and confirm no implementation; describe these as client capabilities that this server does not consume, not as a conformance failure |
 
    For completion, verify the protocol path rather than inferring it from
    template registration. With a connected MCP client, call `client.complete`
-   using a `ref/resource` URI of `spotify://show/{id}` or
-   `spotify://episode/{id}`, argument name `id`, and an empty value. The
-   suggesters read the first saved-library IDs from `/me/shows` or
-   `/me/episodes` (up to ten); an unavailable library or failed request returns
-   an empty list. The query-string twins do not carry completion callbacks.
+   using a `ref/resource` URI of `spotify://show/{id}`,
+   `spotify://episode/{id}` or `spotify://audiobook/{id}`, argument name `id`,
+   and an empty value. The
+   suggesters read the first saved-library IDs from `/me/shows`,
+   `/me/episodes` or `/me/audiobooks` (up to ten); an unavailable library or
+   failed request returns an empty list. Each entity shape is one template that
+   absorbs its query string, so there is no query-string twin that could lack a
+   callback.
    Do not claim completion for the artist, album, track, or playlist templates.
 
    Criterion: absent optional features are labeled optional differences, and
