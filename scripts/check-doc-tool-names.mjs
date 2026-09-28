@@ -514,10 +514,13 @@ const retiredToolNames = new Set([
   'taste_recommendations',
   'record_feedback',
   // #848 — the transfer and volume tool families, collapsed onto one tool each.
-  // Each name still FORWARDS to its survivor with the flags its behaviour
-  // needed (`handoff` → `transfer_playback` with `preserve_position: true`), so
-  // a migration table can name what it replaced; the names are simply not
-  // registered any more, which is what this list records.
+  // A call on one of these is REFUSED, not forwarded: it returns
+  // `kind: 'unknown_tool'`, `reason: 'retired_tool_alias'`, and a `fix` naming
+  // the survivor plus the flags its behaviour used to be given (`handoff` →
+  // `transfer_playback` with `preserve_position: true`). That is why the names
+  // belong here even though nothing registers them — a migration table still
+  // has to be able to say what each one replaced, and this list is what lets a
+  // doc name them at all.
   'handoff',
   'switch_device',
   'transfer_playback_with_state',

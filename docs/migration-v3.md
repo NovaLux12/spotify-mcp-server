@@ -82,9 +82,8 @@ those apart without parsing prose.
 | What you sent | `kind` | `reason` | `error.param` | Where to look it up |
 |---|---|---|---|---|
 | A retired parameter name | `validation` | `retired_input` | the retired name(s) | the parameter tables below |
-| A retired tool name that still forwards | *(succeeds)* | — | — | carries `deprecated_inputs` + `deprecation_note` instead |
-| A retired tool name that does not forward | `unknown_tool` | `unknown_tool` | — | the "Retired tool names" tables below, and `fix` names the survivor |
-| A retired tool name that never existed / is gone with no replacement | `unknown_tool` | `unknown_tool` | — | the "February 2026" table above |
+| A retired tool name | `unknown_tool` | `retired_tool_alias` | — | the "Retired tool names" tables below, and `fix` names the survivor |
+| A name that never existed / is gone with no replacement | `unknown_tool` | `unknown_tool` | — | the "February 2026" table above |
 
 So a `retired_input` refusal is **this page's row, not a defect**. The `fix`
 field names the replacement parameter and the message names the version the
@@ -101,13 +100,16 @@ way a single column would hide:
 
 - **"Removed in"** is the release constant the refusal message quotes. It is
   the version boundary a notice promises.
-- **"Still callable in 3.0?"** is what the code in this tree does today. The
-  ten forwarding names answer calls in 3.0, precisely because forwarding *is*
-  their one-release migration window.
+- **"Still callable in 3.0?"** is what the code in this tree does today, and it
+  is derived from the same record the refusal message is built from.
 
-A name that still answers calls and carries a notice naming `v3.0` is
-therefore neither a contradiction nor a promise that the name is safe to keep
-using. Port your calls; do not read the working forward as an extension.
+**Every retired tool name in 3.0 refuses.** Earlier releases kept some of them
+answering calls for one release, with their arguments translated into the
+survivor's; 3.0 is the release that withdrew that window, so the migration
+lives in the refusal rather than in a forwarded result. A name that answers
+while carrying a notice naming `v3.0` would be neither a contradiction nor a
+promise that the name is safe to keep using — port your calls, and read a
+working forward as a temporary courtesy rather than an extension.
 
 ## Retired names and parameters
 
