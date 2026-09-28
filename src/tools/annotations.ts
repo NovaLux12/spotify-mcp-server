@@ -1509,7 +1509,12 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // `dry_run` moved from the bare opt-in `DryRun` fragment to `DryRunDefault`, so
   // the published schema now carries `default: true`, and both the description and
   // the elicitation clause grew. Same tool count: no tool was added or removed.
-  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 13018]),
+  // #1567: 13018 -> 13095 measured. `save_to_library` moved from the bare
+  // opt-in `DryRun` to `DryRunDefault`, which publishes a longer description
+  // and the `"default": true` the host reads, and its own description now says
+  // PREVIEWS BY DEFAULT. Same 13 tools, +77 bytes; the derived ceiling moves
+  // with the baseline, so nothing is raised here.
+  manifestEntry('library', 'library', lazyModule('./library.js', 'registerLibraryTools'), [13, 13095]),
   // #603: playback 12,077 -> 12,210B (+133), same 16 tools — MEASURED, not
   // estimated: the real `tools/list` payload for this module. The get_devices
   // description now names the spotify://player/devices resource so an agent

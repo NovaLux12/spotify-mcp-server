@@ -1494,9 +1494,15 @@ All three also had a second defect that the replacement does not inherit: a read
 #### `save_to_library`
 Save one or more items to the user's library via Spotify's unified library endpoint — a single request for any mix of URI types.
 
-**Inputs:** `uris` (string[], required, max 40 — track, album, episode, show, audiobook, user, or playlist URIs)
+**Inputs:**
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `uris` | string[] | yes | URIs to save (track, album, episode, show, audiobook, user, or playlist). Max 40. |
+| `dry_run` | boolean | no | **Defaults to `true`.** Preview exactly which URIs would be saved without calling the API; pass `dry_run=false` to commit. |
 
 Sends `PUT /me/library?uris=…`.
+
+**Preview by default (#1567).** `dry_run` is declared as the shared `DryRunDefault` fragment, so the emitted `tools/list` entry carries `"default": true` — a host reads the schema, not the source. Before the fix the property carried no default at all while the handler branched on `if (args.dry_run)`, so an omitted flag was `undefined`, i.e. falsy, i.e. commit: one call could add 40 items to a library with no preview and no way for the caller to have known. The handler branches on `isDryRun(args)` as well, so a hand-built args object that skipped zod parsing cannot turn an omission into a write. This is the save half of the pair; the removal half had the same defect and was fixed a release earlier (#1550).
 
 ---
 

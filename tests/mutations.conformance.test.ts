@@ -6,6 +6,14 @@
  * one-line reason (local sidecars only — nothing previewable, nothing to
  * serialize for a verifier).
  *
+ * #1567 added the second half of the `dry_run` contract: a write tool that
+ * declares the flag must also publish what an OMITTED flag does. Checking
+ * that the property is *named* `dry_run` passed against `save_to_library`
+ * while it committed on omission, and it would equally have passed against
+ * an inverted `default` — the name is the same either way. The two
+ * `dry_run` tests below therefore read the property's `default` from the
+ * live schema, not just its presence.
+ *
  * Enumeration uses the live registry: every slice registrar runs on one real
  * McpServer and the surface is read back over InMemoryTransport via
  * tools/list (JSON Schema properties) — the same path a host uses. The test
@@ -87,6 +95,74 @@ const KNOWN_MISSING_RESPONSE_FORMAT: string[] = [
   'upload_playlist_cover',
 ];
 
+/**
+ * #1567: the same known-gap idiom, one level down. A write tool may declare
+ * `dry_run` without publishing a default — that is the gap, not the contract.
+ * Every name here is a tool whose handler branches on the flag while the
+ * emitted `tools/list` entry tells a host nothing about what an omitted flag
+ * does, which is how `save_to_library` committed with no preview and no way
+ * for the caller to have known.
+ *
+ * This list is a green contract, not an excuse. Fixing a tool means deleting
+ * its entry, and the deepEqual below fails if the set changes for any other
+ * reason, so the list cannot quietly rot into a permanent exemption.
+ */
+const KNOWN_MISSING_DRY_RUN_DEFAULT: string[] = [
+  'add_to_playlist',
+  'batch_add_to_playlist',
+  'clean_all_playlists',
+  'clone_playlist_cover',
+  'copy_playlist',
+  'create_playlist',
+  'create_smart_playlist',
+  'jump_to_chapter',
+  'merge_playlists',
+  'move_items_between_playlists',
+  'playlist_collab_toggle',
+  'playlist_cover_from_track',
+  'playlist_expression_algebra',
+  'playlist_reverse',
+  'playlist_shuffle',
+  'playlist_sort',
+  'playlist_subtract',
+  'playlist_template_apply',
+  'playlist_to_library',
+  'playlist_trim',
+  'playlist_union',
+  'remove_duplicate_playlist_items',
+  'remove_from_playlist',
+  'remove_unavailable_playlist_items',
+  'reorder_playlist_items',
+  'replace_playlist_items',
+  'split_playlist',
+  'start_podcast_session',
+  'update_playlist',
+  'upload_playlist_cover',
+];
+
+/**
+ * #1567: write tools that deliberately commit on an omitted `dry_run`, each
+ * with the reason it is not the #827 preview-by-default convention. Anything
+ * without a reason fails the guard.
+ *
+ * The playback family is NOT listed here — it is derived from the manifest's
+ * own `scopeKey: 'playback'` grouping instead (see PLAYBACK_MODULES), the same
+ * way tests/tools.dry-run-contract.test.ts derives it, so a new playback
+ * module is covered by construction rather than by remembering to edit a
+ * constant.
+ */
+const COMMIT_BY_DEFAULT: Record<string, string> = {
+  import_playlist:
+    'imports into an existing playlist by appending — its own local zod '
+    + 'fragment declares `default: false` (src/tools/import.ts) so a host can '
+    + 'see the commit; the preview default is a separate retrofit',
+};
+
+/** Modules the manifest groups as playback. Derived, not hand-maintained. */
+const PLAYBACK_MODULES = new Set(
+  REGISTRAR_MANIFEST.filter((m) => m.scopeKey === 'playback').map((m) => m.key),
+);
+
 // ---------------------------------------------------------------------------
 // Writer evidence: per-tool registration chunks in src/tools/*.
 // ---------------------------------------------------------------------------
@@ -132,6 +208,8 @@ interface SurfacedTool {
   name: string;
   module: string;
   properties: string[];
+  /** The raw `dry_run` JSON Schema property: `undefined` when absent. */
+  dryRun?: { default?: unknown };
 }
 
 interface ListedTool {
@@ -189,11 +267,22 @@ async function enumerateLiveRegistry(): Promise<SurfacedTool[]> {
     const listed = await client.listTools();
     const tools = listed.tools as ListedTool[];
     return tools
-      .map((t) => ({
-        name: t.name,
-        module: moduleByTool.get(t.name) ?? 'unknown',
-        properties: Object.keys(t.inputSchema?.properties ?? {}),
-      }))
+      .map((t) => {
+        const properties = (t.inputSchema?.properties ?? {}) as Record<
+          string,
+          { default?: unknown }
+        >;
+        return {
+          name: t.name,
+          module: moduleByTool.get(t.name) ?? 'unknown',
+          properties: Object.keys(properties),
+          // #1567: kept as the property itself, not just its name, so the
+          // default can be asserted below. `'default' in prop` rather than
+          // `prop.default !== undefined` — a published `default: false` is a
+          // declared default, and reading the value alone would call it absent.
+          dryRun: properties.dry_run,
+        };
+      })
       .sort((a, b) => (a.name < b.name ? -1 : 1));
   } finally {
     await client.close().catch(() => undefined);
@@ -234,6 +323,57 @@ describe('mutations conformance guard (#920)', () => {
       `write tools missing dry_run changed (land a slice? update KNOWN_MISSING_DRY_RUN): [${missing
         .map((t) => `${t.name} (${t.module})`)
         .join(', ')}]`,
+    );
+  });
+
+  it('every write tool that declares dry_run publishes what an omitted flag does', async () => {
+    // #1567. The name check above cannot see this: a tool may be named
+    // `dry_run` and still say nothing about an omitted flag, which is how
+    // `save_to_library` committed with no preview. This asserts the default
+    // is *declared*, against the known-gap list rather than a blanket
+    // requirement, so the 30 tools still to be retrofitted stay visible as a
+    // number that has to go down instead of disappearing.
+    const writers = writersOf(await enumerateLiveRegistry(), collectWriterEvidence());
+    const withFlag = writers.filter((t) => t.dryRun !== undefined);
+    assert.ok(withFlag.length > 0, 'no writer declares dry_run — the probe is vacuous');
+
+    // `'default' in prop`, not `prop.default === undefined`: a tool that
+    // publishes `default: false` has declared one.
+    const missing = withFlag.filter((t) => !('default' in t.dryRun!));
+    assert.deepEqual(
+      missing.map((t) => t.name).sort(),
+      [...KNOWN_MISSING_DRY_RUN_DEFAULT].sort(),
+      `write tools whose dry_run has no published default changed (land a slice? update KNOWN_MISSING_DRY_RUN_DEFAULT): [${missing
+        .map((t) => `${t.name} (${t.module})`)
+        .join(', ')}]`,
+    );
+  });
+
+  it('a non-playback write tool previews by default, so an inverted default fails here', async () => {
+    // #1567. The value half, which is what the presence half cannot see:
+    // flipping `default: true` to `default: false` on a mutating tool would
+    // keep the property named `dry_run` and would keep passing every other
+    // assertion in this file. #827's `DryRunDefault` is the convention this
+    // enforces — every mutating tool previews on an omitted flag — with the
+    // playback family's deliberate `default: false` (#836) derived from the
+    // manifest, and the one measured non-playback exception named with a
+    // reason.
+    const writers = writersOf(await enumerateLiveRegistry(), collectWriterEvidence());
+    const declaring = writers.filter((t) => t.dryRun !== undefined && 'default' in t.dryRun!);
+    assert.ok(declaring.length > 0, 'no writer publishes a dry_run default — the probe is vacuous');
+
+    const wrong = declaring.filter(
+      (t) =>
+        t.dryRun!.default !== true
+        && !PLAYBACK_MODULES.has(t.module)
+        && !(t.name in COMMIT_BY_DEFAULT),
+    );
+    assert.deepEqual(
+      wrong
+        .map((t) => `${t.name} (${t.module}) = ${JSON.stringify(t.dryRun!.default)}`)
+        .sort(),
+      [],
+      'every non-playback write tool that declares a dry_run default must publish default:true',
     );
   });
 

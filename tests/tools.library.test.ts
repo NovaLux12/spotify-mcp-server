@@ -365,7 +365,9 @@ describe('unified library tools (save_to_library / remove_from_library / check_i
       path === '/me/library/contains' ? uris.map(() => true) : undefined,
     );
 
-    const out = await h.invoke('save_to_library', { uris });
+    // #1567: `dry_run` now DEFAULTS TO TRUE, so an omitted flag previews. This
+    // test is about the wire format of the committing call, so it says so.
+    const out = await h.invoke('save_to_library', { uris, dry_run: false });
 
     const wires = wireCalls(h.client.calls);
     assert.deepEqual(wires.filter((c) => c.method === 'PUT'), [
@@ -585,6 +587,7 @@ describe('response_format json mode returns machine-readable payloads (#51)', ()
     const h = harness();
     const out = await h.invoke('save_to_library', {
       uris: ['spotify:track:abc'],
+      dry_run: false,
       response_format: 'json',
     });
     const payload = JSON.parse(out.content[0].text);
@@ -643,6 +646,59 @@ describe('max_results truncation + pagination info (#52/#53)', () => {
 });
 
 describe('dry_run previews destructive operations without any mutating call (#57)', () => {
+  // #1567: the DECISION half of the preview-by-default contract, for the whole
+  // /me/library write pair. `harness.invoke` calls the handler directly with a
+  // hand-built args object, so the zod `.default(true)` never runs here — which
+  // is precisely why the handler also branches on `isDryRun(args)`. A test that
+  // went through the parser would pass against `if (args.dry_run)` and a bare
+  // `DryRun` fragment, which is the defect. `save_to_library` shipped that way
+  // (#1567); `remove_from_library` was fixed a release earlier (#1550) and had
+  // no test at this level, so both are named here.
+  //
+  // This asserts the observable effect — zero calls to Spotify — rather than
+  // reading the default back out of the schema, so it cannot be satisfied by
+  // the schema saying `true` while the handler disagrees.
+  for (const name of ['save_to_library', 'remove_from_library']) {
+    it(`${name} with dry_run OMITTED previews and makes zero client calls`, async () => {
+      const h = harness();
+      const uris = ['spotify:track:abc', 'spotify:album:xyz'];
+
+      const out = await h.invoke(name, { uris });
+
+      assert.equal(
+        h.client.calls.length,
+        0,
+        `an omitted dry_run must preview, not write (${name})`,
+      );
+      assert.equal(
+        h.client.calls.filter((c) => c.method === 'PUT' || c.method === 'DELETE').length,
+        0,
+        `an omitted dry_run reached the wire as a mutation (${name})`,
+      );
+      const text = out.content[0].text;
+      assert.match(text, /^\[dry run\]/);
+      assert.match(text, /nothing was changed/);
+      for (const uri of uris) assert.ok(text.includes(uri), `${uri} missing from the plan`);
+      const sc = out.structuredContent as Record<string, unknown>;
+      assert.equal(sc.dry_run, true);
+      assert.deepEqual(sc.would_affect, uris);
+    });
+
+    it(`${name} with dry_run omitted previews through the PARSED schema too`, async () => {
+      // The other half. The handler is only reachable with the default in place
+      // when a host parses arguments against the published schema, so the
+      // fragment itself has to carry the default, not just the branch.
+      const h = harness();
+      const shape = h.shape(name);
+      const parsed = shape.parse({ uris: ['spotify:track:abc'] });
+      assert.equal(
+        (parsed as Record<string, unknown>).dry_run,
+        true,
+        `${name} must publish dry_run default:true to a parsing host`,
+      );
+    });
+  }
+
   it('remove_from_library dry_run makes zero client calls and previews every URI', async () => {
     const h = harness();
     const uris = ['spotify:track:abc', 'spotify:album:xyz'];
@@ -696,7 +752,7 @@ describe('confirmation-friendly batch summaries on mutations (#58)', () => {
   it('save_to_library echoes "{n} items affected" with the first URIs', async () => {
     const h = harness();
     const uris = ['spotify:track:abc', 'spotify:album:xyz', 'spotify:show:r1'];
-    const out = await h.invoke('save_to_library', { uris });
+    const out = await h.invoke('save_to_library', { uris, dry_run: false });
     assert.match(
       out.content[0].text,
       /3 items affected: spotify:track:abc, spotify:album:xyz, spotify:show:r1/,
@@ -706,7 +762,7 @@ describe('confirmation-friendly batch summaries on mutations (#58)', () => {
   it('long batches are abbreviated after three URIs with an ellipsis', async () => {
     const h = harness();
     const four = Array.from({ length: 4 }, (_, i) => `spotify:track:id${i}`);
-    const out = await h.invoke('save_to_library', { uris: four });
+    const out = await h.invoke('save_to_library', { uris: four, dry_run: false });
     const summaryLine = out.content[0].text.split('\n')[1];
     assert.equal(
       summaryLine,
@@ -729,7 +785,7 @@ describe('mutation receipts in json mode (#112 idea 11)', () => {
       path === '/me/library/contains' ? [true] : undefined,
     );
 
-    const out = await h.invoke('save_to_library', { uris, response_format: 'json' });
+    const out = await h.invoke('save_to_library', { uris, dry_run: false, response_format: 'json' });
 
     // The text channel must remain valid JSON despite the appended receipt.
     const parsed = JSON.parse(out.content[0].text) as { ok: boolean; affected: number };
@@ -758,7 +814,7 @@ describe('a landed write survives a failed receipt read (#748)', () => {
       return null;
     });
 
-    const out = await h.invoke('save_to_library', { uris: ['spotify:track:t1'] });
+    const out = await h.invoke('save_to_library', { uris: ['spotify:track:t1'], dry_run: false });
     const sc = out.structuredContent as {
       ok: boolean;
       affected: number;
@@ -852,7 +908,7 @@ describe('library registration after the per-type endpoint removal (#638)', () =
       return receipt.receipt_id;
     };
 
-    const added = await h.invoke('save_to_library', { uris });
+    const added = await h.invoke('save_to_library', { uris, dry_run: false });
     const beforeUndo = h.client.calls.length;
     const undoneAdd = await h.invoke('undo_mutation', { receipt_id: receiptOf(added), dry_run: false });
     assert.equal(undoneAdd.structuredContent?.ok, true, undoneAdd.content[0]?.text);
