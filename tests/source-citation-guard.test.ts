@@ -81,6 +81,19 @@ export function resolvesToRepoFile(cited: string, citingFile: string): boolean {
 let trackedCache: Set<string> | null = null;
 
 /**
+ * Buffer ceiling for `git ls-files -z`, in bytes.
+ *
+ * Named so a reader can see it is a deliberate ceiling rather than a copied
+ * default. It is not load-bearing today: `git ls-files -z` on this tree emits
+ * ~16 KB against Node's 1 MiB `execFileSync` default (measured), so the
+ * default would serve. It is set because the set is only useful if it is
+ * complete — a silently truncated list would report tracked files as dangling,
+ * which is the one wrong answer this guard must never give — and 64 MiB is far
+ * enough above the current tree that it will not be the thing that breaks.
+ */
+const TRACKED_LIST_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
  * Every path git tracks in this checkout, as repo-relative POSIX paths.
  *
  * Cached: the guard asks this once per cited path across every `src/` file,
@@ -90,7 +103,7 @@ let trackedCache: Set<string> | null = null;
  */
 function tracked(): Set<string> {
   if (trackedCache) return trackedCache;
-  const out = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  const out = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: TRACKED_LIST_MAX_BYTES });
   trackedCache = new Set(out.split('\0').filter(Boolean));
   return trackedCache;
 }
