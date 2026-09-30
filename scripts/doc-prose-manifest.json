@@ -1023,6 +1023,10 @@
         "label": "Windows (PowerShell): $env:SPOTIFYCLIENTID=\"yourclientid…"
       },
       {
+        "hash": "b70906f0fb087ffb",
+        "label": "Windows is supported for install and everyday use, and i…"
+      },
+      {
         "hash": "87eca7720eb3235f",
         "label": "Headless / remote host: SPOTIFYHEADLESS=1 SPOTIFYCLIENTI…"
       },
@@ -4971,7 +4975,7 @@
         "label": "Summary"
       },
       {
-        "hash": "8c7fb4d0d436a23f",
+        "hash": "da6576b431c49083",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5437,6 +5441,42 @@
       {
         "hash": "248c7138b0fd6b5c",
         "label": "For confirmation-gated destructive operations, a missing…"
+      },
+      {
+        "hash": "bf10f6425c6cb048",
+        "label": "Task records and a real home (#1635)"
+      },
+      {
+        "hash": "6b031fcca63f5672",
+        "label": "Long-running tools keep one JSON record per task under /…"
+      },
+      {
+        "hash": "8a19a85dd549431c",
+        "label": "That is the right behaviour for a restart of your server…"
+      },
+      {
+        "hash": "5bb0e9522d2017c8",
+        "label": "So the store creates the directory and then stops, unles…"
+      },
+      {
+        "hash": "8da519996fbd8593",
+        "label": "Name the directory. Passing dir to the constructor is a …"
+      },
+      {
+        "hash": "6edf5cca6f32a35c",
+        "label": "Resolve outside the home this process sees. That is a sa…"
+      },
+      {
+        "hash": "36e5f9656ac63324",
+        "label": "Set SPOTIFYMCPALLOWREALHOMESTORES=never to say so explic…"
+      },
+      {
+        "hash": "00966037e31d875b",
+        "label": "What is left — the default store inside a real home, rea…"
+      },
+      {
+        "hash": "bc4013af86664cf4",
+        "label": "For a normal npm run dev this changes one thing: the fir…"
       },
       {
         "hash": "d3566e21bf87cd7a",
@@ -7591,9 +7631,9 @@
     }
   ],
   "provenance": {
-    "head": "298c15c8bce852c20a2dd5f2324c72aca7a538b9",
-    "base": "a34f33182c706dea60dc9029065552749f5c7b5b",
-    "upstream": "a34f33182c706dea60dc9029065552749f5c7b5b",
+    "head": "829c7c34c51fb47791976cf67e283a15d57fb51e",
+    "base": "0bea1e08b4f1955fd947e6139f00539d32e950a3",
+    "upstream": "0bea1e08b4f1955fd947e6139f00539d32e950a3",
     "behind": false
   },
   "reanchored": [
@@ -7757,6 +7797,15 @@
       "to": "6555776743433e73",
       "toLabel": "Every tool that writes a local file resolves its destina…",
       "reason": "#1580 corrected the write-root paragraph; re-pinned after the rebase",
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "8c7fb4d0d436a23f",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "da6576b431c49083",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1647 added the SPOTIFY_MCP_ALLOW_REAL_HOME_STORES row to this table, so the same table is present under new text",
       "date": "2026-09-30"
     },
     {
