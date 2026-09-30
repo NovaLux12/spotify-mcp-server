@@ -84,8 +84,9 @@
  * shared filesystem.
  */
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import type { CallToolResult, CreateTaskResult, Result, Task, TaskStatus } from '@modelcontextprotocol/sdk/types.js';
 import type { CreateTaskOptions, TaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
 import { isTerminal } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
@@ -252,6 +253,105 @@ export function tasksDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * Whether it is safe for the constructor to reconcile a store rooted here.
+ *
+ * `reconcile()` is destructive by design: it renames every unparseable record
+ * to `.corrupt` and drops every terminal record past its TTL. That is correct
+ * for a real restart of a real server, and wrong for every other caller that
+ * happens to construct the store — because "the previous process died" is a
+ * claim about a process, and nothing in the filesystem establishes it (#1635).
+ *
+ * The failure this guards was reported as a mystery: an empty `tasks/`
+ * directory appeared in a real `~/.spotify-mcp/` at a time its author was not
+ * working, and the only process that had done it was a script importing server
+ * code without a sandbox home. Nothing about that run looked wrong. `mkdirSync`
+ * succeeding and `reconcile()` finding nothing to quarantine are exactly what a
+ * healthy startup looks like, so the destructive default was silent — and on a
+ * home that *did* hold in-flight records it would have renamed a user's real
+ * `working` tasks to `.corrupt` and deleted their expired ones.
+ *
+ * So the store refuses to touch records it cannot justify touching. It creates
+ * the directory and says so on stderr; it does not read, rename, rewrite or
+ * delete a single record. A real `npm run dev` is unaffected in every way a
+ * user can observe except one: the first start after a crash leaves the
+ * previous run's `working` records alone instead of settling them, and the
+ * message says why and names the opt-out.
+ *
+ * ## Why not simply "is this a temp dir?"
+ *
+ * Checking for `/tmp` would be a guess about where sandboxes live, and it
+ * would be wrong for every one of them: a container, a devcontainer, a CI
+ * runner with a custom `TMPDIR`, and a user who relocated their home to
+ * somewhere else entirely. The hermetic helper redirects `HOME`, so the tests
+ * that matter resolve under the temp root while the *resolved path* is
+ * compared, not the string that produced it.
+ *
+ * ## Why not "is this the real home?"
+ *
+ * That is the same guess pointed the other way — it would forbid the one
+ * caller that is entitled to reconcile. A user running the server normally is
+ * not a hazard; a *second* process standing a store up beside a real install
+ * is. The distinguishing question is not where the data is but whether the
+ * caller has claimed it, which is what the opt-out below records.
+ */
+function reconcilePermitted(dir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  // Exact compare, no trim, matching `SPOTIFY_MCP_CONFIRM` in
+  // `src/tools/confirm.ts`. The bypass that skips a destructive step is
+  // spelled one way and only one way; tolerating `'never '` would mean a
+  // shell that appends a stray character arms it anyway, and the whole point
+  // of requiring the value to be typed deliberately is that it cannot happen
+  // by accident. An earlier draft of this used `.trim()`, and the near-miss
+  // test caught it.
+  if (env.SPOTIFY_MCP_ALLOW_REAL_HOME_STORES === 'never') return true;
+  return isSandboxedHome(dir, env);
+}
+
+/**
+ * True when `dir` resolves inside a home that is not the caller's real one.
+ *
+ * Compares *resolved* paths on both sides. The real home is captured through
+ * `homedir()` on every call rather than at module load, for the reason
+ * `storeDir()` in `config.ts` documents: the hermetic helper redirects `HOME`
+ * after import, and a constant captured earlier would pin the answer to the
+ * pre-redirect home and read as "not sandboxed" in every test.
+ */
+function isSandboxedHome(dir: string, env: NodeJS.ProcessEnv): boolean {
+  let realHome: string;
+  try {
+    realHome = realpathSync.native(homedir());
+  } catch {
+    return false;
+  }
+  // Windows and macOS both hand out a case-insensitive or symlinked home
+  // (`/Users/x` vs `/System/Volumes/Data/Users/x`), so a string compare of two
+  // unresolved paths reports a sandbox as real. `realpathSync.native` collapses
+  // both sides; the case fold is applied only where the platform is
+  // case-insensitive, because on Linux two paths differing only in case are two
+  // different directories and folding them would hide a real one.
+  const fold = process.platform === 'win32' || process.platform === 'darwin' ? (p: string) => p.toLowerCase() : (p: string) => p;
+  const target = fold(safeRealpath(dir));
+  if (target === fold(realHome)) return false;
+  // A store may sit below the home rather than at it (`~/.spotify-mcp/tasks`),
+  // so the real home containing the store is the case that matters, and it is
+  // the one a test redirecting HOME to a temp root gets right.
+  return !isInside(target, fold(realHome));
+}
+
+/** `realpath` that yields the input unchanged rather than throwing. */
+function safeRealpath(target: string): string {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return resolve(target);
+  }
+}
+
+/** True when `child` is `parent` or sits below it. Both already folded. */
+function isInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
  * A `TaskStore` that survives a process restart.
  *
  * One JSON file per task. Writes go through a temp file and a rename so a
@@ -270,7 +370,22 @@ export class PersistentTaskStore implements TaskStore {
     this.dir = dir;
     mkdirSync(dir, { recursive: true, mode: TASK_DIR_MODE });
     chmodSync(dir, TASK_DIR_MODE);
-    this.reconcile();
+    // The destructive half, behind a guard (#1635). Creating the directory is
+    // safe and keeps a first run working; everything below can rename a
+    // user's records to `.corrupt` and delete their expired ones, so it only
+    // runs for a caller that has established it is the process those records
+    // belong to.
+    if (reconcilePermitted(dir)) {
+      this.reconcile();
+      return;
+    }
+    process.emitWarning(
+      `Task store at ${dir} was left untouched: reconciling it renames unparseable records to ` +
+        '.corrupt and drops terminal records past their TTL, and this process cannot establish that it ' +
+        'is the server those records belong to (#1635). Set SPOTIFY_MCP_ALLOW_REAL_HOME_STORES=never ' +
+        'to reconcile a real store, or point HOME at a sandbox.',
+      'TaskStoreReconcileSkipped',
+    );
   }
 
   /** Absolute path of the record for `taskId`. */

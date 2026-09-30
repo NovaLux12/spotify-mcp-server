@@ -30,9 +30,11 @@ import './helpers/hermetic.js';
 
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -612,6 +614,177 @@ describe('#600 task state survives a restart', () => {
       /working/,
       'a task with no result answered with a bare failure instead of naming its state',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The destructive half, behind a guard
+// ---------------------------------------------------------------------------
+
+describe('#1635 constructing the store cannot settle a real home', () => {
+  /**
+   * A record in each of the three states `reconcile()` acts on: unparseable
+   * (renamed to `.corrupt`), in-flight (rewritten to `failed`), and terminal
+   * past its TTL (deleted). One fixture covers all three because the claim
+   * under test is about the *record set*, not about one code path.
+   */
+  function seedRealHomeStore(dir: string): { corrupt: string; working: string; expired: string } {
+    const files = {
+      corrupt: join(dir, 'corrupt.json'),
+      working: join(dir, 'working.json'),
+      expired: join(dir, 'expired.json'),
+    };
+    writeFileSync(files.corrupt, '{ this is not json', 'utf8');
+    writeFileSync(
+      files.working,
+      JSON.stringify({
+        task: { taskId: 'working', status: 'working', toolName: 'backup_library', createdAt: new Date().toISOString(), ttl: null },
+        toolName: 'backup_library',
+        requestId: 'req-1',
+      }),
+      'utf8',
+    );
+    writeFileSync(
+      files.expired,
+      JSON.stringify({
+        task: {
+          taskId: 'expired',
+          status: 'completed',
+          toolName: 'backup_library',
+          // An hour old against a one-second TTL: terminal and past it.
+          createdAt: new Date(Date.now() - 3_600_000).toISOString(),
+          ttl: 1000,
+        },
+        toolName: 'backup_library',
+        requestId: 'req-1',
+      }),
+      'utf8',
+    );
+    return files;
+  }
+
+  /**
+   * Construct a store in a child process whose `HOME` is `dirname(dirname(dir))`,
+   * so the store really does resolve under that process's own home, and report
+   * what the constructor did.
+   *
+   * The child inherits no `SPOTIFY_MCP_ALLOW_REAL_HOME_STORES` from this
+   * process: the fixture takes it as an argument and sets or deletes it
+   * itself, so a test that has just set the variable in-process cannot leak
+   * into the case that must refuse.
+   */
+  function runChild(dir: string, optOut: string): {
+    files: string[];
+    quarantined: string[];
+    workingStatus: string | null;
+    warnings: string[];
+  } {
+    const home = dirname(dirname(dir));
+    const out = execFileSync(
+      process.execPath,
+      ['--import', 'tsx', new URL('./fixtures/task-store-reconcile-child.ts', import.meta.url).pathname, dir, optOut],
+      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: 'pipe' },
+    );
+    return JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
+      files: string[];
+      quarantined: string[];
+      workingStatus: string | null;
+      warnings: string[];
+    };
+  }
+
+  it('leaves every record alone when the store resolves inside the real home', () => {
+    // The reported case: a script importing server code with no sandbox home
+    // constructed the store against a real `~/.spotify-mcp/`. A `working`
+    // record is work that "is not running and will never resume" — true of a
+    // real restart, and not something an unrelated process gets to decide.
+    //
+    // This has to run in a child. `tests/helpers/hermetic.ts` redirects `HOME`
+    // to a temp root before this file's tests run, so in-process the sandbox
+    // and "the home" are the same directory — the guard is right to reconcile
+    // that, and an in-process assertion for the refusal would be asserting the
+    // opposite of the truth. The child gets a throwaway `HOME` and does not
+    // import the helper, so the store really does resolve under its own home.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-home-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    seedRealHomeStore(dir);
+    try {
+      const report = runChild(dir, '-');
+
+      // None of the three destructive outcomes may have happened.
+      assert.deepEqual(report.quarantined, [], 'an unparseable record must not be renamed to .corrupt');
+      assert.ok(report.files.includes('corrupt.json'), 'the unparseable record must still be where it was');
+      assert.ok(report.files.includes('expired.json'), 'a terminal record past its TTL must not be dropped');
+      assert.equal(report.workingStatus, 'working', 'an in-flight record must survive, not be rewritten to failed');
+
+      // Silent is the part that made this expensive: mkdirSync succeeding and
+      // reconcile() finding nothing look identical to a healthy startup.
+      assert.equal(report.warnings.length, 1, `expected exactly one warning, got ${report.warnings.length}`);
+      assert.match(report.warnings[0], /left untouched/i);
+      // The message has to be actionable, not a shrug.
+      assert.match(report.warnings[0], /SPOTIFY_MCP_ALLOW_REAL_HOME_STORES=never/, 'the warning must name the opt-out');
+      assert.match(report.warnings[0], new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'and name the path it declined to touch');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles a real home when the caller opts in explicitly', () => {
+    // The legitimate caller: a user running the server normally, who *does*
+    // want the previous crash's records settled. The opt-out is the value
+    // `never` and nothing else, mirroring `SPOTIFY_MCP_CONFIRM` in §5 of
+    // AGENTS.md — a near-miss string must not silently re-arm the destructive
+    // default.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-optin-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    seedRealHomeStore(dir);
+    try {
+      const report = runChild(dir, 'never');
+      assert.deepEqual(report.quarantined, ['corrupt.json.corrupt'], 'an opted-in store does quarantine an unparseable record');
+      assert.ok(!report.files.includes('expired.json'), 'and does drop a terminal record past its TTL');
+      assert.equal(report.workingStatus, 'failed', 'and does settle an in-flight record as failed');
+      assert.deepEqual(report.warnings, [], 'and does so without complaining about it');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('a near-miss opt-out value does not re-arm the destructive default', () => {
+    // 'always', 'yes' and '1' are all plausible things for a caller to write.
+    // None of them is the documented value, so none may arm it — a gate that
+    // accepts a near-miss is a gate whose failure mode is a surprise on a
+    // user's real records.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-nearmiss-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      for (const value of ['always', 'yes', '1', 'NEVER', 'never ', '']) {
+        seedRealHomeStore(dir);
+        const report = runChild(dir, value);
+        assert.deepEqual(
+          report.quarantined,
+          [],
+          `"${value}" must not be accepted as the opt-out; only the exact value "never" is`,
+        );
+        assert.equal(report.workingStatus, 'working', `and "${value}" must leave the in-flight record alone`);
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles under a sandbox home, which is every test and every sandboxed host', () => {
+    // The hermetic helper redirects HOME, so the default store path resolves
+    // under a temp root. If this stopped reconciling, the restart-durability
+    // suite above would be asserting against a store that never settled
+    // anything — a gate that passes for the wrong reason (AGENTS.md §6).
+    const dir = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-sandbox-'));
+    seedRealHomeStore(dir);
+    new PersistentTaskStore(dir);
+    assert.equal(existsSync(`${join(dir, 'corrupt.json')}.corrupt`), true, 'a sandboxed store reconciles as it always did');
+    assert.equal(existsSync(join(dir, 'expired.json')), false);
   });
 });
 
