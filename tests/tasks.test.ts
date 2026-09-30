@@ -673,7 +673,7 @@ describe('#1635 constructing the store cannot settle a real home', () => {
    * itself, so a test that has just set the variable in-process cannot leak
    * into the case that must refuse.
    */
-  function runChild(dir: string, optOut: string, home?: string, useDefault = false): {
+  function runChild(dir: string, optOut: string, home?: string, useDefault = false, passNull = false): {
     files: string[];
     quarantined: string[];
     workingStatus: string | null;
@@ -693,6 +693,7 @@ describe('#1635 constructing the store cannot settle a real home', () => {
         dir,
         optOut,
         ...(useDefault ? ['default'] : []),
+        ...(passNull ? ['null'] : []),
       ],
       { encoding: 'utf8', env: { ...process.env, HOME: childHome, USERPROFILE: childHome }, stdio: 'pipe' },
     );
@@ -734,6 +735,38 @@ describe('#1635 constructing the store cannot settle a real home', () => {
       // The message has to be actionable, not a shrug.
       assert.match(report.warnings[0], /SPOTIFY_MCP_ALLOW_REAL_HOME_STORES=never/, 'the warning must name the opt-out');
       assert.match(report.warnings[0], new RegExp(dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'and name the path it declined to touch');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a null directory as no claim, not as a claim (#1635)', () => {
+    // The hole the re-review found, and it is a hole a compiler cannot close.
+    //
+    // `claimed` was `dir !== undefined`, which is TRUE for `null`. A caller in
+    // JavaScript — or any build that erases the types, or a future refactor
+    // that loosens the parameter — could hand this constructor `null`, be
+    // recorded as having NAMED the store, and have a real home's records
+    // quarantined and dropped by a process that never claimed them. That is
+    // the reported incident, reached by a one-word slip rather than by the
+    // sandbox-versus-home confusion the guard was written for.
+    //
+    // TypeScript says `null` is impossible, which is exactly why the runtime
+    // guard has to hold it: the type is not enforced at the boundary a
+    // JavaScript caller crosses.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-null-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    seedRealHomeStore(dir);
+    try {
+      const report = runChild(dir, '-', home, false, true);
+
+      assert.deepEqual(report.quarantined, [], 'a null directory must not be read as a claim and reconciled');
+      assert.ok(report.files.includes('corrupt.json'), 'the unparseable record must still be where it was');
+      assert.ok(report.files.includes('expired.json'), 'a terminal record past its TTL must not be dropped');
+      assert.equal(report.workingStatus, 'working', 'an in-flight record must survive');
+      assert.equal(report.warnings.length, 1, `a null directory must be refused loudly, got ${report.warnings.length} warnings`);
+      assert.match(report.warnings[0], /left untouched/i);
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

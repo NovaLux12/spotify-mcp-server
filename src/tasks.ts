@@ -361,7 +361,19 @@ export class PersistentTaskStore implements TaskStore {
   private readonly claimed: boolean;
 
   constructor(dir?: string) {
-    this.claimed = dir !== undefined;
+    // `null` is NOT a claim, and the distinction is load-bearing (#1635).
+    //
+    // `dir !== undefined` is true for `null`, so a caller passing `null` — legal
+    // from JavaScript, and caught by no compiler anywhere in `src/` because the
+    // parameter is typed `string | undefined` — would be recorded as having
+    // named this store and so would reconcile it, settling a real home's
+    // records from a process that never claimed them. That is the reported
+    // incident, reached by a one-word slip.
+    //
+    // The type says `null` cannot happen, so a compiler will not catch it. The
+    // guard is the last line that can, and it must not be the one place that
+    // reads a runtime check as a type-level guarantee.
+    this.claimed = dir !== undefined && dir !== null;
     this.dir = dir ?? tasksDir();
     mkdirSync(this.dir, { recursive: true, mode: TASK_DIR_MODE });
     chmodSync(this.dir, TASK_DIR_MODE);

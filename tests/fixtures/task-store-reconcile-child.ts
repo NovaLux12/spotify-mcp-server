@@ -27,7 +27,9 @@ import { PersistentTaskStore } from '../../src/tasks.ts';
 
 const dir = process.argv[2];
 const optOut = process.argv[3];
-const useDefault = process.argv[4] === 'default';
+const mode = process.argv[4];
+const useDefault = mode === 'default';
+const passNull = mode === 'null';
 
 if (optOut && optOut !== '-') {
   process.env.SPOTIFY_MCP_ALLOW_REAL_HOME_STORES = optOut;
@@ -40,7 +42,16 @@ process.on('warning', (w: Error) => warnings.push(String(w.message)));
 
 // `default` is the refusal path: no directory is named, so the store resolves
 // `tasksDir()` for this process's HOME — which the caller pointed at `dir`.
-new PersistentTaskStore(useDefault ? undefined : dir);
+//
+// `null` is the same path by a route a compiler cannot see. A JavaScript caller
+// may pass it, and the parameter type `string | undefined` forbids it, so no
+// test in `src/` could ever construct this case. `JSON.parse` returns `any`, so
+// the value arrives as a real `null` without a cast and without a `// @ts-expect-error`
+// standing here as a permanent reminder that the type is a fiction at the
+// boundary. That is the whole point of the case: it is reachable from JS and
+// must not depend on a type that JS does not enforce.
+const supplied: string | undefined = passNull ? JSON.parse('null') : (useDefault ? undefined : dir);
+new PersistentTaskStore(supplied);
 
 // `process.on('warning')` is deferred to a later tick, so a child that writes
 // its report synchronously exits first and the warnings are never collected --
