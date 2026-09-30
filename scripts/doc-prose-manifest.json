@@ -4975,7 +4975,7 @@
         "label": "Summary"
       },
       {
-        "hash": "8c7fb4d0d436a23f",
+        "hash": "da6576b431c49083",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5441,6 +5441,42 @@
       {
         "hash": "248c7138b0fd6b5c",
         "label": "For confirmation-gated destructive operations, a missing…"
+      },
+      {
+        "hash": "bf10f6425c6cb048",
+        "label": "Task records and a real home (#1635)"
+      },
+      {
+        "hash": "6b031fcca63f5672",
+        "label": "Long-running tools keep one JSON record per task under /…"
+      },
+      {
+        "hash": "8a19a85dd549431c",
+        "label": "That is the right behaviour for a restart of your server…"
+      },
+      {
+        "hash": "5bb0e9522d2017c8",
+        "label": "So the store creates the directory and then stops, unles…"
+      },
+      {
+        "hash": "8da519996fbd8593",
+        "label": "Name the directory. Passing dir to the constructor is a …"
+      },
+      {
+        "hash": "6edf5cca6f32a35c",
+        "label": "Resolve outside the home this process sees. That is a sa…"
+      },
+      {
+        "hash": "36e5f9656ac63324",
+        "label": "Set SPOTIFYMCPALLOWREALHOMESTORES=never to say so explic…"
+      },
+      {
+        "hash": "00966037e31d875b",
+        "label": "What is left — the default store inside a real home, rea…"
+      },
+      {
+        "hash": "bc4013af86664cf4",
+        "label": "For a normal npm run dev this changes one thing: the fir…"
       },
       {
         "hash": "d3566e21bf87cd7a",
@@ -7595,10 +7631,11 @@
     }
   ],
   "provenance": {
-    "head": "e6c57b1bf3e08e9d9d1f56f4ca4bef463ea0124c",
-    "base": "a34f33182c706dea60dc9029065552749f5c7b5b",
-    "upstream": "a34f33182c706dea60dc9029065552749f5c7b5b",
-    "behind": false
+    "head": "53069d5a1804d4c259c401eac8e25707b47875c2",
+    "base": "8301f4f783707db83a2c26d2336c95054b962f60",
+    "upstream": "8301f4f783707db83a2c26d2336c95054b962f60",
+    "behind": false,
+    "allowStale": "merging origin/main into #1647: #1646 and #1648 both re-pinned docs, so the manifest is regenerated from the merged tree rather than picking a side"
   },
   "reanchored": [
     {
@@ -7608,7 +7645,7 @@
       "to": "786a9a0a6e1afbf6",
       "toLabel": "Merging the release PR with CI green creates the vX.Y.Z …",
       "reason": "#1576 reworded the tag-push paragraph in place; the rebase took the upstream manifest, so the branch's own pin is restored against the text still in the tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7617,7 +7654,7 @@
       "to": "07d890d82b403ba4",
       "toLabel": "A guard's scope is part of its contract, and widening it…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7626,7 +7663,7 @@
       "to": "e028cd63776169d0",
       "toLabel": "| Endpoint | Status | |---|---| | GET /recommendations |…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7635,7 +7672,7 @@
       "to": "e827afc9d7f8a6dc",
       "toLabel": "src/server.ts registers the manifest in order and then r…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7644,7 +7681,7 @@
       "to": "2045ad170ec882aa",
       "toLabel": "Changing or deleting prose needs --prose-sync, and the t…",
       "reason": "Re-applied after a rebase onto 5ff44a91: git checkout --ours on the mixed file restores main's MANIFEST, which drops this branch's reanchor record along with the pin it describes. The bullet was reworded in place by #1527 itself (it now distinguishes a reword from a deletion), both texts are in the tree, and no paragraph was deleted.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7653,7 +7690,7 @@
       "to": "70bf23cebb99cf0c",
       "toLabel": "These fail at runtime on app registrations created after…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7662,7 +7699,7 @@
       "to": "5dcae56c9eae5c73",
       "toLabel": "| Endpoint | Status | |---|---| | GET /recommendations |…",
       "reason": "the sweep asserted the Nov 2024 post excludes available-genre-seeds by name, which could not be confirmed against Spotify changelog; the row now states only the schema deprecated flag and points at the open question recorded below it",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "AGENTS.md",
@@ -7671,7 +7708,7 @@
       "to": "973c91d934cc758a",
       "toLabel": "After merging, scripts/close-issues-from-pr.sh <pr> has …",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "ARCHITECTURE.md",
@@ -7680,7 +7717,7 @@
       "to": "311ad8dc2251b38f",
       "toLabel": "flowchart TD CLI[\"CLI dispatch (src/index.ts)<br/>auth /…",
       "reason": "The client is a two-lane bounded-concurrency funnel, not a serial queue: src/client.ts dispatches while _inFlight is below _maxConcurrency (#892), so the component-map node claiming 'serialized queue' described a mechanism that is gone.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "ARCHITECTURE.md",
@@ -7689,7 +7726,7 @@
       "to": "6bea1c6bfd5d469b",
       "toLabel": "1. Scheduling (two-lane, bounded concurrency) — get/post…",
       "reason": "The request-pipeline step 1 said requests are issued strictly one at a time and re-linked a promise chain; the drain loop dispatches bounded-concurrent and each task releases its permit in a finally, so there is no chain to re-link.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7698,7 +7735,7 @@
       "to": "8e9e67b89df0b0d0",
       "toLabel": "To remove one snapshot ahead of its window, use the dele…",
       "reason": "#1580 corrected the delete_backup sentence; re-pinned after the rebase",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7707,7 +7744,7 @@
       "to": "a7437f9644cd4edf",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "#1580 corrected a default in the env-var table; re-pinned after the rebase took the upstream manifest",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7716,7 +7753,7 @@
       "to": "faf95763ca17b179",
       "toLabel": "SPOTIFYREQUESTTIMEOUTMS applies an abort timer to every …",
       "reason": "#1603 extends the runtime-limits paragraph with the second per-playlist ceiling and the fact that raising the fetch-all cap alone does not lift it",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7725,7 +7762,16 @@
       "to": "1987a90e548e74ae",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "#727 extends the env-var table rather than replacing it: measured on this tree, 70 data rows, adding SPOTIFY_MCP_LANES_FILE with no row lost.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "30494fc067c03492",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "da6576b431c49083",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1635 review: env-var row now describes the claim rule",
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7734,7 +7780,7 @@
       "to": "40a927b29b3f9c7a",
       "toLabel": "| Flag | Effect | |---|---| | --dry-run | List what woul…",
       "reason": "#1591: --profile does not narrow the sweep, so the flag table row's 'that profile's token file' was wrong.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7743,7 +7789,7 @@
       "to": "6c6f555af6553868",
       "toLabel": "Pruning runs on every append and once at startup, across…",
       "reason": "#606 reworded the pruning paragraph in place ('once at server startup' -> 'once at startup, across the CLI and stdio entry points'). Counted on both trees: 1 on main, 1 on the branch, same paragraph, nothing deleted.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7752,7 +7798,7 @@
       "to": "8000792d47bf77f8",
       "toLabel": "Local stores. spotify-mcp logout erases the token file a…",
       "reason": "#1591: logout now enumerates every profile's token file, so the paragraph's 'a store that is one file per account' list had to name the token files rather than only the read cache.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7761,7 +7807,16 @@
       "to": "6555776743433e73",
       "toLabel": "Every tool that writes a local file resolves its destina…",
       "reason": "#1580 corrected the write-root paragraph; re-pinned after the rebase",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "8c7fb4d0d436a23f",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "30494fc067c03492",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "added the SPOTIFY_MCP_ALLOW_REAL_HOME_STORES row for #1635",
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7770,7 +7825,7 @@
       "to": "9285b77a40401b0d",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "SPOTIFY_MCP_BACKUP_DIR now also holds non-library families and SPOTIFY_MCP_BACKUP_ARTIFACT_RETENTION_DAYS is new (#1592)",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7779,7 +7834,7 @@
       "to": "8c7fb4d0d436a23f",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "#1603 adds the SPOTIFY_MCP_PLAYLIST_ITEMS_CAP row to the env-var table; every prior row is unchanged, so this is an extension rather than a reword of the table's contents",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7788,7 +7843,7 @@
       "to": "06d6e0e506353873",
       "toLabel": "Set SPOTIFYMCPRECEIPTS=1 to persist each mutation receip…",
       "reason": "#1580 corrected the receipts paragraph; re-pinned after the rebase",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7797,7 +7852,7 @@
       "to": "8d977e2956f65028",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
       "reason": "#1591: the SPOTIFY_MCP_PROFILE row claimed logout --profile acts on that account alone; it erases every profile's stores, so the row now says so.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7806,7 +7861,16 @@
       "to": "b184356b04f402b4",
       "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
       "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "bd7767fa60572eed",
+      "label": "So the store creates the directory and then stops, unles…",
+      "to": "5bb0e9522d2017c8",
+      "toLabel": "So the store creates the directory and then stops, unles…",
+      "reason": "#1635 review: guard asks about a claim, not a sandbox heuristic",
+      "date": "2026-09-30"
     },
     {
       "file": "docs/configuration.md",
@@ -7815,7 +7879,7 @@
       "to": "dcefb05c88ef520a",
       "toLabel": "Stores are moved, not deleted: to the freedesktop trash …",
       "reason": "#1591: 'The token file is the single exception' became plural once one run shreds every profile's token file.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/cookbook.md",
@@ -7824,7 +7888,7 @@
       "to": "3b30a81ccdb95f5f",
       "toLabel": "Receipt-bearing mutations of items — playlist adds and r…",
       "reason": "#1578: the undo section named three playlist_meta issuers as a closed list; create_smart_playlist is a fourth and those four are the whole set, since ReceiptKind is a closed union and every other issueReceipt site passes playlist_items or library",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/cookbook.md",
@@ -7833,7 +7897,7 @@
       "to": "83be75faa468ab15",
       "toLabel": "1. Call libraryhygiene and librarygenrereport. When a sp…",
       "reason": "#1578: the recipe glossed an orphaned single as a track whose album isn't saved; the predicate is three conditions (single release, no other liked track on that release, every credited artist has exactly one liked track overall) and every finding is low-confidence",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/distribution.md",
@@ -7842,7 +7906,7 @@
       "to": "7fadc3618dfe8d18",
       "toLabel": "Merging the release PR is the last human step. The tag i…",
       "reason": "#1576 reworded this paragraph in place; re-pinned after the rebase took the upstream manifest",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/migration-v3.md",
@@ -7851,7 +7915,7 @@
       "to": "5b49592f78ae801d",
       "toLabel": "\"Still callable in 3.0?\" is what the code in this tree d…",
       "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/migration-v3.md",
@@ -7860,7 +7924,7 @@
       "to": "22e9b5bcc24051f5",
       "toLabel": "Every retired tool name in 3.0 refuses. Earlier releases…",
       "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/migration-v3.md",
@@ -7869,7 +7933,7 @@
       "to": "d967f61a7f0edc7e",
       "toLabel": "| What you sent | kind | reason | error.param | Where to…",
       "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "docs/v3-roadmap.md",
@@ -7878,7 +7942,7 @@
       "to": "4204f6a63cdbb01f",
       "toLabel": "The 2.0 playlist input spellings go away in 3.0. They ar…",
       "reason": "#1573: the 2.0 playlist input spellings are withdrawn in 3.0, not already gone; the paragraph now says which line they are callable through",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "README.md",
@@ -7887,7 +7951,7 @@
       "to": "742fd50cae55cba1",
       "toLabel": "| Variable | Example | Purpose | |---|---|---| | SPOTIFY…",
       "reason": "The stats.fm opt-in row hard-coded 49, a number nothing re-derives. The census measures 50 across the four keys in STATSFM_REGISTRATION_KEYS; the row now names tastejukebox and the two Spotify writers (taste_to_playlist, statsfm_jukebox)",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "skills/spotify-exhaustive-feature-sweep/SKILL.md",
@@ -7896,7 +7960,7 @@
       "to": "4677a0c2db260d05",
       "toLabel": "src/resources/index.ts and src/resources/templates.ts — …",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "skills/spotify-mcp-competitor-comparison/SKILL.md",
@@ -7905,7 +7969,7 @@
       "to": "b91f01d5dbab9dab",
       "toLabel": "For completion, verify the protocol path rather than inf…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "skills/spotify-mcp-competitor-comparison/SKILL.md",
@@ -7914,7 +7978,7 @@
       "to": "17df20e1f5dca800",
       "toLabel": "| Claim | Current proof to inspect | |---|---| | stdio t…",
       "reason": "the sweep corrected this paragraph; the pinned text was replaced in the same tree",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7923,7 +7987,7 @@
       "to": "316731223f79cc15",
       "toLabel": "1. The schema declares no default and the handler defaul…",
       "reason": "#1571 review: the class-1 list hand-enumerated members and had already gone stale; the classification is the contract and the measured counts carry the instance",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7932,7 +7996,7 @@
       "to": "6ff321e0dbe1a3ea",
       "toLabel": "dryrun default in the playback family (v2, #836) — BREAK…",
       "reason": "#1571 rewrote the paragraph's library/playlist/podcast claim: #827's DryRunDefault was rolled onto those families partially and by module, so each family now holds both conventions at once. A missing schema default implies neither a commit nor a preview.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7941,7 +8005,7 @@
       "to": "4a35a45eefb0eccc",
       "toLabel": "tsconfig.json essentials: { \"compilerOptions\": { \"target…",
       "reason": "rebase onto main after #1541: #585 reworded the hand-maintained 'tsconfig.json essentials' fence in SPEC.md to name the strict flags that measured clean; same fence, new text, old hash gone from the file",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7950,7 +8014,7 @@
       "to": "c395232359bff431",
       "toLabel": "Response byte cap (#895) — responseformat: 'json' and st…",
       "reason": "clean_backup_artifacts registers the 71st module, so this paragraph's registry figures move from 559/128/146,360 to 560/129/148,258 (#1592)",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7959,7 +8023,7 @@
       "to": "88e17d7ba9fcdf20",
       "toLabel": "| HTTP Status | Cause | MCP response | |---|---|---| | 4…",
       "reason": "The 400/422 row added for #1612 lands at the top of the HTTP status table, so the pinned unit is a reword of the same table rather than a deletion. The classifier arm itself is unchanged: one arm, one kind, one reason, one fix — the row documents it, and tests/errors.contract.test.ts asserts 400 and 422 cannot drift apart.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7968,7 +8032,7 @@
       "to": "2c668176003913f0",
       "toLabel": "1566 and #1567 have now closed the /me/library inconsist…",
       "reason": "#1567 moved save_to_library onto DryRunDefault, so the split this paragraph described no longer exists",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7977,7 +8041,7 @@
       "to": "0451f4cbec553ab1",
       "toLabel": "The Spotify Connect SDK and native client integration — …",
       "reason": "Rebase onto main resolved the doc-prose-manifest conflict by taking main's side, which discarded this branch's own reanchor commits. The prose itself survived in the file; the pin is re-pointed at the current text.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7986,7 +8050,7 @@
       "to": "c0be5e8d0a5e09dd",
       "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
       "reason": "The #1550 change reworded the remove_from_library Inputs row in place: dry_run moved from opt-in to defaulting to true, so the row now states the default and how to commit.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -7995,7 +8059,7 @@
       "to": "985d30f963b54c8c",
       "toLabel": "Returns: id, name, description, track count, ispublic, i…",
       "reason": "#1556: get_user_playlists substituted 0 for a count Spotify never stated; the paragraph now says which of the two a read produced",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8004,7 +8068,7 @@
       "to": "2d488f91402c304b",
       "toLabel": "| Family (manifest scopeKey) | publish default: true | p…",
       "reason": "the family table gains clean_backup_artifacts and its coverage of the non-library families sharing the backup directory (#1592)",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8013,7 +8077,7 @@
       "to": "68c3e9ff9ff5e7d3",
       "toLabel": "/artists/{id}/top-tracks status (#901). The two platform…",
       "reason": "The #1550 change reworded the remove_from_library row of the endpoint summary in place: dry_run now defaults to true and a removal of 10 or more URIs requires elicitation confirmation. Same paragraph, new words.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8022,7 +8086,7 @@
       "to": "5f496cb757f0f4fa",
       "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
       "reason": "#727 extends the move_items_between_playlists Inputs table rather than replacing it: measured on this tree, 10 data rows against 8 on main, with source_lane and target_lane added and all 8 originals still present. No row was dropped.",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8031,7 +8095,7 @@
       "to": "1bd9ce1b66814558",
       "toLabel": "Row cap and emit-once (#895) — capRowSections and emitOn…",
       "reason": "rebase onto 76aad008: 1 missing / 1 unpinned, same file, same label, 1 reword; the row occurs once on main and once on the branch",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8040,7 +8104,7 @@
       "to": "ec0396fd5de80042",
       "toLabel": "Returns: grouped results by type. Each item includes URI…",
       "reason": "#1556: search's PLAYLISTS rows rendered a 0 for a count Spotify never stated, so the paragraph now names which of the two arrived",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     },
     {
       "file": "SPEC.md",
@@ -8049,7 +8113,7 @@
       "to": "232a046a29a1468e",
       "toLabel": "Returns: playlist name, owner, track count, ID, URI; plu…",
       "reason": "#1556: get_user_playlists_by_id substituted 0 for a count Spotify never stated; the paragraph now points at the shared rendering",
-      "date": "2026-09-28"
+      "date": "2026-09-30"
     }
   ]
 }

@@ -84,8 +84,9 @@
  * shared filesystem.
  */
 import { randomUUID } from 'node:crypto';
-import { chmodSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { chmodSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve, sep } from 'node:path';
 import type { CallToolResult, CreateTaskResult, Result, Task, TaskStatus } from '@modelcontextprotocol/sdk/types.js';
 import type { CreateTaskOptions, TaskStore } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
 import { isTerminal } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
@@ -252,6 +253,83 @@ export function tasksDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
+ * Whether the store at `dir` may be reconciled by this process.
+ *
+ * Three answers, in the order they are asked:
+ *
+ * 1. **The caller named the store.** Passing a directory is a claim: a test
+ *    fixture, a container's own layout, an operator who set
+ *    `SPOTIFY_MCP_DATA_DIR`. Nobody reaches into someone else's home to pass
+ *    an explicit path into a constructor that already defaults to their own.
+ *    This is what keeps the existing restart-durability suite working, and it
+ *    is the case an earlier version of this guard broke by inferring the claim
+ *    from the resolved path instead.
+ * 2. **The caller set the opt-out**, exactly `never`.
+ * 3. **The default store resolves outside the home this process sees.** That
+ *    is a sandbox: the hermetic helper points `HOME` at a temp root and every
+ *    container does the same, and in both the store is the default location for
+ *    that home. Reconciling there is correct and is what always happened.
+ *
+ * What is left — the default store inside a real home, reached without a claim
+ * — is the reported incident, and it is refused.
+ *
+ * The opt-out is an exact compare, no trim, matching `SPOTIFY_MCP_CONFIRM` in
+ * `src/tools/confirm.ts`. The bypass that skips a destructive step is spelled
+ * one way and only one way; tolerating `'never '` would mean a shell that
+ * appends a stray character arms it anyway. An earlier draft used `.trim()` and
+ * the near-miss test caught it.
+ */
+function reconcilePermitted(dir: string, claimed: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (claimed) return true;
+  if (env.SPOTIFY_MCP_ALLOW_REAL_HOME_STORES === 'never') return true;
+  return isSandboxedHome(dir, env);
+}
+
+/**
+ * True when the default store for this process resolves outside the home it
+ * sees — a sandbox rather than a real user's home.
+ *
+ * Compares the store against `homedir()` on *both* sides after
+ * `realpathSync.native`, because Windows and macOS hand out symlinked or
+ * case-insensitive homes (`/Users/x` vs `/System/Volumes/Data/Users/x`) and a
+ * string compare of unresolved paths reports a sandbox as real. The case fold
+ * is applied only on win32/darwin: on Linux two paths differing only in case
+ * are two different directories, and folding them would hide a real one.
+ *
+ * `homedir()` is called per-invocation rather than captured at module load, for
+ * the reason `storeDir()` in `config.ts` documents — a constant captured at
+ * import would pin the answer to the pre-redirect home.
+ */
+function isSandboxedHome(dir: string, env: NodeJS.ProcessEnv): boolean {
+  let realHome: string;
+  try {
+    realHome = realpathSync.native(homedir());
+  } catch {
+    return false;
+  }
+  const fold = process.platform === 'win32' || process.platform === 'darwin' ? (p: string) => p.toLowerCase() : (p: string) => p;
+  // The default location, resolved the same way the constructor's own default
+  // argument is. Comparing the store against the home rather than asking
+  // "is the home a temp dir" is what keeps a redirected HOME and a relocated
+  // home working, with no guess about where sandboxes live.
+  return !isInside(fold(safeRealpath(dir)), fold(realHome));
+}
+
+/** `realpath` that yields the input unchanged rather than throwing. */
+function safeRealpath(target: string): string {
+  try {
+    return realpathSync.native(target);
+  } catch {
+    return resolve(target);
+  }
+}
+
+/** True when `child` is `parent` or sits below it. Both already folded. */
+function isInside(child: string, parent: string): boolean {
+  return child === parent || child.startsWith(parent.endsWith(sep) ? parent : parent + sep);
+}
+
+/**
  * A `TaskStore` that survives a process restart.
  *
  * One JSON file per task. Writes go through a temp file and a rename so a
@@ -266,11 +344,55 @@ export class PersistentTaskStore implements TaskStore {
   /** Serialises writes to one task file within this process. */
   private readonly chains = new Map<string, Promise<unknown>>();
 
-  constructor(dir: string = tasksDir()) {
-    this.dir = dir;
-    mkdirSync(dir, { recursive: true, mode: TASK_DIR_MODE });
-    chmodSync(dir, TASK_DIR_MODE);
-    this.reconcile();
+  /**
+   * Whether the caller named this store, rather than taking the default.
+   *
+   * The distinction is the whole guard. A caller that passes a directory has
+   * chosen it — a test fixture, a container's own layout, an operator who set
+   * `SPOTIFY_MCP_DATA_DIR` — and is entitled to have its records settled. A
+   * caller that takes the default is the server starting up, and whether it
+   * may settle the records under a real home depends on whether it is entitled
+   * to, which is what `reconcilePermitted` decides.
+   *
+   * An earlier version inferred the same thing from the resolved path and got
+   * it backwards: it refused the explicit-`mkdtemp` case that the existing
+   * restart-durability suite depends on, and that suite caught it.
+   */
+  private readonly claimed: boolean;
+
+  constructor(dir?: string) {
+    // `null` is NOT a claim, and the distinction is load-bearing (#1635).
+    //
+    // `dir !== undefined` is true for `null`, so a caller passing `null` — legal
+    // from JavaScript, and caught by no compiler anywhere in `src/` because the
+    // parameter is typed `string | undefined` — would be recorded as having
+    // named this store and so would reconcile it, settling a real home's
+    // records from a process that never claimed them. That is the reported
+    // incident, reached by a one-word slip.
+    //
+    // The type says `null` cannot happen, so a compiler will not catch it. The
+    // guard is the last line that can, and it must not be the one place that
+    // reads a runtime check as a type-level guarantee.
+    this.claimed = dir !== undefined && dir !== null;
+    this.dir = dir ?? tasksDir();
+    mkdirSync(this.dir, { recursive: true, mode: TASK_DIR_MODE });
+    chmodSync(this.dir, TASK_DIR_MODE);
+    // The destructive half, behind a guard (#1635). Creating the directory is
+    // safe and keeps a first run working; everything below can rename a
+    // user's records to `.corrupt` and delete their expired ones, so it only
+    // runs for a caller that has established it is the process those records
+    // belong to.
+    if (reconcilePermitted(this.dir, this.claimed)) {
+      this.reconcile();
+      return;
+    }
+    process.emitWarning(
+      `Task store at ${this.dir} was left untouched: reconciling it renames unparseable records to ` +
+        '.corrupt and drops terminal records past their TTL, and this process cannot establish that it ' +
+        'is the server those records belong to (#1635). Pass an explicit directory to claim this store, ' +
+        'or set SPOTIFY_MCP_ALLOW_REAL_HOME_STORES=never to reconcile the default one.',
+      'TaskStoreReconcileSkipped',
+    );
   }
 
   /** Absolute path of the record for `taskId`. */
