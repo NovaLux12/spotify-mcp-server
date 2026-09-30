@@ -1,7 +1,7 @@
 /**
  * Child process for the #1635 guard tests.
  *
- * Run as: `node --import tsx <this file> <storeDir> <optOutValue|->`
+ * Run as: `node --import tsx <this file> <storeDir> <optOutValue|-> [default]`
  *
  * Constructs a `PersistentTaskStore` and reports, on stdout as one JSON line,
  * what the constructor did to the record set. The point of the child is
@@ -12,8 +12,13 @@
  * can exercise the branch that refuses.
  *
  * So this child is spawned with `HOME` and `USERPROFILE` pointed at a
- * throwaway root and no hermetic helper imported. The guard then sees a store
- * under its own `homedir()` and must decline to reconcile it.
+ * throwaway root and no hermetic helper imported.
+ *
+ * The optional third argument is the important one. Passing `dir` to the
+ * constructor is itself a claim on the store, and a claimed store reconciles —
+ * so to reach the refusal the child must take the DEFAULT path, which is what
+ * `src/server.ts` does on every `buildMcpServer`. That is the reported case:
+ * the store defaults into a home the process has not established it owns.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,6 +27,7 @@ import { PersistentTaskStore } from '../../src/tasks.ts';
 
 const dir = process.argv[2];
 const optOut = process.argv[3];
+const useDefault = process.argv[4] === 'default';
 
 if (optOut && optOut !== '-') {
   process.env.SPOTIFY_MCP_ALLOW_REAL_HOME_STORES = optOut;
@@ -32,7 +38,9 @@ if (optOut && optOut !== '-') {
 const warnings: string[] = [];
 process.on('warning', (w: Error) => warnings.push(String(w.message)));
 
-new PersistentTaskStore(dir);
+// `default` is the refusal path: no directory is named, so the store resolves
+// `tasksDir()` for this process's HOME — which the caller pointed at `dir`.
+new PersistentTaskStore(useDefault ? undefined : dir);
 
 // `process.on('warning')` is deferred to a later tick, so a child that writes
 // its report synchronously exits first and the warnings are never collected --

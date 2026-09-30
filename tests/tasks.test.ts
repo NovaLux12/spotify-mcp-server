@@ -32,7 +32,7 @@ import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
@@ -673,17 +673,28 @@ describe('#1635 constructing the store cannot settle a real home', () => {
    * itself, so a test that has just set the variable in-process cannot leak
    * into the case that must refuse.
    */
-  function runChild(dir: string, optOut: string): {
+  function runChild(dir: string, optOut: string, home?: string, useDefault = false): {
     files: string[];
     quarantined: string[];
     workingStatus: string | null;
     warnings: string[];
   } {
-    const home = dirname(dirname(dir));
+    // `home` defaults to the home the store would default to, so the common
+    // case needs no argument. `useDefault` asks the child to construct the
+    // store WITHOUT naming a directory — the refusal path, because naming one
+    // is itself a claim and a claimed store reconciles.
+    const childHome = home ?? dirname(dirname(dir));
     const out = execFileSync(
       process.execPath,
-      ['--import', 'tsx', new URL('./fixtures/task-store-reconcile-child.ts', import.meta.url).pathname, dir, optOut],
-      { encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home }, stdio: 'pipe' },
+      [
+        '--import',
+        'tsx',
+        new URL('./fixtures/task-store-reconcile-child.ts', import.meta.url).pathname,
+        dir,
+        optOut,
+        ...(useDefault ? ['default'] : []),
+      ],
+      { encoding: 'utf8', env: { ...process.env, HOME: childHome, USERPROFILE: childHome }, stdio: 'pipe' },
     );
     return JSON.parse(out.trim().split('\n').pop() ?? '{}') as {
       files: string[];
@@ -693,24 +704,22 @@ describe('#1635 constructing the store cannot settle a real home', () => {
     };
   }
 
-  it('leaves every record alone when the store resolves inside the real home', () => {
-    // The reported case: a script importing server code with no sandbox home
-    // constructed the store against a real `~/.spotify-mcp/`. A `working`
-    // record is work that "is not running and will never resume" — true of a
-    // real restart, and not something an unrelated process gets to decide.
+  it('leaves every record alone when the store defaults into a home it does not own', () => {
+    // The reported case, exactly: a script imports server code, constructs the
+    // store, and the store resolves `tasksDir()` — a real `~/.spotify-mcp/
+    // tasks`. A `working` record is work that "is not running and will never
+    // resume", true of a real restart and not something an unrelated process
+    // gets to decide.
     //
-    // This has to run in a child. `tests/helpers/hermetic.ts` redirects `HOME`
-    // to a temp root before this file's tests run, so in-process the sandbox
-    // and "the home" are the same directory — the guard is right to reconcile
-    // that, and an in-process assertion for the refusal would be asserting the
-    // opposite of the truth. The child gets a throwaway `HOME` and does not
-    // import the helper, so the store really does resolve under its own home.
+    // The child constructs the store WITHOUT naming a directory, because
+    // naming one is itself a claim and a claimed store reconciles. That is the
+    // shape `src/server.ts` takes on every `buildMcpServer`.
     const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-home-'));
     const dir = join(home, '.spotify-mcp', 'tasks');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     seedRealHomeStore(dir);
     try {
-      const report = runChild(dir, '-');
+      const report = runChild(dir, '-', home, true);
 
       // None of the three destructive outcomes may have happened.
       assert.deepEqual(report.quarantined, [], 'an unparseable record must not be renamed to .corrupt');
@@ -736,16 +745,39 @@ describe('#1635 constructing the store cannot settle a real home', () => {
     // `never` and nothing else, mirroring `SPOTIFY_MCP_CONFIRM` in §5 of
     // AGENTS.md — a near-miss string must not silently re-arm the destructive
     // default.
+    //
+    // Same store, same home, default path — the two arms differ by one
+    // environment variable and nothing else.
     const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-optin-'));
     const dir = join(home, '.spotify-mcp', 'tasks');
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     seedRealHomeStore(dir);
     try {
-      const report = runChild(dir, 'never');
+      const report = runChild(dir, 'never', home, true);
       assert.deepEqual(report.quarantined, ['corrupt.json.corrupt'], 'an opted-in store does quarantine an unparseable record');
       assert.ok(!report.files.includes('expired.json'), 'and does drop a terminal record past its TTL');
       assert.equal(report.workingStatus, 'failed', 'and does settle an in-flight record as failed');
       assert.deepEqual(report.warnings, [], 'and does so without complaining about it');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('reconciles when the caller NAMES the store, with no opt-out', () => {
+    // The other claim. A caller that passes a directory has chosen it — a test
+    // fixture, a container layout, an operator who set SPOTIFY_MCP_DATA_DIR —
+    // and is entitled to have its records settled. The existing
+    // restart-durability suite depends on this and is the reason the guard
+    // asks about the claim rather than about the path.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-claimed-'));
+    const dir = join(home, 'chosen-store');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    seedRealHomeStore(dir);
+    try {
+      const report = runChild(dir, '-', home, false);
+      assert.deepEqual(report.quarantined, ['corrupt.json.corrupt'], 'a named store reconciles as it always did');
+      assert.ok(!report.files.includes('expired.json'));
+      assert.deepEqual(report.warnings, [], 'and does not warn about a store the caller claimed');
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -762,7 +794,7 @@ describe('#1635 constructing the store cannot settle a real home', () => {
     try {
       for (const value of ['always', 'yes', '1', 'NEVER', 'never ', '']) {
         seedRealHomeStore(dir);
-        const report = runChild(dir, value);
+        const report = runChild(dir, value, home, true);
         assert.deepEqual(
           report.quarantined,
           [],
@@ -775,16 +807,55 @@ describe('#1635 constructing the store cannot settle a real home', () => {
     }
   });
 
-  it('reconciles under a sandbox home, which is every test and every sandboxed host', () => {
-    // The hermetic helper redirects HOME, so the default store path resolves
-    // under a temp root. If this stopped reconciling, the restart-durability
-    // suite above would be asserting against a store that never settled
-    // anything — a gate that passes for the wrong reason (AGENTS.md §6).
-    const dir = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-sandbox-'));
+  it('reconciles the DEFAULT store path when HOME has been redirected', () => {
+    // The case that matters most and the one an earlier draft of this test got
+    // wrong. It constructed the store in a bare `mkdtemp` directory, which is
+    // merely *a* non-home path — so it proved "not under a home reconciles",
+    // not "under a REDIRECTED home reconciles". A regression that broke the
+    // guard specifically for a sandboxed HOME — the hermetic suite, every
+    // container, every CI sandbox — would have sailed past it.
+    //
+    // So this redirects HOME for real, in a child, and asks for the store at
+    // its default location rather than passing one in. That is precisely what
+    // `src/server.ts` does on every `buildMcpServer`.
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-redirect-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     seedRealHomeStore(dir);
-    new PersistentTaskStore(dir);
-    assert.equal(existsSync(`${join(dir, 'corrupt.json')}.corrupt`), true, 'a sandboxed store reconciles as it always did');
-    assert.equal(existsSync(join(dir, 'expired.json')), false);
+    try {
+      const report = runChild(dir, '-');
+      // Redirected home, so the guard treats it as a sandbox and reconciles —
+      // the same as before the fix, and the behaviour every test in this
+      // repository depends on.
+      assert.deepEqual(report.quarantined, ['corrupt.json.corrupt'], 'a redirected HOME must reconcile as it always did');
+      assert.ok(!report.files.includes('expired.json'), 'and drop a terminal record past its TTL');
+      assert.equal(report.workingStatus, 'failed', 'and settle an in-flight record');
+      assert.deepEqual(report.warnings, [], 'and not warn about a store it legitimately owns');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('still creates the directory, with its mode, when it refuses to reconcile', () => {
+    // The guard is on the destructive half only. A first run against a home
+    // that has no `tasks/` directory yet must still work, and the directory
+    // must still be owner-only — `mkdirSync`/`chmodSync` run before the check.
+    // Without this, "refuse to touch records" could quietly degrade into
+    // "refuse to work".
+    const home = mkdtempSync(join(tmpdir(), 'spotify-mcp-tasks-mkdir-'));
+    const dir = join(home, '.spotify-mcp', 'tasks');
+    try {
+      const store = new PersistentTaskStore(dir);
+      assert.ok(existsSync(dir), 'the store directory is created even when the reconcile is refused');
+      assert.equal(store.recordPath('x'), join(dir, 'x.json'), 'and the store is usable against it');
+      // 0o700, and only meaningful on POSIX — the same guard `src/auth.ts`
+      // applies around its own chmod calls.
+      if (process.platform !== 'win32') {
+        assert.equal(statSync(dir).mode & 0o777, 0o700, 'the directory is still owner-only');
+      }
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
