@@ -45,6 +45,7 @@ The variables below are read at the documented call sites; set them in your MCP 
 | `SPOTIFY_MCP_DISABLE_TOOLS` | unset | Comma-separated registration-key overrides forced off; disable wins over enable. |
 | `SPOTIFY_MCP_READONLY` | unset | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) hides Spotify-mutating registration modules. One parser backs this flag, the `spotify_doctor` report, the `whats_new` annotations and the freshness-watermark hold, so they cannot disagree. Read-only modules, resources, and prompts remain subject to their normal gates. |
 | `SPOTIFY_MCP_CONFIRM` | unset | `never` is the only explicit bypass for confirmation-gated destructive operations; callers that require confirmation otherwise fail closed when the client cannot elicit. |
+| `SPOTIFY_MCP_ALLOW_REAL_HOME_STORES` | unset | `never` (exactly; surrounding whitespace is not trimmed) lets the task store reconcile records under a real home. Reconciling renames every unparseable record to `.corrupt` and deletes every terminal record past its TTL, so by default the store only does that when the caller has *claimed* it — by naming the directory, or by resolving it outside the home it sees (a sandbox or container). Unset, a default store inside a real home is created and left untouched and a warning names the path. Normally unset; see [Task records and a real home](#task-records-and-a-real-home-1635). |
 | `SPOTIFY_MCP_ATTRIBUTION` | unset (on) | `0`, `false`, `no`, or `off` (case-insensitive, trimmed) stops the "Music data supplied by Spotify" footer and the `open.spotify.com` link on every rendered row. **On unless one of those values is set** — the opposite of every other switch here, and deliberately: Developer Policy Sec. II.4.a makes attribution mandatory wherever Spotify content is displayed, so an unrecognised value (`enabled`, say, which reads as "on" for `SPOTIFY_MCP_READONLY`) must not be the one that removes it. Unrecognised values keep attribution on and print a stderr line saying so. See [Attribution on rendered rows](#attribution-on-rendered-rows-696). |
 | `SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS` | unset (off) | `1`, `true`, `yes`, or `on` (case-insensitive, trimmed) registers the eleven **derived listening-analytics tools**; unset or any other value does not, and an unrecognised value also prints a stderr line naming the accepted spellings. Independent of `SPOTIFY_MCP_READONLY`: that one hides write-capable *modules*, this one hides individual read-only *tools* inside modules that stay active. See [Derived listening analytics](#derived-listening-analytics). |
 | `SPOTIFY_MCP_FRESHNESS_STATE` | `~/.spotify-mcp/freshness.json` | Per-kind watermark file powering `whats_new` with `since: "last-check"`. Written by that tool, mode 0600. |
@@ -387,6 +388,22 @@ An unknown-only toolset spec fails startup with the valid set names. A mixed kno
 `SPOTIFY_MCP_READONLY=1` (also `true`, `yes` or `on`; case-insensitive, surrounding whitespace ignored) prevents registration of Spotify-mutating modules such as playback and scenes, playlist and library mutations, following, users, audiobooks, and destructive helpers. It does **not** imply that every remaining tool is side-effect-free: local-only tools such as the taste feedback store remain available. It also does not bypass the independent toolset, registration-key, or scope gates. Read-only resources and prompts remain available when their own gates permit.
 
 For confirmation-gated destructive operations, a missing MCP elicitation capability produces an `unsupported` result. Callers that require confirmation must treat that result as refusal; they proceed without prompting only when `SPOTIFY_MCP_CONFIRM=never` explicitly selects the automation bypass. A declined prompt or elicitation failure also fails closed.
+
+### Task records and a real home (#1635)
+
+Long-running tools keep one JSON record per task under `~/.spotify-mcp/tasks/`. When the server starts, it reconciles them: a record still marked in flight belongs to a process that is gone, so it is settled as `failed`; a record that no longer parses is renamed to `.corrupt` rather than deleted; a terminal record past its TTL is dropped.
+
+That is the right behaviour for a restart of your server. It is the wrong behaviour for anything else that constructs the store — a script, a scratch `tsx` run, a sandboxed host — because "the previous process died" is a claim about a process, and nothing on disk establishes it. Applied to a real home by an unrelated process, it renames your in-flight task records and deletes your expired ones, and the run looks entirely healthy: a directory that was created and a reconcile that found nothing to do are indistinguishable from a normal startup.
+
+So the store creates the directory and then stops, unless the caller has established a claim on it. There are three ways to hold one:
+
+- **Name the directory.** Passing `dir` to the constructor is a claim — a test fixture, a container's own layout, an operator who set `SPOTIFY_MCP_DATA_DIR`. Nobody reaches into someone else's home to pass an explicit path to a constructor that already defaults to their own.
+- **Resolve outside the home this process sees.** That is a sandbox: the test suite and any container point `HOME` at a temp root, and reconciling there is correct and is what always happened.
+- **Set `SPOTIFY_MCP_ALLOW_REAL_HOME_STORES=never`** to say so explicitly.
+
+What is left — the default store inside a real home, reached with no claim — is the reported incident, and it is refused with a warning naming the path.
+
+For a normal `npm run dev` this changes one thing: the first start after a crash leaves the previous run's in-flight records as they are, rather than settling them. Set the variable if you want them settled on startup.
 
 ### Attribution on rendered rows (#696)
 

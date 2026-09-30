@@ -101,6 +101,12 @@ set SPOTIFY_CLIENT_ID=your_client_id_here && npx -y @novalux12/spotify-mcp@lates
 $env:SPOTIFY_CLIENT_ID="your_client_id_here"; npx -y @novalux12/spotify-mcp@latest auth
 ```
 
+> **Windows is supported for install and everyday use, and is not covered by CI.**
+> The commands above are the supported path, but the test suite runs on Linux
+> only, so a Windows-specific regression would not be caught before release.
+> See [docs/platform-support.md](docs/platform-support.md) for exactly what is
+> and is not verified there, and what the known gaps are.
+
 **Headless / remote host:**
 ```bash
 SPOTIFY_HEADLESS=1 SPOTIFY_CLIENT_ID=your_client_id_here npx -y @novalux12/spotify-mcp@latest auth
