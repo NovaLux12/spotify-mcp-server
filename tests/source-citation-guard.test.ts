@@ -35,14 +35,25 @@
  *     the removed artefact in prose to explain why it was removed, and that
  *     sentence is not a live citation.
  *
+ * Membership, not existence. Resolution asks whether a path is *tracked*, not
+ * whether it is on disk. The claim this guard makes is about what a reader of
+ * the repository can follow, and a reader has only what was committed.
+ * `.gitignore` excludes `memory/*` bar three whitelisted sweep reports, so a
+ * probe artefact written by `npm run probe:edge` is invisible to every clone
+ * while sitting right there in a developer's working tree. This guard first
+ * used `existsSync`, which made its verdict a property of the machine it ran
+ * on: green on a clean CI checkout, red on any workstation that had ever run a
+ * probe -- the same defect class as #1636, one directory over. A test whose
+ * answer depends on untracked local state is not a guard.
+ *
  * Run: node --import tsx --test tests/source-citation-guard.test.ts
  */
 import './helpers/hermetic.js';
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 
 import { scanFile, walkTypeScriptFiles } from './ts-source-scan.js';
 
@@ -64,7 +75,35 @@ type Dangling = { path: string; line: number; cited: string };
  */
 export function resolvesToRepoFile(cited: string, citingFile: string): boolean {
   const bases = [REPO_ROOT, join(REPO_ROOT, 'src'), dirname(join(REPO_ROOT, citingFile)), dirname(dirname(join(REPO_ROOT, citingFile)))];
-  return bases.some((base) => existsSync(resolve(base, cited)));
+  return bases.some((base) => tracked().has(toRepoRelative(resolve(base, cited))));
+}
+
+let trackedCache: Set<string> | null = null;
+
+/**
+ * Every path git tracks in this checkout, as repo-relative POSIX paths.
+ *
+ * Cached: the guard asks this once per cited path across every `src/` file,
+ * and one `git ls-files` is cheaper than the walk it is serving. Read from git
+ * rather than a hand-maintained ignore reader, so the set stays true as
+ * `.gitignore` changes.
+ */
+function tracked(): Set<string> {
+  if (trackedCache) return trackedCache;
+  const out = execFileSync('git', ['-C', REPO_ROOT, 'ls-files', '-z'], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  trackedCache = new Set(out.split('\0').filter(Boolean));
+  return trackedCache;
+}
+
+/**
+ * A path relative to the repo root, in the POSIX form `git ls-files` prints.
+ *
+ * Anything outside the root yields a `..`-prefixed path, which no tracked
+ * entry can equal -- so a citation escaping the repository cannot resolve by
+ * accident.
+ */
+function toRepoRelative(absolute: string): string {
+  return relative(REPO_ROOT, absolute).split(sep).join('/');
 }
 
 /**
