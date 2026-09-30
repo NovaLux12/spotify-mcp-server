@@ -113,6 +113,95 @@ describe('#1604 a read-only module must contain no mutating call', () => {
     assert.match(result.out, /post/);
   });
 
+  it('catches every mutating verb, not just post (#1604 review)', () => {
+    // The reviewer's D5, and it is the kind of gap a test suite hides from
+    // itself: the "fails" arm exercised `client.post` alone, so narrowing the
+    // verb list to `post` would have left every test green while the gate
+    // stopped catching deletes — which is the write that actually appeared in
+    // the stats.fm jukebox module that motivated the issue.
+    for (const verb of ['post', 'put', 'patch', 'delete']) {
+      const result = runGateOverManifest(
+        manifest(true),
+        ['export async function probe(client: Record<string, unknown>) {', `  await client.${verb}('/x', {});`, '}', ''].join('\n'),
+      );
+      assert.equal(result.status, 1, `a client.${verb}() in a read-only module must fail the gate; output was:\n${result.out}`);
+      assert.match(result.out, new RegExp(`probe_readonly\\.ts:2.*${verb}`, 's'), `the failure must name the verb ${verb}`);
+    }
+  });
+
+  it('does not fire on a mutating call inside a nested template literal (#1604 review)', () => {
+    // The reviewer's D1, and the most serious finding of the review: this was a
+    // FALSE POSITIVE, so the gate failed a perfectly clean tree. The blanking
+    // regex stopped at the inner backtick and left the nested template's body
+    // exposed, where it read as a real call. A gate that fails the tree it
+    // defends gets deleted, so this arm exists to make that unrepeatable.
+    const result = runGateOverManifest(
+      manifest(true),
+      [
+        'export const note = `outer ${`client.post(1)`} end`;',
+        'export const real = `outer ${client.post(1)} end`;',
+        '',
+      ].join('\n'),
+    );
+    // The nested one is a STRING and must be ignored; the `${client.post(1)}`
+    // one is CODE and must be caught. Same shape, one backtick of difference.
+    assert.equal(result.status, 1, `a real call in a substitution must fail the gate; output was:\n${result.out}`);
+    assert.match(result.out, /probe_readonly\.ts:2/, 'the line reported must be the real call, not the nested string');
+  });
+
+  it('follows a destructured verb and an aliased receiver (#1604 review)', () => {
+    // The reviewer's D2 and D3: both are ordinary JavaScript and both are a
+    // write, and the first version of this gate followed neither.
+    const destructured = runGateOverManifest(
+      manifest(true),
+      [
+        'export async function probe(client: { post: (p: string, b: unknown) => Promise<void> }) {',
+        "  const { post } = client;",
+        "  return post('/x', {});",
+        '}',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(destructured.status, 1, `const { post } = client; post(...) must fail; output was:\n${destructured.out}`);
+    assert.match(destructured.out, /probe_readonly\.ts:3/, 'and the reported line must be the call, not the destructuring');
+
+    const aliased = runGateOverManifest(
+      manifest(true),
+      [
+        'export async function probe(client: { post: (p: string, b: unknown) => Promise<void> }) {',
+        '  const c = client;',
+        "  await c.post('/x', {});",
+        '}',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(aliased.status, 1, `const c = client; c.post(...) must fail; output was:\n${aliased.out}`);
+    assert.match(aliased.out, /probe_readonly\.ts:3/);
+  });
+
+  it('still misses a wrapper parameter, and says so (#1604 review)', () => {
+    // The reviewer's D4, pinned deliberately. This shape is NOT caught, and the
+    // useful thing is for that to be a test rather than a hope: if a future
+    // change closes the hole, this test fails and the header gets edited to
+    // match. A blind spot that is only in prose rots silently.
+    const result = runGateOverManifest(
+      manifest(true),
+      [
+        'export function wp(c: { post: (p: string, b: unknown) => Promise<void> }) {',
+        "  return c.post('/x', {});",
+        '}',
+        '',
+      ].join('\n'),
+    );
+    assert.equal(result.status, 0, `the wrapper parameter is a NAMED blind spot; if this now fails, the header must be updated. Output was:\n${result.out}`);
+
+    // And the header has to actually name it, so the claim and the behaviour
+    // cannot drift apart.
+    const header = readFileSync(SCRIPT, 'utf8');
+    assert.match(header, /wrapper parameter/i, 'the header must name the wrapper-parameter blind spot');
+    assert.match(header, /function wp\(c\)/, 'by its shape, so a reader can recognise it in their own code');
+  });
+
   it('ignores the same call when the module is not read-only', () => {
     // The other direction, and the one that keeps the gate from being
     // "no module may ever write": a write in an ordinary module is the normal
