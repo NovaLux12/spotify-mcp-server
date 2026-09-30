@@ -198,7 +198,7 @@ jobs:
         # not machine-checkable today; a gate that claimed to would be a gate
         # that reads as broader than it is.
         if: ${{ !cancelled() }}
-        run: node scripts/check-readonly-tools.mjs
+        run: node --import tsx scripts/check-readonly-tools.mjs
 
       - name: Registry schema conformance gate
         # #655. `server.json` carries a `$schema` URL, which is an annotation,

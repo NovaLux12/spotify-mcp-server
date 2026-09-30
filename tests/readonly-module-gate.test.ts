@@ -27,29 +27,32 @@ const SCRIPT = join(ROOT, 'scripts', 'check-readonly-tools.mjs');
 /**
  * Run the gate over a throwaway tree.
  *
- * The gate reads the compiled manifest for which modules are read-only, so a
- * synthetic module cannot be introduced by writing a file — the manifest is the
+ * The gate reads the read-only module set from `src/tools/annotations.ts`, so a
+ * synthetic module cannot be introduced by writing a file — that module is the
  * source of truth and it is not ours to fake. What this varies instead is the
  * FILE the gate scans, by pointing it at a scratch repo whose
- * `dist/tools/annotations.js` reports a module the scratch repo owns.
+ * `src/tools/annotations.ts` reports a module the scratch repo owns.
  *
  * That is the honest seam: the manifest is generated, so the test generates it
  * too, rather than asserting against a hand-written stub that could agree with
  * a broken scanner.
+ *
+ * The gate is run with `--import tsx` because that is how it is run in CI and
+ * locally; the loader is resolved from this repository's `cwd`, which is why
+ * the scratch tree needs no `node_modules` of its own.
  */
 function runGateOverManifest(manifestSource: string, moduleSource: string): { status: number; out: string } {
   const scratch = mkdtempSync(join(tmpdir(), 'readonly-gate-'));
   try {
     mkdirSync(join(scratch, 'scripts'), { recursive: true });
-    mkdirSync(join(scratch, 'dist', 'tools'), { recursive: true });
     mkdirSync(join(scratch, 'src', 'tools'), { recursive: true });
     // The scanner under test, copied so it resolves its own ROOT at the scratch
     // tree rather than at this repository.
     writeFileSync(join(scratch, 'scripts', 'check-readonly-tools.mjs'), readFileSync(SCRIPT, 'utf8'));
-    writeFileSync(join(scratch, 'dist', 'tools', 'annotations.js'), manifestSource);
+    writeFileSync(join(scratch, 'src', 'tools', 'annotations.ts'), manifestSource);
     writeFileSync(join(scratch, 'src', 'tools', 'probe_readonly.ts'), moduleSource);
     try {
-      const out = execFileSync(process.execPath, [join(scratch, 'scripts', 'check-readonly-tools.mjs')], {
+      const out = execFileSync(process.execPath, ['--import', 'tsx', join(scratch, 'scripts', 'check-readonly-tools.mjs')], {
         encoding: 'utf8',
         stdio: 'pipe',
       });
@@ -63,7 +66,12 @@ function runGateOverManifest(manifestSource: string, moduleSource: string): { st
   }
 }
 
-/** A manifest naming one read-only module backed by `src/tools/probe_readonly.ts`. */
+/**
+ * A manifest naming one read-only module backed by `src/tools/probe_readonly.ts`.
+ *
+ * Written as TypeScript and placed beside the module it describes, because that
+ * is where the gate reads the read-only set from.
+ */
 function manifest(readOnlySafe: boolean): string {
   return [
     'export const REGISTRAR_MANIFEST = [',
@@ -81,7 +89,7 @@ function manifest(readOnlySafe: boolean): string {
 
 describe('#1604 a read-only module must contain no mutating call', () => {
   it('passes on this tree, and says how much it looked at', () => {
-    const out = execFileSync(process.execPath, [SCRIPT], { encoding: 'utf8', cwd: ROOT });
+    const out = execFileSync(process.execPath, ['--import', 'tsx', SCRIPT], { encoding: 'utf8', cwd: ROOT });
     assert.match(out, /read-only modules: \d+ scanned, 0 contain a mutating call/);
     // "0 found" is only meaningful beside "N scanned" — a scan that found no
     // files would print the same zero.

@@ -49,7 +49,7 @@
  *   - A write on a rare branch is still caught: the scan is over source text,
  *     not over an executed path.
  *
- * Run: node scripts/check-readonly-tools.mjs [--json]
+ * Run: node --import tsx scripts/check-readonly-tools.mjs [--json]
  * Exits non-zero on any violation, naming the module, its file and the calls.
  */
 import { readFileSync } from 'node:fs';
@@ -112,12 +112,28 @@ function callsIn(file) {
 }
 
 async function manifest() {
-  const mod = await import(new URL('../dist/tools/annotations.js', import.meta.url).href).catch(() => null);
-  if (!mod) {
+  // Read the TypeScript source, not compiled `dist/`, and say why.
+  //
+  // The first version of this gate imported `dist/tools/annotations.js` and
+  // told the reader to run `npm run build` first. That is wrong twice over: the
+  // `test:` job runs this step BEFORE any build, so it threw
+  // `dist/tools/annotations.js is missing` on a perfectly good checkout — a
+  // gate that fails on the tree it was written to defend. And the census in
+  // this same job already reads the manifest the other way, via
+  // `await import('../src/tools/annotations.ts')` under tsx.
+  //
+  // Reading the source also removes the ordering dependency entirely: the gate
+  // no longer cares where `npm run build` sits in the job, so it cannot be
+  // broken again by a step being moved. It still cannot drift from
+  // `src/tools/annotations.ts` — that file is now the thing being read.
+  const source = new URL('../src/tools/annotations.ts', import.meta.url).href;
+  const mod = await import(source).catch((error) => {
     throw new Error(
-      'dist/tools/annotations.js is missing — run `npm run build` first. This gate reads the compiled manifest so it cannot drift from src/tools/annotations.ts.',
+      `could not load ${source}: ${error.message}\n`
+        + 'This gate imports the TypeScript source, so it must run under tsx: '
+        + '`node --import tsx scripts/check-readonly-tools.mjs`.',
     );
-  }
+  });
   return mod.REGISTRAR_MANIFEST;
 }
 
