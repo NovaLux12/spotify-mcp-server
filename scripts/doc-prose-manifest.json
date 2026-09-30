@@ -4971,7 +4971,7 @@
         "label": "Summary"
       },
       {
-        "hash": "30494fc067c03492",
+        "hash": "da6576b431c49083",
         "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…"
       },
       {
@@ -5451,8 +5451,24 @@
         "label": "That is the right behaviour for a restart of your server…"
       },
       {
-        "hash": "bd7767fa60572eed",
+        "hash": "5bb0e9522d2017c8",
         "label": "So the store creates the directory and then stops, unles…"
+      },
+      {
+        "hash": "8da519996fbd8593",
+        "label": "Name the directory. Passing dir to the constructor is a …"
+      },
+      {
+        "hash": "6edf5cca6f32a35c",
+        "label": "Resolve outside the home this process sees. That is a sa…"
+      },
+      {
+        "hash": "36e5f9656ac63324",
+        "label": "Set SPOTIFYMCPALLOWREALHOMESTORES=never to say so explic…"
+      },
+      {
+        "hash": "00966037e31d875b",
+        "label": "What is left — the default store inside a real home, rea…"
       },
       {
         "hash": "bc4013af86664cf4",
@@ -7611,7 +7627,7 @@
     }
   ],
   "provenance": {
-    "head": "162b68042657fec81b30124ea5e3041650464e34",
+    "head": "112be8382212afdf46405205c221a3fe092b246f",
     "base": "a34f33182c706dea60dc9029065552749f5c7b5b",
     "upstream": "a34f33182c706dea60dc9029065552749f5c7b5b",
     "behind": false
@@ -7745,6 +7761,15 @@
     },
     {
       "file": "docs/configuration.md",
+      "hash": "30494fc067c03492",
+      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "to": "da6576b431c49083",
+      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
+      "reason": "#1635 review: env-var row now describes the claim rule",
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
       "hash": "33cf7c507a0e702f",
       "label": "| Flag | Effect | |---|---| | --dry-run | List what woul…",
       "to": "40a927b29b3f9c7a",
@@ -7831,6 +7856,15 @@
       "to": "b184356b04f402b4",
       "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
       "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
+      "date": "2026-09-30"
+    },
+    {
+      "file": "docs/configuration.md",
+      "hash": "bd7767fa60572eed",
+      "label": "So the store creates the directory and then stops, unles…",
+      "to": "5bb0e9522d2017c8",
+      "toLabel": "So the store creates the directory and then stops, unles…",
+      "reason": "#1635 review: guard asks about a claim, not a sandbox heuristic",
       "date": "2026-09-30"
     },
     {
