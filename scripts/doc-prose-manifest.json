@@ -1023,6 +1023,10 @@
         "label": "Windows (PowerShell): $env:SPOTIFYCLIENTID=\"yourclientid…"
       },
       {
+        "hash": "b70906f0fb087ffb",
+        "label": "Windows is supported for install and everyday use, and i…"
+      },
+      {
         "hash": "87eca7720eb3235f",
         "label": "Headless / remote host: SPOTIFYHEADLESS=1 SPOTIFYCLIENTI…"
       },
@@ -7591,9 +7595,9 @@
     }
   ],
   "provenance": {
-    "head": "4452d0fb690f66b84ccb20646f2b11051eea8cfa",
-    "base": "d5e37fd6ca44a4a9c8e0b338f99faf8a24d272a9",
-    "upstream": "d5e37fd6ca44a4a9c8e0b338f99faf8a24d272a9",
+    "head": "e6c57b1bf3e08e9d9d1f56f4ca4bef463ea0124c",
+    "base": "a34f33182c706dea60dc9029065552749f5c7b5b",
+    "upstream": "a34f33182c706dea60dc9029065552749f5c7b5b",
     "behind": false
   },
   "reanchored": [
