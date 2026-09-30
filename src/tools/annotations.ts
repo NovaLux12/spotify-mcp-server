@@ -458,7 +458,35 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // unchanged and still load-bearing: measure the AGGREGATE, and measure it on
   // the MERGED tree, because two raises in this file's history were each
   // arithmetically right and jointly wrong.
-  defaultMaxBytes: 613_500,
+  // 613,500 -> 620,000 is +6,500B (#1620).
+  //
+  // ## Why
+  //
+  // The opt-in surface had **1,021B** of headroom against a measured **908B**
+  // per gated tool (the 11 tools behind SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS
+  // contribute 9,988B). So the next gated tool of typical size is roughly 0.9x
+  // the entire remaining headroom, and crossing it fails SERVER STARTUP for
+  // anyone running with the flag on — not a CI failure, and not on the default
+  // path, so the default-surface run stays green the whole way.
+  //
+  // That is the failure mode this budget exists to prevent, arriving from the
+  // other side: the gate is not too lax, it is out of room. +6,500B buys about
+  // seven gated tools at the measured average, which is a working margin rather
+  // than a raise sized to the next commit.
+  //
+  // ## What it costs
+  //
+  // This is a deliberate trade and is recorded as one. A larger opt-in ceiling
+  // costs context for the users who opt in: 6,500B is ~1.6k tokens, on a
+  // surface already at ~613kB. The DEFAULT surface is untouched — this ceiling
+  // is only reached by a process that sets the analytics flag, and the
+  // default-surface headroom (~11kB) is unaffected.
+  //
+  // The warrant discipline above still holds and is why this is not larger:
+  // measured on the MERGED tree, not predicted, and sized for several tools
+  // rather than for the next one. The 94B-headroom trap recorded earlier in
+  // this file is what a raise sized to the last byte produces.
+  defaultMaxBytes: 620_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -1285,9 +1313,37 @@ export function collectAggregateSurfaceMeasurement(server: McpServer): Aggregate
 }
 
 export function assertAggregateSurfaceBudget(measurement: AggregateSurfaceMeasurement): void {
-  if (measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools || measurement.schemaBytes > AGGREGATE_SURFACE_LIMITS.maxBytes) {
-    throw new Error(`aggregate tool surface exceeds budget: ${measurement.toolCount} tools/${measurement.schemaBytes}B > ${AGGREGATE_SURFACE_LIMITS.maxTools} tools/${AGGREGATE_SURFACE_LIMITS.maxBytes}B`);
+  if (measurement.toolCount <= AGGREGATE_SURFACE_LIMITS.maxTools && measurement.schemaBytes <= AGGREGATE_SURFACE_LIMITS.maxBytes) {
+    return;
   }
+  // #1620. The single aggregate line names a byte budget and not the tool that
+  // crossed it, so a contributor who adds a gated tool sees a startup failure
+  // several files from the change that caused it, and the default-surface CI
+  // run is green throughout. The per-module table already exists — it is what
+  // `toolset_report` returns and what the manifest budgets against — so the
+  // information is present at the point of failure and was simply not carried
+  // into the message.
+  //
+  // Reported rather than enforced. A module can be inside its own ceiling and
+  // still contribute to an aggregate breach, because the aggregate also charges
+  // per-tool name, title, annotations and `_meta` that the per-module budget
+  // does not; naming the largest modules is a pointer to where the bytes are,
+  // not an accusation that one of them is at fault. Saying so here is the
+  // difference between a diagnosis and a false attribution.
+  const largest = [...REGISTRAR_MANIFEST]
+    .map((entry) => ({ key: entry.key, file: entry.file, bytes: entry.ceiling.schemaBytes, tools: entry.ceiling.toolCount }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 5)
+    .map((m) => `  ${m.key} (${m.file}): ${m.tools} tools / ${m.bytes}B of its own ceiling`)
+    .join('\n');
+  throw new Error(
+    `aggregate tool surface exceeds budget: ${measurement.toolCount} tools/${measurement.schemaBytes}B `
+      + `> ${AGGREGATE_SURFACE_LIMITS.maxTools} tools/${AGGREGATE_SURFACE_LIMITS.maxBytes}B\n`
+      + `Largest module surfaces by their own ceiling (a pointer to where the bytes are, not an attribution — `
+      + `the aggregate also charges per-tool name, title, annotations and _meta that a module ceiling does not):\n`
+      + `${largest}\n`
+      + `See docs/schema-budgets.md for how the aggregate is measured and what headroom remains.`,
+  );
 }
 
 /**

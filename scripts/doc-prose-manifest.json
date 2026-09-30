@@ -2085,7 +2085,7 @@
         "label": "maxresults is a DISPLAY cap and never a work cap (#886).…"
       },
       {
-        "hash": "c395232359bff431",
+        "hash": "eec41f1a9cb91dc4",
         "label": "Response byte cap (#895) — responseformat: 'json' and st…"
       },
       {
@@ -7631,11 +7631,10 @@
     }
   ],
   "provenance": {
-    "head": "53069d5a1804d4c259c401eac8e25707b47875c2",
-    "base": "8301f4f783707db83a2c26d2336c95054b962f60",
-    "upstream": "8301f4f783707db83a2c26d2336c95054b962f60",
-    "behind": false,
-    "allowStale": "merging origin/main into #1647: #1646 and #1648 both re-pinned docs, so the manifest is regenerated from the merged tree rather than picking a side"
+    "head": "829c7c34c51fb47791976cf67e283a15d57fb51e",
+    "base": "0bea1e08b4f1955fd947e6139f00539d32e950a3",
+    "upstream": "0bea1e08b4f1955fd947e6139f00539d32e950a3",
+    "behind": false
   },
   "reanchored": [
     {
@@ -7766,15 +7765,6 @@
     },
     {
       "file": "docs/configuration.md",
-      "hash": "30494fc067c03492",
-      "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "to": "da6576b431c49083",
-      "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "reason": "#1635 review: env-var row now describes the claim rule",
-      "date": "2026-09-30"
-    },
-    {
-      "file": "docs/configuration.md",
       "hash": "33cf7c507a0e702f",
       "label": "| Flag | Effect | |---|---| | --dry-run | List what woul…",
       "to": "40a927b29b3f9c7a",
@@ -7813,9 +7803,9 @@
       "file": "docs/configuration.md",
       "hash": "8c7fb4d0d436a23f",
       "label": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "to": "30494fc067c03492",
+      "to": "da6576b431c49083",
       "toLabel": "| Variable | Default | Purpose | | --- | --- | --- | | S…",
-      "reason": "added the SPOTIFY_MCP_ALLOW_REAL_HOME_STORES row for #1635",
+      "reason": "#1647 added the SPOTIFY_MCP_ALLOW_REAL_HOME_STORES row to this table, so the same table is present under new text",
       "date": "2026-09-30"
     },
     {
@@ -7861,15 +7851,6 @@
       "to": "b184356b04f402b4",
       "toLabel": "SPOTIFYMCPDATADIR is read by the artist-watchlist and pl…",
       "reason": "#1580 corrected the DATA_DIR paragraph; re-pinned after the rebase",
-      "date": "2026-09-30"
-    },
-    {
-      "file": "docs/configuration.md",
-      "hash": "bd7767fa60572eed",
-      "label": "So the store creates the directory and then stops, unles…",
-      "to": "5bb0e9522d2017c8",
-      "toLabel": "So the store creates the directory and then stops, unles…",
-      "reason": "#1635 review: guard asks about a claim, not a sandbox heuristic",
       "date": "2026-09-30"
     },
     {
@@ -8036,6 +8017,15 @@
     },
     {
       "file": "SPEC.md",
+      "hash": "6409de7468c28c6d",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "to": "eec41f1a9cb91dc4",
+      "toLabel": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "reason": "#1620: SPEC byte figure updated to the raised ceiling",
+      "date": "2026-09-30"
+    },
+    {
+      "file": "SPEC.md",
       "hash": "68a7a2a7e4be9530",
       "label": "The Spotify Connect SDK and native client integration — …",
       "to": "0451f4cbec553ab1",
@@ -8086,6 +8076,15 @@
       "to": "5f496cb757f0f4fa",
       "toLabel": "Inputs: | Field | Type | Required | Description | |---|-…",
       "reason": "#727 extends the move_items_between_playlists Inputs table rather than replacing it: measured on this tree, 10 data rows against 8 on main, with source_lane and target_lane added and all 8 originals still present. No row was dropped.",
+      "date": "2026-09-30"
+    },
+    {
+      "file": "SPEC.md",
+      "hash": "c395232359bff431",
+      "label": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "to": "6409de7468c28c6d",
+      "toLabel": "Response byte cap (#895) — responseformat: 'json' and st…",
+      "reason": "#1620: replaced a hand-typed 613,500B with a reference to the constant",
       "date": "2026-09-30"
     },
     {

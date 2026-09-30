@@ -546,6 +546,46 @@ describe('#906 the startup budget gates still run over lazily loaded modules', (
     assert.ok(over.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools, 'precondition: the surface really is over');
     assert.throws(() => assertAggregateSurfaceBudget(over), /aggregate tool surface exceeds budget/);
   });
+
+  it('names the largest modules when the aggregate gate trips (#1620)', () => {
+    // The single aggregate line names a byte budget and not the tool that
+    // crossed it, so a contributor adding a gated tool sees a startup failure
+    // several files from the change that caused it — and the default-surface CI
+    // run is green throughout, because the breach only exists on the opted-in
+    // path. The per-module table already existed; it just was not carried into
+    // the message.
+    const over = { toolCount: AGGREGATE_SURFACE_LIMITS.maxTools + 1, schemaBytes: 0 };
+    let message = '';
+    try {
+      assertAggregateSurfaceBudget(over);
+      assert.fail('the gate must throw for an over-budget surface');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    // It must point somewhere. A module key and its file, so the reader can
+    // open it, rather than a bare number.
+    assert.match(message, /Largest module surfaces/, 'the failure must say where the bytes are');
+    const named = [...message.matchAll(/^\s{2}(\S+) \((src\/tools\/[^)]+)\):/gm)];
+    assert.ok(named.length >= 3, `expected several modules named, got ${named.length}`);
+    for (const [, key, file] of named) {
+      assert.ok(key.length > 0 && file.endsWith('.ts'), `named entry must carry a module and a real file: ${key} ${file}`);
+    }
+    // And it must not read as an accusation. A module can be inside its own
+    // ceiling and still contribute to an aggregate breach, because the
+    // aggregate also charges per-tool name, title, annotations and _meta.
+    assert.match(message, /not an attribution/, 'the message must not blame a module for an aggregate breach');
+    assert.match(message, /docs\/schema-budgets\.md/, 'and must point at where the aggregate is explained');
+  });
+
+  it('does not name modules when the surface is inside budget', () => {
+    // The other direction. A message that always lists modules would train a
+    // reader to skim past the part that matters, and the pass path is the one
+    // that runs on every startup.
+    assert.doesNotThrow(() =>
+      assertAggregateSurfaceBudget({ toolCount: 1, schemaBytes: 1 }),
+    );
+  });
 });
 
 describe('#906 the toolset gate decides what is loaded, not just what is registered', () => {
