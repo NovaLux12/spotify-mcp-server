@@ -1408,6 +1408,28 @@ const aggregateSurfaceFacts = Object.freeze({
   // reader from "simplifying" the measurement back into a sum and publishing a
   // headroom nobody has.
   declaredGatedToolDelta: declaredGatedToolDelta(),
+  // #1620. The gap between the measured opt-in delta and what the manifest's
+  // per-module deltas predict, carried as its own figure so a reader can
+  // derive the headroom rather than take it on trust.
+  //
+  // It is a definitional difference, not an unmeasured quantity. The per-module
+  // budget charges description + inputSchema + outputSchema; the aggregate
+  // charges every tool's name, title, annotations, execution and `_meta` as
+  // well. Eleven gated tools therefore contribute more bytes to the aggregate
+  // than the sum of their module deltas, and the difference is the annotation
+  // and identity overhead those tools carry — which is the same overhead
+  // `metadataOverheadBytes` reports for the whole surface.
+  //
+  // Publishing it as a number is what stops the next reader from "simplifying"
+  // the measurement back into a sum (which would under-report the delta and
+  // overstate the headroom by exactly this much) and shipping a budget nobody
+  // enforced.
+  optInDeltaUnreconciledBytes: optInBytes
+    - gatedSurface.off.schemaBytes
+    - REGISTRAR_MANIFEST.reduce(
+      (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.schemaBytes - entry.baseline.schemaBytes : 0),
+      0,
+    ),
   derivedGatedSchemaBytes: REGISTRAR_MANIFEST.reduce(
     (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.schemaBytes - entry.baseline.schemaBytes : 0),
     0,
