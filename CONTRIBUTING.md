@@ -49,6 +49,12 @@ placed anywhere runs the suite normally once it has a `node_modules`
 containing `tsx` — what matters is what Node can resolve from the worktree, not
 where the worktree sits relative to the primary clone.
 
+### Platform support
+
+The suite runs on **Linux only**; every workflow is `ubuntu-latest` with a Node 22/24 matrix. The server installs and runs on macOS and Windows, but nothing in CI proves it there — see [`docs/platform-support.md`](docs/platform-support.md) for exactly what is and is not verified, the five `win32` branches that go unexercised, and the porting work that would close the gap.
+
+Practically, that means a change that only breaks on Windows will pass CI. If you touch `process.platform` guards, `chmod`, or anything path-shaped, say so in the PR — it is the one class of regression this repository cannot catch for you.
+
 ### Environment variables and authentication
 
 No `.env` file is required — env vars can come from your host config or the command line. To use one:
