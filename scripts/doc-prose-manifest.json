@@ -1023,6 +1023,10 @@
         "label": "Windows (PowerShell): $env:SPOTIFYCLIENTID=\"yourclientid…"
       },
       {
+        "hash": "b70906f0fb087ffb",
+        "label": "Windows is supported for install and everyday use, and i…"
+      },
+      {
         "hash": "87eca7720eb3235f",
         "label": "Headless / remote host: SPOTIFYHEADLESS=1 SPOTIFYCLIENTI…"
       },
@@ -7627,10 +7631,11 @@
     }
   ],
   "provenance": {
-    "head": "9f96748af90af3996cc5969a195086ee0f57ce64",
-    "base": "a34f33182c706dea60dc9029065552749f5c7b5b",
-    "upstream": "a34f33182c706dea60dc9029065552749f5c7b5b",
-    "behind": false
+    "head": "53069d5a1804d4c259c401eac8e25707b47875c2",
+    "base": "8301f4f783707db83a2c26d2336c95054b962f60",
+    "upstream": "8301f4f783707db83a2c26d2336c95054b962f60",
+    "behind": false,
+    "allowStale": "merging origin/main into #1647: #1646 and #1648 both re-pinned docs, so the manifest is regenerated from the merged tree rather than picking a side"
   },
   "reanchored": [
     {
