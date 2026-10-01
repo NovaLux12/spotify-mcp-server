@@ -96,6 +96,31 @@ const realTags = (): string[] =>
 
 const realChangelog = (): string => readDoc('CHANGELOG.md');
 
+/**
+ * A version that is NOT in the real CHANGELOG, derived from what IS.
+ *
+ * The release-history fixtures need a section for a version the changelog does
+ * not yet document — that is exactly the state a release PR is in. Hardcoding
+ * one worked until that version shipped, then silently produced a duplicate
+ * heading, so the guard flagged it and the release PR went red. Deriving it
+ * means the fixture keeps describing a pre-release state forever.
+ *
+ * Bump `offset` to land further ahead; a different offset is guaranteed to
+ * yield a different version, which is what the stray case needs.
+ */
+const nextUndocumented = (offset = 1): string => {
+  const documented = changelogVersions(realChangelog()).versions;
+  const [major = '0', minor = '0', patch = '0'] = newestDocumented().split('.');
+  let candidate = Number(patch) + offset;
+  // Walk up until the version is genuinely absent from the changelog. Bumping
+  // the newest entry by one is not enough on its own: patch numbers are not
+  // dense (3.0.0 → 3.0.2 happens whenever a release is skipped), and a
+  // candidate that is already documented would rebuild the very duplicate this
+  // helper exists to prevent.
+  while (documented.has(`${major}.${minor}.${candidate}`)) candidate += 1;
+  return `${major}.${minor}.${candidate}`;
+};
+
 /** The newest version the changelog documents, as a string. */
 const newestDocumented = (): string => [...changelogVersions(realChangelog()).versions].sort().at(-1)!;
 
@@ -178,7 +203,17 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
     // for that one version would turn every release PR red — including the one
     // open right now — so it is the single exemption. Everything else with no
     // tag still fails, which the test above shows.
-    const next = '3.0.0';
+    // DERIVED, not hardcoded. This used to be `const next = '3.0.0'`, which
+    // was correct only while 3.0.0 was still unreleased. The moment it shipped,
+    // `realChangelog()` began containing a 3.0.0 section, so appending another
+    // one built a DUPLICATE — which the guard correctly reported as an untagged
+    // version, and the release PR went red for a reason that had nothing to do
+    // with the release. Same shape as #1658: a release-path assumption that is
+    // true once and then quietly false forever. Deriving from the newest
+    // documented version makes the fixture describe "a version that is not in
+    // the changelog yet", which is what a release PR actually is, so it holds
+    // for every future release instead of exactly one.
+    const next = nextUndocumented();
     const release = { 'changelog.md': `${realChangelog()}\n## [${next}] — 2026-09-27\n`, 'package.json': JSON.stringify({ version: next }) };
     withFixtures(release, (paths) => {
       assert.match(
@@ -193,7 +228,12 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
     });
     // The exemption is for the version being released and nothing else: the
     // same document with a *different* untagged section still fails.
-    const stray = `${release['changelog.md']}\n## [3.0.1] — 2026-09-28\n`;
+    // Also derived, and for the same reason: the stray must be a version that
+    // differs from `next`, and pinning it to 3.0.1 meant it silently became a
+    // DUPLICATE the day 3.0.1 shipped — which would have made the negative case
+    // assert nothing. Derived from a different bump so it can never equal `next`.
+    const strayVersion = nextUndocumented(2);
+    const stray = `${release['changelog.md']}\n## [${strayVersion}] — 2026-09-28\n`;
     withFixtures({ ...release, 'changelog.md': stray }, (paths) => {
       assert.match(
         runFailure([
@@ -201,7 +241,7 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
           '--changelog', paths['changelog.md'],
           '--package', paths['package.json'],
         ]),
-        /CHANGELOG\.md documents 3\.0\.1, which has no v3\.0\.1 tag/,
+        new RegExp(`CHANGELOG\\.md documents ${strayVersion.replace(/\./g, '\\.')}, which has no v${strayVersion.replace(/\./g, '\\.')} tag`),
         'the exemption covered a version that is not the one being released',
       );
     });
