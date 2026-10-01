@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v3.0.0...v3.0.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **errors:** a token store that cannot be read is an auth failure, not an internal one ([#1659](https://github.com/NovaLux12/spotify-mcp-server/issues/1659)) ([0de957d](https://github.com/NovaLux12/spotify-mcp-server/commit/0de957d1c2a44bba7225866606802b6861eb98d8))
+* **repo:** stop tracking a self-referential `node_modules` symlink ([#1660](https://github.com/NovaLux12/spotify-mcp-server/issues/1660)) ([407f8b8](https://github.com/NovaLux12/spotify-mcp-server/commit/407f8b8e9179ee709001c38afc43ff681865e2e7))
+* **tests:** release-history fixture must agree with the branch it runs on ([#1663](https://github.com/NovaLux12/spotify-mcp-server/issues/1663)) ([86899bd](https://github.com/NovaLux12/spotify-mcp-server/commit/86899bda57f2079b0d2c486dd9d4f13b43c467ab))
+* **tests:** the release-history guard's own fixture went stale at 3.0.0 ([#1662](https://github.com/NovaLux12/spotify-mcp-server/issues/1662)) ([69caef4](https://github.com/NovaLux12/spotify-mcp-server/commit/69caef4cba583bb26f7c5e49f2bee38c4720b979))
+
+
+### Miscellaneous Chores
+
+* **release:** re-trigger release-please after clearing the stale autorelease state ([2f416b6](https://github.com/NovaLux12/spotify-mcp-server/commit/2f416b67b05a152340a90ad1802ac0714ad91550))
+
 ## [3.0.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v2.1.2...v3.0.0) (2026-09-28)
 
 
