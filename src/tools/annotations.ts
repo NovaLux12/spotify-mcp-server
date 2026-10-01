@@ -2822,6 +2822,15 @@ type ErrorKind =
   // `publicFailure`, which claims this class before the input-validation arm
   // below it can match the word "required" in the message.
   | 'output_contract'
+  // The token store could not be READ: no file, or one that fails
+  // `isTokenData`. Its own class because the one correct action is re-auth, and
+  // every neighbouring class is wrong here — `internal` tells the host to retry,
+  // which fails identically forever; `unavailable` tells it to wait, which
+  // changes nothing. `loadTokens` already says "run `npm run auth` again", and
+  // that instruction was being discarded by the fallback arm below. Nothing the
+  // caller sent is at fault and nothing is transient, so the message has to name
+  // the fix rather than a retry.
+  | 'auth'
   | 'internal';
 
 interface ErrorFields {
@@ -2995,6 +3004,7 @@ function defaultReason(kind: ErrorKind): string {
     case 'unknown_param': return 'parameter_not_accepted';
     case 'cancelled': return 'cancelled_by_caller';
     case 'output_contract': return 'structured_content_failed_declared_output_schema';
+    case 'auth': return 'spotify_auth_required';
     case 'internal': return 'internal_error';
   }
 }
@@ -3254,6 +3264,21 @@ function publicFailure(tool: string, error: unknown): ErrorFields {
       reason: defaultReason('output_contract'),
       fix: 'This is a server-side defect and is deterministic; retrying will not change it.',
       text: `${tool} returned a payload that does not match its declared output schema; this is a server-side defect and retrying will not change it.`,
+    };
+  }
+  // The token store itself could not be read. Claimed HERE, above the
+  // input-validation arm and the internal fallback, because both give advice
+  // that is actively wrong for this: `internal` says "retry once", which cannot
+  // succeed against a file that `isTokenData` rejects, and it sends the host to
+  // "protected server diagnostics" instead of the one command that fixes it.
+  // `loadTokens` already carries the actionable half — "run `npm run auth`
+  // again" — and every class below threw that away.
+  if (/tokens are corrupted|no token file at|not authenticated|(?:npm run|spotify-mcp) auth|client_?id (?:environment|is) (?:not|is) (?:set|missing)/.test(lower)) {
+    return {
+      kind: 'auth',
+      reason: defaultReason('auth'),
+      fix: 'Re-authenticate the server, then retry.',
+      text: `${tool} could not read saved Spotify credentials; re-run the Spotify login for this server, then retry.`,
     };
   }
   if (/^(?:invalid (?:(?:playable )?(?:spotify )?(?:reference|uris?)|spotify track\/episode uri|playlist reference)|(?:no resolvable|no valid).*uris?\b)|invalid arguments?|input validation|must |required|provide at least|pass either|not both|expected /.test(lower)) {
