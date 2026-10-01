@@ -45,6 +45,35 @@ On Windows `chmod` is close to a no-op and the mode bits are not POSIX, so every
 
 `src/auth.ts:695` is the one that matters most. On POSIX the server `chmod`s the token file to `0o600`; on Windows the guard skips it. That asymmetry is correct as written and completely untested — and it is exactly the shape of code where a later refactor that hoists the `chmod` out of the guard passes CI on Linux and silently stops protecting tokens on Windows.
 
+## Known untested: five `win32` guards nothing executes
+
+The rest of this file is about the 22 mode assertions. These five lines are a
+separate and smaller gap, and they are listed here so the record and the tracking
+point at each other rather than the documentation quietly absorbing them.
+
+Every one is a `process.platform !== 'win32'` guard around POSIX-only behaviour,
+chiefly `chmod` on the token file. On every CI run the Linux branch is taken and
+the branch a Windows user takes is executed by nothing:
+
+| Site | Guard |
+|---|---|
+| `src/auth.ts:663` | `if (process.platform !== 'win32')` |
+| `src/auth.ts:695` | `if (process.platform !== 'win32') await chmod(tokenFile, 0o600)` |
+| `src/accounts.ts:227` | `if (process.platform !== 'win32')` |
+| `src/accounts.ts:233` | `if (process.platform !== 'win32')` |
+| `src/http.ts:266` | `if (process.platform !== 'win32')` |
+
+`src/auth.ts:695` is the one that matters most, for the reason above.
+
+**The guards are correct. What is missing is a test that runs them, and the fix is
+not to delete them** — deleting a `win32` guard to make a line reachable is the
+one change that would convert this row from a documented gap into a real defect.
+
+Tracking: [#1651](https://github.com/NovaLux12/spotify-mcp-server/issues/1651),
+the residual half of #1632 that #1648's documentation did not discharge. That
+issue is what keeps this table honest; closing it without adding a
+`windows-latest` leg should mean updating this section, not deleting it.
+
 ## What this means for a Windows user
 
 Honest inventory, not reassurance:
