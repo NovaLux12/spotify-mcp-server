@@ -22,16 +22,17 @@ import './helpers/hermetic.js';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  spawn, spawnSync, type ChildProcessWithoutNullStreams, type SpawnSyncReturns,
+  spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnSyncReturns,
 } from 'node:child_process';
 import {
   chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   statSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { armFileDeadline, FLEET_FILE_BUDGET_MS } from './helpers/file-deadline.js';
+import { armFileDeadline, FLEET_FILE_BUDGET_MS, type DeadlineChild } from './helpers/file-deadline.js';
+import { isOwnChild } from './helpers/stdio-child.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const SWEEP_LOOP = join(ROOT, 'scripts/sweep-loop.sh');
@@ -262,6 +263,10 @@ function sandbox(plan: StubStep[]): Sandbox {
       // assert.ok, not assert.equal: it is an assertion function, so the pid
       // narrows to a number and the `!` below is not needed to read it.
       assert.ok(typeof child.pid === 'number', 'the loop must be startable so its pid can be signalled');
+      // Named by the sandbox, which is unique per `sandbox()` call, so a breach
+      // report traces a leaked pipe back to the test that created it rather than
+      // to this file in general.
+      adoptLoop(child, `sweep-loop.sh in ${basename(dir)}`);
       return { pid: child.pid, ...collect(child) };
     },
     shim: (name, body) => {
@@ -338,6 +343,79 @@ function markerOf(report: string): string {
 }
 
 /**
+ * Every asynchronous child this file spawns, so the whole-file deadline can name
+ * and reap all of them rather than only the ones a hook happened to register
+ * (#1653).
+ *
+ * This accessor was `() => []`, which is not the same as this file spawning no
+ * children. It spawns a detached `bash` per `start()` — a real process tree with
+ * inherited stdio — so on a #1365 wedge the breach report could name the *kind*
+ * of handle still registered (`PipeWrap`) and nothing about *whose* it was. The
+ * report said so in as many words: "this file registered no children with the
+ * deadline, so the handles below cannot be attributed to one".
+ *
+ * `run()` is deliberately absent. It is `spawnSync` with its own `RUN_TIMEOUT_MS`,
+ * so it is bounded before the deadline can fire and reaps itself on return;
+ * registering it would put a child in the list that is already gone, and a report
+ * that lists dead pids teaches a reader to distrust the live ones.
+ */
+const spawned: DeadlineChild[] = [];
+
+/**
+ * Adapt a spawned `bash` into the slice the deadline needs, and register it.
+ *
+ * The one place this deliberately departs from `StdioJsonRpcChild.killNow` is
+ * that it signals the **process group**, not the pid. This file spawns `detached:
+ * true` so a signal test can hit the loop alone and still clean up, and its own
+ * comment records the consequence: a loop that ignores SIGTERM has to be
+ * SIGKILLed, and "SIGKILL cannot reach the `sleep` it left running: that orphan
+ * keeps the inherited stdout pipe open, and this test file would hang on
+ * teardown". A pid-only kill would therefore leave behind precisely the leaked
+ * write end this deadline exists to catch, while appearing to have cleaned up.
+ *
+ * The group is only signalled once `isOwnChild` has confirmed the leader is still
+ * ours, so a recycled pid is never signalled.
+ */
+function adoptLoop(child: ChildProcess, what: string): void {
+  const pid = child.pid;
+  let stderrText = '';
+  // `stdio: 'ignore'` gives a null stderr, and `child.stderr.on` would throw on
+  // it — so this is a real branch, not defensive padding. Cast the child to
+  // `ChildProcessWithoutNullStreams` here and the latecomer path dies on its
+  // first spawn with a `TypeError` that no type error predicted.
+  child.stderr?.on('data', (chunk) => { stderrText += String(chunk); });
+  let outcome: string | undefined;
+  child.on('close', (code, signal) => {
+    outcome = `code=${code} signal=${signal ?? 'none'}`;
+  });
+  spawned.push({
+    label: what,
+    get pid() { return pid; },
+    get stderr() { return stderrText; },
+    get outcomeDescription() { return outcome; },
+    // `exitCode`/`signalCode` are latched by Node, so this stays correct for a
+    // child that has exited but whose pipes have not yet reached EOF — which is
+    // the whole #1365 case, and why `closed` cannot stand in for it here.
+    isRunning: () => child.exitCode === null && child.signalCode === null,
+    killNow: () => {
+      if (pid === undefined || pid === process.pid || !isOwnChild(pid)) return;
+      try {
+        // Negative pid = the whole group, which is what reaps the orphan `sleep`.
+        process.kill(-pid, 'SIGKILL');
+      } catch {
+        // ESRCH: the group is already gone. Fall through to the leader alone in
+        // case it exited but left its group behind.
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Gone. The `close` handler has already said so.
+        }
+      }
+    },
+  });
+}
+
+/**
  * The whole-file bound (#1569).
  *
  * This file spawns real child processes, so a child whose tree still holds an
@@ -348,13 +426,58 @@ function markerOf(report: string): string {
  * Armed at module scope, above every hook, because a bound a teardown can clear is
  * not a bound. The timer is `unref`'d, so it cannot itself delay this file.
  */
-armFileDeadline({
+/**
+ * The armed options object, kept so the registration test below can assert on the
+ * accessor the deadline actually reads.
+ *
+ * Asserting on `spawned` instead would prove the array grows while leaving the
+ * thing that matters unpinned: `children: () => []` reads that same array and
+ * discards it, and a test watching the array stays green when the guard goes
+ * blind. That is the decorative guard this issue exists to remove, so the test
+ * calls the accessor's own return value.
+ */
+const deadlineOptions = {
   label: 'tests/guard-sweep-loop.test.ts',
   budgetMs: FLEET_FILE_BUDGET_MS,
-  children: () => [],
-});
+  children: (): readonly DeadlineChild[] => spawned,
+};
+armFileDeadline(deadlineOptions);
 
 describe('sweep-loop.sh guard (#656)', () => {
+  // #1653. `children: () => []` is a guard that reports nothing, and it passed
+  // for as long as this file spawned detached children holding inherited stdio —
+  // the breach report could name `PipeWrap` and not one owner. Asserting the
+  // registration is the only thing that stops the empty literal coming back,
+  // because nothing else about this file changes when it does.
+  it('registers every async child it spawns with the whole-file deadline (#1653)', () => {
+    const before = deadlineOptions.children().length;
+    const box = sandbox(['normal']);
+    const loop = box.start();
+    const registered = deadlineOptions.children().slice(before);
+    try {
+      assert.equal(
+        registered.length,
+        1,
+        `start() must register exactly one child with the deadline; it registered ${registered.length}`,
+      );
+      const [child] = registered;
+      assert.match(child.label, /sweep-loop\.sh in /, 'the label must name the sandbox, so a breach traces to one test');
+      assert.equal(child.pid, loop.pid, 'the registered pid must be the loop the caller was handed');
+      assert.equal(typeof child.isRunning, 'function', 'the deadline calls isRunning() at breach time');
+      assert.equal(typeof child.killNow, 'function', 'the deadline reaps with killNow()');
+    } finally {
+      for (const child of registered) child.killNow();
+    }
+    // Still returned *after* death. The breach report reads this accessor to
+    // name a child that outlived its work, so unregistering on `close` would
+    // erase the one entry the report exists to print.
+    assert.equal(
+      deadlineOptions.children().length,
+      before + 1,
+      'a child must stay registered after it exits, or a breach cannot name it',
+    );
+  });
+
   it('rejects a non-numeric BATCH with a usage error and never starts node', () => {
     const box = sandbox(['normal']);
 
@@ -904,6 +1027,10 @@ describe('sweep-loop.sh guard (#656)', () => {
       ['-c', `sleep 0.5\nprintf '%s\\n' "${process.pid}" > "$1/pid"`, 'bash', box.lock],
       { stdio: 'ignore' },
     );
+    // `stdio: 'ignore'` means this one cannot leak a `PipeWrap`, but it is still
+    // a live child holding a pid, and the deadline reaps by recorded pid — so it
+    // belongs in the list. Skipping it would leave a `sleep` behind on a breach.
+    adoptLoop(latecomer, `latecomer lock-claimer in ${basename(box.dir)}`);
 
     try {
       const result = box.run();
