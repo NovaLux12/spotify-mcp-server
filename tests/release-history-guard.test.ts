@@ -97,28 +97,33 @@ const realTags = (): string[] =>
 const realChangelog = (): string => readDoc('CHANGELOG.md');
 
 /**
- * A version that is NOT in the real CHANGELOG, derived from what IS.
+ * The version this fixture claims is being released: the REAL `package.json`
+ * version.
  *
- * The release-history fixtures need a section for a version the changelog does
- * not yet document — that is exactly the state a release PR is in. Hardcoding
- * one worked until that version shipped, then silently produced a duplicate
- * heading, so the guard flagged it and the release PR went red. Deriving it
- * means the fixture keeps describing a pre-release state forever.
+ * This was hardcoded `'3.0.0'`, and my first fix derived a synthetic version
+ * from the newest changelog heading. Both were wrong for the same reason, and
+ * the release branch is what proved it.
  *
- * Bump `offset` to land further ahead; a different offset is guaranteed to
- * yield a different version, which is what the stray case needs.
+ * On a release PR the real CHANGELOG already contains an UNTAGGED section for
+ * the version about to ship, because the tag is only created by the merge. A
+ * fixture that appends to the real changelog therefore INHERITS that untagged
+ * section, and the guard — which exempts only the version in `package.json` —
+ * correctly reports it as a gap. The release PR went red for a fact about
+ * itself, on both CI legs.
+ *
+ * So the fixture has to agree with the branch it runs on. The real
+ * `package.json` version IS the version being released, so pairing it with the
+ * real changelog is the one self-consistent arrangement: on a release branch
+ * that section is untagged and therefore exempt, and after the merge it is
+ * tagged and therefore consistent. Both cases pass, and neither depends on a
+ * literal that expires the day that version ships.
  */
-const nextUndocumented = (offset = 1): string => {
-  const documented = changelogVersions(realChangelog()).versions;
-  const [major = '0', minor = '0', patch = '0'] = newestDocumented().split('.');
-  let candidate = Number(patch) + offset;
-  // Walk up until the version is genuinely absent from the changelog. Bumping
-  // the newest entry by one is not enough on its own: patch numbers are not
-  // dense (3.0.0 → 3.0.2 happens whenever a release is skipped), and a
-  // candidate that is already documented would rebuild the very duplicate this
-  // helper exists to prevent.
-  while (documented.has(`${major}.${minor}.${candidate}`)) candidate += 1;
-  return `${major}.${minor}.${candidate}`;
+const nextUndocumented = (): string => JSON.parse(readDoc('package.json')).version;
+
+/** A version guaranteed to differ from `version`, by advancing its patch. */
+const bumpPatch = (version: string): string => {
+  const [major = '0', minor = '0', patch = '0'] = version.split('.');
+  return `${major}.${minor}.${Number(patch) + 1}`;
 };
 
 /** The newest version the changelog documents, as a string. */
@@ -214,7 +219,7 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
     // the changelog yet", which is what a release PR actually is, so it holds
     // for every future release instead of exactly one.
     const next = nextUndocumented();
-    const release = { 'changelog.md': `${realChangelog()}\n## [${next}] — 2026-09-27\n`, 'package.json': JSON.stringify({ version: next }) };
+    const release = { 'changelog.md': realChangelog(), 'package.json': JSON.stringify({ version: next }) };
     withFixtures(release, (paths) => {
       assert.match(
         runSuccess([
@@ -232,7 +237,7 @@ describe('release history: every tag has a CHANGELOG section (#932)', () => {
     // differs from `next`, and pinning it to 3.0.1 meant it silently became a
     // DUPLICATE the day 3.0.1 shipped — which would have made the negative case
     // assert nothing. Derived from a different bump so it can never equal `next`.
-    const strayVersion = nextUndocumented(2);
+    const strayVersion = bumpPatch(next);
     const stray = `${release['changelog.md']}\n## [${strayVersion}] — 2026-09-28\n`;
     withFixtures({ ...release, 'changelog.md': stray }, (paths) => {
       assert.match(
