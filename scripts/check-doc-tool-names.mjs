@@ -514,10 +514,13 @@ const retiredToolNames = new Set([
   'taste_recommendations',
   'record_feedback',
   // #848 — the transfer and volume tool families, collapsed onto one tool each.
-  // Each name still FORWARDS to its survivor with the flags its behaviour
-  // needed (`handoff` → `transfer_playback` with `preserve_position: true`), so
-  // a migration table can name what it replaced; the names are simply not
-  // registered any more, which is what this list records.
+  // A call on one of these is REFUSED, not forwarded: it returns
+  // `kind: 'unknown_tool'`, `reason: 'retired_tool_alias'`, and a `fix` naming
+  // the survivor plus the flags its behaviour used to be given (`handoff` →
+  // `transfer_playback` with `preserve_position: true`). That is why the names
+  // belong here even though nothing registers them — a migration table still
+  // has to be able to say what each one replaced, and this list is what lets a
+  // doc name them at all.
   'handoff',
   'switch_device',
   'transfer_playback_with_state',
@@ -596,6 +599,16 @@ const documentedMetadata = new Set([
   // failure, which is exactly the routing decision a host cannot make from
   // prose alone.
   'conflicting_input',
+  // #1615: the `reason` a refusal carries when a call arrives on a retired TOOL
+  // name. Same category as `retired_input` (which is the retired *parameter*
+  // spelling of the same idea) — a refusal shape a host parses, not a tool, a
+  // parameter or a metadata key. `kind` is `unknown_tool`; this separates "we
+  // published this name and then withdrew it, here is the replacement" from
+  // both "you mistyped it" (`unknown_tool`) and "we retired a parameter" —
+  // which is the routing decision a host cannot make from prose alone. It has
+  // been live since #848 across the queue-read and transfer/volume families;
+  // `docs/migration-v3.md` is the first document to name it.
+  'retired_tool_alias',
   // #896: `quota_hit_at_playlist` is the key a paged scan reports to say WHICH
   // playlist a mid-walk 429 stopped it at, so a caller can tell a partial
   // result from a complete one. It is a structuredContent key, not a tool and

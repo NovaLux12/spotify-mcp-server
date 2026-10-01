@@ -45,7 +45,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { isTaskCapable, startTask, type PersistentTaskStore } from '../tasks.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
-import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, type RetiredToolForward, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
+import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
 import { trustedCustomMessage } from '../custom-issues.js';
 import { encodingPlanFor, type EncodingPlan } from './encoding.js';
@@ -458,7 +458,35 @@ export const TOOL_SURFACE_BUDGET = Object.freeze({
   // unchanged and still load-bearing: measure the AGGREGATE, and measure it on
   // the MERGED tree, because two raises in this file's history were each
   // arithmetically right and jointly wrong.
-  defaultMaxBytes: 613_500,
+  // 613,500 -> 620,000 is +6,500B (#1620).
+  //
+  // ## Why
+  //
+  // The opt-in surface had **1,021B** of headroom against a measured **908B**
+  // per gated tool (the 11 tools behind SPOTIFY_MCP_EXPERIMENTAL_ANALYTICS
+  // contribute 9,988B). So the next gated tool of typical size is roughly 0.9x
+  // the entire remaining headroom, and crossing it fails SERVER STARTUP for
+  // anyone running with the flag on — not a CI failure, and not on the default
+  // path, so the default-surface run stays green the whole way.
+  //
+  // That is the failure mode this budget exists to prevent, arriving from the
+  // other side: the gate is not too lax, it is out of room. +6,500B buys about
+  // seven gated tools at the measured average, which is a working margin rather
+  // than a raise sized to the next commit.
+  //
+  // ## What it costs
+  //
+  // This is a deliberate trade and is recorded as one. A larger opt-in ceiling
+  // costs context for the users who opt in: 6,500B is ~1.6k tokens, on a
+  // surface already at ~613kB. The DEFAULT surface is untouched — this ceiling
+  // is only reached by a process that sets the analytics flag, and the
+  // default-surface headroom (~11kB) is unaffected.
+  //
+  // The warrant discipline above still holds and is why this is not larger:
+  // measured on the MERGED tree, not predicted, and sized for several tools
+  // rather than for the next one. The 94B-headroom trap recorded earlier in
+  // this file is what a raise sized to the last byte produces.
+  defaultMaxBytes: 620_000,
   perToolMaxBytes: 6_000,
   coreMaxTools: 200,
   coreMaxBytes: 220_000,
@@ -1285,9 +1313,37 @@ export function collectAggregateSurfaceMeasurement(server: McpServer): Aggregate
 }
 
 export function assertAggregateSurfaceBudget(measurement: AggregateSurfaceMeasurement): void {
-  if (measurement.toolCount > AGGREGATE_SURFACE_LIMITS.maxTools || measurement.schemaBytes > AGGREGATE_SURFACE_LIMITS.maxBytes) {
-    throw new Error(`aggregate tool surface exceeds budget: ${measurement.toolCount} tools/${measurement.schemaBytes}B > ${AGGREGATE_SURFACE_LIMITS.maxTools} tools/${AGGREGATE_SURFACE_LIMITS.maxBytes}B`);
+  if (measurement.toolCount <= AGGREGATE_SURFACE_LIMITS.maxTools && measurement.schemaBytes <= AGGREGATE_SURFACE_LIMITS.maxBytes) {
+    return;
   }
+  // #1620. The single aggregate line names a byte budget and not the tool that
+  // crossed it, so a contributor who adds a gated tool sees a startup failure
+  // several files from the change that caused it, and the default-surface CI
+  // run is green throughout. The per-module table already exists — it is what
+  // `toolset_report` returns and what the manifest budgets against — so the
+  // information is present at the point of failure and was simply not carried
+  // into the message.
+  //
+  // Reported rather than enforced. A module can be inside its own ceiling and
+  // still contribute to an aggregate breach, because the aggregate also charges
+  // per-tool name, title, annotations and `_meta` that the per-module budget
+  // does not; naming the largest modules is a pointer to where the bytes are,
+  // not an accusation that one of them is at fault. Saying so here is the
+  // difference between a diagnosis and a false attribution.
+  const largest = [...REGISTRAR_MANIFEST]
+    .map((entry) => ({ key: entry.key, file: entry.file, bytes: entry.ceiling.schemaBytes, tools: entry.ceiling.toolCount }))
+    .sort((a, b) => b.bytes - a.bytes)
+    .slice(0, 5)
+    .map((m) => `  ${m.key} (${m.file}): ${m.tools} tools / ${m.bytes}B of its own ceiling`)
+    .join('\n');
+  throw new Error(
+    `aggregate tool surface exceeds budget: ${measurement.toolCount} tools/${measurement.schemaBytes}B `
+      + `> ${AGGREGATE_SURFACE_LIMITS.maxTools} tools/${AGGREGATE_SURFACE_LIMITS.maxBytes}B\n`
+      + `Largest module surfaces by their own ceiling (a pointer to where the bytes are, not an attribution — `
+      + `the aggregate also charges per-tool name, title, annotations and _meta that a module ceiling does not):\n`
+      + `${largest}\n`
+      + `See docs/schema-budgets.md for how the aggregate is measured and what headroom remains.`,
+  );
 }
 
 /**
@@ -3363,62 +3419,34 @@ const LEGACY_ALIAS_COMPAT_HINT =
   'SPOTIFY_MCP_LEGACY_ALIASES=1 to keep accepting the old name)';
 
 /**
- * A retired tool name that still forwards, and the record describing how
- * (#848), or `undefined` when this call is not one.
+ * The refusal for a call on one of the ten #848 names, or `undefined` when
+ * `requested` was not one.
  *
- * Two conditions, and both have to hold:
- *  - the name is a known retired forward ({@link resolveRetiredToolForward});
- *  - the surviving tool is registered AND enabled in THIS session.
+ * v3.0 is the release those names promised to stop being callable in, and it is
+ * the release that removed the forwarding, so this is now every call's answer
+ * rather than the answer for a session that happened to trim the toolset
+ * owning the survivor. The name is gone either way; what changed is that the
+ * refusal says so instead of the generic unknown-tool `nearestNames` guess,
+ * which would have been offered to someone who did not mistype anything.
  *
- * The second is the same rule {@link legacyAliasTarget} enforces, and for the
- * same reason: a session that trimmed the `playback` toolset must not be able
- * to reach `transfer_playback` by calling `handoff`. The toolset gate decides
- * what is callable, and an alias is not a way around it.
- *
- * Unlike {@link legacyAliasTarget} this is NOT gated on an environment flag.
- * The eight `taste_*` aliases were duplicate registrations that #908 withdrew
- * from `tools/list` while leaving the names resolvable; these ten names carry
- * behaviour that has no other name at all, and a caller who upgrades must get
- * that behaviour rather than a schema error. The one-release window is the
- * contract, so it runs by default.
+ * `kind` and `reason` are the same pair the retired queue-read names refuse
+ * with (#847), so a caller routing on those two fields sees one coherent "this
+ * name was withdrawn on purpose" answer across both families rather than
+ * having to know which issue withdrew which. `fix` carries the exact
+ * replacement call, including the flags the forward used to supply — the four
+ * of those a caller cannot re-derive from the survivor's schema are the whole
+ * reason the record in `shaping.ts` outlived the rewriter.
  */
-function retiredToolForwardTarget(
-  requested: string,
-  registry: Record<string, RegistryEntry>,
-): { alias: string; forward: RetiredToolForward } | undefined {
-  const forward = resolveRetiredToolForward(requested);
-  if (forward === undefined) return undefined;
-  const entry = registry[forward.tool];
-  if (!entry || entry.enabled === false) return undefined;
-  return { alias: requested, forward };
-}
-
-/**
- * Attach the retired-name notice to one forwarded result (#848).
- *
- * Applied here, at the single point every tool result passes, for the reason
- * {@link applyStatsfmIdentityDeprecation} gives: a notice threaded by hand is a
- * notice missing on whichever call path someone forgot, and a caller reading
- * `deprecation_note` off one tool cannot tell a missing key from an absent
- * deprecation.
- *
- * `deprecated_inputs` carries the retired TOOL NAME, the same convention
- * {@link resolveDeprecatedToolName} established for #1099: the field is a list
- * of the deprecated spellings this call used, and a tool name is a spelling.
- * The note says so in words too, because the array alone would read as a
- * parameter that was sent and `handoff` is not a parameter of
- * `transfer_playback`.
- */
-function applyRetiredToolForwardDeprecation(
-  result: unknown,
-  alias: string,
-  forward: RetiredToolForward,
-): unknown {
-  return stampDeprecation(result, {
-    values: [],
-    deprecatedInputs: [alias],
-    deprecationNote: retiredToolForwardNote(alias, forward),
-  });
+function retiredForwardRefusal(requested: string) {
+  const record = resolveRetiredToolForward(requested);
+  if (record === undefined) return undefined;
+  const tool = safeIdentifier(requested);
+  return errorResult(tool, {
+    kind: 'unknown_tool',
+    reason: 'retired_tool_alias',
+    fix: `Call ${record.tool} instead — ${record.note}`,
+    text: `${tool} is not an available tool; ${retiredToolForwardNote(requested, record)}`,
+  }, `retired tool ${JSON.stringify(requested)}`);
 }
 
 /**
@@ -3499,30 +3527,6 @@ function retiredAliasResult(requested: string) {
     fix: `Call ${canonical} instead${LEGACY_ALIAS_COMPAT_HINT}.`,
     text: `${tool} is not an available tool; ${retiredToolAliasMessage(requested, canonical)}.`,
   }, `retired tool alias ${JSON.stringify(requested)}`);
-}
-
-/**
- * The refusal for a call that named a #848 forward whose surviving tool this
- * session did not register, or `undefined` when `requested` was not one.
- *
- * Same `kind` / `reason` pair as the taste-alias refusal above, so a caller
- * routing on those two fields cannot tell the two apart by accident. It exists
- * because without it the call would fall through to the generic unknown-tool
- * answer, whose `nearestNames` guess would be offered to someone who did not
- * mistype anything: `handoff` is a name this server withdrew on purpose, and
- * the only reason it cannot forward here is that the caller trimmed the
- * toolset that owns the replacement. The `fix` says so.
- */
-function retiredForwardRefusal(requested: string) {
-  const forward = resolveRetiredToolForward(requested);
-  if (forward === undefined) return undefined;
-  const tool = safeIdentifier(requested);
-  return errorResult(tool, {
-    kind: 'unknown_tool',
-    reason: 'retired_tool_alias',
-    fix: `Call ${forward.tool} instead (enable the toolset that registers it in this session).`,
-    text: `${tool} is not available in this session; it forwards to ${forward.tool}, which is not registered here.`,
-  }, `retired tool forward ${JSON.stringify(requested)}`);
 }
 
 /**
@@ -3955,34 +3959,29 @@ export function installToolErrorBoundary(
     // opt-in rewrite can never dispatch into a module this session trimmed —
     // the `taste` toolset being off has to win over SPOTIFY_MCP_LEGACY_ALIASES.
     const aliasTarget = legacyAliasTarget(requested, registry);
-    // #848: a retired name that still forwards, with its arguments translated
-    // into the surviving tool's. Checked before `aliasTarget` because a name
-    // can only be in one of the two tables, and after the toolset gate because
-    // the surviving tool has to be registered for the forward to be legal.
-    const forward = retiredToolForwardTarget(requested, registry);
     const registered = registry[requested];
-    const resolved = forward?.forward.tool ?? aliasTarget ?? (registered && registered.enabled !== false ? requested : undefined);
+    const resolved = aliasTarget ?? (registered && registered.enabled !== false ? requested : undefined);
     if (resolved === undefined) {
-      return retiredAliasResult(requested) ?? retiredForwardRefusal(requested) ?? unknownToolResult(registry, requested);
+      // #848: one of the ten retired transfer/volume names. They are not in
+      // `registry` — #848 withdrew those rows when the families collapsed —
+      // and v3.0 removed the forwarding that used to make the name answer
+      // anyway, so this is the whole path for them now.
+      return retiredAliasResult(requested)
+        ?? retiredForwardRefusal(requested)
+        ?? unknownToolResult(registry, requested);
     }
 
     const entry = registry[resolved];
     const tool = safeIdentifier(resolved);
     const shape = getObjectShape(entry.inputSchema);
     const knownParams = shape ? Object.keys(shape) : [];
-    // The rewrite happens HERE, before the retired-input, identity-conflict and
-    // unknown-parameter checks, because all three must see the arguments the
-    // SURVIVING tool is about to be validated against. Rewriting afterwards
-    // would validate `handoff`'s `device_id` against `transfer_playback`'s
-    // schema and refuse a call that was perfectly translatable.
-    const rewritten = forward ? forward.forward.rewrite(request.params.arguments ?? {}) : (request.params.arguments ?? {});
     // #848: fold this tool's still-accepted deprecated input spellings into
-    // their canonical names. Also before validation, and for the same reason:
-    // `transfer_playback`'s canonical `device` is REQUIRED, so a caller sending
-    // only `device_id` would be refused `required_param` if the fold happened
-    // later. The legacy key is removed here, which is what lets it stay out of
-    // the published schema and cost no bytes on every `tools/list`.
-    const { args, deprecated } = normalizeDeprecatedInputs(resolved, rewritten);
+    // their canonical names, before validation, because `transfer_playback`'s
+    // canonical `device` is REQUIRED, so a caller sending only `device_id`
+    // would be refused `required_param` if the fold happened later. The legacy
+    // key is removed here, which is what lets it stay out of the published
+    // schema and cost no bytes on every `tools/list`.
+    const { args, deprecated } = normalizeDeprecatedInputs(resolved, request.params.arguments ?? {});
     // #1287: a retired playlist input spelling is answered as its own typed
     // refusal BEFORE the unknown-parameter fallback, because the two claims are
     // different. `unknown_param` says "we never had that name"; these names were
@@ -4057,12 +4056,9 @@ export function installToolErrorBoundary(
       const result = await invokeHandler(entry, parsedArgs, extra);
       await validateOutput(entry, result, tool, request.params.task !== undefined);
       const statsfm = applyStatsfmIdentityDeprecation(result, shape, args);
-      const withInputs = deprecated.length === 0
+      return (deprecated.length === 0
         ? statsfm
-        : stampDeprecation(statsfm, deprecatedInputResolution(deprecated));
-      return (forward
-        ? applyRetiredToolForwardDeprecation(withInputs, forward.alias, forward.forward)
-        : withInputs) as ServerResult;
+        : stampDeprecation(statsfm, deprecatedInputResolution(deprecated))) as ServerResult;
     } catch (error) {
       return errorResult(tool, publicFailure(tool, error), error) as ServerResult;
     }

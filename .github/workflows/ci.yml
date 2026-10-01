@@ -183,6 +183,23 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run check:doc-tool-names -- --census-file .surface-census.json
 
+      - name: Read-only modules contain no mutating call
+        # #1604. `SPOTIFY_MCP_READONLY=1` is the hard read-only guarantee, and
+        # what backs it is a marker (`readOnlySafe` in
+        # `src/tools/annotations.ts`) plus a name-prefix regex. Both are
+        # conventions about text; neither looks at the code that runs, so a
+        # module can gain a `client.post` with every derived signal unchanged
+        # and the census unmoved.
+        #
+        # This reads the handler instead. It is deliberately scoped to what a
+        # source check can establish -- that nothing behind the read-only flag
+        # writes to Spotify -- and says so in its own header. It does not
+        # attempt to verify a description's prose against its handler, which is
+        # not machine-checkable today; a gate that claimed to would be a gate
+        # that reads as broader than it is.
+        if: ${{ !cancelled() }}
+        run: node --import tsx scripts/check-readonly-tools.mjs
+
       - name: Registry schema conformance gate
         # #655. `server.json` carries a `$schema` URL, which is an annotation,
         # not a check: nothing was loading it. The only party that validated the

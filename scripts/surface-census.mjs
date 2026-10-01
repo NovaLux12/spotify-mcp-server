@@ -1408,6 +1408,28 @@ const aggregateSurfaceFacts = Object.freeze({
   // reader from "simplifying" the measurement back into a sum and publishing a
   // headroom nobody has.
   declaredGatedToolDelta: declaredGatedToolDelta(),
+  // #1620. The gap between the measured opt-in delta and what the manifest's
+  // per-module deltas predict, carried as its own figure so a reader can
+  // derive the headroom rather than take it on trust.
+  //
+  // It is a definitional difference, not an unmeasured quantity. The per-module
+  // budget charges description + inputSchema + outputSchema; the aggregate
+  // charges every tool's name, title, annotations, execution and `_meta` as
+  // well. Eleven gated tools therefore contribute more bytes to the aggregate
+  // than the sum of their module deltas, and the difference is the annotation
+  // and identity overhead those tools carry — which is the same overhead
+  // `metadataOverheadBytes` reports for the whole surface.
+  //
+  // Publishing it as a number is what stops the next reader from "simplifying"
+  // the measurement back into a sum (which would under-report the delta and
+  // overstate the headroom by exactly this much) and shipping a budget nobody
+  // enforced.
+  optInDeltaUnreconciledBytes: optInBytes
+    - gatedSurface.off.schemaBytes
+    - REGISTRAR_MANIFEST.reduce(
+      (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.schemaBytes - entry.baseline.schemaBytes : 0),
+      0,
+    ),
   derivedGatedSchemaBytes: REGISTRAR_MANIFEST.reduce(
     (total, entry) => total + (entry.gatedSurface ? entry.gatedSurface.schemaBytes - entry.baseline.schemaBytes : 0),
     0,
@@ -1564,15 +1586,22 @@ const v3Headline = `Measured on this branch, just now: a default 3.0 session put
  *
  * Three properties of the rendering, each load-bearing:
  *
- *  - **The runtime column is not the version column.** A row can carry
- *    `v3.0` in "Removed in" and still forward in this tree — that is the
- *    one-release window `RETIRED_TOOL_FORWARDS` exists to provide — so the two
- *    are separate columns and neither is derived from the other. Collapsing
- *    them would let a reader conclude that a name still answering calls has
- *    not been retired, which is the notice/code disagreement AGENTS.md §5
- *    calls "worse than no notice".
+ *  - **The runtime column is not the version column.** "Removed in" is the
+ *    release constant; "Still callable in 3.0?" is what the code in this tree
+ *    does. They are separate columns and neither is derived from the other,
+ *    because they can disagree: the queue-read and transfer/volume families
+ *    carried a one-release forwarding window in a prior release, and 3.0 is
+ *    the release that withdrew it. Collapsing the columns would let a reader
+ *    conclude a name still answering calls has not been retired, which is the
+ *    notice/code disagreement AGENTS.md §5 calls "worse than no notice".
+ *  - **Every behaviour cell is a view of the record, not a sentence about it.**
+ *    A literal asserting what the code does is a second copy of the code that
+ *    no gate recomputes, and the one that shipped here said "yes — forwards"
+ *    for as long as the constant existed. Each cell is built from the record it
+ *    describes, so editing a `note` in `src/shaping.ts` moves the row with it.
  *  - **Replacement text is verbatim, not paraphrased.** The queue table prints
- *    `RetiredQueueTool.call` exactly as the refusal puts it in `fix`, so the
+ *    `RetiredQueueTool.call` exactly as the refusal puts it in `fix`, and the
+ *    transfer/volume table prints `RetiredToolRecord.note` the same way, so the
  *    string a reader copies is the string the server hands them.
  *  - **Sorted within each family.** `Object.keys` order is an implementation
  *    detail of where a row was typed; a table that reorders when an unrelated
@@ -1580,7 +1609,8 @@ const v3Headline = `Measured on this branch, just now: a default 3.0 session put
  */
 function migrationTables() {
   const byName = (entries) => [...entries].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0));
-  const cell = (value) => `\`${value.replace(/\|/g, '\\|')}\``;
+  const escaped = (value) => String(value).replace(/\|/g, '\\|');
+  const cell = (value) => `\`${escaped(value)}\``;
   const table = (header, rows) => [
     `| ${header.join(' | ')} |`,
     `|${header.map(() => '---').join('|')}|`,
@@ -1592,9 +1622,21 @@ function migrationTables() {
     'only with `SPOTIFY_MCP_LEGACY_ALIASES=1` **and** the `taste` toolset enabled',
   ]);
 
+  // The behaviour cell is a VIEW of the record, never a sentence about it.
+  //
+  // It used to be a string literal asserting "yes — forwards to the survivor",
+  // in a table whose first two columns were derived from the very constant the
+  // sentence was contradicting. Nothing recomputed it, so `--check` stayed
+  // green on a table that lied for as long as the constant existed — and
+  // #1615 removed the forwarding in the same release that introduced this
+  // table, so the lie was armed. The fix is structural rather than cosmetic:
+  // the cell now quotes the survivor and the migration note the constant
+  // carries, which is the same derivation `queueRows` makes from `entry.call`.
+  // Change a `note` in `src/shaping.ts` and this row moves with it; there is
+  // no second copy of the behaviour left to go stale.
   const forwardRows = byName(Object.entries(RETIRED_TOOL_FORWARDS)).map(([retired, forward]) => [
     cell(retired), cell(forward.tool), RETIRED_TOOL_FORWARDS_REMOVED_IN,
-    'yes — forwards to the survivor with its arguments translated; the result carries `deprecated_inputs` and `deprecation_note`',
+    `no — refuses before any Spotify request, \`kind: "unknown_tool"\`, \`reason: "retired_tool_alias"\`; \`fix\` names the survivor — call ${cell(forward.tool)} instead: ${escaped(forward.note)}`,
   ]);
 
   const queueRows = byName(Object.entries(RETIRED_QUEUE_TOOLS)).map(([retired, entry]) => [
@@ -1637,13 +1679,16 @@ function migrationTables() {
     '',
     table(['Retired name', 'Canonical', 'Removed in', 'Still callable in 3.0?'], aliasRows),
     '',
-    '#### Retired names that still forward — removed in ' + RETIRED_TOOL_FORWARDS_REMOVED_IN,
+    '#### Retired transfer and volume names — removed in ' + RETIRED_TOOL_FORWARDS_REMOVED_IN,
     '',
     'These are not the same tool twice, so a name-only rewrite would hand the',
-    'caller a schema error instead of the behaviour they asked for. Each call',
-    'is translated into its survivor\'s arguments first.',
+    'caller a schema error instead of the behaviour they asked for. They are no',
+    'longer forwarded either: a call on one is refused, and the refusal names',
+    'the survivor plus the arguments the forwarding used to supply — several of',
+    'which the survivor\'s own schema does not imply. The note column below is',
+    'printed from the same constant the refusal message is built from.',
     '',
-    table(['Retired name', 'Forwards to', 'Removed in', 'Still callable in 3.0?'], forwardRows),
+    table(['Retired name', 'Replaced by', 'Removed in', 'Still callable in 3.0?'], forwardRows),
     '',
     '#### Retired queue-read names — removed in ' + RETIRED_QUEUE_TOOLS_REMOVED_IN,
     '',

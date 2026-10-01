@@ -1552,6 +1552,18 @@ export const DOCUMENTED_ENV_VARS: readonly DocumentedEnvVar[] = [
     inHelp: true,
   },
   {
+    // #1635. A second destructive step, and a second bypass. This one is NOT
+    // primarily for users: it exists so a script or a sandboxed host that
+    // imports server code without redirecting HOME cannot settle a real
+    // task store on its way past. Unset, the store is created and left
+    // untouched; a real `npm run dev` wanting the previous crash's records
+    // settled sets this to exactly `never`.
+    name: 'SPOTIFY_MCP_ALLOW_REAL_HOME_STORES',
+    summary: 'Set to exactly `never` to let the task store reconcile records in a home the process did not sandbox — it renames unparseable records to .corrupt and drops expired ones (#1635). Not normally needed.',
+    default: null,
+    inHelp: true,
+  },
+  {
     // The one opt-OUT switch in this registry, so its summary has to say which
     // values turn it off — a reader who sees only "set to 1 to enable" would
     // set the compliant default and think they had done something. The default
