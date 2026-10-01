@@ -39,3 +39,4 @@ memory/*
 .surface-census.json
 USABILITY_AUDIT_*.md
 audit-quota-lurkers.md
+node_modules
