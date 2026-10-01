@@ -66,6 +66,18 @@ jobs:
 
       - run: npm ci
 
+      - name: Fetch release tags
+        # #932, hit for real on 3.0.0. `actions/checkout` defaults to
+        # `fetch-depth: 1` and fetches no tags, so `tests/release-history-guard`
+        # below reads an empty tag list. In `ci.yml` that made the gate pass
+        # vacuously, so the fetch was added there; this workflow never had one,
+        # and the same missing tags fail it *loudly* instead: 43 errors, one per
+        # CHANGELOG heading, every one claiming a release has no tag when all of
+        # them do. `npm test` here is what blocked the 3.0.0 publish, and the
+        # message names a missing history rather than a missing clone.
+        if: ${{ !cancelled() }}
+        run: git fetch --tags --force --quiet
+
       - run: npx tsc --noEmit
 
       - run: npm test
