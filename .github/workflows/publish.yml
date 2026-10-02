@@ -104,12 +104,12 @@ jobs:
 
   publish-mcp-registry:
     runs-on: ubuntu-latest
-    # Sized against the worst case the retry step can reach, not the common one:
-    # ~70s setup + 10 x 90s attempts + 9 x 30s sleeps = ~21 min. A limit below
-    # that ends the job with "cancelled due to timeout" — the same unhelpful
-    # answer this step exists to replace, just reached a different way. 25
-    # leaves ~4 min of margin.
-    timeout-minutes: 25
+    # Sized against the worst case the steps below can reach, not the common one:
+    # ~70s setup + up to 10 min waiting for npm visibility + 10 x 90s publish
+    # attempts + 9 x 30s sleeps = ~31 min. A limit below that ends the job with
+    # "cancelled due to timeout" — the same unhelpful answer this job exists to
+    # replace, just reached a different way. 35 leaves ~4 min of margin.
+    timeout-minutes: 35
     needs: publish-npm
     permissions:
       contents: read
@@ -158,6 +158,47 @@ jobs:
 
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc
+
+      # `needs: publish-npm` orders the two jobs; it does not make the release
+      # visible, and mcp-publisher resolves the npm artifact server-side. On
+      # v3.0.1 the publish step below burned all ten of its attempts across
+      # ~10 minutes and still got a 400; re-running the job hours later
+      # succeeded on the first attempt. So the propagation window is not
+      # reliably shorter than the retry budget, and retrying the PUBLISH is the
+      # wrong instrument for it — every attempt is a real write attempt
+      # against the registry to discover what one read could have told us.
+      #
+      # So wait for the read first. This polls npm until the exact version is
+      # resolvable, and only then hands over. On the common case it returns in
+      # seconds and the retry step below never fires; on a genuinely broken
+      # release it fails here, with a message that names the thing that is
+      # actually missing, instead of ten identical registry 400s.
+      #
+      # The comparison is against the OUTPUT, not the exit status. `npm view`
+      # exits 0 for some states that carry no version, so `npm view ... && go`
+      # is the shape to avoid — see the note on the publish guard above.
+      - name: Wait for the npm release to become visible
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG="@novalux12/spotify-mcp"
+          budget_seconds=600
+          waited=0
+          while [ "$waited" -lt "$budget_seconds" ]; do
+            found="$(npm view "$PKG@$VERSION" version 2>/dev/null || true)"
+            if [ "$found" = "$VERSION" ]; then
+              echo "$PKG@$VERSION is visible on npm after ${waited}s"
+              exit 0
+            fi
+            sleep 15
+            waited=$((waited + 15))
+          done
+          echo "::error::$PKG@$VERSION was not resolvable on npm after ${budget_seconds}s." >&2
+          echo "The registry cannot publish a version npm does not serve yet, so this job will" >&2
+          echo "fail on every attempt. If $VERSION is on npm now, this was propagation lag and a" >&2
+          echo "re-run will do it. If it is not, the npm publish step did not do what it reported." >&2
+          exit 1
 
       - name: Publish server to MCP Registry
         shell: bash
