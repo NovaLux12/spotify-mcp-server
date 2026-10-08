@@ -75,6 +75,12 @@ const parameterAllowlist = new Set([
   // its own output, same category as the `DoctorSurface` keys above.
   'history_purge', 'history_rows', 'history_max_rows', 'history_retention_days',
   'history_oldest_ts',
+  // #1601: the `enable_toolset` result keys, named in SPEC.md §5.12 because a
+  // host has to be able to read what an activation actually did — which
+  // registration keys turned on, which tool names arrived, and whether the
+  // change notification went out. structuredContent keys describing a call's
+  // own output, the same category as the DoctorSurface fields above.
+  'activated_modules', 'added_tools', 'already_active', 'list_changed_sent',
   // #677: the token-endpoint failure classes. RFC 6749 §5.2 error codes the
   // refresh response carries (`invalid_client`, `server_error`) and one
   // category name of this server's own classifier (`network_unreachable`).

@@ -358,19 +358,26 @@ function bumpClaimNumber(source: string, claim: CountClaim, to: number): string 
  *
  * This is a different population from the manifest row count, and conflating
  * them is the trap this file is most careful about. `lazy-module-loading.test.ts`
- * describes "the 67 modules taking a `SpotifyClient`", and that is neither
- * `total` (71) nor `total - 1` (70): it is 67. `statsfm` takes a
- * `StatsfmClient`; `swarm3meta` and `moodexpand` take no second parameter at
- * all; `receipts` is a local registrar with no exported signature to read. So
- * 67 + 2 + 1 + 1 = 71. Applying the row-count grammar here would demand 70 and
- * force a CORRECT 67 to be "fixed" into a wrong 70.
+ * describes "the 68 modules taking a `SpotifyClient`", and that is neither
+ * `total` (71) nor `total - 1` (70): it is 68. `statsfm` takes a
+ * `StatsfmClient`; `moodexpand` takes no second parameter at all; `receipts`
+ * is a local registrar with no exported signature to read. So
+ * 68 + 1 + 1 + 1 = 71. Applying the row-count grammar here would demand 70 and
+ * force a CORRECT 68 to be "fixed" into a wrong 70.
  *
- * `annotations.ts` states the same decomposition independently — "three
- * registrars take no client at all … and one takes a `StatsfmClient`" — which
- * is the cross-check that 67 is the right number and not 69. Counting the two
- * no-client modules as client-takers, which the loop's `else` branch does if
- * read as a tally rather than as a predicate, yields 69 and is wrong: a
- * registrar that takes no client does not take a SpotifyClient.
+ * `annotations.ts` states the same decomposition independently — "two registrars
+ * take no client at all … and one takes a `StatsfmClient`" — which is the
+ * cross-check that 68 is the right number and not 70. Counting the no-client
+ * module as a client-taker, which the loop's `else` branch does if read as a
+ * tally rather than as a predicate, yields 70 and is wrong: a registrar that
+ * takes no client does not take a SpotifyClient.
+ *
+ * The 68 moved from 67 in #1601, which gave `swarm3meta` a `SpotifyClient`
+ * parameter: `enable_toolset` registers modules at runtime through
+ * `registerManifestModules`, which passes the client the manifest already
+ * carries. `swarm3meta` was one of the three no-client registrars and is now
+ * one of the 68 — the comment moved with it rather than being left describing
+ * a population the loop no longer computes.
  *
  * So this population gets its own assertion and its own rule, and
  * `ARITY_FORM` is deliberately narrow enough that no row-count claim can match

@@ -46,7 +46,7 @@ function harness(registry: Record<string, unknown>): Map<string, Handler> {
   // One parameter: the server. The second `{} as never` was padding a call
   // that never had a second parameter, which is what a compile error should
   // have said and was not saying because the argument was already `never`.
-  registerSwarm3MetaTools(server as never);
+  registerSwarm3MetaTools(server as never, {} as never);
   return handlers;
 }
 
@@ -205,7 +205,7 @@ describe('#713 — the discovery trio honours response_format', () => {
 
   it('toolset_report declares response_format and honours it', async () => {
     const server = new McpServer({ name: 'discovery-713', version: '0.0.0' });
-    registerSwarm3MetaTools(server);
+    registerSwarm3MetaTools(server, {} as never);
     const registry = (server as unknown as {
       _registeredTools: Record<string, {
         inputSchema?: unknown;
