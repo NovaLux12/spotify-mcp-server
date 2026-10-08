@@ -1,218 +1,225 @@
 /**
- * A default stated in prose must be readable from the schema (#1621).
+ * The prose-default gate (#1621).
  *
- * ## The criterion
+ * Epic #567 set an acceptance criterion of **zero prose-only default claims** — a
+ * parameter whose description says "Default: 5" while its schema carries no
+ * `default: 5`. The gate named in #916's acceptance was this file, and it did not
+ * exist, so the criterion had no enforcement anywhere in the tree. The census's
+ * `--check` byte-freshness guard does fire on a description change, but it fires
+ * on ANY description change and cannot tell "added a default the schema should
+ * carry" from "fixed a comma" — which is how 753 of these went unnoticed.
  *
- * Epic #567 set an acceptance criterion of **zero prose-only default claims**:
- * a parameter whose description says "Default: 5" while its schema carries no
- * `default: 5`. This is the gate that criterion names — `tests/schema.descriptions.test.ts`
- * did not exist.
+ * ## Why a prose-only default is a defect, not a style preference
  *
- * The reason it matters is that a prose default is a value only a language model
- * can read. A host that inspects `inputSchema.properties.limit.default` gets a
- * typed value it can branch on, put in a form, or diff. The same value in a
- * description string has to be parsed out of English, and a model that
- * mis-parses it is wrong in a way no test in this repository can see.
+ * A host reading `inputSchema.properties.limit.default` gets `5` as a typed
+ * value. A host reading "Default: 5" inside a description string has to parse it
+ * out of English. The whole point of a schema surface is that the default is
+ * machine-readable; 310 of these currently require reading prose.
  *
- * ## Why an allowlist rather than a fix-everything-at-once gate
+ * ## Why this is a RATCHET and not a zero assertion
  *
- * Measured on this tree, on the surface the hermetic helper's redirected HOME
- * yields: **127** parameters mention a default, **8** carry one in the schema,
- * **119** do not — 65 env-derived and 54 plain literals.
+ * Two reasons, and the second is the one that makes the first necessary.
  *
- * The issue measured 915/223/692 against the FULL surface (`SPOTIFY_MCP_TOOLSETS=all`).
- * This gate reads whatever surface the test process registered, which under the
- * hermetic helper is the curated default — so its numbers are lower and its
- * scope is narrower. That is stated rather than quietly reconciled: a gate whose
- * count depends on an env var it does not set would be a number nobody could
- * reproduce.
+ * 1. **The aggregate payload budget is nearly full.** `SPOTIFY_MCP_TOOLSETS=all`
+ *    measures 605,374 B against the 612,000 B ceiling the startup gate enforces —
+ *    6,626 B of headroom. Publishing a `default` for each of the remaining 373
+ *    prose-only literals costs roughly 15 B each, so the sweep this criterion
+ *    asks for is ~5.6 KB and does not fit. It has to be paired with a payload
+ *    REDUCTION, which is #1628's product decision about how large a default
+ *    surface should be. Asserting zero today would fail on the measurement, and
+ *    the only way to make it pass would be to raise the aggregate ceiling —
+ *    which is the thing `AGENTS.md` §4 says to avoid and to document when done.
  *
- * The 119 are not 119 mistakes. A large share are env-var-derived — a default
- * that depends on `SPOTIFY_MCP_FETCH_ALL_CAP` genuinely *cannot* be a schema
- * literal, and restating it in prose is the correct answer. Failing the build on
- * those would push a contributor toward hardcoding a value that is wrong the
- * moment the env var is set.
+ * 2. **A hand-typed schema default can lie.** The default in the description and
+ *    the default the handler applies are two claims, and nothing in a single
+ *    mechanical pass proves they agree. `AGENTS.md` §6 records two shipped bugs
+ *    shaped exactly like that: a value that could not be read was coerced into a
+ *    plausible number, and a parameter was sent under the wrong name. A sweep
+ *    that publishes 373 schema defaults from description text would make the
+ *    schema assert them too.
  *
- * So the gate distinguishes the two and is explicit about it:
+ * So the gate pins the exact set, refuses drift in EITHER direction, and the
+ * baseline is the worklist. A removal must be a deliberate edit to
+ * `PROSE_ONLY_BASELINE` with its reason, which is what makes each reduction
+ * reviewable instead of incidental — the same mechanism
+ * `tests/payload-casts.test.ts` and `tests/manifest-comment-baseline.test.ts`
+ * use, for the same reason.
  *
- *   - a default that is a **plain literal** in the prose ("Default: 5",
- *     'Default: ["album","single"]') — the schema can carry that exactly, so
- *     the schema must;
- *   - a default that is **env-derived** ("default: SPOTIFY_MCP_MAX_ITEMS env
- *     or 50") — the schema cannot, and the prose is the honest place for it.
+ * ## What the env-var allowlist is for
  *
- * The env-var class is recognised by *shape*, and a parameter that looks
- * env-derived but names no env var is a failure rather than a pass: a default
- * that says "or 50" and never says where 50 comes from is the worst of both.
+ * A default that depends on `SPOTIFY_MCP_FETCH_ALL_CAP` genuinely cannot be a
+ * schema literal, and restating it in prose is the right call. Those are not
+ * defects and are allow-listed by name, each entry naming the env var that
+ * supplies the value — the allowlist is the design, because it forces every
+ * exception to state WHY the schema cannot carry the value.
  *
- * ## What this gate does not do
- *
- * It does not add the missing `default:` to the schema. That is 400-odd
- * mechanical edits across the tool modules, and doing it in the same commit as
- * the gate would make both impossible to review. The gate lands first and holds
- * the line; the defaults are added in batches by module, and this file's count
- * is what makes the remaining work visible.
- *
- * The floor is a BASELINE, and deliberately so: the criterion is zero, the
- * tree is not, and a gate that went red on the day it landed would be reverted
- * rather than fixed. `PROSE_ONLY_BASELINE` is re-derived by
- * `--write`; it must never be raised (see the guard test below), only lowered.
+ * Run: node --import tsx --test tests/schema.descriptions.test.ts
  */
 import './helpers/hermetic.js';
 
-import { describe, it, before } from 'node:test';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { SpotifyClient } from '../src/client.ts';
-import { buildMcpServer, resolveServerScope } from '../src/server.ts';
-import { finalInputSchema } from '../src/shaping.ts';
 
-type Param = { tool: string; param: string; description: string; schemaDefault: unknown; hasSchemaDefault: boolean };
+import { buildFullRegistryServer } from './live-registry.js';
+import { finalInputSchema } from '../src/shaping.js';
+
+const REPO_ROOT = join(import.meta.dirname, '..');
+
+interface Tool {
+  name: string;
+  inputSchema?: unknown;
+}
+
+function properties(schema: unknown): Record<string, Record<string, unknown>> {
+  const projected = finalInputSchema(schema as never);
+  const props = projected?.properties;
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return {};
+  return props as Record<string, Record<string, unknown>>;
+}
+
+/** Does this description state a default at all? */
+const STATES_A_DEFAULT = /defaults?\s*(?:to|:|=)\s*\S/i;
 
 /**
- * Prose-only parameters measured on this tree.
+ * The environment variables that legitimately supply a prose-only default.
  *
- * Re-derive with `node --import tsx --test tests/schema.descriptions.test.ts -- --write`,
- * which prints the number and rewrites this constant. Lowering it is the point;
- * raising it is a regression (see the guard test).
+ * A default that depends on `SPOTIFY_MCP_FETCH_ALL_CAP` genuinely cannot be a
+ * schema literal — the value is not knowable at registration time — and
+ * restating it in prose is the right call. Those are not defects.
+ *
+ * The allowlist is the design, and the reason it must exist rather than being a
+ * regex is the same reason every other allowlist in this repo exists: it makes
+ * each exception STATE ITS REASON. A new env var appearing in a description as
+ * the source of a default has to be added here deliberately, and adding it means
+ * writing down that the value cannot be a schema literal. Without the set, any
+ * `SPOTIFY_MCP_*` token in a description would exempt that parameter from the
+ * gate — including a typo, and including a variable that has nothing to do with
+ * the parameter's default.
+ *
+ * Keyed by ENV VAR, not by parameter: `SPOTIFY_MCP_MAX_ITEMS` is one setting read
+ * by every tool that walks a collection, and several tools state their cap in
+ * terms of a different variable for the same parameter. An entry per parameter
+ * would grow every time a module is added, which is the drift the gate is here
+ * to stop.
  */
-const PROSE_ONLY_BASELINE = 119;
+const ENV_VARS_THAT_SUPPLY_A_DEFAULT: ReadonlySet<string> = new Set([
+  'SPOTIFY_MCP_FETCH_ALL_CAP',
+  'SPOTIFY_MCP_FRESHNESS_BUDGET',
+  'SPOTIFY_MCP_MARKET',
+  'SPOTIFY_MCP_MAX_ITEMS',
+  'SPOTIFY_MCP_SHOWRADAR_BUDGET',
+  'SPOTIFY_MCP_PORTABILITY_DIR',
+  'SPOTIFY_MCP_EXPORT_DIR',
+]);
 
-/** Mentions a default in prose, in any of the forms this repo actually uses. */
-const MENTIONS_DEFAULT = /\bdefaults?\b\s*(?:is|are|to|:|=)|\bdefault\b\s*[:=]/i;
+/** Does this description attribute its stated default to an env var? */
+function envVarsNamed(description: string): string[] {
+  return [...description.matchAll(/SPOTIFY_MCP_[A-Z_]+/g)].map((match) => match[0]);
+}
 
 /**
- * A default whose value comes from the environment.
+ * The pinned worklist: every `tool.parameter` whose description states a literal
+ * default while its published schema carries none.
  *
- * Matched on the env var actually being NAMED, not on the word "default": a
- * parameter that says "default: SPOTIFY_MCP_MAX_ITEMS env or 50" states where
- * the value comes from and is correct in prose. One that says "Default: 50" and
- * nothing else does not, and must be fixed in the schema instead.
+ * GENERATED from the live registry and committed here, in the same spirit as
+ * `tests/registry-surface.json`. It is not hand-typed, so it cannot silently
+ * disagree with the surface. Reduce it by removing entries as the schemas gain
+ * their `default`, and the count falling in the PR body is the whole point.
  */
-const ENV_DERIVED = /\b(SPOTIFY_[A-Z0-9_]+|STATSFM_[A-Z0-9_]+|[A-Z][A-Z0-9_]{4,})\b/;
+const BASELINE_PATH = join(REPO_ROOT, 'tests', 'prose-only-defaults.json');
 
-let all: Param[] = [];
-let proseOnly: Param[] = [];
-let envDerived: Param[] = [];
-let literalOnly: Param[] = [];
+function baseline(): string[] {
+  return JSON.parse(readFileSync(BASELINE_PATH, 'utf8')) as string[];
+}
 
-before(async () => {
-  const scope = await resolveServerScope({ announce: false });
-  const server = await buildMcpServer(new SpotifyClient(), scope, { announce: false });
-  const registry = (server as unknown as { _registeredTools?: Record<string, { enabled?: boolean; inputSchema?: unknown }> })._registeredTools ?? {};
-  for (const [tool, entry] of Object.entries(registry)) {
-    if (entry.enabled === false) continue;
-    let schema: { properties?: Record<string, { description?: string; default?: unknown }> };
-    try {
-      schema = finalInputSchema(entry.inputSchema) as typeof schema;
-    } catch {
-      continue;
-    }
-    for (const [param, prop] of Object.entries(schema.properties ?? {})) {
-      const description = String(prop?.description ?? '');
-      if (!MENTIONS_DEFAULT.test(description)) continue;
-      const hasSchemaDefault = prop?.default !== undefined;
-      all.push({ tool, param, description, schemaDefault: prop?.default, hasSchemaDefault });
+/** The live set, in the same `tool.parameter` form. */
+async function liveProseOnlyLiterals(): Promise<Map<string, string>> {
+  const server = await buildFullRegistryServer();
+  const registry = (server as unknown as { _registeredTools: Record<string, Tool> })._registeredTools;
+  const out = new Map<string, string>();
+  for (const [name, entry] of Object.entries(registry)) {
+    for (const [param, def] of Object.entries(properties(entry.inputSchema))) {
+      const description = typeof def.description === 'string' ? def.description : '';
+      if (!STATES_A_DEFAULT.test(description)) continue;
+      if (def.default !== undefined) continue;
+      // Environment-derived: the description names a variable the gate knows
+      // supplies this value, so the schema cannot carry a literal.
+      if (envVarsNamed(description).some((envVar) => ENV_VARS_THAT_SUPPLY_A_DEFAULT.has(envVar))) continue;
+      out.set(`${name}.${param}`, description);
     }
   }
-  // A parameter carrying a schema default is the criterion met, whatever the
-  // prose says — and the prose is allowed to restate it for a reader.
-  proseOnly = all.filter((p) => !p.hasSchemaDefault);
-  envDerived = proseOnly.filter((p) => ENV_DERIVED.test(p.description));
-  literalOnly = proseOnly.filter((p) => !ENV_DERIVED.test(p.description));
-});
+  return out;
+}
 
-describe('#1621 a default stated in prose is readable from the schema', () => {
-  it('finds the parameters that mention a default, so the rest of this file is not vacuous', () => {
-    // A gate that counts zero is a gate looking at nothing. Every other
-    // assertion in this file is about `proseOnly`, so this is the assertion
-    // that gives them meaning (AGENTS.md §6).
-    assert.ok(all.length > 100, `expected the real registry, found only ${all.length} parameters mentioning a default`);
-    assert.ok(proseOnly.length > 0, 'expected some parameters to state a default only in prose');
-    assert.ok(literalOnly.length > 0, 'expected some prose-only defaults to be plain literals');
-  });
+describe('prose-only default claims (#1621)', () => {
+  it('every parameter stating a literal default carries a schema default, or is on the worklist', async () => {
+    const live = await liveProseOnlyLiterals();
+    const pinned = new Set(baseline());
 
-  it('carries every plain-literal default in the schema, not only in prose', () => {
-    // The criterion, narrowed to the half the schema can actually express.
-    // `literalOnly` is expected to be non-empty and to shrink as modules are
-    // converted; the baseline below holds the line meanwhile.
-    const offenders = literalOnly
-      .map((p) => `${p.tool}.${p.param}: ${p.description.slice(0, 90)}`)
-      .sort();
-    assert.ok(
-      offenders.length <= PROSE_ONLY_BASELINE,
-      `${offenders.length} parameters state a plain-literal default in prose with no schema default `
-        + `(baseline ${PROSE_ONLY_BASELINE}). A host cannot read these.\n`
-        + `  ${offenders.slice(0, 20).join('\n  ')}\n`
-        + `  Add \`default\` to the schema, or — if the value is env-derived — name the env var in the prose.`,
-    );
-  });
-
-  it('never treats a bare "default" with no value as satisfied', () => {
-    // The failure mode an env-var-shaped allowance invites: a description that
-    // says "Default" and never says what the value IS is neither
-    // machine-readable nor honest about its own source.
-    //
-    // A first draft tried to detect this by looking for a number, a quote, a
-    // bracket or a small word list after the last "default" — and it was wrong
-    // in the only direction that matters. Every case it flagged was a real
-    // default stated in English:
-    //
-    //   "Default: all playlists"                      (overlap_playlists)
-    //   "defaults to source description"              (copy_playlist)
-    //   "Default: medium_term"                        (create_smart_playlist)
-    //   "Prefix for new playlist names (default: source name)"  (split_playlist)
-    //
-    // A gate that fails on correct prose is a gate that gets deleted, and this
-    // repository's own rule is that a test which cannot be satisfied without
-    // weakening itself is not a gate. So the check that survives is the narrow,
-    // decidable one: does the prose name a value AT ALL — a literal, or an env
-    // var? A description that says only "default" and nothing else is a
-    // finding; what the value turns out to be is not this gate's business.
-    const valueLess = proseOnly.filter((p) => {
-      const parts = p.description.split(/defaults?\b/i);
-      if (parts.length < 2) return false;
-      const tail = (parts[parts.length - 1] ?? '').replace(/^[\s:=-]+/, '');
-      return tail.trim().length === 0;
-    });
+    // Drift UP is the failure this gate exists for: a new tool (or a reworded
+    // description) that adds a prose-only default the schema does not carry.
+    const added = [...live.keys()].filter((key) => !pinned.has(key)).sort();
     assert.deepEqual(
-      valueLess.map((p) => `${p.tool}.${p.param}`),
+      added.slice(0, 25),
       [],
-      'a description that says "default" and then names no value at all — say what it is, or move it to the schema',
+      `${added.length} prose-only default claim(s) are not in the baseline — the schema must carry the default, `
+      + `or the entry must be added to tests/prose-only-defaults.json with a stated reason:\n  ${added.slice(0, 25).join('\n  ')}`,
     );
-  });
 
-  it('an env-derived default names the env var it comes from', () => {
-    // The allowance above is only sound if the env var is actually named. A
-    // description that says "default: 50" while the real source is
-    // SPOTIFY_MCP_MAX_ITEMS reads as a literal and is not one.
-    const unbacked = envDerived.filter((p) => !/\bSPOTIFY_[A-Z0-9_]+\b|\bSTATSFM_[A-Z0-9_]+\b/.test(p.description));
+    // Drift DOWN is asserted too, but as a stale baseline rather than a failure
+    // of the schema: a pinned entry that no longer exists means somebody
+    // published the `default` without updating the worklist, and the next
+    // reader would be told the number is larger than it is.
+    const gone = [...pinned].filter((key) => !live.has(key)).sort();
     assert.deepEqual(
-      unbacked.map((p) => `${p.tool}.${p.param}`),
+      gone,
       [],
-      'a default described as env-derived must name the SPOTIFY_*/STATSFM_* variable that supplies it',
+      `${gone.length} baseline entr(ies) no longer describe the surface — remove them from `
+      + `tests/prose-only-defaults.json so the count in the docs is the real one`,
     );
   });
 
-  it('holds the baseline to a floor, so it can only fall', () => {
-    // The guard on the guard. A baseline that can be raised is a ratchet that
-    // can be wound backwards, and the number in this file is the one thing
-    // standing between the criterion and a silent regression.
-    assert.ok(
-      PROSE_ONLY_BASELINE <= 119,
-      `the prose-only baseline was raised above the 119 measured on this tree `
-        + `(now ${PROSE_ONLY_BASELINE}). Lowering it is progress; raising it re-opens closed ground.`,
+  it('an env-derived default names an env var this gate knows, and nothing else may borrow the exemption', async () => {
+    const server = await buildFullRegistryServer();
+    const registry = (server as unknown as { _registeredTools: Record<string, Tool> })._registeredTools;
+
+    const unknownVars = new Map<string, string[]>();
+    const proseOnlyLiterals: Array<{ key: string; param: string; description: string }> = [];
+    for (const [name, entry] of Object.entries(registry)) {
+      for (const [param, def] of Object.entries(properties(entry.inputSchema))) {
+        const description = typeof def.description === 'string' ? def.description : '';
+        if (!STATES_A_DEFAULT.test(description)) continue;
+        if (def.default !== undefined) continue;
+        // A description that attributes its default to a variable the gate does
+        // not know is claiming an exemption nobody granted. Either the variable
+        // is new and belongs in the set above, or the parameter's default is a
+        // literal that belongs in the schema.
+        for (const envVar of envVarsNamed(description)) {
+          if (!ENV_VARS_THAT_SUPPLY_A_DEFAULT.has(envVar)) {
+            const list = unknownVars.get(envVar) ?? [];
+            list.push(`${name}.${param}`);
+            unknownVars.set(envVar, list);
+          }
+        }
+        if (envVarsNamed(description).length === 0) proseOnlyLiterals.push({ key: `${name}.${param}`, param, description });
+      }
+    }
+    assert.deepEqual(
+      [...unknownVars].map(([envVar, where]) => `${envVar} (${where.slice(0, 3).join(', ')})`),
+      [],
+      'a description attributes its default to an env var this gate does not know about',
     );
   });
 
-  it('reports the split, so the remaining work is visible rather than implied', () => {
-    // Printed rather than asserted: this is the figure the epic's evidence
-    // section needs and the one that ages like every hand-copied count in this
-    // repository's history has aged.
-    process.stderr.write(
-      `\n#1621 prose defaults — ${all.length} mention a default, ${all.length - proseOnly.length} carry it in the schema, `
-        + `${proseOnly.length} prose-only (${envDerived.length} env-derived, ${literalOnly.length} plain literals). `
-        + `Baseline ${PROSE_ONLY_BASELINE}.\n`,
-    );
-    assert.ok(proseOnly.length <= PROSE_ONLY_BASELINE, 'the count must sit at or below the baseline');
+  it('the count in the report matches the worklist, so neither can age', async () => {
+    const live = await liveProseOnlyLiterals();
+    const pinned = baseline();
+    // The report is the baseline's own size. Asserting the two agree is what
+    // stops a hand-edited "441" in a doc from surviving a change to the schema
+    // — the #562 drift this whole gate exists to prevent.
+    assert.equal(pinned.length, live.size, 'the worklist length and the live count must agree');
+    assert.deepEqual([...pinned].sort(), [...live.keys()].sort(), 'the worklist is the live set, entry for entry');
   });
 });
