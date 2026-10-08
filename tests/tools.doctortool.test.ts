@@ -19,7 +19,8 @@ import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../src/client.js';
 import { initConfig, DEFAULT_SCOPES, scopesForProfile } from '../src/config.js';
-import { registerDoctorTool } from '../src/tools/doctortool.js';
+import { collectDoctorReport, registerDoctorTool } from '../src/tools/doctortool.js';
+import { collectAggregateSurfaceMeasurement } from '../src/tools/annotations.js';
 
 // ---------------------------------------------------------------------------
 // Stub plumbing (mirrors tests/tools.users.test.ts)
@@ -37,6 +38,8 @@ interface DoctorRow {
 interface DoctorSurface {
   registry_available: boolean;
   registered_tools: number;
+  schema_bytes: number;
+  est_tokens: number;
   total_modules: number;
   active_modules: string[];
   exposed_modules: string[];
@@ -158,6 +161,7 @@ function harness(opts: {
   return {
     requestedPaths,
     registered,
+    server: fakeServer,
     invoke: async (
       args: Record<string, unknown> = {},
     ): Promise<{
@@ -591,6 +595,50 @@ describe('spotify_doctor', () => {
       surface.exposed_modules.length,
       surface.active_modules.length - surface.hidden_by_scopes.length - surface.hidden_by_readonly.length,
     );
+  });
+
+  /**
+   * #1628: the surface reports its own payload cost, in the unit the budget gate
+   * enforces.
+   *
+   * `registered_tools` counts NAMES. The ceilings in `AGENTS.md` §4 and the
+   * aggregate gate in `annotations.ts` measure UTF-8 bytes of description plus
+   * emitted `inputSchema`, so two modules holding the same number of tools can
+   * differ by tens of kilobytes and a name count cannot see it. That is the gap
+   * the epic's third criterion was left half-met by: the cost table existed but
+   * doctor could not tell a caller what THEIR surface cost.
+   *
+   * The discriminating assertion is the byte identity against
+   * `collectAggregateSurfaceMeasurement`, the same function the startup gate
+   * calls. Asserting `schema_bytes > 0` would pass for any number the report
+   * invented; this fails if the two ever disagree, which is the actual
+   * requirement.
+   */
+  it('reports the schema bytes the aggregate gate measures, not a separate number (#1628)', async () => {
+    await writeTokenFile({ ...VALID_TOKENS(), scope: 'user-read-private' });
+    process.env.SPOTIFY_MCP_TOOLSETS = 'playback';
+    const { invoke, server } = harness({ seededTools: 2 });
+    const surface = (await invoke({ response_format: 'json' })).structuredContent?.surface;
+    assert.ok(surface);
+    const measured = collectAggregateSurfaceMeasurement(server);
+    assert.equal(surface.registered_tools, measured.toolCount, 'the tool count and the payload come from the same registry');
+    assert.equal(surface.schema_bytes, measured.schemaBytes, 'doctor must report the bytes the gate enforces');
+    assert.equal(surface.est_tokens, Math.round(surface.schema_bytes / 4), 'the estimate is bytes over the 4-bytes-per-token convention');
+    assert.ok(surface.schema_bytes > 0, 'a live registry has a non-empty payload');
+  });
+
+  it('reports a zero payload rather than a fabricated one when no registry can be read', async () => {
+    // `collectDoctorReport` takes the server OPTIONALLY because the CLI `doctor`
+    // subcommand runs in a separate process with no registry to read. A zero
+    // there is correct and is what `registry_available: false` says it is — the
+    // failure mode this guards is a report that substituted a plausible figure
+    // for a measurement it could not take (#1628, and the #803/#830 class in
+    // AGENTS.md §6 generally).
+    const report = await collectDoctorReport({} as SpotifyClient, undefined);
+    const surface = report.surface;
+    assert.equal(surface.registry_available, false);
+    assert.equal(surface.schema_bytes, 0);
+    assert.equal(surface.est_tokens, 0);
   });
 
   /**
