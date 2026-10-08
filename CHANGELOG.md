@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v3.0.1...v3.1.0) (2026-10-08)
+
+
+### Features
+
+* **doctor:** report the surface's payload cost in the unit the gate enforces ([#1628](https://github.com/NovaLux12/spotify-mcp-server/issues/1628)) ([#1670](https://github.com/NovaLux12/spotify-mcp-server/issues/1670)) ([27d52fb](https://github.com/NovaLux12/spotify-mcp-server/commit/27d52fb5386745ba810e13efa790939e92d24871))
+* **tools:** call_tool dispatcher and runtime toolset activation ([#1601](https://github.com/NovaLux12/spotify-mcp-server/issues/1601)) ([#1669](https://github.com/NovaLux12/spotify-mcp-server/issues/1669)) ([b84e1aa](https://github.com/NovaLux12/spotify-mcp-server/commit/b84e1aa4c493ecad375c4d2606089d022d97f86b))
+
+
+### Bug Fixes
+
+* **publish:** wait for the npm release to be visible before publishing to the MCP registry ([#1664](https://github.com/NovaLux12/spotify-mcp-server/issues/1664)) ([19a9443](https://github.com/NovaLux12/spotify-mcp-server/commit/19a9443f70beeb1855c0bfcf72c33036114f0953))
+* **tests:** reap every sweep-loop child in a hook, so a leak costs seconds not 8 minutes ([#1569](https://github.com/NovaLux12/spotify-mcp-server/issues/1569)) ([#1672](https://github.com/NovaLux12/spotify-mcp-server/issues/1672)) ([c463e7c](https://github.com/NovaLux12/spotify-mcp-server/commit/c463e7cb11c2fe1c1014f4ded306a495bd46eb3f))
+
+
+### Tests
+
+* gate the default vocabulary — prose defaults, cap names, name families ([#1621](https://github.com/NovaLux12/spotify-mcp-server/issues/1621), [#1626](https://github.com/NovaLux12/spotify-mcp-server/issues/1626)) ([#1671](https://github.com/NovaLux12/spotify-mcp-server/issues/1671)) ([32cac6e](https://github.com/NovaLux12/spotify-mcp-server/commit/32cac6e923a228ae7a6d8384f37e4b4cc2ed76d1))
+
 ## [3.0.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v3.0.0...v3.0.1) (2026-10-01)
 
 
