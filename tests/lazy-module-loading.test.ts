@@ -381,7 +381,16 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // now also resolves by its sidecar label, and a resume that silently
     // landed at 0:00 is now seek-corrected) are additive and narrowing
     // respectively, never a removed capability.
-    assert.equal(playback.toolCount, 92, 'the playback surface itself must not change');
+    //
+    // 92 -> 94 (#1601): the only two tools this tripwire has ever counted that
+    // are NOT playback tools. `swarm3meta` is `alwaysActive`, so it registers
+    // under every toolset, and #1601 added `call_tool` and `enable_toolset` to
+    // it. That is deliberate — the dispatcher is what makes a trimmed surface
+    // usable, so withholding it from a trimmed surface would defeat the point —
+    // but it does mean this number is no longer a pure playback count, and the
+    // comment says so rather than leaving the next author to work out why a
+    // playback assertion moved when no playback file changed.
+    assert.equal(playback.toolCount, 94, 'the playback surface itself must not change');
   });
 
   it('never evaluates a module whose registration key is inactive', async () => {
@@ -403,11 +412,17 @@ describe('#906 a trimmed toolset evaluates only the modules it serves', () => {
     // `clean_backup_artifacts`). Each is a registration count, and the
     // forwarding aliases add no line here.
     //
+    // 560 -> 562 (#1601): `call_tool` and `enable_toolset`, in
+    // `src/tools/swarm3_meta.ts`. The runtime escape hatch a trimmed surface
+    // needs, which is why it is in the `alwaysActive` module rather than in one
+    // toolset: a host that trimmed to `core` is exactly the host that cannot
+    // reach a tool outside it without a restart.
+    //
     // The message says "full surface", not "default surface": since #889 an
     // unset `SPOTIFY_MCP_TOOLSETS` registers a strict subset of this, so a
     // reader taking "the default surface must be unchanged" literally would be
     // asserting a number this tripwire has never measured.
-    assert.equal(full.toolCount, 560, 'the full (TOOLSETS=all) surface must be unchanged');
+    assert.equal(full.toolCount, 562, 'the full (TOOLSETS=all) surface must be unchanged');
     const missing = REGISTRAR_MANIFEST
       .map((module) => module.file.replace(/^src\/tools\//, '').replace(/\.ts$/, ''))
       .filter((stem) => !full.toolModules.includes(stem));
@@ -452,7 +467,7 @@ describe('#906 every manifest entry is a working thunk', () => {
 
   it('never hands a module a client it did not ask for', async () => {
     // Every registrar is called as `registrar(server, client)`. That is right
-    // for the 67 modules taking a `SpotifyClient`, and wrong for the one that
+    // for the 68 modules taking a `SpotifyClient`, and wrong for the one that
     // does not: `registerStatsfmTools(server, client: StatsfmClient = new
     // StatsfmClient())`. Passing Spotify's client there would send every
     // stats.fm request to api.spotify.com, and no schema comparison can see
@@ -460,10 +475,13 @@ describe('#906 every manifest entry is a working thunk', () => {
     // The manifest entry is the only place that decision is recorded, so the
     // guard reads the source of every registrar and pins the arity.
     //
-    // 67, not 69: `swarm3meta` and `moodexpand` take no second parameter at
-    // all, so they are in neither the 67 nor the stats.fm one. See
+    // 68, not 70: `moodexpand` takes no second parameter at all, and `receipts`
+    // is a local registrar with no exported signature to read, so they are in
+    // neither the 68 nor the stats.fm one. `swarm3meta` USED to be in that
+    // no-client pair and left it in #1601: `enable_toolset` registers modules
+    // at runtime, which needs the client the manifest already passes. See
     // `ModuleRegistrar` in annotations.ts, which states the same decomposition
-    // — three registrars take no client, one takes a `StatsfmClient`.
+    // — two registrars take no client, one takes a `StatsfmClient`.
     const client = new SpotifyClient();
     for (const module of REGISTRAR_MANIFEST) {
       if (!module.file.startsWith('src/tools/')) continue;

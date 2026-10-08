@@ -401,7 +401,7 @@ describe('#583 — the operator surface prints the resolved caps', () => {
 
   it('toolset_report lists every cap and echoes the table as structured data', async () => {
     const server = new McpServer({ name: 'caps', version: '0.0.0' });
-    registerSwarm3MetaTools(server);
+    registerSwarm3MetaTools(server, {} as never);
     const tool = (server as unknown as { _registeredTools: Record<string, { handler: (a: Record<string, never>) => Promise<{ content: Array<{ text: string }>; structuredContent: { batch_caps: unknown } }> }> })._registeredTools.toolset_report;
     const result = await tool.handler({});
     assert.deepEqual(result.structuredContent.batch_caps, CHUNK_CAPS);

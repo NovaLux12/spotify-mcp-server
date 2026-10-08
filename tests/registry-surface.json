@@ -214,6 +214,8 @@
       "switch_account"
     ],
     "swarm3meta": [
+      "call_tool",
+      "enable_toolset",
       "find_tool",
       "inspect_tool",
       "toolset_report"
@@ -765,6 +767,7 @@
     "batch_add_to_playlist",
     "batch_add_to_queue",
     "browse_category_deepdive",
+    "call_tool",
     "cancel_wind_down",
     "canonicalize_spotify_uri",
     "capture_playback_position",
@@ -810,6 +813,7 @@
     "discover_weekly_diff",
     "discovery_digest",
     "duplicate_saved_versions",
+    "enable_toolset",
     "episode_bookmark",
     "episode_context_bundle",
     "episode_guest_census",

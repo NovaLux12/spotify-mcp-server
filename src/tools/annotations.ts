@@ -43,7 +43,9 @@ import {
   type CallToolResult,
   type ServerResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { isTaskCapable, startTask, type PersistentTaskStore } from '../tasks.js';
+import type { CreateTaskOptions } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
+import type { CreateTaskResult } from '@modelcontextprotocol/sdk/experimental/tasks/index.js';
+import { isTaskCapable, startTask, applyTaskSupport, type PersistentTaskStore } from '../tasks.js';
 import { getObjectShape, getSchemaDescription, safeParseAsync, type AnySchema } from '@modelcontextprotocol/sdk/server/zod-compat.js';
 import { finalInputSchema, finalOutputSchema, OUTPUT_SCHEMA_FAMILIES, outputSchemaFamilyForModule, type OutputSchemaFamily, PROSE_ONLY_MODULES, PENDING_OUTPUT_SCHEMA_MODULES, RETIRED_PLAYLIST_INPUTS, retiredInputMessage, retiredInputsOnCall, resolveLegacyToolAlias, retiredToolAliasMessage, retiredWalkCapMessage, retiredWalkCapOnCall, resolveStatsfmUserInput, withPlaylistInputMetadata, withPlaylistInputNote, STATSFM_USER_INPUT, STATSFM_LEGACY_USER_INPUT, resolveRetiredQueueTool, retiredQueueToolMessage, resolveRetiredToolForward, retiredToolForwardNote, normalizeDeprecatedInputs, deprecatedInputResolution, type PlaylistInputResolution } from '../shaping.js';
 import { SpotifyApiError, isTokenFailureReason, CANCELLED_STATUS } from '../client.js';
@@ -650,6 +652,14 @@ export const DESTRUCTIVE_PREFIXES =
 const OVERRIDES: Record<string, ToolAnnotations> = {
   verify_receipt: { readOnlyHint: true, idempotentHint: true },
   spotify_doctor: { readOnlyHint: true, idempotentHint: true },
+  // #1601. `call_tool` dispatches whatever name the caller supplies, so its
+  // own hints have to describe the WORST case across the registered surface
+  // rather than a verdict on the verb. `call` is in neither READ_ONLY_PREFIXES
+  // nor MUTATING_PREFIXES, so name-driven classification returns
+  // `destructiveHint: false` — which is exactly the hint a host reads as "safe
+  // to auto-approve", and a tool that can reach `delete_playlist` must never
+  // carry it. Stated explicitly, as every write is (AGENTS.md §4).
+  call_tool: { destructiveHint: true, idempotentHint: false },
   // Writes that read like reads, and reads that read like writes.
   // Local reference normalization never calls Spotify or mutates server state.
   dedupe_spotify_uris: { readOnlyHint: true, idempotentHint: true },
@@ -1436,10 +1446,13 @@ export function declaredGatedToolDelta(): number {
 /**
  * A module's registration function.
  *
- * `client` is optional because three registrars take no client at all
- * (`registerSwarm3MetaTools`, `registerMoodExpandTools`, and the local receipts
- * registrar) and one takes a `StatsfmClient` rather than a `SpotifyClient` —
- * see `lazyModule`'s `adapt`.
+ * `client` is optional because two registrars take no client at all
+ * (`registerMoodExpandTools` and the local receipts registrar) and one takes a
+ * `StatsfmClient` rather than a `SpotifyClient` — see `lazyModule`'s `adapt`.
+ * `registerSwarm3MetaTools` left the no-client list in #1601: its
+ * `enable_toolset` registers modules at runtime through
+ * `registerManifestModules`, which hands every registrar the client the
+ * manifest already carries.
  * `registerManifestModule` always passes it; the type only says a module is
  * not required to consume it.
  */
@@ -2063,7 +2076,31 @@ export const REGISTRAR_MANIFEST: readonly RegistrarManifestEntry[] = [
   // 1624 -> 2023 (#713): toolset_report gained a declared `response_format`, and
   // all three discovery tools now carry the mode-specific description instead of
   // the shared "json = raw API object" wording. +399B once, on a 3-tool module.
-  manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [3, 2248], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
+  //
+  // #1601 adds `call_tool` and `enable_toolset`, taking the module from three
+  // tools to five. MEASURED, not estimated: the baseline was zeroed first and
+  // the startup gate's own refusal supplied both figures — they are the ones on
+  // the `manifestEntry` line below, which is the authoritative record. They are
+  // deliberately NOT repeated here: a hand-copied copy of a baseline is exactly
+  // what `tests/live-constant-comment.test.ts` refuses, and a stale restatement
+  // of a live figure is the #1480 bug shape. Read the entry for the number.
+  //
+  // This is the module the trimmed default surface stands on, so it is the one
+  // place where a ceiling raise is also the mechanism the surface depends on:
+  // without `call_tool` a host on the curated `core` set has no supported way to
+  // reach a tool outside it, and without `enable_toolset` widening the surface
+  // needs a restart. Both refuse any module the session did not register, so
+  // neither is a route around `SPOTIFY_MCP_READONLY` or the per-module budget.
+  //
+  // Host-session payload impact: the two tools cost close to a further KB of
+  // schema on EVERY `tools/list` a host receives before the user types anything,
+  // and the module itself nearly doubles in size. That is the real cost of the
+  // escape hatch and it is recorded here rather than left to be discovered: the
+  // epic this serves exists to reduce per-session payload, so a module that
+  // nearly doubles needs its reason stated where the next author re-measures it.
+  // The derived ceiling (tools +1, bytes x1.1) is unchanged as a formula; only
+  // the baseline moved.
+  manifestEntry('swarm3meta', 'swarm3meta', lazyModule('./swarm3_meta.js', 'registerSwarm3MetaTools'), [5, 3904], { alwaysActive: true, scopeKey: 'catalog', readOnlySafe: true }),
   // #598. `alwaysActive` for the same reason `swarm3meta` above carries it:
   // the DEFAULT session serves the `prompts` set, and `dj` /
   // `playlist_from_mood` / `discover_weekly_alternative` / `crate_digging` now
@@ -3936,6 +3973,397 @@ function taskAugmentationRefused(tool: string, capable: boolean): Error {
 }
 
 /**
+ * The `tools/call` parameters a dispatch needs, with the wire envelope removed
+ * (#1601).
+ *
+ * The dispatcher exists so a second entry point can reach the SAME dispatch the
+ * `tools/call` handler runs — `call_tool` is that second entry point, and it is
+ * the only way a host on a trimmed surface reaches a tool that is registered
+ * without restarting with a different `SPOTIFY_MCP_TOOLSETS`. Two copies of
+ * this logic would be two policies: one of them would drift, and the drifting
+ * one would be the one nobody tests.
+ */
+export interface ToolDispatchParams {
+  /** The requested tool name, before any legacy-alias rewrite. */
+  readonly name: string;
+  /** Raw caller arguments, before deprecated-input folding and zod parsing. */
+  readonly arguments?: Record<string, unknown>;
+  /**
+   * The task augmentation a wire call carried. Absent for a `call_tool`
+   * dispatch, which is a synchronous call by construction — a long tool called
+   * through `call_tool` runs inline, exactly as its own `tools/call` would.
+   *
+   * Typed as the SDK's own `CreateTaskOptions` rather than `unknown` so the
+   * hand-off to `startTask` keeps the compile-time contract the wire path had:
+   * the field arrives off `CallToolRequest['params']['task']`, and widening it
+   * here would push a cast into the one call that must not get the shape wrong.
+   */
+  readonly task?: CreateTaskOptions;
+}
+
+/**
+ * A request-shaped stub for the pieces of the wire request the dispatch reads
+ * after validation (#1601): the JSON-RPC id for provenance, and the tool name
+ * the task record attributes the work to.
+ *
+ * NOT `request.params` copied wholesale. Only these two fields are read, and
+ * fabricating the rest would invite a future edit to read a field that is
+ * absent and silently get `undefined` provenance on a real task.
+ */
+function dispatchProvenance(toolName: string): { id: string; params: { name: string } } {
+  return { id: 'unknown', params: { name: toolName } };
+}
+
+/**
+ * The one dispatch every tool call goes through (#1601).
+ *
+ * Both entry points call this: the `tools/call` request handler installed by
+ * {@link installToolErrorBoundary}, and the `call_tool` tool in
+ * `src/tools/swarm3_meta.ts`. Everything before the handler — the legacy-alias
+ * rewrite, the retired-name refusals, the deprecated-input fold, the
+ * unknown-parameter rejection, the encoding tolerance, the zod parse — and
+ * everything after it — task augmentation, output validation, the deprecation
+ * stamp — is here, once.
+ *
+ * `registry` is the SDK's live private tool record, read through the same
+ * accessor the rest of this module uses. It is a parameter rather than a read
+ * so the function has no hidden dependency on the server it was called with,
+ * and so a test can drive it against a registry it built itself.
+ *
+ * Returns the same `ServerResult` the wire handler returns, including every
+ * refusal. It never throws for a tool-level failure: `errorResult` already
+ * converts those. The two throws it does make are for a task augmentation it
+ * cannot honour, which is a protocol error and must stay one.
+ */
+export async function dispatchToolCall(
+  registry: Record<string, RegistryEntry>,
+  params: ToolDispatchParams,
+  extra: unknown,
+  taskStore?: PersistentTaskStore,
+): Promise<CallToolResult | CreateTaskResult> {
+  const requested = params.name;
+  // #908: a retired legacy alias. `aliasTarget` is set only when the rewrite
+  // is switched on AND the canonical name is actually registered, so an
+  // opt-in rewrite can never dispatch into a module this session trimmed —
+  // the `taste` toolset being off has to win over SPOTIFY_MCP_LEGACY_ALIASES.
+  const aliasTarget = legacyAliasTarget(requested, registry);
+  const registered = registry[requested];
+  const resolved = aliasTarget ?? (registered && registered.enabled !== false ? requested : undefined);
+  if (resolved === undefined) {
+    // #848: one of the ten retired transfer/volume names. They are not in
+    // `registry` — #848 withdrew those rows when the families collapsed —
+    // and v3.0 removed the forwarding that used to make the name answer
+    // anyway, so this is the whole path for them now.
+    return retiredAliasResult(requested)
+      ?? retiredForwardRefusal(requested)
+      ?? unknownToolResult(registry, requested);
+  }
+
+  const entry = registry[resolved];
+  const tool = safeIdentifier(resolved);
+  const shape = getObjectShape(entry.inputSchema);
+  const knownParams = shape ? Object.keys(shape) : [];
+  // #848: fold this tool's still-accepted deprecated input spellings into
+  // their canonical names, before validation, because `transfer_playback`'s
+  // canonical `device` is REQUIRED, so a caller sending only `device_id`
+  // would be refused `required_param` if the fold happened later. The legacy
+  // key is removed here, which is what lets it stay out of the published
+  // schema and cost no bytes on every `tools/list`.
+  const { args, deprecated } = normalizeDeprecatedInputs(resolved, params.arguments ?? {});
+  // #1287: a retired playlist input spelling is answered as its own typed
+  // refusal BEFORE the unknown-parameter fallback, because the two claims are
+  // different. `unknown_param` says "we never had that name"; these names were
+  // in the registry until v3.0 and the caller is following a deprecation
+  // notice we served them. It runs here, ahead of every handler and therefore
+  // ahead of any Spotify request, which is where the removal contract says a
+  // refused input must fail.
+  const retired = retiredInputResult(tool, resolved, args);
+  if (retired) return retired;
+  // #1318: a stats.fm identity sent under both spellings with different
+  // values is refused here, before the handler runs and therefore before any
+  // stats.fm request, naming both fields.
+  const identityConflict = statsfmIdentityConflict(tool, shape, args);
+  if (identityConflict) return identityConflict;
+  // #886: same reasoning as the playlist retirement above, for the walk caps
+  // withdrawn from `take_playlist_snapshot` and `backup_library`. Ahead of the
+  // unknown-parameter fallback for the same reason: the two claims are
+  // different, and only one of them is true.
+  const walkCap = retiredWalkCapResult(tool, args);
+  if (walkCap) return walkCap;
+  const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
+  if (unknown) return unknownParamResult(tool, unknown, knownParams);
+
+  // #694: one encoding contract, in front of validation on every call. After
+  // the unknown-key check, because a tolerated encoding is a VALUE and never a
+  // key — a call carrying a genuinely unknown argument is still refused above,
+  // which is the interaction the strict-schema unit asked to be guarded.
+  const tolerantArgs = entry.inputSchema
+    ? await encodingTolerantArgs(encodingPlanFor(entry.inputSchema), shape, args)
+    : args;
+
+  let parsedArgs: unknown;
+  try {
+    if (entry.inputSchema) {
+      const parsed = await safeParseAsync(entry.inputSchema, tolerantArgs);
+      if (!parsed.success) return validationResult(tool, shape, parsed.error);
+      parsedArgs = parsed.data;
+    }
+  } catch {
+    return validationResult(tool, shape, undefined);
+  }
+
+  // #600: a task-augmented call on a tool that advertises task support. The
+  // work runs detached and the caller gets a task handle; the handle is
+  // returned before any of it has happened, which is the entire point and
+  // also why the confirmation gate below has to be the tool's own.
+  if (params.task !== undefined) {
+    if (!taskStore || !isTaskCapable(resolved)) {
+      // A THROWN error, not a returned result. The SDK's `tools/call` wrapper
+      // validates any response to a request that carried `task` against
+      // `CreateTaskResultSchema`, so a `CallToolResult` handed back here is
+      // turned into an opaque `-32602 Invalid task creation result` before it
+      // reaches the client — the refusal would be written and never read.
+      // Throwing bypasses that validation and delivers the sentence.
+      //
+      // Running it synchronously instead would be worse still: the client is
+      // holding a task handle it never received, and a multi-minute tool
+      // would block on a request the client already considers asynchronous.
+      throw taskAugmentationRefused(tool, isTaskCapable(resolved));
+    }
+    return await startTask({
+      args: parsedArgs,
+      extra,
+      request: dispatchProvenance(resolved),
+      taskParams: params.task,
+      store: taskStore,
+      run: (signal) => invokeHandler(entry, parsedArgs, withTaskSignal(extra, signal)) as Promise<CallToolResult>,
+    });
+  }
+
+  try {
+    const result = await invokeHandler(entry, parsedArgs, extra);
+    await validateOutput(entry, result, tool, params.task !== undefined);
+    const statsfm = applyStatsfmIdentityDeprecation(result, shape, args);
+    return (deprecated.length === 0
+      ? statsfm
+      : stampDeprecation(statsfm, deprecatedInputResolution(deprecated))) as CallToolResult;
+  } catch (error) {
+    return errorResult(tool, publicFailure(tool, error), error) as CallToolResult;
+  }
+}
+
+/**
+ * Dispatch one tool by name for a caller that is NOT the `tools/call` handler
+ * (#1601).
+ *
+ * `call_tool` in `src/tools/swarm3_meta.ts` is that caller. It is the escape
+ * hatch the trimmed default surface depends on: a host that starts on the
+ * curated `core` set and needs a tool from an inactive module has no supported
+ * way to reach it, because the only knob that changes the surface
+ * (`SPOTIFY_MCP_TOOLSETS`) is read once at startup.
+ *
+ * This returns the SAME result the wire path returns for the same call —
+ * including the retired-alias refusals, the unknown-name refusal with its
+ * near-matches, and every validation failure — because it is the same
+ * {@link dispatchToolCall}. It is not a re-implementation that happens to look
+ * similar: a second copy of that policy would drift, and the copy that drifted
+ * would be the one no test exercised.
+ *
+ * Throws only when the SDK exposes no registry at all, which is a server bug
+ * rather than a caller error and must not read as "tool not found".
+ */
+export async function dispatchRegisteredTool(
+  server: McpServer,
+  name: string,
+  args: Record<string, unknown> | undefined,
+  extra: unknown,
+): Promise<CallToolResult> {
+  const registry = registeredToolEntries(server);
+  if (!registry || typeof registry !== 'object') {
+    throw new Error('Spotify MCP tool registry is unavailable; refusing to dispatch without it');
+  }
+  // No `task` is supplied, so the dispatcher cannot take the task path and the
+  // union above collapses to a tool result. A plain narrowing cast rather than
+  // `as unknown as`: the only member that needs asserting away is one this call
+  // has already ruled out.
+  return (await dispatchToolCall(registry, { name, arguments: args }, extra)) as CallToolResult;
+}
+
+/** What {@link activateRegistrationKeys} hands back to its caller. */
+export interface ActivationResult {
+  /** Registration keys whose modules were registered by this call. */
+  readonly activated: readonly string[];
+  /** Tool names added to the live registry, in registration order. */
+  readonly addedTools: readonly string[];
+  /** Keys that were already active, so nothing was registered for them. */
+  readonly alreadyActive: readonly string[];
+}
+
+/**
+ * The registration keys that currently have live tools in this session.
+ *
+ * Read from the module budget rows rather than from `SPOTIFY_MCP_TOOLSETS`,
+ * because the two stop agreeing the instant anything has been activated at
+ * runtime (#1601) — the env spec is the answer for a session that has already
+ * widened, not for the one asking whether it still needs to.
+ *
+ * A module with zero live tools is not active, whatever its status row says:
+ * `toolset_trimmed`, `read_only_hidden` and an empty `scope_filtered` split all
+ * report `toolCount: 0`, and all three mean "call activate for me".
+ */
+export function activeRegistrationKeys(server: McpServer): ReadonlySet<string> {
+  return new Set(
+    collectModuleSchemaBudgets(server)
+      .filter((row) => row.toolCount > 0)
+      .map((row) => row.registrationKey),
+  );
+}
+
+/**
+ * Register more registration keys into a LIVE server, then re-run every gate
+ * that ran at startup (#1601).
+ *
+ * ## Why this exists
+ *
+ * `SPOTIFY_MCP_TOOLSETS` is read once, in `resolveServerScope`, before any
+ * module registers. A host that picked the curated `core` surface and later
+ * needs `library_hygiene` has to be restarted with a different environment,
+ * which is the thing the dispatcher is supposed to make unnecessary.
+ *
+ * ## Why it is not "just call the registrar"
+ *
+ * Everything the startup path applies after registration — output schemas,
+ * annotations, `execution.taskSupport`, the per-module budget gate and the
+ * aggregate surface gate — is what makes a registered tool behave like every
+ * other tool. A module registered without them would serve tools with no
+ * annotations, no declared output contract and no budget charge: a payload no
+ * gate can see is not one anybody is paying for. So the same four calls run
+ * again here, in the same order, against the same registry.
+ *
+ * ## Why it reverts
+ *
+ * Activation is atomic. If any post-registration gate refuses, the tools this
+ * call added are removed from the registry before the error leaves, so the
+ * session's surface is exactly what it was before the caller asked. A partial
+ * activation would give a host half a module's tools and a `list_changed`
+ * notification describing a surface that does not exist.
+ */
+export async function activateRegistrationKeys(
+  server: McpServer,
+  client: SpotifyClient,
+  keys: readonly string[],
+  context: RegistrarManifestContext,
+): Promise<ActivationResult> {
+  const requested = new Set(keys.map((key) => key.toLowerCase()));
+  if (requested.size === 0) return { activated: [], addedTools: [], alreadyActive: [] };
+
+  const alreadyActive: string[] = [];
+  const modules: RegistrarManifestEntry[] = [];
+  const live = activeRegistrationKeys(server);
+  for (const module of REGISTRAR_MANIFEST) {
+    if (!requested.has(module.registrationKey)) continue;
+    // The two refusals, checked HERE rather than read off
+    // `moduleRegistrationStatus`, and the order is the whole point. That
+    // function tests the toolset trim before the read-only gate, so a module
+    // that is both trimmed AND read-only-hidden reports `toolset_trimmed` — and
+    // a caller acting on that status would register nothing, report success,
+    // and hand a read-only host a session that quietly ignored its request.
+    // A safety gate must not be maskable by a configuration one.
+    if (context.disableOverrides.has(module.registrationKey.toLowerCase())) {
+      throw new Error(
+        `module "${module.registrationKey}" is named in SPOTIFY_MCP_DISABLE_TOOLS and cannot be activated in this session`,
+      );
+    }
+    if (context.readOnly && module.readOnlySafe !== true) {
+      throw new Error(
+        `module "${module.registrationKey}" is hidden by SPOTIFY_MCP_READONLY and cannot be activated in a read-only session`,
+      );
+    }
+    if (live.has(module.registrationKey)) {
+      if (!alreadyActive.includes(module.registrationKey)) alreadyActive.push(module.registrationKey);
+      continue;
+    }
+    modules.push(module);
+  }
+  if (modules.length === 0) return { activated: [], addedTools: [], alreadyActive };
+
+  // The context that decides what registers. `isModuleActive` admits the
+  // requested keys and nothing else, so a module that was trimmed AND not asked
+  // for still registers nothing; `scopeBlocked` and `readOnly` are the
+  // operator's own and are not overridable by a runtime call.
+  const activationContext: RegistrarManifestContext = {
+    readOnly: context.readOnly,
+    isModuleActive: (registrationKey) => requested.has(registrationKey.toLowerCase()),
+    disableOverrides: context.disableOverrides,
+    scopeBlocked: context.scopeBlocked,
+  };
+
+  const before = new Set(registeredToolNames(server));
+  const metadata = serverMetadata(server);
+  // Snapshot the two maps `registerManifestModule` writes, so a revert restores
+  // the metadata exactly rather than leaving a module recorded as "active with
+  // zero tools" — a row that would make `toolset_report` claim a module is
+  // registered when it just stopped being.
+  const statusSnapshot = new Map(metadata.statuses);
+  const toolsSnapshot = new Map([...metadata.tools].map(([key, names]) => [key, [...names]]));
+  // The SDK calls `sendToolListChanged()` once per `registerTool`, so a 32-tool
+  // activation would emit 32 notifications — each a partial frame on a
+  // line-oriented stream, and each a host re-listing a half-built surface. The
+  // v2 plan's constraint is one notification per change, so the per-registration
+  // ones are suppressed here and exactly one is emitted by the caller once the
+  // activation has committed. Restored in the `finally` whichever way it ends:
+  // a later `server.tool()` in this session must keep its own notification.
+  const realNotify = server.sendToolListChanged.bind(server);
+  server.sendToolListChanged = () => undefined;
+  let added: string[] = [];
+  try {
+    await registerManifestModules(server, client, activationContext, modules);
+    added = registeredToolNames(server).filter((name) => !before.has(name));
+    // The startup pipeline, in startup order, against the registry that now
+    // holds the new tools.
+    applyToolOutputSchemas(server);
+    applyToolAnnotations(server);
+    applyTaskSupport(server);
+    assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));
+    assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
+  } catch (error) {
+    // Revert, then PROVE the revert: the gates run again against the restored
+    // registry and metadata, so a rollback that silently left the surface over
+    // budget fails loudly instead of handing back a session that cannot serve
+    // tools/list.
+    //
+    // The delete goes through `getToolRegistry`, the one reader of the SDK's
+    // private tool record this module already owns. Writing the field cast a
+    // second time here would be a second claim about a shape the SDK does not
+    // publish, which is exactly what `tests/payload-casts.test.ts` counts and
+    // what the module's own header says not to do.
+    const revertRegistry = getToolRegistry(server);
+    for (const name of added) delete revertRegistry[name];
+    metadata.statuses.clear();
+    for (const [key, status] of statusSnapshot) metadata.statuses.set(key, status);
+    metadata.tools.clear();
+    for (const [key, names] of toolsSnapshot) metadata.tools.set(key, names);
+    metadata.budgetRows = undefined;
+    assertModuleSchemaBudgets(collectModuleSchemaBudgets(server));
+    assertAggregateSurfaceBudget(collectAggregateSurfaceMeasurement(server));
+    throw new Error(`toolset activation was refused and the surface was left unchanged: ${errorTextOf(error)}`);
+  } finally {
+    server.sendToolListChanged = realNotify;
+  }
+
+  return {
+    activated: [...new Set(modules.map((module) => module.registrationKey))],
+    addedTools: added,
+    alreadyActive,
+  };
+}
+
+/** A thrown value as a one-line string, for a refusal message. */
+function errorTextOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
  * Replace the SDK's two early tools handlers with the final production boundary.
  * It advertises closed root input objects, rejects unknown keys before any
  * callback runs, preserves parsed handler/output semantics, and turns every
@@ -3977,117 +4405,18 @@ export function installToolErrorBoundary(
   }) as unknown as ServerResult);
 
   lowLevelServer.removeRequestHandler('tools/call');
-  lowLevelServer.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
-    const requested = request.params.name;
-    // #908: a retired legacy alias. `aliasTarget` is set only when the rewrite
-    // is switched on AND the canonical name is actually registered, so an
-    // opt-in rewrite can never dispatch into a module this session trimmed —
-    // the `taste` toolset being off has to win over SPOTIFY_MCP_LEGACY_ALIASES.
-    const aliasTarget = legacyAliasTarget(requested, registry);
-    const registered = registry[requested];
-    const resolved = aliasTarget ?? (registered && registered.enabled !== false ? requested : undefined);
-    if (resolved === undefined) {
-      // #848: one of the ten retired transfer/volume names. They are not in
-      // `registry` — #848 withdrew those rows when the families collapsed —
-      // and v3.0 removed the forwarding that used to make the name answer
-      // anyway, so this is the whole path for them now.
-      return retiredAliasResult(requested)
-        ?? retiredForwardRefusal(requested)
-        ?? unknownToolResult(registry, requested);
-    }
-
-    const entry = registry[resolved];
-    const tool = safeIdentifier(resolved);
-    const shape = getObjectShape(entry.inputSchema);
-    const knownParams = shape ? Object.keys(shape) : [];
-    // #848: fold this tool's still-accepted deprecated input spellings into
-    // their canonical names, before validation, because `transfer_playback`'s
-    // canonical `device` is REQUIRED, so a caller sending only `device_id`
-    // would be refused `required_param` if the fold happened later. The legacy
-    // key is removed here, which is what lets it stay out of the published
-    // schema and cost no bytes on every `tools/list`.
-    const { args, deprecated } = normalizeDeprecatedInputs(resolved, request.params.arguments ?? {});
-    // #1287: a retired playlist input spelling is answered as its own typed
-    // refusal BEFORE the unknown-parameter fallback, because the two claims are
-    // different. `unknown_param` says "we never had that name"; these names were
-    // in the registry until v3.0 and the caller is following a deprecation
-    // notice we served them. It runs here, ahead of every handler and therefore
-    // ahead of any Spotify request, which is where the removal contract says a
-    // refused input must fail.
-    const retired = retiredInputResult(tool, resolved, args);
-    if (retired) return retired;
-    // #1318: a stats.fm identity sent under both spellings with different
-    // values is refused here, before the handler runs and therefore before any
-    // stats.fm request, naming both fields.
-    const identityConflict = statsfmIdentityConflict(tool, shape, args);
-    if (identityConflict) return identityConflict;
-    // #886: same reasoning as the playlist retirement above, for the walk caps
-    // withdrawn from `take_playlist_snapshot` and `backup_library`. Ahead of
-    // the unknown-parameter fallback for the same reason: the two claims are
-    // different, and only one of them is true.
-    const walkCap = retiredWalkCapResult(tool, args);
-    if (walkCap) return walkCap;
-    const unknown = Object.keys(args).find((param) => !knownParams.includes(param));
-    if (unknown) return unknownParamResult(tool, unknown, knownParams);
-
-    // #694: one encoding contract, in front of validation on every call. After
-    // the unknown-key check, because a tolerated encoding is a VALUE and never a
-    // key — a call carrying a genuinely unknown argument is still refused above,
-    // which is the interaction the strict-schema unit asked to be guarded.
-    const tolerantArgs = entry.inputSchema
-      ? await encodingTolerantArgs(encodingPlanFor(entry.inputSchema), shape, args)
-      : args;
-
-    let parsedArgs: unknown;
-    try {
-      if (entry.inputSchema) {
-        const parsed = await safeParseAsync(entry.inputSchema, tolerantArgs);
-        if (!parsed.success) return validationResult(tool, shape, parsed.error);
-        parsedArgs = parsed.data;
-      }
-    } catch {
-      return validationResult(tool, shape, undefined);
-    }
-
-    // #600: a task-augmented call on a tool that advertises task support. The
-    // work runs detached and the caller gets a task handle; the handle is
-    // returned before any of it has happened, which is the entire point and
-    // also why the confirmation gate below has to be the tool's own.
-    if (request.params.task !== undefined) {
-      if (!taskStore || !isTaskCapable(resolved)) {
-        // A THROWN error, not a returned result. The SDK's `tools/call` wrapper
-        // validates any response to a request that carried `task` against
-        // `CreateTaskResultSchema`, so a `CallToolResult` handed back here is
-        // turned into an opaque `-32602 Invalid task creation result` before it
-        // reaches the client — the refusal would be written and never read.
-        // Throwing bypasses that validation and delivers the sentence.
-        //
-        // Running it synchronously instead would be worse still: the client is
-        // holding a task handle it never received, and a multi-minute tool
-        // would block on a request the client already considers asynchronous.
-        throw taskAugmentationRefused(tool, isTaskCapable(resolved));
-      }
-      return (await startTask({
-        args: parsedArgs,
-        extra,
-        request,
-        taskParams: request.params.task,
-        store: taskStore,
-        run: (signal) => invokeHandler(entry, parsedArgs, withTaskSignal(extra, signal)) as Promise<CallToolResult>,
-      })) as ServerResult;
-    }
-
-    try {
-      const result = await invokeHandler(entry, parsedArgs, extra);
-      await validateOutput(entry, result, tool, request.params.task !== undefined);
-      const statsfm = applyStatsfmIdentityDeprecation(result, shape, args);
-      return (deprecated.length === 0
-        ? statsfm
-        : stampDeprecation(statsfm, deprecatedInputResolution(deprecated))) as ServerResult;
-    } catch (error) {
-      return errorResult(tool, publicFailure(tool, error), error) as ServerResult;
-    }
-  });
+  // #1601: the handler is a thin wrapper. The dispatch it runs is
+  // `dispatchToolCall`, which the `call_tool` tool calls too, so a request that
+  // arrives over the wire and one that arrives through the dispatcher go
+  // through the identical alias rewrite, refusal set, validation and output
+  // contract. A second copy here would be a second policy.
+  lowLevelServer.setRequestHandler(CallToolRequestSchema, (request, extra) =>
+    dispatchToolCall(
+      registry,
+      { name: request.params.name, arguments: request.params.arguments, task: request.params.task },
+      extra,
+      taskStore,
+    ));
 
   return Object.keys(registry).length;
 }

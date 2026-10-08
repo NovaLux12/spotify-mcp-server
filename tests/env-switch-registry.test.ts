@@ -729,8 +729,14 @@ describe('env switches at the registry (#661)', () => {
       }
       assert.equal(
         baseline.tools.length - surface.tools.length,
-        3,
-        'disabling swarm3meta must remove exactly its three tools',
+        5,
+        // #1601: three -> five. `swarm3meta` is the `alwaysActive` discovery
+        // module and it gained `call_tool` and `enable_toolset` — the runtime
+        // escape hatch the trimmed default surface depends on. This assertion
+        // is what proves `SPOTIFY_MCP_DISABLE_TOOLS` still removes the whole
+        // module including the two new tools, so the count is the point and not
+        // an incidental figure.
+        'disabling swarm3meta must remove exactly its five tools',
       );
       // The tool the operator keeps — discovery has to survive the trim that
       // the alwaysActive flag exists for.
