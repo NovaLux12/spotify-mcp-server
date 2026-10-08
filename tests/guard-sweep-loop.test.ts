@@ -19,7 +19,7 @@
 
 import './helpers/hermetic.js';
 
-import { describe, it } from 'node:test';
+import { after, describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams, type SpawnSyncReturns,
@@ -442,6 +442,58 @@ const deadlineOptions = {
   children: (): readonly DeadlineChild[] => spawned,
 };
 armFileDeadline(deadlineOptions);
+
+/**
+ * Reap every async child this file spawned, whichever way its tests ended.
+ *
+ * #1569, and this is the fix rather than another diagnosis of it. On 2026-10-08
+ * the whole-file bound fired for real and, because #1653 had filled in the
+ * `children` accessor, the breach report NAMED the culprit instead of restating
+ * the symptom:
+ *
+ *     - sweep-loop.sh in sweep-loop-ummf93: still running when the budget
+ *       expired (pid=10143)
+ *         stderr: sweep-loop: terminated — the report was left at its last
+ *         complete batch
+ *     Handles still registered when the budget expired: PipeWrap
+ *
+ * A detached `sweep-loop.sh` outlived the test that started it and held an
+ * inherited stdio write end, so the loop could not drain and the file sat at 0%
+ * CPU until the 480000ms bound fired. That is the whole shape of the original
+ * report — "733 of ~5,700 tests reported, then roughly seventeen minutes of
+ * complete silence" — with the owner attached.
+ *
+ * The per-test cleanups were the gap: `start()` registers a child with the
+ * deadline, but only SOME tests reap it, and a test that throws before its
+ * `finally` — or that only signals and polls, which is every signal test — leaves
+ * the child running. The deadline eventually kills it, which is why this reads as
+ * an eight-minute hang rather than a leak that outlives the process.
+ *
+ * So the reap is HOOKED rather than per-test. `after` runs after every test in
+ * the file, on the pass and the fail path alike, and `killNow` signals the whole
+ * process group — the only signal that reaches the `sleep` a signalled loop can
+ * leave behind, which is the orphan that keeps the pipe open.
+ *
+ * `child.done` is awaited with a bound, not awaited bare: a loop that ignores the
+ * SIGKILL would otherwise turn a bounded hang into an unbounded one, and the
+ * deadline is the backstop for that case rather than the primary mechanism.
+ */
+const REAP_GRACE_MS = 2_000;
+
+after(async () => {
+  for (const child of [...spawned]) {
+    child.killNow();
+  }
+  const pending = spawned.filter((child) => child.isRunning());
+  if (pending.length > 0) {
+    const deadline = Date.now() + REAP_GRACE_MS;
+    while (Date.now() < deadline && pending.some((child) => child.isRunning())) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 25);
+      await promise;
+    }
+  }
+});
 
 describe('sweep-loop.sh guard (#656)', () => {
   // #1653. `children: () => []` is a guard that reports nothing, and it passed
