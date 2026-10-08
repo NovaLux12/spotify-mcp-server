@@ -491,13 +491,25 @@ describe('#581 — one report, two call shapes', () => {
 
     // Everything a user acts on — which modules are live, which are hidden and
     // why — is env-derived, so it must be identical whether or not a registry
-    // was available. Only the count is not.
-    const { registry_available: aAvail, registered_tools: aCount, ...a } = withRegistry.surface;
-    const { registry_available: bAvail, registered_tools: bCount, ...b } = withoutRegistry.surface;
+    // was available. Only the count and the payload cost are not: `schema_bytes`
+    // and `est_tokens` are measured off the live registry through the same
+    // function the aggregate gate uses, which is the whole point of them (#1628)
+    // — a name count cannot answer "what did this surface cost".
+    const {
+      registry_available: aAvail, registered_tools: aCount,
+      schema_bytes: aBytes, est_tokens: aTokens, ...a
+    } = withRegistry.surface;
+    const {
+      registry_available: bAvail, registered_tools: bCount,
+      schema_bytes: bBytes, est_tokens: bTokens, ...b
+    } = withoutRegistry.surface;
     assert.equal(aAvail, true);
     assert.equal(bAvail, false);
     assert.equal(aCount, 3);
     assert.equal(bCount, 0);
+    assert.ok(aBytes > 0, 'a live registry has a measurable payload');
+    assert.equal(bBytes, 0, 'an unobservable registry reports a zero payload, not a fabricated one');
+    assert.equal(aTokens, Math.round(aBytes / 4));
     assert.deepEqual(
       a,
       b,

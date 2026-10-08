@@ -56,7 +56,7 @@ function loadTasteFeedback(): Promise<TasteFeedbackModule> {
 }
 import { ResponseFormat } from '../shaping.js';
 import { CHUNK_CAPS } from '../chunk.js';
-import { readOnlyModeEnabled, REGISTRAR_MANIFEST } from './annotations.js';
+import { readOnlyModeEnabled, collectAggregateSurfaceMeasurement, REGISTRAR_MANIFEST } from './annotations.js';
 
 // ---------------------------------------------------------------------------
 // Row model
@@ -101,6 +101,31 @@ export interface DoctorReport {
 export interface DoctorSurface {
   registry_available: boolean;
   registered_tools: number;
+  /**
+   * UTF-8 bytes of the `tools/list` payload the active surface actually
+   * emits (#1628).
+   *
+   * This is the unit the budget gate enforces, and it was the unit the report
+   * was missing: `registered_tools` counts NAMES, while the ceilings in
+   * `AGENTS.md` §4 and the aggregate gate in `annotations.ts` measure UTF-8
+   * bytes of description + emitted `inputSchema`. Two modules holding the same
+   * number of tools can differ by tens of kilobytes, so a caller asking "what
+   * did trimming to 90 tools cost me?" could not be answered by a name count.
+   *
+   * Measured through `collectAggregateSurfaceMeasurement`, which is the same
+   * function the startup gate calls — so the number here is the number the gate
+   * enforces, not a reconstruction of it. 0 when no live registry could be
+   * read, and `registry_available: false` in that case; a zero beside
+   * `registry_available: true` would mean an empty surface.
+   */
+  schema_bytes: number;
+  /**
+   * A token estimate for the same payload, at the 4-bytes-per-token convention
+   * the audit in #1628 used. An ESTIMATE, and named as one: no tokenizer is
+   * run and no host bills in this unit, so it is a figure for comparing two
+   * configurations of this server, not a bill.
+   */
+  est_tokens: number;
   total_modules: number;
   active_modules: string[];
   exposed_modules: string[];
@@ -625,8 +650,17 @@ function registeredToolCount(server: McpServer): { available: boolean; count: nu
  * `registered_tools` need a live registry, and they say so rather than
  * reporting a zero that would read as "no tools are registered".
  */
-function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null): DoctorSurface {
-  const { available, count } = server
+/**
+ * Bytes per token for {@link DoctorSurface.est_tokens}.
+ *
+ * The convention the #1628 audit used, stated as a named constant rather than a
+ * bare `/4` at the call site for two reasons: it is an ESTIMATE and a reader has
+ * to be able to find the one place it is defined, and a future tokenizer-backed
+ * figure replaces one line instead of hunting for a literal.
+ */
+const BYTES_PER_TOKEN_ESTIMATE = 4;
+
+function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null): DoctorSurface {  const { available, count } = server
     ? registeredToolCount(server)
     : { available: false, count: 0 };
   const toolsets = resolveToolsets(process.env.SPOTIFY_MCP_TOOLSETS);
@@ -647,8 +681,7 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
   // is the same set as the manifest's `alwaysActive` rows and is pinned to it
   // by tests/toolsets.test.ts, so a new ungated row cannot arrive undeclared.
   const allKeys = [...new Set([...allRegistrationKeys, ...UNGATED_REGISTRATION_KEYS])].sort();
-  const ungated = new Set<string>(UNGATED_REGISTRATION_KEYS);
-  // The `disable` term comes FIRST and is not folded into the ungated
+  const ungated = new Set<string>(UNGATED_REGISTRATION_KEYS);  // The `disable` term comes FIRST and is not folded into the ungated
   // exemption, which is exactly the precedence `moduleRegistrationStatus`
   // applies after #580. Without it this filter kept reporting a module the
   // operator had just switched off, while echoing their `disable_overrides`
@@ -682,10 +715,19 @@ function surfaceFor(server: McpServer | undefined, tokens: ParsedTokens | null):
     isModuleActive('resources', toolsets.sets, overrides) && !moduleBlockedByScopes('resources', granted);
   const promptsActive =
     isModuleActive('prompts', toolsets.sets, overrides) && !moduleBlockedByScopes('prompts', granted);
+  // The payload cost of the surface, measured with the function the startup
+  // aggregate gate uses (#1628). Read only when a live registry exists — the
+  // CLI subcommand has none, and a fabricated figure would be the coerced
+  // plausible number `AGENTS.md` §6 exists to stop.
+  const payload = server
+    ? collectAggregateSurfaceMeasurement(server)
+    : { toolCount: 0, schemaBytes: 0 };
 
   return {
     registry_available: available,
     registered_tools: count,
+    schema_bytes: payload.schemaBytes,
+    est_tokens: Math.round(payload.schemaBytes / BYTES_PER_TOKEN_ESTIMATE),
     total_modules: allKeys.length,
     active_modules: activeModules,
     exposed_modules: exposedModules,
@@ -726,6 +768,14 @@ function surfaceRow(surface: DoctorSurface): DoctorRow {
     `disable_overrides=${surface.disable_overrides.join(',') || '(none)'}`,
     `read_only=${surface.read_only}`,
     `prompts_without_resources=${surface.prompts_without_resources}`,
+    // #1628. The payload cost of the surface, in the unit the budget gate
+    // enforces. `registered_tools` counts names and cannot answer "what did
+    // this cost", because two modules with the same tool count differ by tens
+    // of kilobytes. Printed in the DETAIL only — the summary stays the
+    // human-readable verdict, and a byte figure a reader cannot act on does not
+    // belong in the one line every report shows.
+    `tools_list_payload=${surface.schema_bytes}B`,
+    `tools_list_est_tokens=${surface.est_tokens}`,
     // Named explicitly rather than folded into a `hidden_by_*` count: it is a
     // per-TOOL gate, so "N modules hidden" would be the wrong unit and would
     // overstate what was withheld.
