@@ -40,3 +40,8 @@ memory/*
 USABILITY_AUDIT_*.md
 audit-quota-lurkers.md
 node_modules
+
+# Local agent scaffolding (Claude Code settings and nested worktrees). Never
+# tracked; 86 MB of it showed up as untracked noise in every `git status`.
+# Nothing is deleted — the directory stays on disk and stops being reported.
+.claude/
