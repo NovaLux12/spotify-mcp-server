@@ -5471,6 +5471,22 @@
         "label": "The stats.fm families are opt-in (#607). statsfm, taste …"
       },
       {
+        "hash": "e10a4d3259eb17ec",
+        "label": "A trimmed surface can be widened at runtime, without a r…"
+      },
+      {
+        "hash": "73f0636b13a71669",
+        "label": "calltool ({ name, arguments }) dispatches any tool this …"
+      },
+      {
+        "hash": "37f079e04d34bc84",
+        "label": "enabletoolset ({ sets }) registers an inactive toolset i…"
+      },
+      {
+        "hash": "366d39d7b021fcd9",
+        "label": "Both are annotated as writes and both refuse to reach a …"
+      },
+      {
         "hash": "2f0771808e8bd8a4",
         "label": "SPOTIFYMCPENABLETOOLS and SPOTIFYMCPDISABLETOOLS take re…"
       },
@@ -7683,9 +7699,9 @@
     }
   ],
   "provenance": {
-    "head": "2d12fe03bbb5c2b62332f8e4ed04920a4292d0f8",
-    "base": "19a9443f70beeb1855c0bfcf72c33036114f0953",
-    "upstream": "19a9443f70beeb1855c0bfcf72c33036114f0953",
+    "head": "cdf19db6ec26ca33a3245892894ebc58c8f5c8f7",
+    "base": "ec5feefc0b3f55d6cd9af3920032b6801a04b0f5",
+    "upstream": "ec5feefc0b3f55d6cd9af3920032b6801a04b0f5",
     "behind": false
   },
   "reanchored": [

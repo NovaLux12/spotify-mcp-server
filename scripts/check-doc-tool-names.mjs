@@ -583,6 +583,13 @@ const documentedMetadata = new Set([
   // that verdict, so there is nothing to backtick. These two name the refusal
   // shape a host parses, not a tool, a parameter, or a metadata key.
   'elicitation_failed', 'confirmation_unavailable',
+  // #1601: the three `structuredContent.error` discriminators the dispatcher
+  // and the runtime-activation tool return, quoted in the doctor skill's error
+  // catalogue so an agent can match one against a live call. Same category as
+  // the confirmation refusals above — a value a host parses, not a tool, a
+  // parameter, or a metadata key. `self_dispatch_refused` is a guard, not a
+  // failure of the target: `call_tool` refuses to name itself.
+  'self_dispatch_refused', 'unknown_toolset', 'activation_refused',
   // #1571: `would_replace` is a structuredContent field of the
   // `save_discover_weekly` / `save_release_radar` dry-run preview
   // (portability.ts:396-397) — the count of existing archive items a commit

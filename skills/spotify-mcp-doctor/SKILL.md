@@ -35,6 +35,25 @@ local build. It is the first probe for OpenClaw and other host-only agents.
 4. Use `toolset_report.structuredContent.registered_tools` as the live
    registered-tool count. Use its active toolsets/modules to explain why a
    tool is missing; a toolset trim is different from a registration failure.
+5. Use `spotify_doctor`'s surface row for the payload **cost**, not just the
+   count. `surface.schema_bytes` is the UTF-8 size of the `tools/list` payload
+   this session actually serves and `surface.est_tokens` is a rough token
+   figure for it — the unit the schema budget gate enforces, which a tool-name
+   count cannot answer. A caller who trimmed to a smaller surface and wants to
+   know what that cost reads these two fields. They are `0` with
+   `registry_available: false`, which is the CLI subcommand running outside the
+   server process, not an empty surface.
+
+**A tool that is "missing" is usually trimmed, not broken — and there is a way
+back without a restart.** When a host needs a tool that is not on its surface,
+`call_tool` dispatches any tool this session *did* register, and
+`enable_toolset` registers an inactive toolset into the live session and emits
+one `notifications/tools/list_changed`. Both refuse a module the session did not
+register, so neither is a route around `SPOTIFY_MCP_READONLY` or the schema
+budget. If `enable_toolset` returns `activation_refused`, read the message: it
+names either a module `SPOTIFY_MCP_READONLY` hides or a toolset whose
+registration would breach the aggregate payload ceiling, and in the second case
+the whole activation is reverted rather than partially applied.
 
 `spotify-mcp doctor` in a shell renders **this same report** (#581) — same row
 ids, same statuses, same text, plus a `Configuration:` block of resolved config
@@ -156,6 +175,10 @@ be obtained. Never ask them to paste token JSON.
 | `429` responses | Rate limit | Honor `Retry-After`; the client waits and retries with backoff |
 | `503` | Spotify service unavailable | Wait and retry; check Spotify status |
 | Port 8888 busy during auth | Callback listener conflict | Stop the stale listener or set a loopback `SPOTIFY_REDIRECT_URI` and add the exact same URI to the dashboard |
+| `call_tool` returns `unknown_tool` for a tool that exists | The tool is registered in a module this session's toolset gate trimmed | Use `enable_toolset { sets: [...] }` to register it, then `call_tool` it; the result names near-matches |
+| `enable_toolset` returns `unknown_toolset` | A set name the registry does not have | The error lists every valid set name; `'all'` is not a single set name but selects every one |
+| `enable_toolset` returns `activation_refused` naming `SPOTIFY_MCP_READONLY` | The module holds writes and this session is read-only | Use a session that permits writes; read-only mode is an operator guarantee, not a mode a tool call may undo |
+| `call_tool` reports `self_dispatch_refused` | A call named `call_tool` itself | Name the target tool instead; use `find_tool` to discover it |
 
 ## Probe 5 — Live end-to-end through the host
 

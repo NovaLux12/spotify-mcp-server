@@ -373,6 +373,13 @@ alongside the library half, and says which is which in the result.
 
 **The stats.fm families are opt-in (#607).** `statsfm`, `taste` and `tastecomposites` are not in the default: 49 tools that need a separate stats.fm username, advertised to every user whether or not they have one. Set `SPOTIFY_MCP_STATSFM=1`, or name them — `SPOTIFY_MCP_TOOLSETS=core,taste,statsfm` — and read [docs/statsfm.md](statsfm.md) for what they require.
 
+**A trimmed surface can be widened at runtime, without a restart (#1601).** `SPOTIFY_MCP_TOOLSETS` is read once at startup, so before #1601 a host that trimmed to `core` and then wanted `library_hygiene` had to be restarted with a different environment. Two tools now make the surface a starting point rather than a commitment:
+
+- `call_tool` (`{ name, arguments }`) dispatches **any tool this session registered**, by name. `find_tool` discovers the name and `inspect_tool` shows its schema; the two shipped long before this and could not *call* anything. The result is the target tool's own result, verbatim — no wrapper envelope and no `response_format` of its own.
+- `enable_toolset` (`{ sets }`) registers an inactive toolset into the live session and emits exactly one `notifications/tools/list_changed`.
+
+Both are annotated as writes and both refuse to reach a module the session did not register, so neither is a route around `SPOTIFY_MCP_READONLY` or the per-module schema budget — widening the surface is `enable_toolset`'s job, and it goes through the same budget gates startup does. Activation is atomic: if registering a toolset would breach the aggregate ceiling, the whole activation reverts and the surface is left exactly as it was. The full contract is in [SPEC.md](../SPEC.md#call_tool).
+
 `SPOTIFY_MCP_ENABLE_TOOLS` and `SPOTIFY_MCP_DISABLE_TOOLS` take registration keys, not individual tool names. The complete key list is:
 
 <!-- BEGIN:generated env-registration-keys -->
