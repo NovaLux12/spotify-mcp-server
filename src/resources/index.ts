@@ -1033,10 +1033,9 @@ export function registerResources(
       } catch (error) {
         const expected = resourceError(error);
         if (expected) {
-          // NOTE: same missing-disclosure shape as the genre-heatmap renderer
-          // below — this block used to compute a gatedResourceResult and
-          // discard it. Pure deletion for the sweep; the `if (result) return
-          // result;` it never had wants its own fix with a regression test.
+          const rateLimit = client.getRateLimitStatus();
+          const result = gatedResourceResult(url, uri, expected, 'Audiobook data', rateLimit.retryAfterSec);
+          if (result) return result;
         }
         throw error;
       }
@@ -1192,13 +1191,15 @@ export function registerResources(
       } catch (error) {
         const expected = resourceError(error);
         if (expected) {
-          // NOTE: a graceful 403/404/429 disclosure belongs here — the shared
-          // renderWithApiErrors helper in this file serves one via
-          // gatedResourceResult, but this block computed it and discarded it,
-          // so those statuses currently throw instead of disclosing. Left as a
-          // pure deletion for the dead-code sweep; the missing
-          // `if (result) return result;` wants its own fix with a regression
-          // test, not a drive-by inside this change.
+          const rateLimit = client.getRateLimitStatus();
+          const result = gatedResourceResult(
+            url,
+            'spotify://me/genre-heatmap',
+            expected,
+            'Genre data',
+            rateLimit.retryAfterSec,
+          );
+          if (result) return result;
         }
         throw error;
       }
