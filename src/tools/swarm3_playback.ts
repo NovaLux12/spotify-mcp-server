@@ -14,7 +14,7 @@ import { z } from 'zod';
 import { capFor, chunk } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
-import { mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, unlink, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -48,7 +48,6 @@ import type {
   SpotifyEpisode,
   SpotifyQueue,
   SpotifyTrack,
-  SpotifyVolumeTarget,
 } from '../types/spotify.js';
 import { isMissingFileRefusal, ownStoreRoots, readLocalFile } from '../paths.js';
 import { textResult, emit } from '../result.js';
@@ -163,49 +162,6 @@ function rankDevices(devices: readonly SpotifyDevice[]): SpotifyDevice[] {
 
 function volumeDisplay(d: SpotifyDevice): string {
   return d.volume_percent === null ? '—' : `${d.volume_percent}%`;
-}
-
-/** Resolve a device argument (exact id first, then case-insensitive name substring). */
-function resolveDevice(devices: readonly SpotifyDevice[], hint: string): SpotifyDevice | null {
-  const exact = devices.find((d) => d.id === hint);
-  if (exact) return exact;
-  const lower = hint.toLowerCase();
-  return devices.find((d) => d.name.toLowerCase().includes(lower)) ?? null;
-}
-
-/**
- * Devices eligible for a volume write: volume-capable AND carrying a real id.
- * `PUT /me/player/volume?device_id=` with an empty value addresses the wrong
- * device (or 400s), so id-less entries are dropped — and counted, so callers
- * can say how many were skipped instead of silently selecting fewer.
- */
-function selectVolumeTargets(
-  all: readonly SpotifyDevice[],
-  deviceIds: readonly string[] | undefined,
-): { selected: SpotifyVolumeTarget[]; skippedNoId: number } {
-  const pool = deviceIds?.length
-    ? deviceIds.map((h) => resolveDevice(all, h)).filter((d): d is SpotifyDevice => d !== null)
-    : [...all];
-  const capable = pool.filter((d) => d.supports_volume);
-  const hasId = (d: SpotifyDevice): d is SpotifyVolumeTarget => d.id !== null;
-  const selected = capable.filter(hasId);
-  return { selected, skippedNoId: capable.length - selected.length };
-}
-
-/** Human note for id-less devices dropped from a volume plan. */
-function skippedNoIdNote(count: number): string {
-  if (count === 0) return '';
-  return ` — skipped ${count} volume-capable device${count === 1 ? '' : 's'} with no device id`;
-}
-
-/**
- * One preview line per device. Names the query parameter the wire call
- * actually sends (`volume_percent`, the name Spotify declares) plus the real
- * device id it resolved, so an agent copying the plan reproduces the call the
- * tool would make. The tool's own input stays `volume`.
- */
-function volumePlanLine(d: SpotifyVolumeTarget, volume: number): string {
-  return `PUT /me/player/volume?volume_percent=${volume} on "${d.name}" (device ${d.id})`;
 }
 
 function deviceLine(d: SpotifyDevice): string {

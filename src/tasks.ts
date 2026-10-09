@@ -282,7 +282,7 @@ export function tasksDir(env: NodeJS.ProcessEnv = process.env): string {
 function reconcilePermitted(dir: string, claimed: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
   if (claimed) return true;
   if (env.SPOTIFY_MCP_ALLOW_REAL_HOME_STORES === 'never') return true;
-  return isSandboxedHome(dir, env);
+  return isSandboxedHome(dir);
 }
 
 /**
@@ -300,7 +300,7 @@ function reconcilePermitted(dir: string, claimed: boolean, env: NodeJS.ProcessEn
  * the reason `storeDir()` in `config.ts` documents — a constant captured at
  * import would pin the answer to the pre-redirect home.
  */
-function isSandboxedHome(dir: string, env: NodeJS.ProcessEnv): boolean {
+function isSandboxedHome(dir: string): boolean {
   let realHome: string;
   try {
     realHome = realpathSync.native(homedir());

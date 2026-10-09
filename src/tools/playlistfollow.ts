@@ -160,7 +160,6 @@ async function followHandler(
 async function unfollowHandler(
   server: McpServer,
   client: SpotifyClient,
-  called: string,
   args: UnfollowArgs,
   deprecation: Deprecation,
 ): Promise<ToolOut> {
@@ -202,7 +201,7 @@ export function registerPlaylistFollowTools(server: McpServer, client: SpotifyCl
     'unfollow_playlist',
     'Unfollow a playlist — remove it from your Spotify library — via DELETE /me/library. Always asks before writing unless SPOTIFY_MCP_CONFIRM=never.',
     unfollowSchema,
-    async (args) => unfollowHandler(server, client, 'unfollow_playlist', args, NO_INPUT_DEPRECATION),
+    async (args) => unfollowHandler(server, client, args, NO_INPUT_DEPRECATION),
   );
 
   // #1099: one-release aliases. Identical schema, identical handler, plus the
@@ -228,6 +227,6 @@ export function registerPlaylistFollowTools(server: McpServer, client: SpotifyCl
     'unpin_playlist',
     'DEPRECATED, use unfollow_playlist. This tool never unpinned anything; it has always removed the playlist from your Spotify library via DELETE /me/library.',
     unfollowSchema,
-    async (args) => unfollowHandler(server, client, 'unpin_playlist', args, resolveDeprecatedToolName('unpin_playlist', 'unfollow_playlist')),
+    async (args) => unfollowHandler(server, client, args, resolveDeprecatedToolName('unpin_playlist', 'unfollow_playlist')),
   );
 }

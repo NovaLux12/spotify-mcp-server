@@ -310,7 +310,7 @@ function findDuplicateGroups(
         else recordingBuckets.set(recording, [member]);
       }
 
-      for (const [recording, recordingMembers] of recordingBuckets) {
+      for (const [, recordingMembers] of recordingBuckets) {
         if (recordingMembers.length < 2) continue;
         const clusterOrdered = [...recordingMembers].sort(byOldest);
         const keptUri = clusterOrdered[0].uri;

@@ -66,7 +66,6 @@ import type {
   PlaylistItemsResponse,
   SpotifyImage,
   SpotifyTrack,
-  SpotifyEpisode,
 } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { positionBaseClause, positionSchema } from '../positionbase.js';
@@ -1674,7 +1673,6 @@ export function registerPlaylistTools(server: McpServer, client: SpotifyClient):
       const rawDryRun = args.dry_run;
       const rawApply = args.apply;
       const effectiveApply = rawDryRun !== undefined ? !rawDryRun : !!rawApply;
-      const effectiveDryRun = !effectiveApply;
       const listScan = await client.getAllPagesWithTruncation<SpotifyPlaylistSimple>('/me/playlists', {
         limit: '50',
       });

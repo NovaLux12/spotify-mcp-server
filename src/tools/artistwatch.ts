@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
-import { capFor, chunk } from '../chunk.js';
+import { chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError } from '../client.js';
@@ -14,7 +14,7 @@ import {
   paginationInfo,
   listStructuredContent,
 } from '../shaping.js';
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, open, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { classifySpotifyReference, spotifyRef } from '../refs.js';
@@ -242,16 +242,6 @@ function persistFailureNote(path: string, error: unknown): string {
   return `NOT saved: writing ${path} failed (${(error as Error).message}). `
     + 'Nothing was persisted — fix the path or its permissions and re-run.';
 }
-
-type AlbumItem = {
-  id: string;
-  name: string;
-  uri: string;
-  album_type: string;
-  release_date: string;
-  total_tracks: number;
-  artists: Array<{ id: string; name: string }>;
-};
 
 type WatchlistEntry = {
   artists: string[];

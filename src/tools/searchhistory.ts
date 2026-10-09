@@ -21,7 +21,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { ResponseFormat } from '../shaping.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';

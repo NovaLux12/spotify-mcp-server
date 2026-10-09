@@ -384,7 +384,7 @@ describe('#606 init: buildServerEntry', () => {
 
   it('puts a resolved path under the hermetic home, not the real one', () => {
     assert.match(
-      defaultOutPath('openclaw', {}, process.env.HOME ?? ''),
+      defaultOutPath('openclaw', process.env.HOME ?? ''),
       /openclaw\.json$/,
     );
   });

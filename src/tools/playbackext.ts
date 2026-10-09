@@ -16,13 +16,8 @@ import { capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { constants as FS } from 'node:fs';
-import { join } from 'node:path';
 import type { SpotifyClient } from '../client.js';
-import type {
-  PlaybackState,
-  SpotifyTrack,
-} from '../types/spotify.js';
+import type { PlaybackState } from '../types/spotify.js';
 import { PlaybackDryRun, ResponseFormat } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { dedupeUris, loadCandidates, matchesArtistFilter, uniqueByArtist } from './smart.js';

@@ -25,12 +25,11 @@ import { getConfig, storePath } from '../config.js';
 // own store paths (scenesFilePath(), historyFilePath()) rather than to a
 // caller-supplied destination. chmod is here for the history-file mode
 // enforcement in export_profile_state.
-import { chmod, copyFile, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, readdir, stat, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { exportRootDir, READ_ROOTS_ENV_HINT, ownStoreRoots, readLocalFile, readRoots, resolveOutputPath, writeOutputFile } from '../paths.js';
 import { csvTable } from '../csvsafe.js';
 import type {
-  SpotifyPaged,
   PlaylistItemObject,
   SavedTrackItem,
   SavedAlbumItem,
@@ -41,7 +40,7 @@ import type {
   RecentlyPlayedResponse,
   RecentlyPlayedItem,
 } from '../types/spotify.js';
-import { scenesFilePath, loadScenes } from './scenes.js';
+import { scenesFilePath } from './scenes.js';
 import { genreTagsPath } from './libraryinsights.js';
 import { playbackExtFile } from './playbackext.js';
 import { searchHistoryFile } from './searchhistory.js';

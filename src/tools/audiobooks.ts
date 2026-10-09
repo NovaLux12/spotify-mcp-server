@@ -7,7 +7,6 @@ import type {
   SpotifyChapterSimple,
   SpotifyPaged,
   SavedAudiobookItem,
-  UserProfile,
 } from '../types/spotify.js';
 
 import {
@@ -16,7 +15,6 @@ import {
   jsonResult,
   renderList,
   renderSingle,
-  type ResponseFormatValue,
 } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { spotifyRef } from '../refs.js';
@@ -180,7 +178,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
         );
       }
       return withMarketSource(
-        renderList(args.response_format, result.items, {
+        renderList(result.items, {
           header: walk
             ? `Chapters for audiobook (walked ${result.items.length} — ${
                 walk.truncated
@@ -258,7 +256,7 @@ export function registerAudiobookTools(server: McpServer, client: SpotifyClient)
       if (args.response_format === 'json') {
         return jsonResult(result as unknown as Record<string, unknown>);
       }
-      return renderList(args.response_format, result.items, {
+      return renderList(result.items, {
         header: `Saved audiobooks (${result.total} total):`,
         line: (item) => {
           const authors = item.audiobook.authors.map((a) => a.name).join(', ');

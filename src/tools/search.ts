@@ -19,7 +19,7 @@ import {
   playlistCountPhrase,
 } from '../shaping.js';
 import { SPOTIFY_SEARCHABLE_KINDS } from '../refs.js';
-import { emit, formatDuration } from '../result.js';
+import { formatDuration } from '../result.js';
 
 /** Spotify's February 2026 /search cap: requests above 10 return Invalid limit. */
 export const SPOTIFY_SEARCH_MAX_LIMIT = 10;

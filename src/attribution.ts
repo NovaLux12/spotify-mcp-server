@@ -264,7 +264,10 @@ export function installAttributionBoundary(server: object): void {
   const originalTool = api.tool.bind(server);
   const originalRegisterTool = api.registerTool.bind(server);
 
-  const remember = (name: string, args: unknown[], callbackIndex: number): void => {
+  // `_name` keeps the arity: the shared registrar signature passes a tool name here
+  // and this boundary deliberately ignores it. Renaming rather than deleting is the
+  // same verdict as the `void _x;` statements in src/tools (AGENTS.md §1).
+  const remember = (_name: string, args: unknown[], callbackIndex: number): void => {
     if (!enabled || typeof args[callbackIndex] !== 'function') return;
     const callback = args[callbackIndex] as (...callArgs: unknown[]) => unknown;
     args[callbackIndex] = async (...callArgs: unknown[]) => attributeResult(await callback(...callArgs));

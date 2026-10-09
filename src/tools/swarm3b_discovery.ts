@@ -36,7 +36,6 @@ import type {
   SearchResponse,
   SpotifyAlbumItem,
   SpotifyAlbumRow as AlbumWithMeta,
-  SpotifyPaged,
   SpotifyTrackSimple,
 } from '../types/spotify.js';
 import {
@@ -48,7 +47,6 @@ import {
   listStructuredContent,
   unresolvedIdsNote,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
 import { resolveSpotifyId, spotifyId } from '../refs.js';
 import { getConfig } from '../config.js';
 import { facetCoverageNote, facetGroups, facetUnavailableReason } from '../removed.js';
@@ -66,14 +64,6 @@ const SearchLimit = z
   .max(10)
   .optional()
   .describe('Results per page, 1–10 (Feb-2026 /search cap). Default: 10');
-
-const SearchLimitFragment = z
-  .number()
-  .int()
-  .min(1)
-  .max(10)
-  .optional()
-  .describe('Results per page, 1-10 (Feb-2026 /search cap). Default: 5');
 
 const IncludeGroups = z
   .string()
@@ -501,7 +491,7 @@ export function registerSwarm3bDiscoveryTools(server: McpServer, client: Spotify
       }
       const variantGroups = [...groups.entries()]
         .filter(([, rows]) => rows.length > 1)
-        .map(([base, rows]) => ({ base_title: rows[0].name, variant_count: rows.length, variants: [...rows].sort((x, y) => (x.year ?? 0) - (y.year ?? 0)) }))
+        .map(([, rows]) => ({ base_title: rows[0].name, variant_count: rows.length, variants: [...rows].sort((x, y) => (x.year ?? 0) - (y.year ?? 0)) }))
         .sort((a, b) => b.variant_count - a.variant_count);
       const cap = resolveMaxResults(args.max_results, 100);
       const trunc = truncateItems(variantGroups, cap);

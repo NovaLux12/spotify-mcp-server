@@ -1210,9 +1210,7 @@ export function registerPlaybackTools(server: McpServer, client: SpotifyClient):
       // runtime's current-track position, so asking for both still costs one.
       let state: PlaybackState | null = null;
       let stateError: string | null = null;
-      let stateRead = false;
       if (enriched || wantsRuntime) {
-        stateRead = true;
         try {
           state = await client.get<PlaybackState>('/me/player');
         } catch (error) {

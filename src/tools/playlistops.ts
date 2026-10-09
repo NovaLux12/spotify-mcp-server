@@ -26,7 +26,6 @@ import {
   truncateItems,
   withPlaylistInputMetadata,
   withPlaylistInputNote,
-  type ResponseFormatValue,
   type SectionCap,
 } from '../shaping.js';
 import type {

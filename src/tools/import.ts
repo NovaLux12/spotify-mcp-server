@@ -37,9 +37,6 @@ import {
   readRoots,
   resolveInputPath,
 } from '../paths.js';
-import { homedir } from 'node:os';
-import { delimiter, join } from 'node:path';
-import { backupDir } from './backup.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
 import { consentAfterGate, consentFields, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 import type { ElicitVerdict } from './confirm.js';

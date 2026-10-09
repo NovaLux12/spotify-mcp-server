@@ -25,7 +25,7 @@
  * (clone the LIVE playlist, not a local backup) — different mechanics, no clash.
  */
 import { z } from 'zod';
-import { capFor, chunk } from '../chunk.js';
+import { capFor } from '../chunk.js';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -52,7 +52,7 @@ import {
   withPlaylistInputMetadata,
   withPlaylistInputNote,
 } from '../shaping.js';
-import type { ResponseFormatValue, SectionCap } from '../shaping.js';
+import type { SectionCap } from '../shaping.js';
 import type {
   PlaylistItemObject,
   SpotifyAlbumSimple,
@@ -60,13 +60,12 @@ import type {
   SpotifyTrack,
 } from '../types/spotify.js';
 import { playlistItemTotal, type SpotifyPlaylistPage } from '../types/spotify.js';
-import { positionDesc, positionSchema } from '../positionbase.js';
+import { positionDesc } from '../positionbase.js';
 import { emit, textResult, type EmitOptions } from '../result.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal, REMOVE_ELICIT_THRESHOLD } from './confirm.js';
 import { MOVE_ELICIT_THRESHOLD } from './playlistbatch.js';
 import { spotifyRef } from '../refs.js';
 
-type TextContent = { type: 'text'; text: string };
 ;
 
 // ---------------------------------------------------------------------------
@@ -1047,7 +1046,7 @@ export function registerSwarm3PlaylistopsTools(server: McpServer, client: Spotif
       const view = truncateItems(payload.common_tracks as typeof common, cap);
       return emit(rf, withPlaylistInputNote([
         `Intersection of ${loaded.length} playlists: ${common.length} common track(s).`,
-        ...loaded.map((p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
+        ...loaded.map((_p, i) => `  • ${nameOf[i]}: ${rowsPer[i].length} track(s)`),
         ...(common.length > 0 ? ['', 'Common:', ...view.items.map((c, i) => `  ${i + 1}. ${c.name} (${c.uri}) — present in ${c.in_playlists.length}/${loaded.length} sources`)] : []),
         view.footer ? `(${view.footer})` : '',
       ].filter(Boolean).join('\n'), input), withPlaylistInputMetadata(payload, input), SUMMARISE_JSON);

@@ -28,8 +28,7 @@
  */
 import { z } from 'zod';
 import { lstat, mkdir, open, readdir, stat, unlink, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { getConfig } from '../config.js';
@@ -37,21 +36,14 @@ import {
   ResponseFormat,
   DryRun,
   completenessFooter,
-  describeDryRun,
   walkCap,
   type ResponseFormatValue,
 } from '../shaping.js';
 import { SpotifyApiError } from '../client.js';
-import { backupRetentionDays, backupRootDir, resolveOutputPath } from '../paths.js';
-import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';
+import { backupRetentionDays, backupRootDir } from '../paths.js';
 import type {
   FollowedArtistsResponse,
   PlaylistItemObject,
-  SavedAlbumItem,
-  SavedAudiobookItem,
-  SavedEpisodeItem,
-  SavedShowItem,
-  SavedTrackItem,
   SpotifyPaged,
   SpotifyPlaylistSimple,
 } from '../types/spotify.js';
@@ -749,7 +741,6 @@ function emptyPrune(retentionDays: number): PruneResult {
  * whose date cannot be established is kept rather than guessed at.
  */
 async function pruneStore(
-  dir: string,
   entries: readonly StoreEntry[],
   retentionDays: number,
   now: number = Date.now(),
@@ -787,7 +778,7 @@ async function pruneBackups(
   now: number = Date.now(),
 ): Promise<PruneResult> {
   const dir = backupDir(env);
-  return pruneStore(dir, await readStoreEntries(dir), backupRetentionDays(env), now);
+  return pruneStore(await readStoreEntries(dir), backupRetentionDays(env), now);
 }
 
 interface StoreEnvelope {
@@ -1270,7 +1261,7 @@ export function registerBackupTools(server: McpServer, client: SpotifyClient): v
       const entries = await readStoreEntries(dir);
       // Retention runs on the read path too (#697): an operator asking
       // "what is stored" must not be shown a year-old snapshot forever.
-      const prune = await pruneStore(dir, entries, retentionDays, now);
+      const prune = await pruneStore(entries, retentionDays, now);
       const removed = new Set(prune.removed.map((entry) => entry.path));
       const survivors = entries.filter((entry) => !removed.has(entry.path));
       const envelope = storeEnvelope(survivors, retentionDays, now);

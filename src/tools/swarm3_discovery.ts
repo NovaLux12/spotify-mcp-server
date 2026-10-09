@@ -8,11 +8,9 @@ import type {
   SearchResponse,
   SpotifyAlbumItem,
   SpotifyAlbumRow as AlbumPayload,
-  SpotifyAlbumSimple,
   SpotifyArtistAlbumRow as ReleaseRow,
   SpotifyArtistFull,
   SpotifyArtistSimple,
-  SpotifyTrack,
   SpotifyTrackSimple,
 } from '../types/spotify.js';
 import {
@@ -22,7 +20,6 @@ import {
   paginationInfo,
   unresolvedIdsNote,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig } from '../config.js';
 import { spotifyId, resolveSpotifyId } from '../refs.js';
 import { probeArtistReleases } from '../artistreleases.js';

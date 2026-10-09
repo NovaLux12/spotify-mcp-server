@@ -154,7 +154,7 @@ export function parseInitArgs(argv: readonly string[]): InitOptions {
 }
 
 /** Where a host's config lives, given an explicit `--out`. */
-export function defaultOutPath(host: InitHost, env: NodeJS.ProcessEnv, home: string): string {
+export function defaultOutPath(host: InitHost, home: string): string {
   if (host === 'openclaw') return join(home, '.openclaw', 'openclaw.json');
   if (host === 'generic') return join(process.cwd(), 'mcp-servers.json');
   return join(process.cwd(), '.mcp.json');
@@ -204,18 +204,6 @@ export function buildServerEntry(
     entry: { command: opts.command, args: [...opts.args], env },
     missing,
   };
-}
-
-function renderEntryJson(entry: ServerEntry, indent: string): string {
-  const args = entry.args.map((a) => JSON.stringify(a)).join(', ');
-  const envLines = Object.entries(entry.env)
-    .map(([k, v]) => `${indent}  ${JSON.stringify(k)}: ${JSON.stringify(v)}`)
-    .join(',\n');
-  return [
-    `${indent}"command": ${JSON.stringify(entry.command)},`,
-    `${indent}"args": [${args}],`,
-    `${indent}"env": {${envLines.length > 0 ? `\n${envLines}\n${indent}` : ''}}`,
-  ].join('\n');
 }
 
 /** Merge the entry into an existing host document without touching other keys. */
@@ -400,7 +388,7 @@ export async function runInit(argv: readonly string[], io: InitIo = defaultInitI
 
   const target = opts.out !== undefined
     ? resolve(io.cwd, opts.out)
-    : resolve(io.cwd, defaultOutPath(opts.host, io.env, io.home));
+    : resolve(io.cwd, defaultOutPath(opts.host, io.home));
 
   if (opts.host === 'claude-code') {
     io.write(`${claudeAddCommand(entry)}\n`);

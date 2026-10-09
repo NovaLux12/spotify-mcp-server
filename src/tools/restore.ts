@@ -44,7 +44,7 @@ import {
   type WriteProvenance,
 } from './provenance.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
-import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
+import { receiptRecords, writeVerdict } from './playlistreceipts.js';
 import { LIBRARY_BACKUP_SCHEMA_VERSION } from './backup.js';
 import { chunk } from '../chunk.js';
 

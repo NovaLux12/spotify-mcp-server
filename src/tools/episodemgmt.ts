@@ -6,7 +6,7 @@
  * ok:true, which was phantom success. Removed per #85 precedent.
  */
 import { z } from 'zod';
-import { capFor, chunk } from '../chunk.js';
+import { chunk } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal } from './confirm.js';

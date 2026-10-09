@@ -34,7 +34,7 @@ import {
   paginationInfo,
   listStructuredContent,
 } from '../shaping.js';
-import type { ResponseFormatValue, PaginationInfo } from '../shaping.js';
+import type { ResponseFormatValue } from '../shaping.js';
 import { getConfig, storePath } from '../config.js';
 import { trustedCustomIssue } from '../custom-issues.js';
 import {
@@ -44,7 +44,7 @@ import {
 } from '../artistreleases.js';
 import { readOnlyModeEnabled } from './annotations.js';
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
 

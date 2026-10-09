@@ -37,7 +37,7 @@ const DeleteDryRun = DryRun.default(true).describe(
   'Preview only, and the default: pass dry_run: false to delete the snapshot.',
 );
 
-export function registerBackupDeleteTools(server: McpServer, client: SpotifyClient): void {
+export function registerBackupDeleteTools(server: McpServer, _client: SpotifyClient): void {
   server.tool(
     'delete_backup',
     'Delete one library backup file (and its metadata sidecar) from SPOTIFY_MCP_BACKUP_DIR. Irreversible — the library rows in the file cannot be recovered from anywhere else. Destructive and confirmation-gated: dry_run defaults to true, and executing is refused when the client cannot prompt (SPOTIFY_MCP_CONFIRM=never bypasses). Paths outside the backup directory are refused.',

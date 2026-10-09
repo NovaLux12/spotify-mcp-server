@@ -24,8 +24,7 @@ import {
 } from '../playlistmatch.js';
 import { capFor } from '../chunk.js';
 import { MARKET_CODE } from './catalog.js';
-import { readFile, readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -36,7 +35,6 @@ import { receiptRecords, receiptsLines, replaceVerdict, writeVerdict, type Write
 import {
   DryRun,
   PlaylistId,
-  PAGED_WALK_LIST_REASON,
   PlaylistListFields,
   ResponseFormat,
   MaxResults,
@@ -52,7 +50,7 @@ import {
 } from '../shaping.js';
 import { expandAlbumToTracks } from './playlistbatch.js';
 import { confirmViaElicitation, describeConfirmation, requiredConfirmationRefusal, REMOVE_ELICIT_THRESHOLD } from './confirm.js';
-import type { ResponseFormatValue } from '../shaping.js';
+
 import type {
   PlaylistItemObject,
   SavedAlbumItem,
@@ -122,13 +120,6 @@ function normalizeArtistRef(ref: string): string {
   return ref.trim();
 }
 
-/** Accept a bare track ID or spotify:track: URI; return the raw ID. */
-function normalizeTrackRef(ref: string): string {
-  const parsed = parseSpotifyUri(ref);
-  if (parsed && parsed.type === 'track') return parsed.id;
-  return ref.trim();
-}
-
 /** Page every item of a playlist (playlist order), capped by the fetch-all cap,
  *  and return the walk's truncation verdict beside the rows (#1555).
  *  `market` is forwarded on the /items query string so album release dates
@@ -168,16 +159,6 @@ const isTrack = (p: SpotifyTrack | SpotifyEpisode | null | undefined): p is Spot
   p?.type === 'track';
 const isEpisode = (p: SpotifyTrack | SpotifyEpisode | null | undefined): p is SpotifyEpisode =>
   p?.type === 'episode';
-
-/** URI when present, else ID — set-op identity for a playable row. */
-function playableKey(p: SpotifyTrack | SpotifyEpisode | null | undefined): string | null {
-  if (!p) return null;
-  return p.uri ?? p.id ?? null;
-}
-
-function displayName(p: SpotifyTrack | SpotifyEpisode | null | undefined): string {
-  return p?.name ?? '(unavailable)';
-}
 
 interface LoadedPlaylist {
   id: string;
@@ -416,29 +397,9 @@ function intersectionOf(lists: readonly (readonly string[])[]): string[] {
   return first.filter((uri) => lists.every((rest) => rest.includes(uri)));
 }
 
-function unionOf(lists: readonly (readonly string[])[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const list of lists) {
-    for (const uri of list) {
-      if (!seen.has(uri)) {
-        seen.add(uri);
-        out.push(uri);
-      }
-    }
-  }
-  return out;
-}
-
 function differenceOf(minuend: readonly string[], subtrahend: readonly string[]): string[] {
   const cut = new Set(subtrahend);
   return minuend.filter((uri) => !cut.has(uri));
-}
-
-function xorOf(a: readonly string[], b: readonly string[]): string[] {
-  const setA = new Set(a);
-  const setB = new Set(b);
-  return [...a.filter((u) => !setB.has(u)), ...b.filter((u) => !setA.has(u))];
 }
 
 // --- candidate pickers (#381/#398): one slot per query, no double-fire -----
@@ -606,7 +567,6 @@ const SetOpParams = {
 function dedupeSequence(uris: readonly string[], mode: 'first' | 'last' | 'none'): string[] {
   if (mode === 'none') return [...uris];
   if (mode === 'first') return [...new Set(uris)];
-  const out: string[] = [];
   const seenLast = new Map<string, number>();
   uris.forEach((u, i) => seenLast.set(u, i));
   return uris.filter((u, i) => seenLast.get(u) === i);
@@ -785,7 +745,6 @@ export function registerExhaust2PlaylistsTools(server: McpServer, client: Spotif
       ...sharedListFields,
     },
     async (args) => {
-      const rf = args.response_format;
       const p = await loadPlaylistFull(client, args.playlist_id);
       const rows = toRows(p.items).filter(
         (r): r is Row & { kind: 'track' | 'episode' } =>

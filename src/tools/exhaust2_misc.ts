@@ -23,7 +23,7 @@ import { capFor } from '../chunk.js';
 import { ARTIST_ALBUM_PAGE_LIMIT, MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { SpotifyApiError, quotaPreflight, quotaSnapshot, quotaWindowRemaining, quotaDelta } from '../client.js';
 import {
@@ -52,7 +52,7 @@ import { loadTokens } from '../auth.js';
 import { WRITE_SCOPE_REQUIREMENTS, moduleBlockedByScopes, scopesFor } from '../scopefilter.js';
 import { loadScenes, scenesFilePath } from './scenes.js';
 import { loadPlaybackExt, playbackExtFile } from './playbackext.js';
-import { genreTagsPath, loadGenreTags } from './libraryinsights.js';
+import { loadGenreTags } from './libraryinsights.js';
 import { loadSidecar, SidecarUnreadableError } from '../sidecar.js';
 import { historyFilePath, isHistoryEnabled, readHistory } from '../history.js';
 import type { HistoryRecord } from '../history.js';

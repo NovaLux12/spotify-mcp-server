@@ -19,7 +19,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { randomBytes } from 'node:crypto';
 import { chmod, mkdir, open, rename, rm } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import type { SpotifyClient } from '../client.js';
 import { loadSidecar } from '../sidecar.js';
 import {

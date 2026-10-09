@@ -42,7 +42,6 @@ import { getTokenFile, loadTokens } from '../auth.js';
 import {
   accountsFile,
   currentActingIdentity,
-  discoverTokenFiles,
   profileForTokenFile,
   readAccounts,
   registerAccount,
