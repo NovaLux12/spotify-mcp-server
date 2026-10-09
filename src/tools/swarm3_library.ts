@@ -356,13 +356,6 @@ function histogramLines(entries: Array<[string, number]>): string[] {
   return entries.map(([k, n]) => `  ${k.padEnd(10)} ${String(n).padStart(5)}  ${'█'.repeat(Math.max(1, Math.round((n / max) * 30)))}`);
 }
 
-function quotaNote(err: unknown): string | null {
-  if (err instanceof SpotifyApiError && err.status === 429) {
-    return `Quota hit mid-scan (Retry-After: ${err.retryAfterSec ?? 'unknown'}s) — results are partial.`;
-  }
-  return null;
-}
-
 function walkCap(scan_cap?: number): number {
   return scan_cap ?? getConfig().fetchAllCap;
 }
@@ -408,7 +401,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, scan_cap }) => {
+    async ({ response_format, scan_cap }) => {
       const rf = response_format;
       const albums = await loadSavedAlbums(client, walkCap(scan_cap));
       const tallyMap = tally(albums, (a) => decadeOf(a.release_date));
@@ -505,7 +498,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, scan_cap }) => {
+    async ({ response_format, scan_cap }) => {
       const rf = response_format;
       const albums = await loadSavedAlbums(client, walkCap(scan_cap));
       const entries = sortedTally(tally(albums, (a) => a.album_type || null));
@@ -532,9 +525,8 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       top_n: TopN,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, top_n, scan_cap }) => {
+    async ({ response_format, top_n, scan_cap }) => {
       const rf = response_format;
-      const maxResults = resolveMaxResults(max_results, getConfig().maxItems);
       const n = top_n ?? 10;
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
       const counts = new Map<string, { name: string; tracks: number }>();
@@ -642,7 +634,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, scan_cap }) => {
+    async ({ response_format, scan_cap }) => {
       const rf = response_format;
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
       const now = Date.now();
@@ -1203,7 +1195,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, scan_cap }) => {
+    async ({ response_format, scan_cap }) => {
       const rf = response_format;
       const tracks = await loadSavedTracks(client, walkCap(scan_cap));
       const runtime = new Map<string, { ms: number; tracks: number }>();
@@ -1334,7 +1326,7 @@ export function registerSwarm3LibraryTools(server: McpServer, client: SpotifyCli
       max_results: MaxResults,
       scan_cap: ScanCap,
     },
-    async ({ response_format, max_results, scan_cap }) => {
+    async ({ response_format, scan_cap }) => {
       const rf = response_format;
       const albums = await loadSavedAlbums(client, walkCap(scan_cap));
       const entries = [...tally(albums, (a) => (yearOf(a.release_date) !== null ? String(yearOf(a.release_date)) : null)).entries()]

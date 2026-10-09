@@ -212,20 +212,6 @@ function topTrackRow(t: SpotifyTrackWithReleaseDate): { id: string; name: string
   return { id: t.id, name: t.name, artists: trackArtists(t) };
 }
 
-function recentTrackRow(r: RecentlyPlayedItem): {
-  id: string;
-  name: string;
-  artists: string;
-  played_at: string;
-} {
-  return {
-    id: r.track.id,
-    name: r.track.name,
-    artists: trackArtists(r.track),
-    played_at: r.played_at,
-  };
-}
-
 /** Per-artist/per-track play counts over a history walk. */
 function playCounts(items: RecentlyPlayedItem[]): {
   byTrack: Map<string, { name: string; artists: string; plays: number; last: string }>;
@@ -1310,7 +1296,7 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
     async (args) => {
       const rf = args.response_format;
       const depth = recentDepth(args.max_items);
-      const [walk, stTracks, mtTracks, stArtists, mtArtists] = await Promise.all([
+      const [walk, stTracks, , stArtists, mtArtists] = await Promise.all([
         walkRecentlyPlayed(client, depth),
         fetchTopTracks(client, 'short_term', 10),
         fetchTopTracks(client, 'medium_term', 10),
@@ -1322,7 +1308,6 @@ export function registerSwarm3AnalyticsTools(server: McpServer, client: SpotifyC
       const { byTrack, byArtist } = playCounts(chron);
       const topRecentArtist = [...byArtist.entries()].sort((a, b) => b[1].plays - a[1].plays)[0];
       const topRecentTrack = [...byTrack.entries()].sort((a, b) => b[1].plays - a[1].plays)[0];
-      const hours = new Set(chron.map((r) => utcHour(r.played_at)));
       const hourHist: Record<string, number> = {};
       for (const r of chron) bump(hourHist, `${pad2(utcHour(r.played_at))}:00`);
       const peakHour = sortedEntries(hourHist)[0];

@@ -37,7 +37,7 @@ import {
   asRecord,
   type ResponseFormatValue,
 } from '../shaping.js';
-import { CHUNK_CAPS, capFor, chunk } from '../chunk.js';
+import { capFor, chunk } from '../chunk.js';
 import {
   confirmViaElicitation,
   describeConfirmation,

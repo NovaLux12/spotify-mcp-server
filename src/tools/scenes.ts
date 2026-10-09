@@ -14,10 +14,10 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { chmod, mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
 import type { SpotifyClient } from '../client.js';
-import type { PlaybackState, SpotifyDevice, GetDevicesResponse } from '../types/spotify.js';
+import type { PlaybackState, SpotifyDevice } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, describeDryRun } from '../shaping.js';
 import { loadSidecar } from '../sidecar.js';
 import { storePath } from '../config.js';

@@ -28,7 +28,6 @@ import { isGatedError } from '../gating.js';
 import type {
   SpotifyAlbumItem,
   SpotifyAlbumRow as AlbumPayload,
-  SpotifyAlbumSimple,
   SpotifyArtistFull,
   SpotifyArtistSimple,
   SpotifyAudiobookRow as AudiobookSearchItem,
@@ -48,7 +47,6 @@ import {
   truncateItems,
   paginationInfo,
   nextPageLine,
-  listStructuredContent,
   asRecord,
   readNumber,
 } from '../shaping.js';

@@ -12,7 +12,7 @@
  * Playlist item ops use /playlists/{id}/items (Feb-2026 path, SPEC §9).
  */
 import { z } from 'zod';
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { chunk } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
@@ -28,7 +28,7 @@ import {
   parseSpotifyUri,
   walkCap,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+
 import { spotifyId } from '../refs.js';
 import type { PlaylistItemObject } from '../types/spotify.js';
 import { ownStoreRoots, readLocalFile } from '../paths.js';
@@ -89,7 +89,7 @@ const NO_GATE = 'this tool asks for no confirmation: the write is the single exp
 // Result shaping helpers (exhaust2 house style)
 // ---------------------------------------------------------------------------
 
-type TextContent = { type: 'text'; text: string };
+
 ;
 
 /** json mode stringifies the payload; payload always rides as structuredContent. */
@@ -119,13 +119,6 @@ function snapFileStem(filename: string): string {
 }
 
 /** List snapshot bundle files in dir (unsorted). */
-async function listBundleFiles(dir: string): Promise<string[]> {
-  try {
-    return (await readdir(dir)).filter((n) => BUNDLE_FILE_RE.test(n));
-  } catch {
-    return [];
-  }
-}
 
 /** Next free sequence for a prefix + dateStamp inside dir (never clobbers). */
 async function nextSeq(dir: string, re: RegExp, dateStamp: string, group: number): Promise<number> {

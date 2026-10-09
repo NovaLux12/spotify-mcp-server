@@ -443,7 +443,6 @@ export function resolveStoreEnv(options: StorePathsOptions = {}): NodeJS.Process
  * first and the containment check would then be reasoning about the wrong file.
  */
 export function localStorePaths(options: StorePathsOptions = {}): LocalStore[] {
-  const cwd = options.cwd ?? process.cwd();
   const env = resolveStoreEnv(options);
 
   return STORE_DEFINITIONS.flatMap((def) => {

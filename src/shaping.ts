@@ -2587,7 +2587,6 @@ export interface RenderListOptions<T> {
  * the call sites that actually passed them.
  */
 export function renderList<T>(
-  fmt: ResponseFormatValue | undefined,
   pageItems: readonly T[],
   opts: RenderListOptions<T>,
 ): RenderedToolResult {

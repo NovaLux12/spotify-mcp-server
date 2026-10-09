@@ -239,7 +239,7 @@ const DIR_BYTES_CAVEAT =
   + '`directory_bytes` above is this tool\'s own lstat measurement of every regular file in the directory, '
   + 'so the two answer different questions and `directory_bytes` is never smaller.';
 
-export function registerBackupCleanupTools(server: McpServer, client: SpotifyClient): void {
+export function registerBackupCleanupTools(server: McpServer, _client: SpotifyClient): void {
   server.tool(
     'clean_backup_artifacts',
     'Delete the NON-library files sharing SPOTIFY_MCP_BACKUP_DIR with your library backups: closed listening sessions '

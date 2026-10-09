@@ -2,7 +2,13 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import { derivedAnalyticsToolServer } from '../derivedanalytics.js';
-import type { SavedTrackItem, SavedAlbumItem, SpotifyPaged, RecentlyPlayedResponse, SpotifyPlaylistSimple, PlaylistItemObject } from '../types/spotify.js';
+import type {
+  SavedTrackItem,
+  SavedAlbumItem,
+  RecentlyPlayedResponse,
+  SpotifyPlaylistSimple,
+  PlaylistItemObject,
+} from '../types/spotify.js';
 import {
   ResponseFormat,
   MaxResults,

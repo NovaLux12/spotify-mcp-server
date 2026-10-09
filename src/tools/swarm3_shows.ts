@@ -45,7 +45,7 @@ import {
   resolveMaxResults,
   truncateItems,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+
 import type {
   SavedShowItem,
   SpotifyEpisodeFull,
@@ -54,9 +54,6 @@ import type {
   SpotifyShowSimple,
 } from '../types/spotify.js';
 import { emit } from '../result.js';
-
-type TextContent = { type: 'text'; text: string };
-type ToolResult = { content: TextContent[]; structuredContent?: Record<string, unknown> };
 
 // ---------------------------------------------------------------------------
 // Shared shaping helpers (mirrors exhaust2_playlists.ts)
@@ -76,13 +73,6 @@ const DryRunDefault = z
 const isDry = (args: { dry_run?: boolean }): boolean => args.dry_run ?? true;
 
 /** Dry-run PLAN result. */
-function dryOut(label: string, target: string, lines: string[], extra?: Record<string, unknown>): ToolResult {
-  const prose = `[dry run] ${label} — ${target}\n${lines.join('\n')}`;
-  return {
-    content: [{ type: 'text', text: prose }],
-    structuredContent: { ok: true, dry_run: true, label, target, plan: lines, ...extra },
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Shared plumbing

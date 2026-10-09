@@ -21,8 +21,6 @@ import { z } from 'zod';
 import { capFor } from '../chunk.js';
 import { issueReceipt, type Receipt } from '../receipts.js';
 import { receiptRecords, receiptsLines, writeVerdict } from './playlistreceipts.js';
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
 import type {
@@ -30,7 +28,6 @@ import type {
   RecentlyPlayedResponse,
   RecentlyPlayedItem,
   GetDevicesResponse,
-  SpotifyDevice,
   SpotifyPaged,
   SpotifyTrack,
   SavedTrackItem,
@@ -55,8 +52,6 @@ import {
   recordFromCheckpoint,
   type PlaybackPositionRecord,
 } from './playbackpositions.js';
-import { loadSidecar } from '../sidecar.js';
-import { storePath } from '../config.js';
 import { textResult, emit } from '../result.js';
 import { spotifyRef } from '../refs.js';
 
@@ -168,10 +163,7 @@ import {
   exhaust2PlaybackFile,
   loadExhaust2Store,
   saveExhaust2Store,
-  type Exhaust2Store,
-  type MuteMemory,
   type EpisodeBookmark,
-  type Exhaust2Checkpoint,
 } from '../playbackstores.js';
 export {
   exhaust2PlaybackFile,
@@ -964,7 +956,10 @@ export function registerExhaust2PlaybackTools(server: McpServer, client: Spotify
       const fmt = args.response_format as ResponseFormatValue | undefined;
       const wanted = (args.artists as string[]).map((a) => a.toLowerCase());
       const found = new Map<string, { last: string; track: string }>();
-      const items = await walkRecentlyPlayed(client, args.max_pages ?? 10, (page, all) => {
+      const items = await walkRecentlyPlayed(client, args.max_pages ?? 10, (page, _all) => {
+        // `_all` keeps the arity: the walk passes the full accumulator beside
+        // each page and this callback only needs the page. Renamed, not
+        // deleted, for the same reason as the `void _x;` registrars.
         for (const row of page) {
           for (const a of trackArtists(row.track)) {
             const key = a.toLowerCase();

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import {
   chmodSync,
   closeSync,
@@ -11,7 +11,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { readFileSync } from 'node:fs';
 // `loadGenreTags` now delegates to loadSidecarSync in src/sidecar.ts (#1051);
 // readFileSync remains for the #1052 inline cap logic (chmodSync, writeFileSync,
 // existsSync are already imported above).
@@ -30,7 +29,6 @@ import {
   listStructuredContent,
   type ResponseFormatValue,
 } from '../shaping.js';
-import { loadSidecarSync, SidecarUnreadableError } from '../sidecar.js';
 import { ownStoreRoots, readLocalFileSync } from '../paths.js';
 
 // ---------------------------------------------------------------------------

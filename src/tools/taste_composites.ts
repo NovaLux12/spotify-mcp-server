@@ -22,7 +22,7 @@
  */
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SpotifyApiError, type SpotifyClient } from '../client.js';
+import { type SpotifyClient } from '../client.js';
 import {
   ResponseFormat,
   MaxResults,
@@ -55,7 +55,6 @@ import {
   statsfmFetchFromPayloadImpl,
 } from '../lib/statsfm-client.js';
 import { statsfmRangeSchema } from './statsfm.js';
-import { readOnlyModeEnabled } from './annotations.js';
 
 // ---------------------------------------------------------------------------
 // Parsed-payload fixture seam over the shared stats.fm client
@@ -325,7 +324,7 @@ function ymd(ms: number): string {
 // taste_playlist.ts so this row can stay `readOnlySafe: true` truthfully.
 // ---------------------------------------------------------------------------
 
-export function registerTasteCompositeTools(server: McpServer, client: SpotifyClient): void {
+export function registerTasteCompositeTools(server: McpServer, _client: SpotifyClient): void {
 
   // ---- taste_daily_brief ----
   server.tool(

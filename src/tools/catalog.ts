@@ -33,7 +33,6 @@ import {
   renderSingle,
   severalCounts,
   unresolvedIdsNote,
-  type ResponseFormatValue,
 } from '../shaping.js';
 import { chunk, capFor, type ChunkCapKind } from '../chunk.js';
 import { recordSearch } from './searchhistory.js';
@@ -629,7 +628,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         return jsonResult(result as unknown as Record<string, unknown>);
       }
       return withMarketSource(
-        renderList(args.response_format, result.items, {
+        renderList(result.items, {
           // A walk bounded by the fetch-all cap says what it read, and says so
           // when the cap cut the collection short. Reporting `result.total`
           // alone would let a capped walk read as the artist's whole discography.
@@ -770,7 +769,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
         return withMarketSource(jsonResult(result as unknown as Record<string, unknown>), market);
       }
       return withMarketSource(
-        renderList(args.response_format, result.items, {
+        renderList(result.items, {
           header: walk
             ? `Tracks for album (walked ${walk.items.length} of ${result.total}${walk.truncated ? ` — fetch-all cap ${getConfig().fetchAllCap} reached, tracks past it were not read` : ''}):`
             : `Tracks for album (${result.total} total):`,
@@ -943,7 +942,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       }
       const tracks = result.tracks ?? [];
       return withMarketSource(
-        renderList(args.response_format, tracks, {
+        renderList(tracks, {
           header: `Top tracks (${tracks.length}):`,
           line: (track, i) =>
             `  ${i + 1}. "${track.name}" by ${joinArtists(track)} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`,
@@ -981,7 +980,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       }
       if (!data?.markets?.length) throw new Error('Available markets list is empty or unavailable');
 
-      return renderList(args.response_format, data.markets, {
+      return renderList(data.markets, {
         header: `Available markets (${data.markets.length}):`,
         line: (market) => {
           if (typeof market === 'string') return `  • ${market}`;
@@ -1013,7 +1012,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, tracks, {
+      return renderList(tracks, {
         header: `Tracks (${tracks.length}):`,
         line: (track) =>
           `  • "${track.name}" by ${joinArtists(track)} (${formatDuration(track.duration_ms)}) | URI: ${track.uri}`,
@@ -1041,7 +1040,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, albums, {
+      return renderList(albums, {
         header: `Albums (${albums.length}):`,
         line: (album) =>
           `  • "${album.name}" by ${joinArtists(album)} (${album.album_type}, ${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`,
@@ -1069,7 +1068,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, artists, {
+      return renderList(artists, {
         header: `Artists (${artists.length}):`,
         line: (item) => {
           const genres = Array.isArray(item.genres) && item.genres.length > 0
@@ -1101,7 +1100,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, episodes, {
+      return renderList(episodes, {
         header: `Episodes (${episodes.length}):`,
         line: (ep) =>
           `  • "${ep.name}" (${formatDuration(ep.duration_ms)}, ${ep.release_date}) | URI: ${ep.uri}`,
@@ -1129,7 +1128,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, shows, {
+      return renderList(shows, {
         header: `Shows (${shows.length}):`,
         line: (show) =>
           `  • "${show.name}"${publisherByline(show.publisher)} (${show.total_episodes} episodes) | URI: ${show.uri}`,
@@ -1157,7 +1156,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, books, {
+      return renderList(books, {
         header: `Audiobooks (${books.length}):`,
         line: (book) => {
           const authors = (book.authors ?? []).map((a) => a.name).join(', ') || 'unknown author';
@@ -1187,7 +1186,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
           ...severalDegradedExtra(degraded),
         });
       }
-      return renderList(args.response_format, chapters, {
+      return renderList(chapters, {
         header: `Chapters (${chapters.length}):`,
         line: (chapter) =>
           `  ${chapter.chapter_number}. "${chapter.name}" (${formatDuration(chapter.duration_ms)}) | URI: ${chapter.uri}`,
@@ -1452,7 +1451,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const { data: result, market } = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: 'single', limit: String(Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: String((args.offset as number) ?? 0) });
       if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
       if (args.response_format === 'json') return withMarketSource(jsonResult(result as unknown as Record<string, unknown>), market);
-      return withMarketSource(renderList(args.response_format as ResponseFormatValue, result.items, { header: `Singles for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined }), market);
+      return withMarketSource(renderList(result.items, { header: `Singles for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.release_date}, ${album.total_tracks} tracks) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined }), market);
     },
   );
   server.tool(
@@ -1471,7 +1470,7 @@ export function registerCatalogTools(server: McpServer, client: SpotifyClient): 
       const { data: result, market } = await getWithMarketFallback<SpotifyArtistAlbumsResponse>(client, `/artists/${encodeURIComponent(args.artist_id as string)}/albums`, args.market as string | undefined, { include_groups: groups, limit: String(Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT)), offset: String((args.offset as number) ?? 0) });
       if (!result) throw new Error(`Artist "${args.artist_id}" not found`);
       if (args.response_format === 'json') return withMarketSource(jsonResult(result as unknown as Record<string, unknown>), market);
-      return withMarketSource(renderList(args.response_format as ResponseFormatValue, result.items, { header: `Appearances for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined }), market);
+      return withMarketSource(renderList(result.items, { header: `Appearances for artist (${result.total} total):`, line: (album: SpotifyAlbumItem) => `  • "${album.name}" (${album.album_type}, ${album.release_date}) | URI: ${album.uri}`, total: result.total, offset: args.offset as number | undefined, limit: Math.min((args.limit as number) ?? ARTIST_ALBUM_PAGE_LIMIT, ARTIST_ALBUM_PAGE_LIMIT), maxResults: args.max_results as number | undefined }), market);
     },
   );
 

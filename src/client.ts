@@ -1611,7 +1611,7 @@ export class SpotifyClient {
    */
   private afterMutation(method: string, path: string, response: unknown): void {
     this._invalidationEpoch += 1;
-    const plan = invalidationPlan(method, path);
+    const plan = invalidationPlan(path);
     if (plan.scope === 'all') {
       this.cache?.clear();
       this.validators?.clear();

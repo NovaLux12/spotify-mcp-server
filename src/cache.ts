@@ -499,7 +499,7 @@ function playlistPrefixes(rawId: string): string[] {
  * 5. Everything else — `all`. Unclassified means unproven, and unproven must
  *    not mean stale.
  */
-export function invalidationPlan(method: string, path: string): InvalidationPlan {
+export function invalidationPlan(path: string): InvalidationPlan {
   const cleanPath = splitQuery(path).path;
   const segments = cleanPath.split('/').filter((s) => s.length > 0);
   const head = segments[0] ?? '';

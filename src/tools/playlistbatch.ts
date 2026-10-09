@@ -2,7 +2,7 @@
  * Playlist batch operations — Stream D (#183, #189, #200).
  */
 import { z } from 'zod';
-import { capFor, runChunkedPlaylistWrite, chunk } from '../chunk.js';
+import { capFor, runChunkedPlaylistWrite } from '../chunk.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
 import { fetchAllCap, scanCapFloor } from '../config.js';

@@ -36,7 +36,7 @@ import { spotifyRef } from '../refs.js';
 // local shaping helpers (slice-convention: self-contained)
 // ---------------------------------------------------------------------------
 
-type TextContent = { type: 'text'; text: string };
+
 ;
 
 /** Accept a bare playlist/track ID or a spotify:<type>: URI; return the raw ID. */

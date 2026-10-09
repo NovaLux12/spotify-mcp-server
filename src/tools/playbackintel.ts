@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { MARKET_CODE } from './catalog.js';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SpotifyApiError, type SpotifyClient } from '../client.js';
-import type { PlaybackState, GetDevicesResponse, SpotifyDevice, SpotifyTrack, SpotifyEpisode } from '../types/spotify.js';
+import type { PlaybackState, GetDevicesResponse, SpotifyDevice } from '../types/spotify.js';
 import { playlistItemTotal } from '../types/spotify.js';
 import { ResponseFormat, PlaybackDryRun, MaxResults, resolveMaxResults, truncateItems, parseSpotifyUri, describeDryRun, validateUris } from '../shaping.js';
 import { loadPlaybackExt, detectSessions } from './playbackext.js';

@@ -16,7 +16,7 @@ import { buildMcpServer, resolveServerScope, type ServerScope } from './server.j
 // launching the server over stdio evaluates none of it.
 import { isCliSubcommand } from './cli/dispatch.js';
 import { readOnlyModeEnabled } from './tools/annotations.js';
-import { DERIVED_ANALYTICS_TOOLS, derivedAnalyticsEnabled } from './derivedanalytics.js';
+import { derivedAnalyticsEnabled } from './derivedanalytics.js';
 
 export { buildMcpServer, resolveServerScope };
 export type { ServerScope };

@@ -27,9 +27,8 @@ import {
   resolveMatchBy,
   trackMatchesArtist,
 } from '../playlistmatch.js';
-import { capFor, chunk } from '../chunk.js';
-import { readFile, readdir } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { capFor } from '../chunk.js';
+import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { SpotifyClient } from '../client.js';
@@ -37,8 +36,6 @@ import { getConfig } from '../config.js';
 import { backupDir } from './backup.js';
 import { assertPlaylistRewriteReadable, assertPlaylistRewritable, unavailableRowPositions } from './rewritable.js';
 import {
-  ResponseFormat,
-  MaxResults,
   PlaylistPairFields,
   batchSummary,
   describeDryRun,
@@ -51,7 +48,7 @@ import {
   withPlaylistInputMetadata,
   withPlaylistInputNote,
 } from '../shaping.js';
-import type { ResponseFormatValue } from '../shaping.js';
+
 import type {
   PlaylistItemObject,
   SpotifyEpisode,
@@ -61,12 +58,11 @@ import type { LibraryBackup } from './backup.js';
 import { diffTrackLists } from './swarm3_snapshots.js';
 import type { SnapTrackRow } from './swarm3_snapshots.js';
 import { isMissingFileRefusal, ownStoreRoots, readLocalFile } from '../paths.js';
-import { positionDesc, positionSchema } from '../positionbase.js';
+import { positionSchema } from '../positionbase.js';
 import { consentFields, declaredCreationDate, provenanceNote, provenancePromptLines, type WriteProvenance } from './provenance.js';
 import { emit } from '../result.js';
 import { spotifyRef } from '../refs.js';
 
-type TextContent = { type: 'text'; text: string };
 ;
 
 // ---------------------------------------------------------------------------
@@ -106,11 +102,6 @@ function normalizePlaylistRef(ref: string): string {
 }
 
 /** Accept a bare artist ID or spotify:artist: URI; return the raw ID. */
-function normalizeArtistRef(ref: string): string {
-  const parsed = parseSpotifyUri(ref);
-  if (parsed && parsed.type === 'artist') return parsed.id;
-  return ref.trim();
-}
 
 /**
  * The outcome of one playlist item walk: the rows it read, and the verdict on
