@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Bug Fixes
 
 * **ci:** fetch release tags in flake-probe before running the suite ([#932](https://github.com/NovaLux12/spotify-mcp-server/issues/932)) ([#1683](https://github.com/NovaLux12/spotify-mcp-server/issues/1683)) ([778c5b7](https://github.com/NovaLux12/spotify-mcp-server/commit/778c5b767e07b959b418c037c3d1399242bc4ad6))
+* **resources:** serve the subject disclosure on gated audiobook/heatmap reads ([#1677](https://github.com/NovaLux12/spotify-mcp-server/issues/1677)) ([db9525b](https://github.com/NovaLux12/spotify-mcp-server/commit/db9525b6d1c04bfa6b03a379b5f8ca4e0217eadc))
 
 
 ### Documentation
