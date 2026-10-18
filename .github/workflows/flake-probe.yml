@@ -116,6 +116,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # #1629 / #932 follow-up. `actions/checkout` defaults to `fetch-depth: 1`
+      # and fetches no tags, so the release-history gate at
+      # `tests/release-history-guard.test.ts` would read an empty tag list on a
+      # shallow clone, fail its `realTags().length > 0` precondition, and turn
+      # all eight of its subtests red across every probe leg. The result looked
+      # like a per-zone flake for nine days before this step was added; every
+      # leg was actually reporting the same clone-input problem, and the zone
+      # it appeared under was the only one the scheduler happened to pick.
+      #
+      # A step with no `if:` is skipped as soon as any earlier step fails, so
+      # the guard is what keeps the probe running even when an unrelated red
+      # (the build, say) precedes it. The matching comment in `ci.yml` carries
+      # the original reasoning; this step is its probe-side mirror, not a
+      # drive-by copy.
+      #
+      # The probe still runs the suite under each of four zones on purpose;
+      # this step only standardises one thing across them, which is the tag
+      # set the gate compares against.
+      - name: Fetch release tags
+        if: ${{ !cancelled() }}
+        run: git fetch --tags --force --quiet
+
       # `npm test` cannot be used here, for the reason above: it now loads
       # `scripts/pin-tz.mjs`, which would overwrite this step's `TZ` with UTC
       # and make all four matrix legs the same run. It also reports to the
@@ -136,6 +158,23 @@ jobs:
           npm run build
           node --import tsx --test-reporter=tap --test 'tests/*.test.ts' 2>&1 | tee test-results.tap
 
+      - name: Sanitise the artifact name
+        # `actions/upload-artifact` rejects forward slashes in artifact names
+        # (NTFS limitation), and three of the four probe zones contain them:
+        # `Etc/GMT+12`, `Pacific/Kiritimati`, `Asia/Kathmandu`. The matrix job
+        # keeps the human-readable zone string in its own `name` field; the
+        # artifact needs a filename-safe variant computed here because the
+        # Actions expression language has no `replace()` for strings. The
+        # matrix `tz` value is piped in via `env:` so the resulting artifact
+        # name is unique per leg. This was masked by the failing suite for
+        # nine days; the suite ran to the upload step for the first time on
+        # the PR that added the tag fetch, and three legs immediately turned
+        # red on the artifact name instead.
+        id: sanitize
+        env:
+          ZONE: ${{ matrix.tz }}
+        run: echo "name=flake-probe-tap-${ZONE/\//-}" >> "$GITHUB_OUTPUT"
+
       - name: Upload TAP results
         # Retained per zone, because "which zone broke" is the whole question
         # this workflow exists to answer, and a single merged artifact would
@@ -145,7 +184,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: flake-probe-tap-${{ matrix.tz }}
+          name: ${{ steps.sanitize.outputs.name }}
           path: test-results.tap
           if-no-files-found: ignore
           retention-days: 14
