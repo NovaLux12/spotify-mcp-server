@@ -164,12 +164,16 @@ jobs:
         # `Etc/GMT+12`, `Pacific/Kiritimati`, `Asia/Kathmandu`. The matrix job
         # keeps the human-readable zone string in its own `name` field; the
         # artifact needs a filename-safe variant computed here because the
-        # Actions expression language has no `replace()` for strings. This was
-        # masked by the failing suite for nine days; the suite ran to the
-        # upload step for the first time on the PR that added the tag fetch,
-        # and three legs immediately turned red on the artifact name instead.
+        # Actions expression language has no `replace()` for strings. The
+        # matrix `tz` value is piped in via `env:` so the resulting artifact
+        # name is unique per leg. This was masked by the failing suite for
+        # nine days; the suite ran to the upload step for the first time on
+        # the PR that added the tag fetch, and three legs immediately turned
+        # red on the artifact name instead.
         id: sanitize
-        run: echo "name=flake-probe-tap-${TZ/\//-}" >> "$GITHUB_OUTPUT"
+        env:
+          ZONE: ${{ matrix.tz }}
+        run: echo "name=flake-probe-tap-${ZONE/\//-}" >> "$GITHUB_OUTPUT"
 
       - name: Upload TAP results
         # Retained per zone, because "which zone broke" is the whole question
