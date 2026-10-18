@@ -116,6 +116,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # #1629 / #932 follow-up. `actions/checkout` defaults to `fetch-depth: 1`
+      # and fetches no tags, so the release-history gate at
+      # `tests/release-history-guard.test.ts` would read an empty tag list on a
+      # shallow clone, fail its `realTags().length > 0` precondition, and turn
+      # all eight of its subtests red across every probe leg. The result looked
+      # like a per-zone flake for nine days before this step was added; every
+      # leg was actually reporting the same clone-input problem, and the zone
+      # it appeared under was the only one the scheduler happened to pick.
+      #
+      # A step with no `if:` is skipped as soon as any earlier step fails, so
+      # the guard is what keeps the probe running even when an unrelated red
+      # (the build, say) precedes it. The matching comment in `ci.yml` carries
+      # the original reasoning; this step is its probe-side mirror, not a
+      # drive-by copy.
+      #
+      # The probe still runs the suite under each of four zones on purpose;
+      # this step only standardises one thing across them, which is the tag
+      # set the gate compares against.
+      - name: Fetch release tags
+        if: ${{ !cancelled() }}
+        run: git fetch --tags --force --quiet
+
       # `npm test` cannot be used here, for the reason above: it now loads
       # `scripts/pin-tz.mjs`, which would overwrite this step's `TZ` with UTC
       # and make all four matrix legs the same run. It also reports to the
