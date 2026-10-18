@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1](https://github.com/NovaLux12/spotify-mcp-server/compare/v3.1.0...v3.1.1) (2026-10-18)
+
+
+### Bug Fixes
+
+* **ci:** fetch release tags in flake-probe before running the suite ([#932](https://github.com/NovaLux12/spotify-mcp-server/issues/932)) ([#1683](https://github.com/NovaLux12/spotify-mcp-server/issues/1683)) ([778c5b7](https://github.com/NovaLux12/spotify-mcp-server/commit/778c5b767e07b959b418c037c3d1399242bc4ad6))
+
+
+### Documentation
+
+* the runtime escape hatch and the doctor payload fields ([#1673](https://github.com/NovaLux12/spotify-mcp-server/issues/1673)) ([6b70f55](https://github.com/NovaLux12/spotify-mcp-server/commit/6b70f55b78279e109b7f0088f1b147237fca1e40))
+
+
+### Miscellaneous Chores
+
+* **repo:** gitignore the local .claude/ agent scaffolding ([#1675](https://github.com/NovaLux12/spotify-mcp-server/issues/1675)) ([dfe456f](https://github.com/NovaLux12/spotify-mcp-server/commit/dfe456f354d7fbf808b9f407a2a714d57734ec62))
+* **src:** remove dead imports, types, locals and params ([#1676](https://github.com/NovaLux12/spotify-mcp-server/issues/1676)) ([77084f6](https://github.com/NovaLux12/spotify-mcp-server/commit/77084f6763317183a24cfae7cde04879193290c4))
+
 ## [3.1.0](https://github.com/NovaLux12/spotify-mcp-server/compare/v3.0.1...v3.1.0) (2026-10-08)
 
 
