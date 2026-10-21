@@ -91,7 +91,7 @@ The package contract is generated directly from `package.json`; the census guard
     "typescript": "^7.0.2"
   },
   "scripts": {
-    "build": "tsc && node scripts/add-shebang.js",
+    "build": "tsc -p tsconfig.build.json && node scripts/add-shebang.js",
     "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
     "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
     "start": "node --env-file-if-exists=.env dist/index.js",
