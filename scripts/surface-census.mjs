@@ -2362,10 +2362,11 @@ function registrationKeyList() {
  * documentation. Those are different problems with different fixes: a stale
  * block is repaired with `--write`, and running it here would be the second
  * half of the deletion, so the message has to send the reader to
- * `parseToolsetsModule` and away from the docs. `check-tests-typecheck.mjs`'s
- * `GLOBAL_ERROR` handling is the same shape — an unmeasurable run is
- * collected separately and fails the gate outright rather than reading as a
- * comfortable pass.
+ * `parseToolsetsModule` and away from the docs. The retired
+ * `check-tests-typecheck.mjs` gate's `GLOBAL_ERROR` handling was the same
+ * shape — an unmeasurable run collected separately and failed outright rather
+ * than reading as a comfortable pass — and the plain `tsc --noEmit` that
+ * replaced it keeps that property by having no parser in between at all.
  */
 function parseToolsetsModule(source = readFileSync(join(ROOT, 'src/toolsets.ts'), 'utf8')) {
   const block = /export const TOOLSETS:[\s\S]*?= \{([\s\S]*?)\} as const;/.exec(source)?.[1];
