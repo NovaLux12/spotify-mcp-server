@@ -46,7 +46,7 @@
     "typescript": "^7.0.2"
   },
   "scripts": {
-    "build": "tsc && node scripts/add-shebang.js",
+    "build": "tsc -p tsconfig.build.json && node scripts/add-shebang.js",
     "dev": "node --env-file-if-exists=.env --import tsx/esm src/index.ts",
     "auth": "node --env-file-if-exists=.env --import tsx/esm src/index.ts auth",
     "start": "node --env-file-if-exists=.env dist/index.js",
@@ -56,7 +56,6 @@
     "count:tools": "node scripts/surface-census.mjs",
     "check:docs-counts": "node scripts/surface-census.mjs --check",
     "check:doc-tool-names": "node scripts/check-doc-tool-names.mjs",
-    "check:tests-typecheck": "node scripts/check-tests-typecheck.mjs",
     "lint:scripts": "node scripts/check-script-syntax.mjs",
     "sweep": "node scripts/live-gauntlet.mjs --batch=40 --resume=memory/live-sweep-report.json --report=memory/live-sweep-report.json",
     "sweep:loop": "bash scripts/sweep-loop.sh",

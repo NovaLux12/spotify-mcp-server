@@ -291,7 +291,7 @@
         "label": "3. Commands"
       },
       {
-        "hash": "1f0a28a0a144b2d2",
+        "hash": "e1fb649938344b0a",
         "label": "| Command | What it does | |---|---| | npm ci | Reproduc…"
       },
       {
@@ -479,59 +479,43 @@
         "label": "Retiring a tool name is different: delete it, pin its ab…"
       },
       {
-        "hash": "00fffd52e88e682b",
-        "label": "The test-tree typecheck budget"
+        "hash": "ad0ed9b42ae39599",
+        "label": "The typecheck covers the test tree"
       },
       {
-        "hash": "9e88db1bbcf6de97",
-        "label": "tsconfig.json includes only src, so npx tsc --noEmit has…"
+        "hash": "d103c3f6b9d20acf",
+        "label": "tsx strips types rather than checking them. A test that …"
       },
       {
-        "hash": "bb4537c936f124ef",
-        "label": "It is a budget, not a zero gate. The count is large and …"
+        "hash": "b10cd29282917dd4",
+        "label": "The emit path is separated instead, because that is the …"
       },
       {
-        "hash": "60fa4a9bcbf3a80b",
-        "label": "The baseline is a measurement of this tree, in both dire…"
+        "hash": "28ae9e5999b29072",
+        "label": "What was deleted, and why nothing was lost (#1679). tsco…"
       },
       {
-        "hash": "ac399165f6e6a965",
-        "label": "So: fix errors in the test, then --write. A PR that lowe…"
+        "hash": "4bb3cf50a9b5eefb",
+        "label": "The guard test tests/tests-typecheck-budget-gate.test.ts…"
       },
       {
-        "hash": "38d4d452febb5bcc",
-        "label": "15. Narrowing the class of drift that is caught is not t…"
+        "hash": "a240adc0705ae5b1",
+        "label": "It fails closed. A run-level tsc error (TS5058, TS2688) …"
       },
       {
-        "hash": "42f952c1bb63ef7b",
-        "label": "--write reclaims; it does not widen. Re-baselining downw…"
+        "hash": "ea22c448f774eceb",
+        "label": "The baseline cannot go stale. The two-direction rule exi…"
       },
       {
-        "hash": "fcf32bbe22351d1d",
-        "label": "The baseline is a measurement of the tree as rebased ont…"
+        "hash": "04ffea8170231c07",
+        "label": "--write cannot widen. Re-baselining down was free and ra…"
       },
       {
-        "hash": "365f634d46f78299",
-        "label": "--baseline <path> and --project <path> point the gate at…"
+        "hash": "429ccafcc5db2371",
+        "label": "That is a strictly stronger property, not a loosened one…"
       },
       {
-        "hash": "b017ca0baeb2e0eb",
-        "label": "Three things make it trustworthy, and all are asserted i…"
-      },
-      {
-        "hash": "70212ec4e36c8920",
-        "label": "It fails closed. tsc reports a bad path or an unreadable…"
-      },
-      {
-        "hash": "47cf5c58792a00d6",
-        "label": "It is proven to fail in the direction it did not have. T…"
-      },
-      {
-        "hash": "713bd2f5148f0fd5",
-        "label": "The regression path still works. Lowering the baseline, …"
-      },
-      {
-        "hash": "67b14bb52c6988b0",
+        "hash": "2fe2e39e7888bb94",
         "label": "Do not silence a new error with @ts-nocheck, a blanket a…"
       },
       {
@@ -7111,6 +7095,13 @@
   "retired": [
     {
       "file": "AGENTS.md",
+      "hash": "00fffd52e88e682b",
+      "label": "The test-tree typecheck budget",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "118767fe31aa6582",
       "label": "A retirement reason is a claim about a tree, and --prose…",
       "date": "2026-09-27",
@@ -7125,6 +7116,13 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "1f0a28a0a144b2d2",
+      "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "2baa4ae7670cf60a",
       "label": "Hand-written prose from both sides survives, because you…",
       "date": "2026-09-27",
@@ -7136,6 +7134,34 @@
       "label": "Two things make it trustworthy, and both are asserted in…",
       "date": "2026-09-27",
       "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "365f634d46f78299",
+      "label": "--baseline <path> and --project <path> point the gate at…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "38d4d452febb5bcc",
+      "label": "15. Narrowing the class of drift that is caught is not t…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "42f952c1bb63ef7b",
+      "label": "--write reclaims; it does not widen. Re-baselining downw…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "47cf5c58792a00d6",
+      "label": "It is proven to fail in the direction it did not have. T…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
     },
     {
       "file": "AGENTS.md",
@@ -7167,10 +7193,24 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "60fa4a9bcbf3a80b",
+      "label": "The baseline is a measurement of this tree, in both dire…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "62dcb79a42472277",
       "label": "Do not silence a new error with @ts-nocheck, a blanket a…",
       "date": "2026-09-27",
       "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "67b14bb52c6988b0",
+      "label": "Do not silence a new error with @ts-nocheck, a blanket a…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
     },
     {
       "file": "AGENTS.md",
@@ -7192,6 +7232,20 @@
       "label": "The pin is hand-maintained on purpose. It is not in a ge…",
       "date": "2026-09-27",
       "reason": "#1435: this bullet justified hand-maintaining the pin by quoting the old recovery verbatim ('take the merge base, then run --write'). That recipe no longer exists, so the quotation was stale. The argument itself is unchanged and still true -- --write is the generated-block step of the recovery, so a generated pin would go green one command after prose loss -- only the quotation was corrected."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "70212ec4e36c8920",
+      "label": "It fails closed. tsc reports a bad path or an unreadable…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "713bd2f5148f0fd5",
+      "label": "The regression path still works. Lowering the baseline, …",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
     },
     {
       "file": "AGENTS.md",
@@ -7230,10 +7284,38 @@
     },
     {
       "file": "AGENTS.md",
+      "hash": "9e88db1bbcf6de97",
+      "label": "tsconfig.json includes only src, so npx tsc --noEmit has…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "ac399165f6e6a965",
+      "label": "So: fix errors in the test, then --write. A PR that lowe…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "b017ca0baeb2e0eb",
+      "label": "Three things make it trustworthy, and all are asserted i…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
+    },
+    {
+      "file": "AGENTS.md",
       "hash": "b732e60fd0ecdc0a",
       "label": "| Command | What it does | |---|---| | npm ci | Reproduc…",
       "date": "2026-09-27",
       "reason": "#1478 made the typecheck budget two-way; these AGENTS.md paragraphs said the gate failed only on an INCREASE, which stopped being true. Reworded in place, none deleted."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "bb4537c936f124ef",
+      "label": "It is a budget, not a zero gate. The count is large and …",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
     },
     {
       "file": "AGENTS.md",
@@ -7255,6 +7337,13 @@
       "label": "Adding prose is free. A new tool adds a contract paragra…",
       "date": "2026-09-27",
       "reason": "reworded two AGENTS.md prose paragraphs that this branch itself replaces, after resolving the mixed-file manifest conflict with --ours (main) during the rebase onto 3ad74650; both paragraphs are present in expanded form on this tree and neither was lost. Evidence re-derived rather than assumed: 16 bolded bullets on origin/main and 16 on this tree (no bullet lost), AGENTS.md 999 lines on origin/main vs 1013 here (additive, +14), the branch's replacement wording 'Adding prose is free for --check' present once on this tree and 0 on origin/main, and 'One reading' present once on this tree. The pin is keyed on content, so an extension hashes identically to a removal; that is the gap filed as #1527."
+    },
+    {
+      "file": "AGENTS.md",
+      "hash": "fcf32bbe22351d1d",
+      "label": "The baseline is a measurement of the tree as rebased ont…",
+      "date": "2026-10-21",
+      "reason": "#1679: the test-tree typecheck budget is gone. Its baseline reached zero, so tsconfig.tests.json, tsconfig.tests-baseline.json, scripts/check-tests-typecheck.mjs and tests/tests-typecheck-budget-gate.test.ts were removed and tests/ joined the main typecheck. These paragraphs pinned the baseline comparison and the --write/--allow-increase ceremony, which no longer exist."
     },
     {
       "file": "ARCHITECTURE.md",
@@ -7699,9 +7788,9 @@
     }
   ],
   "provenance": {
-    "head": "cdf19db6ec26ca33a3245892894ebc58c8f5c8f7",
-    "base": "ec5feefc0b3f55d6cd9af3920032b6801a04b0f5",
-    "upstream": "ec5feefc0b3f55d6cd9af3920032b6801a04b0f5",
+    "head": "f8e7f126947b6de0d17cb938c751410f701a3ac5",
+    "base": "dd9af31f0b5cbcd7d701762e242fd3c0cec1982c",
+    "upstream": "dd9af31f0b5cbcd7d701762e242fd3c0cec1982c",
     "behind": false
   },
   "reanchored": [

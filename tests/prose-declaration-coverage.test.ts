@@ -2,12 +2,12 @@
  * The hand-maintained prose declaration must cover every export of the module
  * beside it.
  *
- * `scripts/prose-manifest.d.mts` exists because `tsconfig.tests.json` does not
- * include `scripts`, so an importing test would otherwise bind to `any`. Its own
+ * `scripts/prose-manifest.d.mts` exists because no tsconfig includes
+ * `scripts`, so an importing test would otherwise bind to `any`. Its own
  * header says the accepted cost is that it "can drift from the `.mjs` beside
  * it" — and that cost was paid the moment the module grew: #1451 added five
  * exports and the declaration kept its original six, so a test importing them
- * failed `npm run check:tests-typecheck` with five TS2305s while `tsx` — which
+ * failed the typecheck with five TS2305s while `tsx` — which
  * strips types without checking them — ran the suite green.
  *
  * **The typecheck gate cannot be the guard for this.** It only speaks when

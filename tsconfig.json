@@ -4,18 +4,22 @@
     "module": "Node16",
     "moduleResolution": "Node16",
     "outDir": "dist",
-    "rootDir": "src",
+    "rootDir": ".",
     "strict": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "lib": ["ES2024"],
     "types": [
       "node"
     ]
   },
   "include": [
-    "src/**/*"
+    "src/**/*",
+    "tests/**/*"
   ]
 }

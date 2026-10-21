@@ -48,20 +48,15 @@ jobs:
         run: npm ci
 
       - name: Typecheck
+        # #1408, #1478, #1679. This covers `src/` AND `tests/`. `tsx` strips
+        # types rather than checking them, so a test naming a symbol that does
+        # not exist runs and passes; the budget gate that used to catch it
+        # measured a tree whose baseline had reached zero, so it guarded an
+        # empty set while every test file still paid the indirection. There is
+        # no baseline and no `--write` escape hatch now: the first diagnostic in
+        # either tree is a failure, which is a stronger property than the
+        # two-way baseline comparison it replaces.
         run: npx tsc --noEmit
-
-      - name: Test-tree typecheck budget
-        # #1408, #1478. `tsconfig.json` includes only `src`, so the typecheck
-        # above has never seen a test file, and `tsx` strips types rather than
-        # checking them — a test naming a symbol that does not exist runs and
-        # passes. The count is baselined rather than zero, and the baseline is
-        # required to be a CURRENT measurement of this tree: above it is a
-        # regression, below it is slack nobody can spend (a one-directional
-        # comparison is what let three dead entries accumulate to the "5 to
-        # give back" this job kept reporting as a pass). Re-baseline with
-        # `npm run check:tests-typecheck -- --write`; widening the budget takes
-        # `--allow-increase "<reason>"`.
-        run: npm run check:tests-typecheck
 
       - name: Payload-shape guard (no `as any` under src/tools)
         # #758. `as any` at a payload boundary is the cast that turns off the
