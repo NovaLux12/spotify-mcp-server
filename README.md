@@ -15,15 +15,15 @@ A broad Spotify Web API tool surface, plus extras most servers skip. Registratio
 A server started with no `SPOTIFY_MCP_TOOLSETS` registers **131 tools** (150,111 bytes of schema) — the curated default surface (#889). `SPOTIFY_MCP_TOOLSETS=all` registers all **562 tools**, along with **17 fixed resources**, **28 resource templates**, and **14 prompts**. Toolsets and production gates can trim a configured host further; both figures describe a real production `tools/list` after finalizers.
 <!-- END:generated surface-census -->
 
-### 🚧 3.0 is landing
+### 3.0 and later
 
-**3.0 is the release where the open issue list goes to zero** — every epic, every
+**3.0 was the release where the open issue list went to zero** — every epic, every
 issue under it, every contradiction we turned up auditing ourselves. Most of that
 backlog was never "bugs" in the crashing sense; it was places where this server
 reported a value it had not actually checked, which is the only kind of wrong
 that is genuinely dangerous.
 
-It also *removes* tools, because Spotify deleted the endpoints underneath them in
+It also *removed* tools, because Spotify deleted the endpoints underneath them in
 February 2026 — including artist follows, which have no migration target at all.
 
 → **[Read the 3.0 roadmap](docs/v3-roadmap.md)**
